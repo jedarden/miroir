@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::signal;
 use tracing::{error, info};
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, registry};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, registry, util::SubscriberInitExt};
 
 mod auth;
 mod client;
@@ -36,7 +36,7 @@ struct UnifiedState {
 
 impl UnifiedState {
     fn new(config: MiroirConfig) -> Self {
-        let metrics = Metrics::new();
+        let metrics = Metrics::new(&config);
 
         let master_key = std::env::var("MIROIR_MASTER_KEY")
             .unwrap_or_else(|_| config.master_key.clone());
@@ -81,9 +81,12 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
 
     // Initialize structured JSON logging (plan §10 format)
-    // Fields: timestamp, level, target, message, request_id, pod_id
+    // Fields on every line: timestamp, level, target, message, pod_id
+    // Per-request fields (request_id) are added by telemetry middleware span.
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let pod_id = std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string());
 
     // Build subscriber - conditionally add OTel layer
     // Note: We rebuild the layers in each branch because the types differ
@@ -95,24 +98,27 @@ async fn main() -> anyhow::Result<()> {
             .with_current_span(false)
             .with_span_list(false);
         // Apply OTel layer to registry first, then add filter and json layer
-        let subscriber = registry()
+        registry()
             .with(otel_layer)
             .with(filter)
-            .with(json_layer);
-        tracing::subscriber::set_global_default(subscriber)
-            .map_err(|e| anyhow::anyhow!("Failed to set subscriber: {}", e))?;
+            .with(json_layer)
+            .init();
     } else {
         let json_layer = tracing_subscriber::fmt::layer()
             .json()
             .with_target(true)
             .with_current_span(false)
             .with_span_list(false);
-        let subscriber = registry()
+        registry()
             .with(filter)
-            .with(json_layer);
-        tracing::subscriber::set_global_default(subscriber)
-            .map_err(|e| anyhow::anyhow!("Failed to set subscriber: {}", e))?;
+            .with(json_layer)
+            .init();
     }
+
+    // Set pod_id as a global default field so it appears on every log line.
+    // This is done via a separate info span that is entered once and never
+    // left — its fields propagate to all child spans and events.
+    let _pod_span = tracing::info_span!("runtime", pod_id = %pod_id).entered();
 
     info!(
         shards = config.shards,
