@@ -112,6 +112,9 @@ async fn search_handler(
     };
     let node_count = plan.shard_to_node.len() as u64;
 
+    // Record scatter fan-out size before executing
+    state.metrics.record_scatter_fan_out(node_count);
+
     // Build search request
     let search_req = SearchRequest {
         index_uid: index.clone(),
@@ -174,6 +177,10 @@ async fn search_handler(
     let mut response = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json");
+
+    if result.degraded {
+        state.metrics.inc_scatter_partial_responses();
+    }
 
     if result.degraded && !result.failed_shards.is_empty() {
         let mut sorted_shards = result.failed_shards.clone();
