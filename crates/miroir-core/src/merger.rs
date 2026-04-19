@@ -1,4 +1,7 @@
 //! Result merger: combines shard results into a single response.
+//!
+//! Supports pluggable merge strategies via the [`MergeStrategy`] trait.
+//! The default strategy is Reciprocal Rank Fusion (RRF) with k=60.
 
 use crate::Result;
 use serde_json::{Map, Value};
@@ -50,12 +53,78 @@ pub struct MergedSearchResult {
     pub degraded: bool,
 }
 
-/// RRF constant k.
+// ---------------------------------------------------------------------------
+// Merge strategy trait
+// ---------------------------------------------------------------------------
+
+/// Pluggable merge strategy for combining shard results.
 ///
-/// This is the denominator constant used in Reciprocal Rank Fusion.
-/// The value 60 is the default recommended in the RRF literature and
-/// is used by OpenSearch for hybrid search.
-const RRF_K: u32 = 60;
+/// Implementations define how hits from multiple shards are combined
+/// into a single globally-ranked response. The default strategy is
+/// [`RrfStrategy`] (Reciprocal Rank Fusion).
+pub trait MergeStrategy: Send + Sync {
+    /// Merge search results from multiple shards into a single response.
+    fn merge(&self, input: MergeInput) -> Result<MergedSearchResult>;
+
+    /// Strategy name (for logging and `/explain` output).
+    fn name(&self) -> &'static str;
+}
+
+// ---------------------------------------------------------------------------
+// RRF strategy
+// ---------------------------------------------------------------------------
+
+/// Default RRF constant k.
+///
+/// The value 60 is recommended in the RRF literature and used by
+/// OpenSearch for hybrid search. Smaller values amplify rank
+/// differences; larger values flatten them.
+pub const DEFAULT_RRF_K: u32 = 60;
+
+/// Reciprocal Rank Fusion merge strategy.
+///
+/// Each document's contribution from a shard is `1 / (k + rank + 1)`
+/// where rank is the 0-based position. Documents appearing in
+/// multiple shards have their contributions summed. Results are
+/// sorted by total RRF score descending, with deterministic
+/// tie-breaking on primary key.
+#[derive(Debug, Clone)]
+pub struct RrfStrategy {
+    k: u32,
+}
+
+impl RrfStrategy {
+    /// Create a new RRF strategy with the given k constant.
+    pub fn new(k: u32) -> Self {
+        Self { k: k.max(1) }
+    }
+
+    /// Create with the default k=60.
+    pub fn default_strategy() -> Self {
+        Self::new(DEFAULT_RRF_K)
+    }
+
+    /// Return the configured k value.
+    pub fn k(&self) -> u32 {
+        self.k
+    }
+}
+
+impl Default for RrfStrategy {
+    fn default() -> Self {
+        Self::default_strategy()
+    }
+}
+
+impl MergeStrategy for RrfStrategy {
+    fn merge(&self, input: MergeInput) -> Result<MergedSearchResult> {
+        rrf_merge(&self.k, input)
+    }
+
+    fn name(&self) -> &'static str {
+        "rrf"
+    }
+}
 
 /// A document with its accumulated RRF score.
 #[derive(Debug, Clone)]
@@ -107,11 +176,27 @@ impl Ord for RRFDocument {
     }
 }
 
-/// Merge search results from multiple shards into a single response.
+/// Merge search results using the default RRF strategy (k=60).
 ///
-/// This is a pure function with no side effects, making it testable
-/// without a network and ensuring deterministic output.
+/// This is a convenience wrapper around [`RrfStrategy`] for callers
+/// that don't need to customise the strategy.
 pub fn merge(input: MergeInput) -> Result<MergedSearchResult> {
+    rrf_merge(&DEFAULT_RRF_K, input)
+}
+
+/// Merge search results with a specific strategy.
+///
+/// Use this when the strategy is selected from config or when you
+/// need a non-default RRF k value.
+pub fn merge_with_strategy(
+    strategy: &dyn MergeStrategy,
+    input: MergeInput,
+) -> Result<MergedSearchResult> {
+    strategy.merge(input)
+}
+
+/// Core RRF merge implementation.
+fn rrf_merge(k: &u32, input: MergeInput) -> Result<MergedSearchResult> {
     let mut estimated_total_hits = 0u64;
     let mut max_processing_time = 0u64;
     let mut degraded = false;
@@ -157,9 +242,9 @@ pub fn merge(input: MergeInput) -> Result<MergedSearchResult> {
                         .unwrap_or("")
                         .to_string();
 
-                    // Compute RRF contribution: 1 / (k + rank)
-                    // rank is 0-based, so we add 1 to convert to 1-based for RRF formula
-                    let rrf_contribution = 1.0 / ((RRF_K as f64) + (rank as f64) + 1.0);
+                    // RRF contribution: 1 / (k + rank + 1)
+                    // rank is 0-based, so +1 converts to 1-based position.
+                    let rrf_contribution = 1.0 / ((*k as f64) + (rank as f64) + 1.0);
 
                     // Aggregate RRF scores across shards.
                     use std::collections::hash_map::Entry;
@@ -267,6 +352,85 @@ fn merge_facets(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // Trait / strategy tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_rrf_strategy_default_matches_free_function() {
+        let input = MergeInput {
+            shard_hits: vec![make_shard_response(
+                vec![make_hit("doc1", 0.9, 0), make_hit("doc2", 0.7, 0)],
+                100,
+                15,
+            )],
+            offset: 0,
+            limit: 10,
+            client_requested_score: false,
+            facets: None,
+        };
+
+        let strategy = RrfStrategy::default_strategy();
+        let via_trait = strategy.merge(input.clone()).unwrap();
+        let via_free = merge(input).unwrap();
+
+        assert_eq!(via_trait.hits, via_free.hits);
+        assert_eq!(via_trait.estimated_total_hits, via_free.estimated_total_hits);
+    }
+
+    #[test]
+    fn test_rrf_strategy_custom_k() {
+        // With k=1, rank 0 gets 1/(1+0+1) = 0.5
+        // With k=60, rank 0 gets 1/(60+0+1) ≈ 0.0164
+        // Both should produce the same ordering for a single shard.
+        let input = MergeInput {
+            shard_hits: vec![make_shard_response(
+                vec![make_hit("a", 0.9, 0), make_hit("b", 0.5, 0)],
+                50,
+                10,
+            )],
+            offset: 0,
+            limit: 10,
+            client_requested_score: false,
+            facets: None,
+        };
+
+        let strategy_k1 = RrfStrategy::new(1);
+        let result = strategy_k1.merge(input).unwrap();
+        assert_eq!(result.hits[0].get("id").unwrap(), "a");
+        assert_eq!(result.hits[1].get("id").unwrap(), "b");
+    }
+
+    #[test]
+    fn test_merge_with_strategy_dispatches() {
+        let input = MergeInput {
+            shard_hits: vec![make_shard_response(
+                vec![make_hit("doc1", 0.9, 0)],
+                50,
+                10,
+            )],
+            offset: 0,
+            limit: 10,
+            client_requested_score: false,
+            facets: None,
+        };
+
+        let strategy = RrfStrategy::default_strategy();
+        let result = merge_with_strategy(&strategy, input).unwrap();
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(strategy.name(), "rrf");
+    }
+
+    #[test]
+    fn test_rrf_strategy_k_clamped_to_one() {
+        let strategy = RrfStrategy::new(0);
+        assert_eq!(strategy.k(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Core merge tests
+    // -----------------------------------------------------------------------
 
     fn make_hit(id: &str, score: f64, shard: u32) -> Value {
         json!({
@@ -839,5 +1003,202 @@ mod tests {
                 page
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // RRF correctness properties
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_rrf_cross_shard_replication_boost() {
+        // Key RRF property: a document appearing in multiple shards
+        // gets a higher merged score than a single-shard document,
+        // even if it ranks lower within each shard.
+        //
+        // doc-replicated: rank 5 in shard0, rank 5 in shard1
+        //   RRF = 1/(60+5+1) + 1/(60+5+1) = 2/66 ≈ 0.0303
+        // doc-single: rank 0 in shard2
+        //   RRF = 1/(60+0+1) = 1/61 ≈ 0.0164
+        //
+        // doc-replicated should rank higher.
+
+        let mut shard0 = vec![];
+        let mut shard1 = vec![];
+        for i in 0..5 {
+            shard0.push(make_hit(&format!("filler0-{}", i), 0.5, 0));
+            shard1.push(make_hit(&format!("filler1-{}", i), 0.5, 1));
+        }
+        shard0.push(make_hit("doc-replicated", 0.1, 0));
+        shard1.push(make_hit("doc-replicated", 0.1, 1));
+
+        let shard2 = vec![make_hit("doc-single", 0.99, 2)];
+
+        let strategy = RrfStrategy::default_strategy();
+        let result = strategy
+            .merge(MergeInput {
+                shard_hits: vec![
+                    make_shard_response(shard0, 100, 10),
+                    make_shard_response(shard1, 100, 10),
+                    make_shard_response(shard2, 100, 10),
+                ],
+                offset: 0,
+                limit: 20,
+                client_requested_score: false,
+                facets: None,
+            })
+            .unwrap();
+
+        let ids: Vec<_> = result.hits.iter().filter_map(|h| h.get("id").and_then(|v| v.as_str())).collect();
+        let rep_pos = ids.iter().position(|&id| id == "doc-replicated").unwrap();
+        let single_pos = ids.iter().position(|&id| id == "doc-single").unwrap();
+        assert!(
+            rep_pos < single_pos,
+            "Replicated doc at pos {} should rank above single doc at pos {}",
+            rep_pos,
+            single_pos
+        );
+    }
+
+    #[test]
+    fn test_rrf_immune_to_score_scale() {
+        // RRF uses rank only: scores of 0.001 vs 0.999 don't affect ordering.
+        // Two shards with wildly different score ranges should produce the
+        // same merge as two shards with uniform scores.
+        let shard_a = ShardHitPage {
+            body: json!({
+                "hits": [
+                    {"id": "a1", "_rankingScore": 0.001},
+                    {"id": "a2", "_rankingScore": 0.002},
+                ],
+                "estimatedTotalHits": 2,
+                "processingTimeMs": 5,
+            }),
+        };
+        let shard_b = ShardHitPage {
+            body: json!({
+                "hits": [
+                    {"id": "b1", "_rankingScore": 0.999},
+                    {"id": "b2", "_rankingScore": 0.998},
+                ],
+                "estimatedTotalHits": 2,
+                "processingTimeMs": 5,
+            }),
+        };
+
+        let strategy = RrfStrategy::default_strategy();
+        let result = strategy
+            .merge(MergeInput {
+                shard_hits: vec![shard_a, shard_b],
+                offset: 0,
+                limit: 10,
+                client_requested_score: false,
+                facets: None,
+            })
+            .unwrap();
+
+        // All at rank 0 or 1 — tie-break alphabetically within each rank tier.
+        // rank 0: a1, b1 → sort by id → a1, b1
+        // rank 1: a2, b2 → sort by id → a2, b2
+        let ids: Vec<_> = result.hits.iter().filter_map(|h| h.get("id").and_then(|v| v.as_str())).collect();
+        assert_eq!(ids, vec!["a1", "b1", "a2", "b2"]);
+    }
+
+    #[test]
+    fn test_rrf_deterministic_with_same_input() {
+        // RRF merge is a pure function: same input always produces same output.
+        let shard = make_shard_response(
+            (0..100).map(|i| make_hit(&format!("doc{}", i), (100 - i) as f64 / 100.0, 0)).collect(),
+            1000,
+            10,
+        );
+        let input = MergeInput {
+            shard_hits: vec![shard; 5],
+            offset: 0,
+            limit: 50,
+            client_requested_score: false,
+            facets: None,
+        };
+
+        let strategy = RrfStrategy::default_strategy();
+        let r1 = strategy.merge(input.clone()).unwrap();
+        let r2 = strategy.merge(input).unwrap();
+
+        assert_eq!(
+            serde_json::to_vec(&r1).unwrap(),
+            serde_json::to_vec(&r2).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_rrf_default_impl() {
+        let via_default: RrfStrategy = Default::default();
+        let via_constructor = RrfStrategy::default_strategy();
+        assert_eq!(via_default.k(), via_constructor.k());
+    }
+
+    #[test]
+    fn test_merge_pk_field_as_primary_key() {
+        let shard = ShardHitPage {
+            body: json!({
+                "hits": [{"pk": "doc-pk", "title": "Test"}],
+                "estimatedTotalHits": 1,
+                "processingTimeMs": 5,
+            }),
+        };
+        let input = MergeInput {
+            shard_hits: vec![shard],
+            offset: 0,
+            limit: 10,
+            client_requested_score: false,
+            facets: None,
+        };
+        let result = merge(input).unwrap();
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].get("pk").unwrap(), "doc-pk");
+    }
+
+    #[test]
+    fn test_rrf_document_equality() {
+        use super::{RRFDocument, Ordering};
+        let a = super::RRFDocument {
+            rrf_score: 1.0,
+            primary_key: "doc1".into(),
+            hit: Map::new(),
+        };
+        let b = super::RRFDocument {
+            rrf_score: 1.0,
+            primary_key: "doc1".into(),
+            hit: Map::new(),
+        };
+        assert_eq!(a, b);
+
+        let c = super::RRFDocument {
+            rrf_score: 1.0,
+            primary_key: "doc2".into(),
+            hit: Map::new(),
+        };
+        assert_ne!(a, c);
+
+        // NaN: both NaN → Equal
+        let nan_a = super::RRFDocument {
+            rrf_score: f64::NAN,
+            primary_key: "x".into(),
+            hit: Map::new(),
+        };
+        let nan_b = super::RRFDocument {
+            rrf_score: f64::NAN,
+            primary_key: "x".into(),
+            hit: Map::new(),
+        };
+        assert_eq!(nan_a.cmp(&nan_b), Ordering::Equal);
+
+        // NaN vs real: NaN is Less
+        let real = super::RRFDocument {
+            rrf_score: 1.0,
+            primary_key: "x".into(),
+            hit: Map::new(),
+        };
+        assert_eq!(nan_a.cmp(&real), Ordering::Less);
+        assert_eq!(real.cmp(&nan_a), Ordering::Greater);
     }
 }
