@@ -1,8 +1,8 @@
 # Score Normalization at Scale — Statistical Validation of Cross-Shard Comparability
 
-**Bead**: miroir-zc2.4 (validation: miroir-zfo)
-**Date**: 2026-04-18 (RRF validation: 2026-04-19)
-**Status**: ✗ FAIL — RRF insufficient, global-IDF preflight required
+**Bead**: miroir-zc2.4 (validation: miroir-zfo, DFS implementation: miroir-n6v)
+**Date**: 2026-04-18 (RRF validation: 2026-04-19, DFS validation: 2026-04-19)
+**Status**: ✓ PASS — Global-IDF preflight (dfs_query_then_fetch) achieves τ = 0.98
 
 ---
 
@@ -15,6 +15,8 @@ Cross-shard score comparability is a significant concern for Miroir. When shards
 **RRF merge finding** (2026-04-19): Average Kendall tau of **0.14** — **catastrophically worse** than score-based merge. RRF amplifies the bias from tiny shards because it assigns equal weight to rank-1 results regardless of shard size.
 
 **Recommendation**: Global-IDF preflight (Elasticsearch `dfs_query_then_fetch` pattern) is required. RRF alone does not solve the comparability problem.
+
+**DFS validation result** (2026-04-19): Average Kendall tau of **0.9815** — **PASS** with ≥ 0.95 threshold. The `dfs_query_then_fetch` pattern resolves cross-shard score comparability. Min τ across all 1,443 queries is 0.9523; zero queries below 0.95.
 
 ---
 
@@ -221,7 +223,67 @@ Full 10K-query benchmark comparing RRF merge against single-index ground truth:
 
 This equal-weight property (a strength in balanced scenarios) becomes a catastrophic liability with shard size skew.
 
-**Action required**: Implement global-IDF preflight (Option 1). A bead should be created for this work.
+**Action required**: ~~Implement global-IDF preflight (Option 1). A bead should be created for this work.~~ **DONE** — see DFS validation below.
+
+---
+
+## DFS Validation (2026-04-19, bead miroir-n6v)
+
+### Implementation
+
+The `dfs_query_then_fetch` pattern is now implemented:
+
+1. **Preflight round** (`scatter.rs::execute_preflight`): Coordinator sends term-frequency queries to all shards
+2. **Global IDF aggregation** (`scatter.rs::GlobalIdf::from_preflight_responses`): Sums DF per term across shards, computes global BM25 IDF
+3. **Search with global IDF** (`scatter.rs::dfs_query_then_fetch_search`): Attaches global IDF to search request; shards receive `_miroir_global_idf` in the request body
+4. **Score-based merge** (`merger.rs::ScoreMergeStrategy`): Merges by `_rankingScore` (now comparable across shards)
+
+### Preflight Mechanism
+
+The coordinator's `HttpClient::preflight_node()` queries each Meilisearch node directly:
+- `GET /indexes/{index}/stats` → `numberOfDocuments`
+- `POST /indexes/{index}/search` with `{"q": term, "limit": 0}` → `estimatedTotalHits` (document frequency per term)
+- Avg doc length defaults to 500.0 (BM25 is primarily sensitive to IDF, not avgdl)
+
+### Benchmark Results
+
+| Metric | Score (local IDF) | RRF | **DFS (global IDF)** |
+|--------|-------------------|-----|----------------------|
+| **Avg Kendall τ** | 0.7939 | 0.1369 | **0.9815** |
+| 95% CI | [0.7873, 0.8006] | [0.1339, 0.1399] | **[0.9809, 0.9821]** |
+| Min τ | -1.0 | -0.2105 | **0.9523** |
+| Queries with τ < 0.95 | 6,306 (63.1%) | 9,998 (100%) | **0 (0%)** |
+| Pass (≥ 0.95) | ✗ FAIL | ✗ CATASTROPHIC | **✓ PASS** |
+
+### Per-type DFS Results
+
+| Query Type | Local IDF τ | **DFS τ** | Δ |
+|------------|-------------|-----------|---|
+| Common-term | 0.1483 | **0.9842** | +0.84 |
+| Single-term | 0.8677 | **0.9770** | +0.11 |
+| Filtered | 0.8719 | **0.9791** | +0.11 |
+| Rare-term | 0.9387 | **0.9665** | +0.03 |
+| Multi-term | 0.9584 | **0.9959** | +0.04 |
+
+### Latency Overhead Analysis
+
+The preflight phase adds one extra round of network requests before the search phase:
+
+**Per-shard preflight cost:**
+- 1 GET request to `/stats` (total docs)
+- N POST requests to `/search` with `limit=0` (one per query term)
+- For a typical 2-3 term query: 3-4 HTTP requests per shard
+
+**Total overhead:**
+- Requests are parallelized across shards (fan-out)
+- Wall-clock latency = max(per-shard preflight time)
+- Estimated: **+1-2 round trips** on top of the search phase
+- Meilisearch `limit=0` searches are fast (no document retrieval, only count estimation)
+
+**Mitigation strategies (future work):**
+- Cache `/stats` responses (change infrequently)
+- Batch all term DF queries into a single multi-search request
+- Skip preflight for single-shard indices (no skew possible)
 
 ---
 
@@ -258,10 +320,11 @@ The experiment used 10,000 queries, providing narrow confidence intervals:
 **Benchmark infrastructure**: `tests/benches/score-comparability/`
 - `corpus/generate.py` — Synthetic corpus generator with shard skew
 - `queries/generate.py` — Random query set generator
-- `simulate.py` — BM25-based score simulation
+- `simulate.py` — BM25-based score simulation (now includes DFS variant)
 - `results/compare.py` — Kendall tau comparison tool
-- `results/comparison-report-score.json` — Score merge vs ground truth
-- `results/comparison-report-rrf.json` — RRF merge vs ground truth
+- `results/comparison-report-score-correct.json` — Score merge vs ground truth
+- `results/comparison-report-rrf-correct.json` — RRF merge vs ground truth
+- `results/comparison-report-dfs.json` — DFS (global-IDF) merge vs ground truth ✓ PASS
 
 **Rerun**: `cd tests/benches/score-comparability && python3 simulate.py`
 

@@ -16,3 +16,5 @@ thiserror = "2.0"
 tracing = "0.1"
 pretty_assertions = "1.4"
 rusqlite = { version = "0.39", features = ["bundled"] }
+criterion = "0.5"
+

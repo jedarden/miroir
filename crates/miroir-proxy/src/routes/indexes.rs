@@ -1,6 +1,6 @@
 use axum::extract::Path;
 use axum::http::StatusCode;
-use axum::{routing::any, Json, Router};
+use axum::{routing::any, Extension, Json, Router};
 use miroir_core::config::Config;
 use miroir_core::scatter::{PreflightRequest, PreflightResponse, TermStats};
 use miroir_core::topology::Topology;
