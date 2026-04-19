@@ -48,6 +48,12 @@ pub struct TaskStateMachine {
     last_applied_log_index: u64,
 }
 
+impl Default for TaskStateMachine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TaskStateMachine {
     pub fn new() -> Self {
         Self {

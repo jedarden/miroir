@@ -9,11 +9,12 @@
 
 use super::command::TaskStoreCommand;
 use super::state_machine::TaskStateMachine;
-use crate::task::{MiroirTask, NodeTask, NodeTaskStatus, TaskFilter, TaskStatus};
+use crate::task::{MiroirTask, NodeTask, NodeTaskStatus, TaskStatus};
 use std::collections::HashMap;
 use std::time::Instant;
 
 /// Simulates Redis-style direct HashMap access (no serialization, no consensus).
+#[allow(dead_code)]
 struct DirectStore {
     tasks: HashMap<String, MiroirTask>,
 }
@@ -67,6 +68,7 @@ impl DirectStore {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct BenchResult {
     name: String,
     insert_ns: f64,
@@ -74,6 +76,7 @@ struct BenchResult {
     update_ns: f64,
 }
 
+#[allow(dead_code)]
 fn bench_state_machine(n: usize) -> BenchResult {
     let mut sm = TaskStateMachine::new();
     let mut insert_latencies = Vec::with_capacity(n);
@@ -121,6 +124,7 @@ fn bench_state_machine(n: usize) -> BenchResult {
     }
 }
 
+#[allow(dead_code)]
 fn bench_direct_store(n: usize) -> BenchResult {
     let mut store = DirectStore::new();
     let mut insert_latencies = Vec::with_capacity(n);
@@ -159,6 +163,7 @@ fn bench_direct_store(n: usize) -> BenchResult {
     }
 }
 
+#[allow(dead_code)]
 fn bench_serialization(n: usize) -> (f64, f64, usize, usize) {
     let cmd = TaskStoreCommand::InsertTask {
         node_tasks: vec![

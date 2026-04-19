@@ -27,20 +27,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Simulated Raft consensus overhead.
-///
-/// In a real Raft cluster, every write goes through:
-/// 1. Serialize command → log entry
-/// 2. Send to majority of peers (network RTT)
-/// 3. Each peer persists to disk (fsync)
-/// 4. Majority ACK → leader commits
-/// 5. Apply to state machine
-///
-/// The network + fsync dominates. This constant represents the consensus overhead
-/// based on published openraft benchmarks and typical K8s pod-to-pod latency.
+/// Simulated Raft consensus overhead — used by benchmark tests only.
+#[allow(dead_code)]
 const RAFT_CONSENSUS_OVERHEAD: Duration = Duration::from_micros(2500); // 2.5ms median
 
-/// Redis network overhead (same cluster, pod-to-pod).
+/// Redis network overhead — used by benchmark tests only.
+#[allow(dead_code)]
 const REDIS_NETWORK_OVERHEAD: Duration = Duration::from_micros(500); // 0.5ms median
 
 /// Raft-backed implementation of TaskRegistry.
@@ -56,6 +48,12 @@ const REDIS_NETWORK_OVERHEAD: Duration = Duration::from_micros(500); // 0.5ms me
 /// consensus layer is simulated for benchmarking purposes.
 pub struct RaftTaskRegistry {
     state_machine: Arc<std::sync::Mutex<TaskStateMachine>>,
+}
+
+impl Default for RaftTaskRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RaftTaskRegistry {
