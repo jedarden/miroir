@@ -84,6 +84,10 @@ enum Commands {
     /// Explain query plans and operations
     #[command(subcommand)]
     Explain(commands::explain::ExplainSubcommand),
+
+    /// Manage Meilisearch keys
+    #[command(subcommand)]
+    Key(commands::key::KeySubcommand),
 }
 
 #[tokio::main]
@@ -106,8 +110,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    // TODO: Use admin_key for API authentication when commands are implemented
-    let _admin_key = admin_key.unwrap();
+    let admin_key = admin_key.unwrap();
+    let api_url = cli.api_url.unwrap_or_else(|| "http://localhost:8080".to_string());
 
     match cli.command {
         Commands::Status(cmd) => commands::status::run(cmd).await,
@@ -125,5 +129,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Ui(cmd) => commands::ui::run(cmd).await,
         Commands::Tenant(cmd) => commands::tenant::run(cmd).await,
         Commands::Explain(cmd) => commands::explain::run(cmd).await,
+        Commands::Key(cmd) => commands::key::run(cmd, &admin_key, &api_url).await,
     }
 }

@@ -3,6 +3,7 @@ pub mod canary;
 pub mod cdc;
 pub mod dump;
 pub mod explain;
+pub mod key;
 pub mod node;
 pub mod rebalance;
 pub mod reshard;

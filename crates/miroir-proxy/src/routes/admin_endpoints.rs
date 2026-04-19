@@ -171,6 +171,7 @@ pub struct TopologyResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub id: String,
+    pub address: String,
     pub status: String,
     pub shard_count: u32,
     pub last_seen_ms: u64,
@@ -201,6 +202,7 @@ where
         .nodes()
         .map(|n| NodeInfo {
             id: n.id.as_str().to_string(),
+            address: n.address.clone(),
             status: format!("{:?}", n.status).to_lowercase(),
             shard_count: 0, // TODO: compute from routing table
             last_seen_ms: 0, // TODO: track last health check time
@@ -303,6 +305,7 @@ mod tests {
             nodes: vec![
                 NodeInfo {
                     id: "meili-0".to_string(),
+                    address: "http://meili-0.search.svc:7700".to_string(),
                     status: "healthy".to_string(),
                     shard_count: 32,
                     last_seen_ms: 100,
@@ -310,6 +313,7 @@ mod tests {
                 },
                 NodeInfo {
                     id: "meili-1".to_string(),
+                    address: "http://meili-1.search.svc:7700".to_string(),
                     status: "degraded".to_string(),
                     shard_count: 32,
                     last_seen_ms: 5000,
@@ -346,6 +350,7 @@ mod tests {
     fn test_node_info_with_optional_error() {
         let info = NodeInfo {
             id: "test".to_string(),
+            address: "http://meili-0.search.svc:7700".to_string(),
             status: "healthy".to_string(),
             shard_count: 10,
             last_seen_ms: 100,
@@ -361,6 +366,7 @@ mod tests {
     fn test_node_info_with_error() {
         let info = NodeInfo {
             id: "test".to_string(),
+            address: "http://meili-0.search.svc:7700".to_string(),
             status: "failed".to_string(),
             shard_count: 10,
             last_seen_ms: 100,
