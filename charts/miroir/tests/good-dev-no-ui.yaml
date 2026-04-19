@@ -1,0 +1,6 @@
+# Good: dev defaults (single replica, SQLite, no HPA, no UI)
+# Expected: PASS
+miroir:
+  replicas: 1
+taskStore:
+  backend: sqlite

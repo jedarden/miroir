@@ -1,0 +1,8 @@
+# Rule 2 bad: HPA enabled with only 1 replica
+# Expected: FAIL — HPA requires miroir.replicas >= 2
+miroir:
+  replicas: 1
+taskStore:
+  backend: redis
+hpa:
+  enabled: true

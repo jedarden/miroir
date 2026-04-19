@@ -1,0 +1,9 @@
+# Rule 3 bad: search_ui.rate_limit.backend=local with multiple replicas
+# Expected: FAIL — local rate limiting with multi-replica gives per_ip × pod_count effective rate
+miroir:
+  replicas: 2
+taskStore:
+  backend: redis
+search_ui:
+  rate_limit:
+    backend: local

@@ -188,3 +188,17 @@ Return "true" if CDC PVC should be created, "false" otherwise.
 {{- define "miroir.cdcPvcEnabled" -}}
 {{- if .Values.cdcPvc.enabled -}}true{{- else -}}false{{- end -}}
 {{- end -}}
+
+{{/*
+Cross-field validations that JSON Schema draft-7 cannot express.
+Rendered as an empty ConfigMap; fails template rendering on invalid config.
+*/}}
+{{- define "miroir.validate.values" -}}
+{{- if .Values.search_ui -}}
+{{- if and (hasKey .Values.search_ui "scoped_key_rotate_before_expiry_days") (hasKey .Values.search_ui "scoped_key_max_age_days") -}}
+{{- if ge (int .Values.search_ui.scoped_key_rotate_before_expiry_days) (int .Values.search_ui.scoped_key_max_age_days) -}}
+{{- fail (printf "search_ui.scoped_key_rotate_before_expiry_days (%d) must be strictly less than scoped_key_max_age_days (%d); otherwise rotation fires before/at key issuance, producing a continuous rotation loop" (int .Values.search_ui.scoped_key_rotate_before_expiry_days) (int .Values.search_ui.scoped_key_max_age_days)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
