@@ -596,4 +596,26 @@ leader_election:
         assert!(cfg.admin_ui.enabled);
         assert!(cfg.search_ui.enabled);
     }
+
+    #[test]
+    fn config_from_yaml_valid() {
+        let yaml = r#"
+shards: 32
+replication_factor: 1
+nodes: []
+task_store:
+  backend: redis
+"#;
+        let cfg = MiroirConfig::from_yaml(yaml).unwrap();
+        assert_eq!(cfg.shards, 32);
+    }
+
+    #[test]
+    fn unavailable_shard_policy_default_and_display() {
+        let policy: UnavailableShardPolicy = Default::default();
+        assert!(matches!(policy, UnavailableShardPolicy::Partial));
+        assert_eq!(format!("{}", policy), "partial");
+        assert_eq!(format!("{}", UnavailableShardPolicy::Error), "error");
+        assert_eq!(format!("{}", UnavailableShardPolicy::Fallback), "fallback");
+    }
 }

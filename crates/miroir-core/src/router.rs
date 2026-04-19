@@ -45,7 +45,12 @@ pub fn write_targets(shard_id: u32, topology: &Topology) -> Vec<NodeId> {
 }
 
 /// Select the replica group for a query (round-robin by query counter).
+///
+/// Returns 0 when there are no replica groups (caller handles the empty case).
 pub fn query_group(query_seq: u64, replica_groups: u32) -> u32 {
+    if replica_groups == 0 {
+        return 0;
+    }
     (query_seq % replica_groups as u64) as u32
 }
 

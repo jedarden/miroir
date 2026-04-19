@@ -643,7 +643,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_scatter_node_not_in_topology() {
         // Build a plan, then use a topology that doesn't have the plan's nodes
-        let mut topo = make_test_topology();
+        let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
 
         // Empty topology — none of the plan's nodes exist

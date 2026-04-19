@@ -76,12 +76,17 @@ impl RedisPool {
         F::Output: Send + 'static,
     {
         // Check if we're already in a tokio runtime
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            // We're in a runtime - spawn a thread to avoid blocking
-            let handle2 = handle.clone();
-            std::thread::spawn(move || handle2.block_on(future))
-                .join()
-                .unwrap_or_else(|_| panic!("thread panicked"))
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // We're in a runtime - spawn a thread with its own runtime to avoid blocking
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create runtime in thread");
+                rt.block_on(future)
+            })
+            .join()
+            .unwrap_or_else(|_| panic!("thread panicked"))
         } else {
             // Not in a runtime - use the dedicated runtime
             self.runtime.block_on(future)
@@ -2497,7 +2502,7 @@ mod tests {
             assert_eq!(alias.history.len(), 1);
 
             // Flip with retention trim
-            for (i, uid) in ["uid-v3", "uid-v4", "uid-v5"].iter().enumerate() {
+            for uid in ["uid-v3", "uid-v4", "uid-v5"] {
                 store
                     .flip_alias("prod-logs", uid, 2)
                     .expect("Flip should succeed");

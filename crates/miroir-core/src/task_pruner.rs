@@ -191,6 +191,10 @@ mod tests {
     use crate::config::TaskRegistryConfig;
     use crate::task_store::{NewTask, SqliteTaskStore, TaskStore};
     use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// Serialize tests that read/write the global `TASK_REGISTRY_SIZE` gauge.
+    static GAUGE_LOCK: Mutex<()> = Mutex::new(());
 
     fn test_store() -> SqliteTaskStore {
         let store = SqliteTaskStore::open_in_memory().unwrap();
@@ -227,6 +231,7 @@ mod tests {
     /// next pruner cycle drops all 10k.
     #[test]
     fn pruner_deletes_10k_old_terminal_tasks() {
+        let _lock = GAUGE_LOCK.lock().unwrap();
         let store = test_store();
         let eight_days_ms: i64 = 8 * 24 * 3600 * 1000;
         let old_time = now() - eight_days_ms;

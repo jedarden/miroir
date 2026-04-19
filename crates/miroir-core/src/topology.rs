@@ -495,6 +495,30 @@ nodes:
         assert!(g1_ids.contains(&"meili-5"));
     }
 
+    #[test]
+    fn topology_nodes_iterator() {
+        let topo = make_test_topology();
+        let all_nodes: Vec<&Node> = topo.nodes().collect();
+        assert_eq!(all_nodes.len(), 6);
+    }
+
+    #[test]
+    fn deserialize_auto_derives_replica_groups() {
+        let yaml = r#"
+shards: 32
+rf: 1
+nodes:
+  - id: "n0"
+    address: "http://n0:7700"
+    replica_group: 2
+  - id: "n1"
+    address: "http://n1:7700"
+    replica_group: 2
+"#;
+        let topo: Topology = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(topo.replica_groups, 3);
+    }
+
     // ── State machine ─────────────────────────────────────────────────
 
     #[test]

@@ -144,3 +144,43 @@ impl TaskRegistry for StubTaskRegistry {
         Ok(Vec::new())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stub_register_returns_enqueued_task() {
+        let stub = StubTaskRegistry;
+        let task = stub.register(HashMap::new()).unwrap();
+        assert_eq!(task.status, TaskStatus::Enqueued);
+        assert!(!task.miroir_id.is_empty());
+        assert!(task.node_tasks.is_empty());
+        assert!(task.error.is_none());
+    }
+
+    #[test]
+    fn stub_get_returns_none() {
+        let stub = StubTaskRegistry;
+        assert!(stub.get("any-id").unwrap().is_none());
+    }
+
+    #[test]
+    fn stub_update_status_is_ok() {
+        let stub = StubTaskRegistry;
+        stub.update_status("any", TaskStatus::Succeeded).unwrap();
+    }
+
+    #[test]
+    fn stub_update_node_task_is_ok() {
+        let stub = StubTaskRegistry;
+        stub.update_node_task("any", "node-0", NodeTaskStatus::Succeeded).unwrap();
+    }
+
+    #[test]
+    fn stub_list_returns_empty() {
+        let stub = StubTaskRegistry;
+        let tasks = stub.list(TaskFilter::default()).unwrap();
+        assert!(tasks.is_empty());
+    }
+}

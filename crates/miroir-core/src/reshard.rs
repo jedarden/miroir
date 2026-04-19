@@ -593,4 +593,58 @@ mod tests {
             result.new_shard_cv
         );
     }
+
+    #[test]
+    fn time_window_display_roundtrip() {
+        let w = TimeWindow::parse("02:30-06:45").unwrap();
+        assert_eq!(format!("{}", w), "02:30-06:45");
+    }
+
+    #[test]
+    fn time_window_parse_missing_dash() {
+        let err = TimeWindow::parse("02:00").unwrap_err();
+        assert!(err.contains("expected HH:MM-HH:MM"));
+    }
+
+    #[test]
+    fn time_window_parse_invalid_hm() {
+        let err = TimeWindow::parse("ab:00-06:00").unwrap_err();
+        assert!(err.contains("invalid hour"));
+    }
+
+    #[test]
+    fn time_window_parse_invalid_minute() {
+        let err = TimeWindow::parse("02:ab-06:00").unwrap_err();
+        assert!(err.contains("invalid minute"));
+    }
+
+    #[test]
+    fn check_window_now_no_restriction() {
+        let config = ReshardingConfig::default();
+        assert!(matches!(check_window_now(&config), WindowGuardResult::NoRestriction));
+    }
+
+    #[test]
+    fn simulation_throttle_zero_gives_infinity_duration() {
+        let params = SimParams {
+            doc_size_bytes: 1024,
+            corpus_size_bytes: 1024 * 1024,
+            write_rate_dps: 100,
+            replica_groups: 1,
+            replication_factor: 1,
+            old_shards: 4,
+            new_shards: 8,
+            nodes_per_group: 2,
+            backfill_throttle_dps: 0,
+        };
+        let result = simulate(&params);
+        assert!(result.backfill_duration_secs.is_infinite());
+        assert_eq!(result.total_bytes_written, 0);
+    }
+
+    #[test]
+    fn cv_empty_and_zero() {
+        assert_eq!(cv(&[]), 0.0);
+        assert_eq!(cv(&[0, 0, 0]), 0.0);
+    }
 }
