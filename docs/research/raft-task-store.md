@@ -4,6 +4,7 @@
 **Status:** Decision recorded — revisit before v2.0, do not ship in v0.x or v1.0
 **Bead:** miroir-zc2.2
 **Plan ref:** §15 Open Problem #2, §4 Task store schema, §14.2 Per-pod memory budget
+**Prototype:** `crates/miroir-core/src/raft_proto/` (feature-gated behind `raft-proto`)
 
 ---
 
@@ -216,6 +217,31 @@ Snapshot interval: every 10,000 log entries or 5 minutes, whichever comes first.
 
 Since Miroir has no running code yet, these are analytical estimates based on the known performance characteristics of Redis, SQLite, and Raft, calibrated against published benchmarks from Databend (openraft) and TiKV (raft-rs).
 
+### 4.0 Measured: State Machine Apply Path
+
+The prototype benchmark (`raft_proto::benchmark`) measures the actual apply-path overhead of the command-based state machine vs. direct HashMap access. Run with:
+
+```bash
+cargo test -p miroir-core --features raft-proto raft_proto::benchmark -- --nocapture
+```
+
+**Results** (50,000 ops, 3 nodes per task, stable Rust 1.87):
+
+| Operation | State Machine | Direct HashMap | Overhead |
+|-----------|-------------|----------------|----------|
+| Insert | 1,860 ns | 1,847 ns | 1.0x |
+| Read | 251 ns | 235 ns | 1.1x |
+| Update | 320 ns | 309 ns | 1.0x |
+
+| Serialization | Avg Latency | Size per Command |
+|---------------|-------------|-----------------|
+| JSON | 1,474 ns | 73 bytes |
+| Bincode | 428 ns | 26 bytes |
+
+**Throughput (single-threaded, local apply only):** ~538K ops/sec
+
+**Key finding:** The state machine apply path adds negligible overhead (~1.0x) vs. direct HashMap access. Both are sub-microsecond. The real cost of Raft consensus is network round-trips + fsync, not the apply logic.
+
 ### 4.1 Latency: Write Path
 
 A write to the task store goes through: client → Miroir handler → task store backend → response.
@@ -363,6 +389,10 @@ If we revisit and decide to ship Raft, the cleanest path is:
 4. Migration path: `sqlite` → `redis` → `raft` is a config change, not a code rewrite
 
 This preserves the investment in the SQLite and Redis backends and avoids forcing a binary choice.
+
+### Compilation Note
+
+openraft 0.9.22 fails to compile on stable Rust 1.87 because its dependency `validit 0.2.5` uses the unstable `let_chains` feature. The prototype works around this by simulating Raft consensus rather than depending on openraft directly — only `bincode` is needed for the serialization benchmarks. This compilation failure is itself a data point: a dependency that requires nightly Rust is not suitable for production use in v1.0.
 
 ---
 

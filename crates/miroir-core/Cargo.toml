@@ -8,9 +8,26 @@ repository.workspace = true
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 twox-hash = "2"
 thiserror = "2"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
+config = "0.14"
+
+# Raft prototype (P12.OP2 research) — not for production use
+# openraft 0.9.22 fails on stable Rust 1.87 (validit uses let_chains).
+# The prototype simulates Raft; only bincode is needed for serialization benchmarks.
+openraft = { version = "0.9", features = ["serde"], optional = true }
+bincode = { version = "2", features = ["serde"], optional = true }
+
+[features]
+raft-proto = ["bincode"]
+# Enable when openraft compiles on stable Rust:
+# raft-full = ["openraft", "bincode"]
+
+[[bin]]
+name = "bench-reshard-load"
+path = "benches/reshard_load.rs"
 
 [dev-dependencies]

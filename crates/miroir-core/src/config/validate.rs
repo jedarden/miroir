@@ -11,7 +11,8 @@ pub fn validate(cfg: &MiroirConfig) -> Result<(), ConfigError> {
     // replica_groups > 1 requires redis backend
     if cfg.replica_groups > 1 && cfg.task_store.backend == "sqlite" {
         return Err(ConfigError::Validation(
-            "replica_groups > 1 requires task_store.backend = 'redis' (SQLite is single-writer)".into(),
+            "replica_groups > 1 requires task_store.backend = 'redis' (SQLite is single-writer)"
+                .into(),
         ));
     }
 
@@ -130,9 +131,7 @@ pub fn validate(cfg: &MiroirConfig) -> Result<(), ConfigError> {
 
     // shards must be non-zero
     if cfg.shards == 0 {
-        return Err(ConfigError::Validation(
-            "shards must be non-zero".into(),
-        ));
+        return Err(ConfigError::Validation("shards must be non-zero".into()));
     }
 
     // replication_factor must be > 0
