@@ -1,0 +1,8 @@
+# Rule 2 bad: HPA enabled with SQLite backend
+# Expected: FAIL — HPA requires taskStore.backend=redis
+miroir:
+  replicas: 2
+taskStore:
+  backend: sqlite
+hpa:
+  enabled: true

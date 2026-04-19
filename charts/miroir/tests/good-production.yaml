@@ -1,0 +1,18 @@
+# Good: full production config with all features enabled correctly
+# Expected: PASS
+miroir:
+  replicas: 3
+taskStore:
+  backend: redis
+hpa:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+search_ui:
+  scoped_key_max_age_days: 60
+  scoped_key_rotate_before_expiry_days: 30
+  rate_limit:
+    backend: redis
+admin_ui:
+  login_rate_limit:
+    backend: redis

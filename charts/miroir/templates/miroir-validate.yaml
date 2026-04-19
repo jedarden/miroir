@@ -1,0 +1,5 @@
+{{/*
+Render-time value validations (cross-field checks that JSON Schema cannot express).
+This produces no output on success; calls fail() on invalid config.
+*/}}
+{{- include "miroir.validate.values" . -}}

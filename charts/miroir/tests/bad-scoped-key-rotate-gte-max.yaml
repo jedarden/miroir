@@ -1,0 +1,9 @@
+# Rule 5 bad: scoped_key_rotate_before_expiry_days >= scoped_key_max_age_days
+# Expected: FAIL — rotation fires before/at key issuance, producing a continuous rotation loop
+miroir:
+  replicas: 1
+taskStore:
+  backend: sqlite
+search_ui:
+  scoped_key_max_age_days: 30
+  scoped_key_rotate_before_expiry_days: 30
