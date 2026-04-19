@@ -16,7 +16,7 @@ Cross-shard score comparability is a significant concern for Miroir. When shards
 
 **Recommendation**: Global-IDF preflight (Elasticsearch `dfs_query_then_fetch` pattern) is required. RRF alone does not solve the comparability problem.
 
-**DFS validation result** (2026-04-19): Average Kendall tau of **0.9815** — **PASS** with ≥ 0.95 threshold. The `dfs_query_then_fetch` pattern resolves cross-shard score comparability. Min τ across all 1,443 queries is 0.9523; zero queries below 0.95.
+**DFS validation result** (2026-04-19): Average Kendall tau of **0.9817** — **PASS** with ≥ 0.95 threshold. The `dfs_query_then_fetch` pattern resolves cross-shard score comparability. Min τ across all 7,329 queries is 0.9523; zero queries below 0.95.
 
 ---
 
@@ -249,21 +249,21 @@ The coordinator's `HttpClient::preflight_node()` queries each Meilisearch node d
 
 | Metric | Score (local IDF) | RRF | **DFS (global IDF)** |
 |--------|-------------------|-----|----------------------|
-| **Avg Kendall τ** | 0.7939 | 0.1369 | **0.9815** |
-| 95% CI | [0.7873, 0.8006] | [0.1339, 0.1399] | **[0.9809, 0.9821]** |
+| **Avg Kendall τ** | 0.7938 | 0.1361 | **0.9817** |
+| 95% CI | [0.7861, 0.8016] | [0.1326, 0.1397] | **[0.9814, 0.9819]** |
 | Min τ | -1.0 | -0.2105 | **0.9523** |
-| Queries with τ < 0.95 | 6,306 (63.1%) | 9,998 (100%) | **0 (0%)** |
+| Queries with τ < 0.95 | 4,615 (62.9%) | 7,356 (100%) | **0 (0%)** |
 | Pass (≥ 0.95) | ✗ FAIL | ✗ CATASTROPHIC | **✓ PASS** |
 
 ### Per-type DFS Results
 
 | Query Type | Local IDF τ | **DFS τ** | Δ |
 |------------|-------------|-----------|---|
-| Common-term | 0.1483 | **0.9842** | +0.84 |
-| Single-term | 0.8677 | **0.9770** | +0.11 |
-| Filtered | 0.8719 | **0.9791** | +0.11 |
+| Common-term | 0.1477 | **0.9846** | +0.84 |
+| Single-term | 0.8685 | **0.9773** | +0.11 |
+| Filtered | 0.8707 | **0.9792** | +0.11 |
 | Rare-term | 0.9387 | **0.9665** | +0.03 |
-| Multi-term | 0.9584 | **0.9959** | +0.04 |
+| Multi-term | 0.9579 | **0.9957** | +0.04 |
 
 ### Latency Overhead Analysis
 
@@ -284,6 +284,44 @@ The preflight phase adds one extra round of network requests before the search p
 - Cache `/stats` responses (change infrequently)
 - Batch all term DF queries into a single multi-search request
 - Skip preflight for single-shard indices (no skew possible)
+
+### Criterion Latency Benchmarks
+
+Coordinator-side CPU cost measured with Criterion (mock client, no network I/O):
+
+**Global IDF aggregation** (from_preflight_responses):
+
+| Shards | Time |
+|--------|------|
+| 3 | 285 ns |
+| 5 | 419 ns |
+| 10 | 681 ns |
+| 20 | 1.30 µs |
+| 50 | 3.31 µs |
+
+**Varying query term count** (3 shards):
+
+| Terms | Time |
+|-------|------|
+| 1 | 111 ns |
+| 3 | 249 ns |
+| 5 | 425 ns |
+| 10 | 927 ns |
+| 20 | 2.35 µs |
+
+**Query term extraction:**
+
+| Words | Time |
+|-------|------|
+| 1 | 69 ns |
+| 2 | 105 ns |
+| 4 | 263 ns |
+| 7 | 462 ns |
+| 9 | 726 ns |
+
+**IDF computation**: ~113 ps per term (trivial).
+
+The coordinator-side aggregation overhead is sub-microsecond for typical configurations (≤10 shards, ≤5 query terms). The dominant cost is the network round-trip for preflight requests, which is parallelized across shards and adds approximately one round-trip of wall-clock latency.
 
 ---
 
