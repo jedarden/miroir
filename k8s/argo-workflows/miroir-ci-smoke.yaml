@@ -1,0 +1,55 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: miroir-ci-smoke
+  namespace: argo-workflows
+  labels:
+    app: miroir-ci-smoke
+spec:
+  entrypoint: smoke
+  serviceAccountName: argo-workflow
+  arguments:
+    parameters:
+      - name: branch
+        value: main
+  templates:
+    - name: smoke
+      container:
+        image: rust:1.87-slim
+        command: [bash, -c]
+        args:
+          - |
+            set -e
+
+            apt-get update -qq && apt-get install -y -qq git pkg-config libssl-dev >/dev/null 2>&1
+
+            BRANCH="{{workflow.parameters.branch}}"
+            git clone --depth 1 --branch "$BRANCH" \
+              "https://x-access-token:${GH_TOKEN}@github.com/jedarden/miroir.git" \
+              /workspace
+            cd /workspace
+
+            echo "=== cargo fmt --check ==="
+            cargo fmt --all -- --check
+
+            echo "=== cargo clippy -D warnings ==="
+            cargo clippy --all-targets -- -D warnings
+
+            echo "=== cargo test --all ==="
+            cargo test --all
+
+            echo "=== smoke passed ==="
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: github-webhook-secret
+                key: token
+        resources:
+          requests:
+            cpu: 1000m
+            memory: 2Gi
+          limits:
+            cpu: 4000m
+            memory: 8Gi
+      activeDeadlineSeconds: 600

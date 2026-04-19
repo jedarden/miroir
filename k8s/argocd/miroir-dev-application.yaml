@@ -1,0 +1,88 @@
+---
+# ArgoCD Application: miroir-dev on ardenone-cluster
+# Deploy to: jedarden/declarative-config → k8s/ardenone-cluster/miroir-dev/
+#
+# Prerequisites:
+#   - Namespace: miroir-dev (namespace.yml)
+#   - ExternalSecret or manual Secret: miroir-dev-keys
+#     (keys: masterKey, nodeMasterKey, adminApiKey)
+#   - Helm chart published to ghcr.io/jedarden/charts/miroir
+#
+# This file is the source of truth. Copy to declarative-config for ArgoCD sync.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: miroir-dev-ardenone-cluster
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: miroir
+    app.kubernetes.io/instance: miroir-dev
+    app.kubernetes.io/component: application
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/jedarden/charts
+    chart: miroir
+    targetRevision: 0.1.0
+    helm:
+      valuesObject:
+        miroir:
+          replicas: 1
+          shards: 64
+          replicationFactor: 1
+          replicaGroups: 1
+          existingSecret: miroir-dev-keys
+          logLevel: info
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+            requests:
+              cpu: 250m
+              memory: 512Mi
+        taskStore:
+          backend: sqlite
+          path: /data/miroir-tasks.db
+        meilisearch:
+          enabled: true
+          replicas: 2
+          nodesPerGroup: 2
+          persistence:
+            enabled: true
+            size: 10Gi
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+            requests:
+              cpu: 250m
+              memory: 512Mi
+        redis:
+          enabled: false
+        serviceMonitor:
+          enabled: true
+          interval: 30s
+        prometheusRule:
+          enabled: true
+  destination:
+    server: https://k3s-server-a.ardenone.com:6443
+    namespace: miroir-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: true
+    syncOptions:
+      - Validate=true
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - RespectIgnoreDifferences=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10

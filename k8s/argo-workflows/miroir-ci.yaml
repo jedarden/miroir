@@ -1,0 +1,279 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: miroir-ci
+  namespace: argo-workflows
+  labels:
+    app: miroir-ci
+spec:
+  entrypoint: pipeline
+  serviceAccountName: argo-workflow
+  arguments:
+    parameters:
+      - name: repo
+        value: https://github.com/jedarden/miroir.git
+      - name: revision
+        value: main
+      - name: tag
+        value: ""
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 8Gi
+  volumes:
+    - name: ghcr-config
+      secret:
+        secretName: ghcr-credentials
+        items:
+          - key: .dockerconfigjson
+            path: config.json
+  templates:
+    - name: pipeline
+      dag:
+        tasks:
+          - name: checkout
+            template: git-checkout
+          - name: lint
+            template: cargo-lint
+            dependencies: [checkout]
+          - name: test
+            template: cargo-test
+            dependencies: [checkout]
+          - name: build
+            template: cargo-build
+            dependencies: [lint, test]
+          - name: docker
+            template: docker-build-push
+            dependencies: [build]
+            when: "'{{workflow.parameters.tag}}' != ''"
+          - name: release
+            template: create-github-release
+            dependencies: [build]
+            when: "'{{workflow.parameters.tag}}' != ''"
+
+    - name: git-checkout
+      activeDeadlineSeconds: 300
+      container:
+        image: alpine/git:2.43.0
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            REPO="{{workflow.parameters.repo}}"
+            REPO_PATH="${REPO#https://}"
+            git clone --depth 1 --branch "{{workflow.parameters.revision}}" \
+              "https://x-access-token:${GH_TOKEN}@${REPO_PATH}" /workspace/src
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: github-token
+                key: token
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+    - name: cargo-lint
+      activeDeadlineSeconds: 900
+      container:
+        image: rust:1.87-slim
+        command: [bash, -c]
+        args:
+          - |
+            set -e
+            apt-get update -qq && apt-get install -y -qq pkg-config libssl-dev >/dev/null 2>&1
+            cd /workspace/src
+            export CARGO_TARGET_DIR=/workspace/target-lint
+            cargo fmt --check
+            cargo clippy --all-targets -- -D warnings
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            cpu: 1000m
+            memory: 2Gi
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+
+    - name: cargo-test
+      activeDeadlineSeconds: 900
+      container:
+        image: rust:1.87-slim
+        command: [bash, -c]
+        args:
+          - |
+            set -e
+            apt-get update -qq && apt-get install -y -qq pkg-config libssl-dev >/dev/null 2>&1
+            cd /workspace/src
+            export CARGO_TARGET_DIR=/workspace/target-test
+            cargo test --all --all-features
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            cpu: 2000m
+            memory: 4Gi
+          limits:
+            cpu: 4000m
+            memory: 8Gi
+
+    - name: cargo-build
+      activeDeadlineSeconds: 1800
+      container:
+        image: rust:1.87-slim
+        command: [bash, -c]
+        args:
+          - |
+            set -e
+            apt-get update -qq && apt-get install -y -qq pkg-config libssl-dev musl-tools >/dev/null 2>&1
+            cd /workspace/src
+            rustup target add x86_64-unknown-linux-musl
+
+            cargo build --release --target x86_64-unknown-linux-musl \
+              -p miroir-proxy -p miroir-ctl
+
+            mkdir -p /workspace/dist
+            cp target/x86_64-unknown-linux-musl/release/miroir-proxy \
+              /workspace/dist/miroir-proxy-linux-amd64
+            cp target/x86_64-unknown-linux-musl/release/miroir-ctl \
+              /workspace/dist/miroir-ctl-linux-amd64
+
+            sha256sum /workspace/dist/miroir-proxy-linux-amd64 \
+              > /workspace/dist/miroir-proxy-linux-amd64.sha256
+            sha256sum /workspace/dist/miroir-ctl-linux-amd64 \
+              > /workspace/dist/miroir-ctl-linux-amd64.sha256
+
+            # Copy proxy binary to source dir for docker context (Dockerfile expects it there)
+            cp /workspace/dist/miroir-proxy-linux-amd64 \
+              /workspace/src/miroir-proxy-linux-amd64
+
+            echo "=== build checksums ==="
+            cat /workspace/dist/miroir-proxy-linux-amd64.sha256
+            cat /workspace/dist/miroir-ctl-linux-amd64.sha256
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            cpu: 4000m
+            memory: 8Gi
+          limits:
+            cpu: 4000m
+            memory: 8Gi
+
+    - name: docker-build-push
+      activeDeadlineSeconds: 1800
+      container:
+        image: gcr.io/kaniko-project/executor:v1.23.0-debug
+        command: [/busybox/sh, -c]
+        args:
+          - |
+            set -e
+            TAG="{{workflow.parameters.tag}}"
+            REGISTRY="ghcr.io/jedarden/miroir"
+            VERSION="${TAG#v}"
+
+            DESTS="--destination=${REGISTRY}:${TAG}"
+
+            # Stable release (vX.Y.Z): also push float tags and :latest
+            # Pre-release (vX.Y.Z-rc.N) and branch builds: exact tag only
+            if echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              MINOR=$(echo "$TAG" | sed 's/^v\([0-9]*\.[0-9]*\)\..*/\1/')
+              MAJOR=$(echo "$TAG" | sed 's/^v\([0-9]*\)\..*/\1/')
+              DESTS="${DESTS} --destination=${REGISTRY}:${MINOR}"
+              DESTS="${DESTS} --destination=${REGISTRY}:${MAJOR}"
+              DESTS="${DESTS} --destination=${REGISTRY}:latest"
+            fi
+
+            /kaniko/executor \
+              --dockerfile=/workspace/src/Dockerfile \
+              --context=/workspace/src \
+              --build-arg=VERSION=${VERSION} \
+              --build-arg=REVISION={{workflow.parameters.revision}} \
+              $DESTS \
+              --cache=true \
+              --cache-repo=${REGISTRY}/cache \
+              --snapshot-mode=redo \
+              --use-new-run=true
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: ghcr-config
+            mountPath: /kaniko/.docker
+        resources:
+          requests:
+            cpu: 2000m
+            memory: 4Gi
+          limits:
+            cpu: 4000m
+            memory: 8Gi
+
+    - name: create-github-release
+      activeDeadlineSeconds: 600
+      container:
+        image: ghcr.io/cli/cli:2.49.0
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            TAG="{{workflow.parameters.tag}}"
+            VER="${TAG#v}"
+
+            # Extract release notes from CHANGELOG.md for this version
+            NOTES=$(awk -v ver="$VER" '
+              found && /^## \[/ { exit }
+              $0 ~ ("^## \\[" ver "\\]") { found=1; next }
+              found { print }
+            ' /workspace/src/CHANGELOG.md)
+
+            if [ -z "$NOTES" ]; then
+              NOTES="Release ${TAG}"
+            fi
+
+            # Skip if release already exists
+            if gh release view "${TAG}" --repo jedarden/miroir >/dev/null 2>&1; then
+              echo "Release ${TAG} already exists, skipping."
+              exit 0
+            fi
+
+            gh release create "${TAG}" \
+              --repo jedarden/miroir \
+              --title "miroir ${TAG}" \
+              --notes "${NOTES}" \
+              --target "{{workflow.parameters.revision}}" \
+              /workspace/dist/miroir-proxy-linux-amd64 \
+              /workspace/dist/miroir-proxy-linux-amd64.sha256 \
+              /workspace/dist/miroir-ctl-linux-amd64 \
+              /workspace/dist/miroir-ctl-linux-amd64.sha256
+
+            echo "Release ${TAG} created successfully."
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: github-token
+                key: token
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
