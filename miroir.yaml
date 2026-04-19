@@ -1,0 +1,20 @@
+master_key: "test-master-key"
+node_master_key: "test-node-key"
+admin:
+  api_key: "test-admin-key"
+shards: 16
+replication_factor: 1
+replica_groups: 1
+nodes:
+  - id: "meili-0"
+    address: "http://localhost:8700"
+    replica_group: 0
+task_store:
+  backend: sqlite
+  path: "/tmp/miroir-test.db"
+cdc:
+  buffer:
+    overflow: "drop"
+search_ui:
+  rate_limit:
+    backend: "local"
