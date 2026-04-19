@@ -246,6 +246,87 @@ def simulate_distributed_search(
 RRF_K = 60  # RRF constant, matching merger.rs
 
 
+def compute_global_idf(
+    shard_stats: Dict[int, Tuple[Dict, int, float]],
+) -> Tuple[Dict[str, int], int, float]:
+    """Aggregate per-shard statistics into global IDF (dfs_query_then_fetch preflight).
+
+    Returns (global_df, global_N, global_avgdl) — the same shape as per-shard stats
+    so it can be passed directly to score_bm25.
+    """
+    global_df: Dict[str, int] = defaultdict(int)
+    total_docs = 0
+    total_length = 0.0
+
+    for df, N, avgdl in shard_stats.values():
+        total_docs += N
+        total_length += avgdl * N
+        for term, count in df.items():
+            global_df[term] += count
+
+    global_avgdl = total_length / total_docs if total_docs > 0 else 0.0
+    return dict(global_df), total_docs, global_avgdl
+
+
+def simulate_distributed_search_dfs(
+    shard_doc_data: Dict[int, List[DocData]],
+    shard_indexes: Dict[int, Dict[str, List[int]]],
+    shard_doc_categories: Dict[int, List[str]],
+    shard_stats: Dict[int, Tuple[Dict, int, float]],
+    query: Dict,
+    limit: int = 100,
+) -> Dict:
+    """Distributed search with dfs_query_then_fetch (OP#4 global-IDF preflight).
+
+    Phase 1 (preflight): gather per-shard term frequencies, compute global IDF.
+    Phase 2 (search): score documents in each shard using global IDF, then
+    merge by score (now comparable across shards).
+    """
+    query_terms = tokenize(query["q"])
+    category_filter = query["filter"].split("=")[1].strip() if query.get("filter") else None
+    per_shard_limit = limit * 2
+
+    # Phase 1: compute global IDF from per-shard statistics
+    global_df, global_N, global_avgdl = compute_global_idf(shard_stats)
+
+    # Phase 2: score each shard's documents using global IDF
+    all_hits = []
+    for shard_id in shard_doc_data:
+        doc_data = shard_doc_data[shard_id]
+        inv_index = shard_indexes[shard_id]
+        doc_cats = shard_doc_categories[shard_id]
+
+        candidate_indices = _collect_candidates(inv_index, doc_cats, query_terms, category_filter)
+
+        shard_scores = []
+        for idx in candidate_indices:
+            dd = doc_data[idx]
+            s = score_bm25(dd, query_terms, global_df, global_N, global_avgdl)
+            if s > 0:
+                shard_scores.append((dd, s))
+
+        shard_scores.sort(key=lambda x: x[1], reverse=True)
+        for dd, s in shard_scores[:per_shard_limit]:
+            all_hits.append((dd, s, shard_id))
+
+    all_hits.sort(key=lambda x: x[1], reverse=True)
+
+    hits = []
+    for dd, s, shard_id in all_hits[:limit]:
+        hits.append({"id": dd["id"], "title": dd["title"], "score": s, "shard": shard_id})
+
+    return {
+        "query_id": query["id"],
+        "type": query.get("type", "unknown"),
+        "q": query["q"],
+        "filter": query.get("filter"),
+        "hits": hits,
+        "total_hits": len(all_hits),
+        "shards_queried": list(shard_doc_data.keys()),
+        "merge_strategy": "score_dfs",
+    }
+
+
 def simulate_distributed_search_rrf(
     shard_doc_data: Dict[int, List[DocData]],
     shard_indexes: Dict[int, Dict[str, List[int]]],
@@ -363,12 +444,14 @@ def run_experiment(
     ground_truth_file = output_dir / "ground-truth.jsonl"
     distributed_file = output_dir / "distributed.jsonl"
     rrf_file = output_dir / "distributed-rrf.jsonl"
+    dfs_file = output_dir / "distributed-dfs.jsonl"
 
     print(f"\nRunning experiments...")
 
     with open(ground_truth_file, "w") as gt_f, \
          open(distributed_file, "w") as dist_f, \
-         open(rrf_file, "w") as rrf_f:
+         open(rrf_file, "w") as rrf_f, \
+         open(dfs_file, "w") as dfs_f:
         for i, query in enumerate(queries):
             if (i + 1) % 1000 == 0:
                 print(f"  Processed {i + 1} queries...")
@@ -391,11 +474,18 @@ def run_experiment(
             )
             rrf_f.write(json.dumps(rrf_result) + "\n")
 
+            dfs_result = simulate_distributed_search_dfs(
+                shard_doc_data, shard_indexes, shard_doc_categories,
+                shard_stats, query, limit,
+            )
+            dfs_f.write(json.dumps(dfs_result) + "\n")
+
     print(f"  Completed {len(queries)} queries")
     print(f"\nResults saved to:")
     print(f"  {ground_truth_file}")
     print(f"  {distributed_file}")
     print(f"  {rrf_file}")
+    print(f"  {dfs_file}")
 
     # Save experiment metadata
     exp_meta = {
@@ -404,7 +494,7 @@ def run_experiment(
         "shard_count": shard_count,
         "limit": limit,
         "total_queries": len(queries),
-        "merge_strategies": ["score", "rrf"],
+        "merge_strategies": ["score", "rrf", "dfs"],
         "rrf_k": RRF_K,
         "global_stats": {"N": global_stats[1], "avgdl": global_stats[2]},
         "shard_stats": {
@@ -465,6 +555,7 @@ def main():
     print("\nTo compare results, run:")
     print(f"  python3 {output_dir}/compare.py {output_dir}/ground-truth.jsonl {output_dir}/distributed.jsonl --verbose")
     print(f"  python3 {output_dir}/compare.py {output_dir}/ground-truth.jsonl {output_dir}/distributed-rrf.jsonl --verbose")
+    print(f"  python3 {output_dir}/compare.py {output_dir}/ground-truth.jsonl {output_dir}/distributed-dfs.jsonl --verbose")
 
 
 if __name__ == "__main__":

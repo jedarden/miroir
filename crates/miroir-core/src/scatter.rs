@@ -460,7 +460,7 @@ mod tests {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
         let mut c = MockNodeClient::default();
-        c.responses.insert(NodeId::new("node-0"), serde_json::json!({"hits": [{"id": "doc1"}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
+        c.responses.insert(NodeId::new("node-0".into()), serde_json::json!({"hits": [{"id": "doc1"}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
         let r = execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial).await.unwrap();
         assert!(!r.partial);
         assert_eq!(r.shard_pages.len(), 64);
@@ -471,7 +471,7 @@ mod tests {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
         let mut c = MockNodeClient::default();
-        c.errors.insert(NodeId::new("node-0"), NodeError::Timeout);
+        c.errors.insert(NodeId::new("node-0".into()), NodeError::Timeout);
         let r = execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial).await.unwrap();
         assert!(r.partial);
     }
@@ -481,7 +481,7 @@ mod tests {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
         let mut c = MockNodeClient::default();
-        c.errors.insert(NodeId::new("node-0"), NodeError::Timeout);
+        c.errors.insert(NodeId::new("node-0".into()), NodeError::Timeout);
         assert!(execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Error).await.is_err());
     }
 
@@ -503,7 +503,7 @@ mod tests {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
         let mut c = MockNodeClient::default();
-        c.responses.insert(NodeId::new("node-0"), serde_json::json!({"hits": [{"id": "a", "_rankingScore": 0.9}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
+        c.responses.insert(NodeId::new("node-0".into()), serde_json::json!({"hits": [{"id": "a", "_rankingScore": 0.9}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
         let s = crate::merger::RrfStrategy::default_strategy();
         let r = scatter_gather_search(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial, &s).await.unwrap();
         assert!(!r.degraded);
@@ -514,8 +514,8 @@ mod tests {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
         let mut c = MockNodeClient::default();
-        c.responses.insert(NodeId::new("node-0"), serde_json::json!({"hits": [{"id": "a"}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
-        c.errors.insert(NodeId::new("node-2"), NodeError::Timeout);
+        c.responses.insert(NodeId::new("node-0".into()), serde_json::json!({"hits": [{"id": "a"}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
+        c.errors.insert(NodeId::new("node-2".into()), NodeError::Timeout);
         let s = crate::merger::RrfStrategy::default_strategy();
         assert!(scatter_gather_search(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial, &s).await.unwrap().degraded);
     }
@@ -550,15 +550,15 @@ mod tests {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
         let mut c = MockNodeClient::default();
-        c.preflight_responses.insert(NodeId::new("node-0"), PreflightResponse {
+        c.preflight_responses.insert(NodeId::new("node-0".into()), PreflightResponse {
             total_docs: 30000, avg_doc_length: 50.0,
             term_stats: HashMap::from([("search".into(), TermStats { df: 3000 })]),
         });
-        c.preflight_responses.insert(NodeId::new("node-1"), PreflightResponse {
+        c.preflight_responses.insert(NodeId::new("node-1".into()), PreflightResponse {
             total_docs: 30000, avg_doc_length: 55.0,
             term_stats: HashMap::from([("search".into(), TermStats { df: 2500 })]),
         });
-        c.preflight_responses.insert(NodeId::new("node-2"), PreflightResponse {
+        c.preflight_responses.insert(NodeId::new("node-2".into()), PreflightResponse {
             total_docs: 40000, avg_doc_length: 52.0,
             term_stats: HashMap::from([("search".into(), TermStats { df: 4000 })]),
         });
@@ -573,8 +573,8 @@ mod tests {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
         let mut c = MockNodeClient::default();
-        c.responses.insert(NodeId::new("node-0"), serde_json::json!({"hits": [{"id": "a", "_rankingScore": 0.9}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
-        c.preflight_responses.insert(NodeId::new("node-0"), PreflightResponse {
+        c.responses.insert(NodeId::new("node-0".into()), serde_json::json!({"hits": [{"id": "a", "_rankingScore": 0.9}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
+        c.preflight_responses.insert(NodeId::new("node-0".into()), PreflightResponse {
             total_docs: 50000, avg_doc_length: 50.0,
             term_stats: HashMap::from([("test".into(), TermStats { df: 500 })]),
         });

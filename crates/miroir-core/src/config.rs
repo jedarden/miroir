@@ -626,7 +626,7 @@ shards: 16
 replication_factor: 1
 nodes: []
 task_store:
-  backend: sqlite
+  backend: redis
 "#;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("miroir.yaml");
