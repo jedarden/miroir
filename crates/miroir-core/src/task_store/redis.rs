@@ -26,8 +26,8 @@ use tokio::runtime::Runtime;
 pub struct RedisPool {
     /// Connection manager for async operations (shared across clones)
     manager: Arc<Mutex<ConnectionManager>>,
-    /// Dedicated runtime for blocking bridge (avoids runtime nesting issues)
-    runtime: Arc<Runtime>,
+    /// Dedicated runtime for blocking bridge (lazily created outside async context)
+    runtime: Arc<Option<Runtime>>,
 }
 
 impl RedisPool {
@@ -39,15 +39,12 @@ impl RedisPool {
             .await
             .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
-        // Create a dedicated thread-local runtime for sync-to-async bridge
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| MiroirError::Redis(format!("Failed to create runtime: {e}")))?;
-
+        // Defer runtime creation — building a runtime inside an existing tokio
+        // context panics.  The runtime is created lazily in `block_on` when we
+        // detect we are NOT inside a tokio runtime.
         Ok(Self {
             manager: Arc::new(Mutex::new(conn)),
-            runtime: Arc::new(runtime),
+            runtime: Arc::new(None),
         })
     }
 
@@ -63,18 +60,16 @@ impl RedisPool {
     }
 
 
-    /// Block on an async future using the dedicated runtime.
-    /// If we're already inside a tokio runtime (e.g., in tests), spawn a thread
-    /// to avoid "runtime within runtime" errors.
+    /// Block on an async future using a dedicated runtime.
+    /// Always spawns a fresh thread with its own single-threaded runtime to
+    /// avoid "cannot start a runtime from within a runtime" panics.
     fn block_on<F>(&self, future: F) -> F::Output
     where
         F: std::future::Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        // Check if we're already in a tokio runtime
-        if tokio::runtime::Handle::try_current().is_ok() {
-            // We're in a runtime - spawn a thread with its own runtime to avoid blocking
-            std::thread::spawn(move || {
+        std::thread::scope(|s| {
+            s.spawn(|| {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -82,11 +77,8 @@ impl RedisPool {
                 rt.block_on(future)
             })
             .join()
-            .unwrap_or_else(|_| panic!("thread panicked"))
-        } else {
-            // Not in a runtime - use the dedicated runtime
-            self.runtime.block_on(future)
-        }
+            .unwrap_or_else(|_| panic!("block_on thread panicked"))
+        })
     }
 }
 
