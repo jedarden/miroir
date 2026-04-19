@@ -503,9 +503,15 @@ pub async fn auth_middleware(
                     req.extensions_mut().insert(AdminSessionId(session_id));
                     return next.run(req).await;
                 }
-                Err(_) => {
-                    // Cookie tampering or wrong key — fall through to bearer chain
-                    // which will reject with InvalidAuth for admin paths.
+                Err(e) => {
+                    // Cookie tampering or wrong seal key (e.g. cross-pod key
+                    // mismatch in HA).  Log a warning so operators can diagnose
+                    // ADMIN_SESSION_SEAL_KEY divergence across pods.
+                    tracing::warn!(
+                        path = %path,
+                        error = %e,
+                        "admin session cookie unseal failed — tampered cookie or cross-pod key mismatch"
+                    );
                 }
             }
         }
