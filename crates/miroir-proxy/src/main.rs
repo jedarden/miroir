@@ -5,6 +5,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod auth;
+mod client;
 mod middleware;
 mod routes;
 

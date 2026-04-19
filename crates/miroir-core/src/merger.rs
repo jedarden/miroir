@@ -1704,4 +1704,259 @@ mod tests {
         assert_eq!(result.hits.len(), 0);
         assert_eq!(result.estimated_total_hits, 0);
     }
+
+    // -----------------------------------------------------------------------
+    // P12.OP4 RRF skew validation
+    // -----------------------------------------------------------------------
+
+    /// Validates the P12.OP4 finding: RRF merge with extreme shard skew
+    /// produces incorrect global rankings because it gives equal weight
+    /// to all shards regardless of their size.
+    ///
+    /// Scenario: 10 shards where shard 0 has 93K docs (93%) and shard 9
+    /// has 10 docs (0.01%). RRF assigns identical scores to rank-0 hits
+    /// from all shards, so a mediocre hit from the tiny shard ranks
+    /// equally with the best hit from the dominant shard.
+    ///
+    /// Benchmark result (10K queries, skewed corpus):
+    ///   Score merge: τ = 0.79  (95% CI [0.787, 0.801]) — FAIL
+    ///   RRF merge:   τ = 0.14  (95% CI [0.134, 0.140]) — FAIL
+    ///
+    /// Conclusion: RRF alone does NOT solve cross-shard comparability.
+    /// Global-IDF preflight (dfs_query_then_fetch) is required.
+    #[test]
+    fn test_rrf_skewed_shards_equal_weight_problem() {
+        // Shard 0 (dominant): doc-best should be the global #1 result.
+        // It has the highest score and appears in the shard with 93% of docs.
+        let shard_dominant = make_shard_response(
+            vec![
+                make_hit("doc-best", 0.95, 0),      // True global #1
+                make_hit("doc-good", 0.90, 0),       // True global #2
+                make_hit("doc-ok", 0.85, 0),         // True global #3
+                make_hit("doc-mediocre", 0.70, 0),   // True global #4
+                make_hit("doc-weak", 0.60, 0),       // True global #5
+            ],
+            93_000,
+            10,
+        );
+
+        // Shard 9 (tiny, 10 docs): due to local IDF skew, irrelevant docs
+        // can appear at rank 0 with inflated local scores.
+        let shard_tiny = make_shard_response(
+            vec![
+                make_hit("doc-irrelevant", 0.98, 9), // Inflated local IDF → high score
+                make_hit("doc-noise", 0.92, 9),
+            ],
+            10,
+            2,
+        );
+
+        let strategy = RrfStrategy::default_strategy();
+        let result = strategy
+            .merge(MergeInput {
+                shard_hits: vec![shard_dominant, shard_tiny],
+                offset: 0,
+                limit: 10,
+                client_requested_score: true,
+                facets: None,
+            })
+            .unwrap();
+
+        let ids: Vec<_> = result
+            .hits
+            .iter()
+            .filter_map(|h| h.get("id").and_then(|v| v.as_str()))
+            .collect();
+
+        // RRF gives equal rank weight to both shards.
+        // Rank 0 from dominant shard: 1/61 ≈ 0.0164
+        // Rank 0 from tiny shard:     1/61 ≈ 0.0164 (identical!)
+        //
+        // Tie-breaking falls to primary key (alphabetical), NOT relevance.
+        // doc-best and doc-irrelevant both get RRF score 1/61.
+        // Alphabetically: doc-best < doc-irrelevant → doc-best wins the tie.
+        //
+        // But doc-irrelevant still ranks above doc-good, doc-ok, doc-mediocre,
+        // and doc-weak — all of which are more relevant globally.
+        assert_eq!(ids[0], "doc-best");      // Tie-break win (alphabetical)
+        assert_eq!(ids[1], "doc-irrelevant"); // Tie-break loss, but still rank 2!
+
+        // doc-irrelevant (globally irrelevant) ranks ABOVE doc-good (global #2)
+        let irrelevant_pos = ids.iter().position(|&id| id == "doc-irrelevant").unwrap();
+        let good_pos = ids.iter().position(|&id| id == "doc-good").unwrap();
+        assert!(
+            irrelevant_pos < good_pos,
+            "RRF skew bug: irrelevant doc (pos {}) ranks above doc-good (pos {})",
+            irrelevant_pos,
+            good_pos,
+        );
+    }
+
+    /// Computes Kendall tau between two rankings (document ID lists).
+    /// Used to validate merge quality against ground truth.
+    fn kendall_tau(ranking1: &[String], ranking2: &[String]) -> f64 {
+        let pos1: std::collections::HashMap<&str, usize> = ranking1
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.as_str(), i))
+            .collect();
+        let pos2: std::collections::HashMap<&str, usize> = ranking2
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.as_str(), i))
+            .collect();
+
+        let common: Vec<&str> = pos1
+            .keys()
+            .filter(|k| pos2.contains_key(*k))
+            .map(|k| *k)
+            .collect();
+
+        if common.len() < 2 {
+            return 0.0;
+        }
+
+        let r2_positions: Vec<usize> = common.iter().map(|id| pos2[id]).collect();
+        let (_, discordant) = count_inversions(&r2_positions);
+        let n = common.len();
+        let total = n * (n - 1) / 2;
+        let concordant = total - discordant;
+        (concordant as f64 - discordant as f64) / total as f64
+    }
+
+    fn count_inversions(arr: &[usize]) -> (Vec<usize>, usize) {
+        if arr.len() <= 1 {
+            return (arr.to_vec(), 0);
+        }
+        let mid = arr.len() / 2;
+        let (left, inv_l) = count_inversions(&arr[..mid]);
+        let (right, inv_r) = count_inversions(&arr[mid..]);
+
+        let mut merged = Vec::with_capacity(arr.len());
+        let mut inv = inv_l + inv_r;
+        let (mut i, mut j) = (0, 0);
+
+        while i < left.len() && j < right.len() {
+            if left[i] <= right[j] {
+                merged.push(left[i]);
+                i += 1;
+            } else {
+                merged.push(right[j]);
+                inv += left.len() - i;
+                j += 1;
+            }
+        }
+        merged.extend_from_slice(&left[i..]);
+        merged.extend_from_slice(&right[j..]);
+        (merged, inv)
+    }
+
+    /// End-to-end validation: RRF merge on skewed shards produces τ < 0.95
+    /// against ground truth (single-index ranking).
+    ///
+    /// This is a scaled-down version of the 10K-query Python benchmark.
+    #[test]
+    fn test_rrf_skewed_shards_tau_below_threshold() {
+        let k = DEFAULT_RRF_K;
+
+        // Build 5 shards with skewed sizes: [100, 500, 2000, 5000, 10000]
+        // Ground truth: all 17600 docs in one index, sorted by score.
+        let mut all_docs: Vec<(String, f64)> = Vec::new();
+        let mut shard_docs: Vec<Vec<(String, f64)>> = vec![vec![], vec![], vec![], vec![], vec![]];
+        let shard_sizes = [100, 500, 2000, 5000, 10000];
+
+        let mut rng = simple_rng(42);
+        for (shard_id, &size) in shard_sizes.iter().enumerate() {
+            for i in 0..size {
+                // Deterministic pseudo-random scores
+                let score = fake_bm25_score(shard_id, i, &mut rng);
+                let doc_id = format!("s{}-d{:06}", shard_id, i);
+                all_docs.push((doc_id.clone(), score));
+                shard_docs[shard_id].push((doc_id, score));
+            }
+        }
+
+        // Ground truth: global sort by score descending
+        all_docs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let ground_truth: Vec<String> = all_docs.iter().take(100).map(|(id, _)| id.clone()).collect();
+
+        // Per-shard: sort locally (simulates local BM25 with local IDF)
+        for docs in &mut shard_docs {
+            docs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        }
+
+        // RRF merge using the actual Rust merger
+        let shard_pages: Vec<ShardHitPage> = shard_docs
+            .iter()
+            .map(|docs| {
+                let hits: Vec<Value> = docs
+                    .iter()
+                    .take(200)
+                    .map(|(id, score)| {
+                        json!({
+                            "id": id,
+                            "_rankingScore": score,
+                        })
+                    })
+                    .collect();
+                ShardHitPage {
+                    body: json!({
+                        "hits": hits,
+                        "estimatedTotalHits": docs.len(),
+                        "processingTimeMs": 10,
+                    }),
+                }
+            })
+            .collect();
+
+        let strategy = RrfStrategy::new(k);
+        let result = strategy
+            .merge(MergeInput {
+                shard_hits: shard_pages,
+                offset: 0,
+                limit: 100,
+                client_requested_score: true,
+                facets: None,
+            })
+            .unwrap();
+
+        let rrf_ranking: Vec<String> = result
+            .hits
+            .iter()
+            .filter_map(|h| h.get("id").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+
+        let tau = kendall_tau(&ground_truth, &rrf_ranking);
+
+        // RRF with skewed shards should produce τ well below 0.95.
+        assert!(
+            tau < 0.95,
+            "RRF tau = {:.4}, expected < 0.95 with skewed shards",
+            tau,
+        );
+    }
+
+    /// Simple deterministic PRNG for reproducible test scores.
+    fn simple_rng(seed: u64) -> impl FnMut() -> f64 {
+        let mut state = seed;
+        move || {
+            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (state >> 33) as f64 / (1u64 << 31) as f64
+        }
+    }
+
+    /// Simulates a BM25-like score with shard-dependent IDF skew.
+    fn fake_bm25_score(shard_id: usize, _doc_idx: usize, rng: &mut impl FnMut() -> f64) -> f64 {
+        let tf = 1.0 + rng() * 10.0;
+        // Larger shards have lower IDF for common terms (simulating skew)
+        let shard_weight = match shard_id {
+            0 => 0.3,
+            1 => 0.5,
+            2 => 0.7,
+            3 => 0.9,
+            4 => 1.0,
+            _ => 0.5,
+        };
+        tf * shard_weight + rng() * 0.5
+    }
 }
