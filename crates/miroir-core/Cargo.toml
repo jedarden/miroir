@@ -47,6 +47,10 @@ harness = false
 name = "router_bench"
 harness = false
 
+[[bench]]
+name = "dfs_preflight_bench"
+harness = false
+
 [dev-dependencies]
 tempfile = "3"
 proptest = "1"

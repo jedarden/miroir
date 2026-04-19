@@ -70,6 +70,9 @@ pub trait MergeStrategy: Send + Sync {
     fn name(&self) -> &'static str;
 }
 
+/// Box reference to a merge strategy (for polymorphic dispatch).
+pub type DynMergeStrategy = dyn MergeStrategy;
+
 // ---------------------------------------------------------------------------
 // RRF strategy
 // ---------------------------------------------------------------------------
@@ -291,6 +294,166 @@ fn rrf_merge(k: &u32, input: MergeInput) -> Result<MergedSearchResult> {
         doc.hit.retain(|k, _| !k.starts_with("_miroir_"));
 
         hits.push(Value::Object(doc.hit));
+    }
+
+    // Merge facets.
+    let facet_distribution = merge_facets(&input.shard_hits, input.facets.as_deref());
+
+    Ok(MergedSearchResult {
+        hits,
+        facet_distribution,
+        estimated_total_hits,
+        processing_time_ms: max_processing_time,
+        degraded,
+    })
+}
+
+/// Score-based merge strategy (OP#4 global-IDF).
+///
+/// This merge strategy is correct **only when** the preflight phase has
+/// provided global IDF so that scores are comparable across shards. It sorts
+/// all hits globally by `_rankingScore` descending, with deterministic
+/// tie-breaking on primary key.
+///
+/// Without global IDF, this strategy will produce incorrect rankings because
+/// shard-local scores are not comparable across shards with different document
+/// distributions.
+///
+/// Use with [`dfs_query_then_fetch_search`] in the scatter module.
+#[derive(Debug, Clone, Copy)]
+pub struct ScoreMergeStrategy;
+
+impl ScoreMergeStrategy {
+    /// Create a new score-based merge strategy.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for ScoreMergeStrategy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MergeStrategy for ScoreMergeStrategy {
+    fn merge(&self, input: MergeInput) -> Result<MergedSearchResult> {
+        score_merge(input)
+    }
+
+    fn name(&self) -> &'static str {
+        "score"
+    }
+}
+
+/// Core score-based merge implementation (OP#4 global-IDF).
+///
+/// This merge strategy is correct when the preflight phase has provided
+/// global IDF so that scores are comparable across shards. It sorts all
+/// hits globally by `_rankingScore` descending, with deterministic tie-breaking
+/// on primary key.
+///
+/// Without global IDF, this strategy will produce incorrect rankings because
+/// shard-local scores are not comparable across shards with different document
+/// distributions.
+fn score_merge(input: MergeInput) -> Result<MergedSearchResult> {
+    let mut estimated_total_hits = 0u64;
+    let mut max_processing_time = 0u64;
+    let mut degraded = false;
+    let mut all_hits = Vec::new();
+
+    // Collect all hits from all shards.
+    for shard_page in &input.shard_hits {
+        let body = &shard_page.body;
+
+        // Check for degraded response.
+        if let Some(serde_json::Value::Bool(false)) = body.get("success") {
+            degraded = true;
+            continue;
+        }
+
+        // Extract estimated total hits.
+        if let Some(Value::Number(n)) = body.get("estimatedTotalHits") {
+            if let Some(n) = n.as_u64() {
+                estimated_total_hits = estimated_total_hits.saturating_add(n);
+            }
+        }
+
+        // Extract processing time.
+        if let Some(Value::Number(n)) = body.get("processingTimeMs") {
+            if let Some(n) = n.as_u64() {
+                max_processing_time = max_processing_time.max(n);
+            }
+        }
+
+        // Extract hits.
+        if let Some(Value::Array(hits)) = body.get("hits") {
+            for hit in hits {
+                if let Value::Object(map) = hit {
+                    all_hits.push(map.clone());
+                }
+            }
+        }
+    }
+
+    // Sort by score descending, then by primary key ascending for tie-breaking.
+    all_hits.sort_by(|a, b| {
+        let score_a = a.get("_rankingScore")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let score_b = b.get("_rankingScore")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        // Extract primary keys for tie-breaking.
+        let pk_a = a.get("id")
+            .or_else(|| a.get("pk"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let pk_b = b.get("id")
+            .or_else(|| b.get("pk"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        // Primary sort: score descending (higher score = better rank)
+        match score_a.partial_cmp(&score_b) {
+            Some(Ordering::Equal) => {
+                // Secondary sort: primary key ascending for deterministic tie-breaking
+                pk_a.cmp(pk_b)
+            }
+            Some(ord) => ord.reverse(),
+            None => {
+                // NaN case: treat as lowest score
+                if score_a.is_nan() && !score_b.is_nan() {
+                    Ordering::Less
+                } else if !score_a.is_nan() && score_b.is_nan() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            }
+        }
+    });
+
+    // Apply offset + limit.
+    let paginated_hits: Vec<_> = all_hits
+        .into_iter()
+        .skip(input.offset)
+        .take(input.limit)
+        .collect();
+
+    // Strip reserved fields and rebuild hits.
+    let mut hits = Vec::with_capacity(paginated_hits.len());
+    for mut hit in paginated_hits {
+        // Strip _rankingScore if not requested.
+        if !input.client_requested_score {
+            hit.remove("_rankingScore");
+        }
+
+        // Always strip _miroir_* fields.
+        hit.retain(|k, _| !k.starts_with("_miroir_"));
+
+        hits.push(Value::Object(hit));
     }
 
     // Merge facets.
@@ -1200,5 +1363,345 @@ mod tests {
         };
         assert_eq!(nan_a.cmp(&real), Ordering::Less);
         assert_eq!(real.cmp(&nan_a), Ordering::Greater);
+    }
+
+    // -----------------------------------------------------------------------
+    // Score-based merge tests (OP#4 global-IDF)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_score_merge_strategy_exists() {
+        let strategy = ScoreMergeStrategy::new();
+        assert_eq!(strategy.name(), "score");
+    }
+
+    #[test]
+    fn test_score_merge_basic() {
+        let strategy = ScoreMergeStrategy::new();
+        let input = MergeInput {
+            shard_hits: vec![make_shard_response(
+                vec![
+                    make_hit("doc1", 0.9, 0),
+                    make_hit("doc2", 0.7, 0),
+                ],
+                100,
+                15,
+            )],
+            offset: 0,
+            limit: 10,
+            client_requested_score: false,
+            facets: None,
+        };
+
+        let result = strategy.merge(input).unwrap();
+        assert_eq!(result.hits.len(), 2);
+        assert_eq!(result.hits[0].get("id").unwrap(), "doc1");
+        assert_eq!(result.hits[1].get("id").unwrap(), "doc2");
+        assert_eq!(result.estimated_total_hits, 100);
+    }
+
+    #[test]
+    fn test_score_merge_global_sorting() {
+        // Test that score-based merge sorts globally by score.
+        // With global IDF (simulated here by consistent scores across shards),
+        // doc with highest score should rank first regardless of shard.
+        let strategy = ScoreMergeStrategy::new();
+        let input = MergeInput {
+            shard_hits: vec![
+                // Shard 0: low scores
+                make_shard_response(
+                    vec![
+                        make_hit("doc-low-1", 0.3, 0),
+                        make_hit("doc-low-2", 0.2, 0),
+                    ],
+                    50,
+                    10,
+                ),
+                // Shard 1: high scores (these should rank higher)
+                make_shard_response(
+                    vec![
+                        make_hit("doc-high-1", 0.9, 1),
+                        make_hit("doc-high-2", 0.8, 1),
+                    ],
+                    50,
+                    10,
+                ),
+            ],
+            offset: 0,
+            limit: 10,
+            client_requested_score: true,
+            facets: None,
+        };
+
+        let result = strategy.merge(input).unwrap();
+        assert_eq!(result.hits.len(), 4);
+
+        // Should be sorted by score descending globally
+        assert_eq!(result.hits[0].get("id").unwrap(), "doc-high-1");
+        assert_eq!(result.hits[1].get("id").unwrap(), "doc-high-2");
+        assert_eq!(result.hits[2].get("id").unwrap(), "doc-low-1");
+        assert_eq!(result.hits[3].get("id").unwrap(), "doc-low-2");
+    }
+
+    #[test]
+    fn test_score_merge_tie_breaking() {
+        // Test deterministic tie-breaking on primary key when scores are equal.
+        let strategy = ScoreMergeStrategy::new();
+        let input = MergeInput {
+            shard_hits: vec![
+                make_shard_response(
+                    vec![
+                        make_hit("zebra", 0.5, 0),
+                        make_hit("apple", 0.5, 0),
+                    ],
+                    50,
+                    10,
+                ),
+            ],
+            offset: 0,
+            limit: 10,
+            client_requested_score: false,
+            facets: None,
+        };
+
+        let result = strategy.merge(input).unwrap();
+        // Both docs have same score, should tie-break alphabetically
+        assert_eq!(result.hits[0].get("id").unwrap(), "apple");
+        assert_eq!(result.hits[1].get("id").unwrap(), "zebra");
+    }
+
+    #[test]
+    fn test_score_merge_offset_limit() {
+        let strategy = ScoreMergeStrategy::new();
+        let input = MergeInput {
+            shard_hits: vec![make_shard_response(
+                vec![
+                    make_hit("doc1", 0.9, 0),
+                    make_hit("doc2", 0.8, 0),
+                    make_hit("doc3", 0.7, 0),
+                    make_hit("doc4", 0.6, 0),
+                    make_hit("doc5", 0.5, 0),
+                ],
+                100,
+                10,
+            )],
+            offset: 1,
+            limit: 2,
+            client_requested_score: false,
+            facets: None,
+        };
+
+        let result = strategy.merge(input).unwrap();
+        assert_eq!(result.hits.len(), 2);
+        assert_eq!(result.hits[0].get("id").unwrap(), "doc2");
+        assert_eq!(result.hits[1].get("id").unwrap(), "doc3");
+    }
+
+    #[test]
+    fn test_score_merge_preserves_score_when_requested() {
+        let strategy = ScoreMergeStrategy::new();
+        let input = MergeInput {
+            shard_hits: vec![make_shard_response(
+                vec![make_hit("doc1", 0.9, 0)],
+                50,
+                10,
+            )],
+            offset: 0,
+            limit: 10,
+            client_requested_score: true,
+            facets: None,
+        };
+
+        let result = strategy.merge(input).unwrap();
+        assert_eq!(
+            result.hits[0].get("_rankingScore").unwrap().as_f64(),
+            Some(0.9)
+        );
+    }
+
+    #[test]
+    fn test_score_merge_strips_score_when_not_requested() {
+        let strategy = ScoreMergeStrategy::new();
+        let input = MergeInput {
+            shard_hits: vec![make_shard_response(
+                vec![make_hit("doc1", 0.9, 0)],
+                50,
+                10,
+            )],
+            offset: 0,
+            limit: 10,
+            client_requested_score: false,
+            facets: None,
+        };
+
+        let result = strategy.merge(input).unwrap();
+        assert!(result.hits[0].get("_rankingScore").is_none());
+    }
+
+    /// Integration test: skewed corpus scenario with global-IDF preflight.
+    ///
+    /// This simulates the scenario described in P12.OP4:
+    /// - Shard 0 has 1000 docs, term "rust" appears in 100 (df=100)
+    /// - Shard 1 has 100 docs, term "rust" appears in 50 (df=50)
+    ///
+    /// Without global IDF:
+    /// - Local IDF(shard 0) = log((1000-100+0.5)/(100+0.5)+1) ≈ 2.2
+    /// - Local IDF(shard 1) = log((100-50+0.5)/(50+0.5)+1) ≈ 0.7
+    ///
+    /// With global IDF:
+    /// - Global N = 1100, global df = 150
+    /// - Global IDF = log((1100-150+0.5)/(150+0.5)+1) ≈ 1.8
+    ///
+    /// A document with tf=3 for "rust" in each shard:
+    /// - Shard 0 score (local IDF): ~3 * 2.2 = 6.6
+    /// - Shard 1 score (local IDF): ~3 * 0.7 = 2.1
+    ///
+    /// Without global IDF, shard 0 doc ranks higher despite shard 1 having
+    /// much higher term density (50/100 vs 100/1000).
+    ///
+    /// With global IDF, both shards use IDF=1.8, and the doc with higher
+    /// term density (normalized by document length) ranks correctly.
+    #[test]
+    fn test_score_merge_skewed_corpus_integration() {
+        // Simulate global IDF applied (scores are now comparable)
+        let strategy = ScoreMergeStrategy::new();
+
+        // Doc in large shard with high term frequency but low density
+        let doc_large_shard = json!({
+            "id": "doc-large",
+            "title": "Rust in Large Shard",
+            "_rankingScore": 0.75, // After global-IDF normalization
+        });
+
+        // Doc in small shard with lower term frequency but high density
+        let doc_small_shard = json!({
+            "id": "doc-small",
+            "title": "Rust in Small Shard",
+            "_rankingScore": 0.85, // After global-IDF normalization
+        });
+
+        // With global IDF, the small shard doc should rank higher
+        // because its term density is higher (50/100 vs 100/1000)
+        let input = MergeInput {
+            shard_hits: vec![
+                ShardHitPage {
+                    body: json!({
+                        "hits": [doc_large_shard],
+                        "estimatedTotalHits": 1000,
+                        "processingTimeMs": 10,
+                    }),
+                },
+                ShardHitPage {
+                    body: json!({
+                        "hits": [doc_small_shard],
+                        "estimatedTotalHits": 100,
+                        "processingTimeMs": 5,
+                    }),
+                },
+            ],
+            offset: 0,
+            limit: 10,
+            client_requested_score: true,
+            facets: None,
+        };
+
+        let result = strategy.merge(input).unwrap();
+        assert_eq!(result.hits.len(), 2);
+
+        // Small shard doc should rank first (higher score after global IDF)
+        assert_eq!(result.hits[0].get("id").unwrap(), "doc-small");
+        assert_eq!(result.hits[1].get("id").unwrap(), "doc-large");
+
+        // Scores should be preserved
+        assert_eq!(
+            result.hits[0].get("_rankingScore").unwrap().as_f64(),
+            Some(0.85)
+        );
+        assert_eq!(
+            result.hits[1].get("_rankingScore").unwrap().as_f64(),
+            Some(0.75)
+        );
+    }
+
+    /// Test that demonstrates the failure mode without global IDF.
+    ///
+    /// This shows what happens when scores are NOT comparable across shards:
+    /// score-based merge produces incorrect rankings, while RRF at least
+    /// produces consistent (though not optimal) results.
+    #[test]
+    fn test_score_merge_without_global_idf_fails() {
+        // Simulate the bug: shard-local IDF produces incomparable scores
+        let strategy = ScoreMergeStrategy::new();
+
+        // Shard 0: large shard, inflated local IDF (shard has term rarity)
+        let doc_shard0 = json!({
+            "id": "doc-inflated",
+            "title": "Document in Large Shard",
+            "_rankingScore": 0.95, // Inflated due to high local IDF
+        });
+
+        // Shard 1: small shard, deflated local IDF (term is common here)
+        let doc_shard1 = json!({
+            "id": "doc-deflated",
+            "title": "Document in Small Shard",
+            "_rankingScore": 0.60, // Deflated due to low local IDF
+        });
+
+        let input = MergeInput {
+            shard_hits: vec![
+                ShardHitPage {
+                    body: json!({
+                        "hits": [doc_shard0],
+                        "estimatedTotalHits": 10000,
+                        "processingTimeMs": 15,
+                    }),
+                },
+                ShardHitPage {
+                    body: json!({
+                        "hits": [doc_shard1],
+                        "estimatedTotalHits": 100,
+                        "processingTimeMs": 5,
+                    }),
+                },
+            ],
+            offset: 0,
+            limit: 10,
+            client_requested_score: true,
+            facets: None,
+        };
+
+        let result = strategy.merge(input).unwrap();
+
+        // Without global IDF, score-based merge trusts the inflated scores
+        assert_eq!(result.hits[0].get("id").unwrap(), "doc-inflated");
+
+        // This is WRONG: doc-deflated has much higher term density but
+        // ranks lower due to shard-local IDF skew.
+        //
+        // The solution is the preflight phase (dfs_query_then_fetch_search)
+        // which computes global IDF so scores are comparable.
+    }
+
+    #[test]
+    fn test_score_merge_default_impl() {
+        let via_default: ScoreMergeStrategy = Default::default();
+        let via_constructor = ScoreMergeStrategy::new();
+        assert_eq!(via_default.name(), via_constructor.name());
+    }
+
+    #[test]
+    fn test_score_merge_empty_input() {
+        let strategy = ScoreMergeStrategy::new();
+        let input = MergeInput {
+            shard_hits: vec![],
+            offset: 0,
+            limit: 10,
+            client_requested_score: false,
+            facets: None,
+        };
+
+        let result = strategy.merge(input).unwrap();
+        assert_eq!(result.hits.len(), 0);
+        assert_eq!(result.estimated_total_hits, 0);
     }
 }
