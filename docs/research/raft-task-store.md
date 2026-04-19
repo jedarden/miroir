@@ -232,16 +232,16 @@ cargo test -p miroir-core --features raft-proto raft_proto::benchmark -- --nocap
 
 | Operation | State Machine | Direct HashMap | Overhead |
 |-----------|-------------|----------------|----------|
-| Insert | 1,993 ns | 2,088 ns | 1.0x |
-| Read | 263 ns | 262 ns | 1.0x |
-| Update | 338 ns | 335 ns | 1.0x |
+| Insert | 1,835 ns | 1,863 ns | 1.0x |
+| Read | 245 ns | 233 ns | 1.1x |
+| Update | 315 ns | 298 ns | 1.1x |
 
 | Serialization | Avg Latency | Size per Command |
 |---------------|-------------|-----------------|
-| JSON | 1,573 ns | 73 bytes |
-| Bincode | 448 ns | 26 bytes |
+| JSON | 1,441 ns | 73 bytes |
+| Bincode | 422 ns | 26 bytes |
 
-**Throughput (single-threaded, local apply only):** ~501K ops/sec (state machine) vs ~479K ops/sec (direct)
+**Throughput (single-threaded, local apply only):** ~545K ops/sec (state machine) vs ~537K ops/sec (direct)
 
 **Key finding:** The state machine apply path adds negligible overhead (~1.0x) vs. direct HashMap access. Both are sub-microsecond. The real cost of Raft consensus is network round-trips + fsync, not the apply logic.
 
