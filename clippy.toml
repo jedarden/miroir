@@ -1,0 +1,2 @@
+# Clippy configuration
+# Lint enforcement lives in CI via -D warnings
