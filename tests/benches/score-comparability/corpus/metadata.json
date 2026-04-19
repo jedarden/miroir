@@ -1,0 +1,36 @@
+{
+  "total_documents": 100000,
+  "shard_count": 10,
+  "vocabulary_size": 50,
+  "categories": [
+    "tech",
+    "finance",
+    "science",
+    "health",
+    "business"
+  ],
+  "skew_factors": [
+    1.0,
+    100.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    0.01
+  ],
+  "shard_sizes": {
+    "0": 930,
+    "1": 93015,
+    "2": 930,
+    "3": 930,
+    "4": 930,
+    "5": 930,
+    "6": 930,
+    "7": 930,
+    "8": 465,
+    "9": 10
+  }
+}

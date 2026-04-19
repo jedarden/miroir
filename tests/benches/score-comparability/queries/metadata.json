@@ -1,0 +1,19 @@
+{
+  "total_queries": 10000,
+  "allocation": {
+    "single_term": 0.25,
+    "multi_term": 0.25,
+    "filtered": 0.2,
+    "rare_term": 0.15,
+    "common_term": 0.15
+  },
+  "random_seed": 42,
+  "vocab_size": 50,
+  "categories": [
+    "tech",
+    "finance",
+    "science",
+    "health",
+    "business"
+  ]
+}
