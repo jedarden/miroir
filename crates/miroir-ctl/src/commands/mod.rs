@@ -1,0 +1,15 @@
+pub mod alias;
+pub mod canary;
+pub mod cdc;
+pub mod dump;
+pub mod explain;
+pub mod node;
+pub mod rebalance;
+pub mod reshard;
+pub mod shadow;
+pub mod status;
+pub mod task;
+pub mod tenant;
+pub mod ttl;
+pub mod ui;
+pub mod verify;
