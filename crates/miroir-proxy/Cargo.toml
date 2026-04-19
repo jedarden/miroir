@@ -28,6 +28,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 prometheus = "0.13"
 uuid = { version = "1.11", features = ["v7"] }
 subtle = "2"
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
 miroir-core = { path = "../miroir-core", features = ["axum"] }
 
 # OpenTelemetry (optional - use feature flag to enable)

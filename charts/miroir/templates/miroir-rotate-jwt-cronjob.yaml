@@ -1,0 +1,45 @@
+{{/*
+JWT Secret Rotation CronJob (plan §9)
+*/}}
+{{- if .Values.miroir.replicas }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "miroir.fullname" . }}-rotate-jwt
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app.kubernetes.io/component: jwt-rotation
+spec:
+  suspend: true
+  schedule: "0 3 1 */3 *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: {{ include "miroir.serviceAccountName" . }}
+          restartPolicy: Never
+          containers:
+            - name: miroir-ctl
+              image: "{{ .Values.miroir.image.repository }}:{{ .Values.miroir.image.tag | default .Chart.AppVersion }}"
+              command:
+                - miroir-ctl
+                - ui
+                - rotate-jwt-secret
+                - --namespace
+                - {{ .Release.Namespace }}
+                - --secret-name
+                - {{ include "miroir.secretName" . }}
+                - --deployment-name
+                - {{ include "miroir.fullname" . }}-miroir
+                - --yes
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+{{- end }}

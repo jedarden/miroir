@@ -3,6 +3,11 @@
 //! Three token types can appear on `Authorization: Bearer <value>` simultaneously:
 //! the `master_key`, the `admin_key`, and a search UI JWT. Miroir resolves them
 //! deterministically in the order specified by §5.
+//!
+//! JWT signing-secret rotation (plan §9):
+//! - Primary secret (`SEARCH_UI_JWT_SECRET`) signs new tokens; `kid` header identifies it.
+//! - Optional previous secret (`SEARCH_UI_JWT_SECRET_PREVIOUS`) is present only during
+//!   the rotation overlap window. Validation accepts either secret.
 
 use axum::{
     extract::{Request, State},
@@ -10,8 +15,120 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use hmac::{Hmac, Mac};
 use miroir_core::{MeilisearchError, MiroirCode};
+use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use subtle::ConstantTimeEq;
+
+type HmacSha256 = Hmac<Sha256>;
+
+// ---------------------------------------------------------------------------
+// JWT claims (plan §13.21)
+// ---------------------------------------------------------------------------
+
+/// Claims embedded in a search UI JWT session token.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JwtClaims {
+    /// Subject — user identifier or "anonymous".
+    pub sub: String,
+    /// Index this token grants access to.
+    pub idx: String,
+    /// Granted scope (e.g. "search").
+    pub scope: String,
+    /// Issued-at timestamp (seconds since epoch).
+    pub iat: u64,
+    /// Expiration timestamp (seconds since epoch).
+    pub exp: u64,
+}
+
+/// Key ID embedded in the JWT header to identify which secret signed it.
+const KID_PRIMARY: &str = "primary";
+const KID_PREVIOUS: &str = "previous";
+
+/// JWT header (always HS256).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct JwtHeader {
+    alg: String,
+    kid: String,
+    typ: String,
+}
+
+// ---------------------------------------------------------------------------
+// Minimal HS256 JWT encode / decode (no external JWT crate needed)
+// ---------------------------------------------------------------------------
+
+/// Encode and sign a JWT with the given secret.
+fn jwt_encode(header: &JwtHeader, claims: &JwtClaims, secret: &[u8]) -> Result<String, String> {
+    let header_json = serde_json::to_string(header).map_err(|e| e.to_string())?;
+    let claims_json = serde_json::to_string(claims).map_err(|e| e.to_string())?;
+
+    let header_b64 = URL_SAFE_NO_PAD.encode(header_json.as_bytes());
+    let payload_b64 = URL_SAFE_NO_PAD.encode(claims_json.as_bytes());
+
+    let signing_input = format!("{}.{}", header_b64, payload_b64);
+
+    let mut mac =
+        HmacSha256::new_from_slice(secret).map_err(|e| format!("HMAC init: {}", e))?;
+    mac.update(signing_input.as_bytes());
+    let sig = mac.finalize().into_bytes();
+    let sig_b64 = URL_SAFE_NO_PAD.encode(sig);
+
+    Ok(format!("{}.{}.{}", header_b64, payload_b64, sig_b64))
+}
+
+/// Decode and verify a JWT with the given secret. Returns (header, claims).
+fn jwt_decode(
+    token: &str,
+    secret: &[u8],
+) -> Result<(JwtHeader, JwtClaims), JwtValidationError> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return Err(JwtValidationError::Malformed);
+    }
+
+    let header_bytes = URL_SAFE_NO_PAD
+        .decode(parts[0])
+        .map_err(|_| JwtValidationError::Malformed)?;
+    let header: JwtHeader =
+        serde_json::from_slice(&header_bytes).map_err(|_| JwtValidationError::Malformed)?;
+
+    if header.alg != "HS256" {
+        return Err(JwtValidationError::Malformed);
+    }
+
+    // Verify signature
+    let signing_input = format!("{}.{}", parts[0], parts[1]);
+    let mut mac = HmacSha256::new_from_slice(secret).unwrap();
+    mac.update(signing_input.as_bytes());
+    let expected_sig = mac.finalize().into_bytes();
+
+    let actual_sig = URL_SAFE_NO_PAD
+        .decode(parts[2])
+        .map_err(|_| JwtValidationError::InvalidSignature)?;
+
+    use subtle::ConstantTimeEq as _;
+    let sig_valid: bool = actual_sig.ct_eq(&expected_sig).into();
+    if !sig_valid {
+        return Err(JwtValidationError::InvalidSignature);
+    }
+
+    // Decode claims
+    let claims_bytes = URL_SAFE_NO_PAD
+        .decode(parts[1])
+        .map_err(|_| JwtValidationError::Malformed)?;
+    let claims: JwtClaims =
+        serde_json::from_slice(&claims_bytes).map_err(|_| JwtValidationError::Malformed)?;
+
+    // Check expiration with 30s leeway
+    let now = epoch_seconds();
+    if claims.exp + 30 < now {
+        return Err(JwtValidationError::Expired);
+    }
+
+    Ok((header, claims))
+}
 
 // ---------------------------------------------------------------------------
 // Auth state (shared via axum State)
@@ -22,6 +139,76 @@ use subtle::ConstantTimeEq;
 pub struct AuthState {
     pub master_key: String,
     pub admin_key: String,
+    /// HMAC secret for signing/validating search UI JWTs (primary).
+    pub jwt_primary: Option<String>,
+    /// Optional previous secret active during rotation overlap window.
+    pub jwt_previous: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// JWT signing / validation helpers
+// ---------------------------------------------------------------------------
+
+impl AuthState {
+    /// Create a new signed JWT session token for the given index.
+    /// Always signs with the primary secret; `kid` header identifies it.
+    pub fn sign_jwt(&self, sub: &str, idx: &str, scope: &str, ttl_s: u64) -> Option<String> {
+        let secret = self.jwt_primary.as_ref()?;
+        let now = epoch_seconds();
+        let claims = JwtClaims {
+            sub: sub.to_string(),
+            idx: idx.to_string(),
+            scope: scope.to_string(),
+            iat: now,
+            exp: now + ttl_s,
+        };
+        let header = JwtHeader {
+            alg: "HS256".to_string(),
+            kid: KID_PRIMARY.to_string(),
+            typ: "JWT".to_string(),
+        };
+        jwt_encode(&header, &claims, secret.as_bytes()).ok()
+    }
+
+    /// Validate a JWT string against either the primary or previous secret.
+    /// Returns the parsed claims if validation succeeds, or an error.
+    pub fn validate_jwt(&self, token: &str) -> Result<JwtClaims, JwtValidationError> {
+        // Try primary secret first
+        if let Some(ref secret) = self.jwt_primary {
+            match jwt_decode(token, secret.as_bytes()) {
+                Ok((_header, claims)) => return Ok(claims),
+                Err(JwtValidationError::Expired) => return Err(JwtValidationError::Expired),
+                _ => {} // signature mismatch — try previous
+            }
+        }
+
+        // Try previous secret (rotation overlap window)
+        if let Some(ref secret) = self.jwt_previous {
+            if secret.is_empty() {
+                return Err(JwtValidationError::PreviousSecretEmpty);
+            }
+            match jwt_decode(token, secret.as_bytes()) {
+                Ok((_header, claims)) => return Ok(claims),
+                Err(JwtValidationError::Expired) => return Err(JwtValidationError::Expired),
+                _ => {} // signature mismatch
+            }
+        }
+
+        Err(JwtValidationError::InvalidSignature)
+    }
+}
+
+/// Errors returned by JWT validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JwtValidationError {
+    /// Token structure is invalid or alg is not HS256.
+    Malformed,
+    /// HMAC signature did not match any loaded secret.
+    InvalidSignature,
+    /// Token has expired.
+    Expired,
+    /// `SEARCH_UI_JWT_SECRET_PREVIOUS` is set to the empty string (leak response).
+    PreviousSecretEmpty,
 }
 
 // ---------------------------------------------------------------------------
@@ -48,7 +235,7 @@ pub enum AuthVerdict {
 pub enum TokenKind {
     MasterKey,
     AdminKey,
-    /// Phase 5 §13.21 will flesh this out.
+    /// JWT validated against primary or previous secret.
     Jwt,
 }
 
@@ -116,13 +303,11 @@ pub fn is_dispatch_exempt(method: &Method, path: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Rule 1 — JWT-shape probe (Phase 2 stub)
+// Rule 1 — JWT-shape probe
 // ---------------------------------------------------------------------------
 
 /// Returns true if `token` has the structural shape of a JWT (three
-/// dot-separated base64url segments). Phase 5 §13.21 will add full
-/// signature / claim validation; Phase 2 just needs the shape probe
-/// to distinguish JWTs from opaque tokens.
+/// dot-separated base64url segments).
 pub fn probe_jwt_shape(token: &str) -> bool {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
@@ -178,12 +363,17 @@ pub fn dispatch_bearer(
         None => return AuthVerdict::InvalidAuth, // Rule 4 — missing auth
     };
 
-    // Rule 1 — JWT-shape probe
+    // Rule 1 — JWT-shape probe, then full validation
     if probe_jwt_shape(token) {
-        // Phase 2 stub: treat as "not-yet-implemented" JWT.
-        // Phase 5 §13.21 will add signature validation, exp/nbf, kid, idx, scope.
-        // For now, any parseable-but-unsupported JWT returns JwtInvalid.
-        return AuthVerdict::JwtInvalid;
+        match state.validate_jwt(token) {
+            Ok(_claims) => return AuthVerdict::Authenticated(TokenKind::Jwt),
+            Err(JwtValidationError::PreviousSecretEmpty) => {
+                return AuthVerdict::JwtInvalid;
+            }
+            Err(_) => {
+                return AuthVerdict::JwtInvalid;
+            }
+        }
     }
 
     // Rule 2 — admin-path opaque-token match
@@ -300,6 +490,17 @@ impl RateLimiter {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn epoch_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -311,6 +512,26 @@ mod tests {
         AuthState {
             master_key: "master-key-123".to_string(),
             admin_key: "admin-key-456".to_string(),
+            jwt_primary: None,
+            jwt_previous: None,
+        }
+    }
+
+    fn test_state_with_jwt() -> AuthState {
+        AuthState {
+            master_key: "master-key-123".to_string(),
+            admin_key: "admin-key-456".to_string(),
+            jwt_primary: Some("test-secret-primary-key-32byte".to_string()),
+            jwt_previous: None,
+        }
+    }
+
+    fn test_state_with_dual_jwt() -> AuthState {
+        AuthState {
+            master_key: "master-key-123".to_string(),
+            admin_key: "admin-key-456".to_string(),
+            jwt_primary: Some("test-secret-primary-key-32byte".to_string()),
+            jwt_previous: Some("test-secret-previous-key-32byte".to_string()),
         }
     }
 
@@ -320,9 +541,7 @@ mod tests {
 
     #[test]
     fn get_metrics_requires_admin_key() {
-        // GET /_miroir/metrics is NOT exempt - requires admin key
         assert!(!is_dispatch_exempt(&Method::GET, "/_miroir/metrics"));
-        // POST still not exempt either
         assert!(!is_dispatch_exempt(&Method::POST, "/_miroir/metrics"));
     }
 
@@ -381,9 +600,7 @@ mod tests {
 
     #[test]
     fn exempt_get_miroir_ready() {
-        // `GET /_miroir/ready` is exempt for Kubernetes readiness probes
         assert!(is_dispatch_exempt(&Method::GET, "/_miroir/ready"));
-        // POST should not be exempt
         assert!(!is_dispatch_exempt(&Method::POST, "/_miroir/ready"));
     }
 
@@ -442,7 +659,6 @@ mod tests {
     #[test]
     fn exempt_ready_ignores_all_tokens() {
         let state = test_state();
-        // `GET /_miroir/ready` should be exempt from auth (Kubernetes readiness probe)
         let verdict = dispatch_bearer(
             &Method::GET,
             "/_miroir/ready",
@@ -459,7 +675,6 @@ mod tests {
     #[test]
     fn metrics_requires_admin_key() {
         let state = test_state();
-        // With correct admin key, should authenticate
         let verdict = dispatch_bearer(
             &Method::GET,
             "/_miroir/metrics",
@@ -472,7 +687,6 @@ mod tests {
     #[test]
     fn metrics_rejects_master_key() {
         let state = test_state();
-        // Master key doesn't work on admin paths
         let verdict = dispatch_bearer(
             &Method::GET,
             "/_miroir/metrics",
@@ -524,8 +738,8 @@ mod tests {
     }
 
     #[test]
-    fn jwt_on_non_admin_path_returns_jwt_invalid() {
-        let state = test_state();
+    fn jwt_on_non_admin_path_with_no_secret_returns_jwt_invalid() {
+        let state = test_state(); // no JWT secrets configured
         let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123";
         let verdict = dispatch_bearer(
             &Method::GET,
@@ -547,6 +761,259 @@ mod tests {
             &state,
         );
         assert_eq!(verdict, AuthVerdict::JwtInvalid);
+    }
+
+    // -----------------------------------------------------------------------
+    // JWT signing and validation — primary secret
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sign_and_validate_primary_jwt() {
+        let state = test_state_with_jwt();
+        let token = state.sign_jwt("user1", "products", "search", 900).unwrap();
+
+        let claims = state.validate_jwt(&token).unwrap();
+        assert_eq!(claims.sub, "user1");
+        assert_eq!(claims.idx, "products");
+        assert_eq!(claims.scope, "search");
+    }
+
+    #[test]
+    fn signed_jwt_authenticates_via_dispatch() {
+        let state = test_state_with_jwt();
+        let token = state.sign_jwt("user1", "products", "search", 900).unwrap();
+
+        let verdict = dispatch_bearer(
+            &Method::GET,
+            "/indexes/products",
+            Some(&token),
+            &state,
+        );
+        assert_eq!(verdict, AuthVerdict::Authenticated(TokenKind::Jwt));
+    }
+
+    #[test]
+    fn expired_jwt_returns_jwt_invalid() {
+        let state = test_state_with_jwt();
+        let now = epoch_seconds();
+        let claims = JwtClaims {
+            sub: "user1".to_string(),
+            idx: "products".to_string(),
+            scope: "search".to_string(),
+            iat: now - 3600,
+            exp: now - 100, // expired well beyond 30s leeway
+        };
+        let header = JwtHeader {
+            alg: "HS256".to_string(),
+            kid: KID_PRIMARY.to_string(),
+            typ: "JWT".to_string(),
+        };
+        let token = jwt_encode(
+            &header,
+            &claims,
+            state.jwt_primary.as_ref().unwrap().as_bytes(),
+        )
+        .unwrap();
+
+        let result = state.validate_jwt(&token);
+        assert_eq!(result, Err(JwtValidationError::Expired));
+    }
+
+    #[test]
+    fn tampered_signature_returns_invalid_signature() {
+        let state = test_state_with_jwt();
+        let mut token = state.sign_jwt("user1", "products", "search", 900).unwrap();
+        // Tamper with the signature
+        let parts: Vec<&str> = token.split('.').collect();
+        token = format!("{}.{}.tampered_sig", parts[0], parts[1]);
+
+        let result = state.validate_jwt(&token);
+        assert_eq!(result, Err(JwtValidationError::InvalidSignature));
+    }
+
+    // -----------------------------------------------------------------------
+    // JWT dual-secret rotation validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rotation_old_token_validates_via_previous_secret() {
+        let primary = "test-secret-primary-key-32byte";
+        let previous = "test-secret-previous-key-32byte";
+
+        // Sign token with the previous secret
+        let now = epoch_seconds();
+        let claims = JwtClaims {
+            sub: "user1".to_string(),
+            idx: "products".to_string(),
+            scope: "search".to_string(),
+            iat: now,
+            exp: now + 900,
+        };
+        let header = JwtHeader {
+            alg: "HS256".to_string(),
+            kid: KID_PREVIOUS.to_string(),
+            typ: "JWT".to_string(),
+        };
+        let old_token = jwt_encode(&header, &claims, previous.as_bytes()).unwrap();
+
+        // Simulate rotation — new primary, old primary as previous
+        let state = AuthState {
+            master_key: "m".to_string(),
+            admin_key: "a".to_string(),
+            jwt_primary: Some(primary.to_string()),
+            jwt_previous: Some(previous.to_string()),
+        };
+
+        // Old token should still validate via previous secret
+        let validated = state.validate_jwt(&old_token).unwrap();
+        assert_eq!(validated.sub, "user1");
+
+        // And dispatch should authenticate it
+        let verdict = dispatch_bearer(
+            &Method::GET,
+            "/indexes/products",
+            Some(&old_token),
+            &state,
+        );
+        assert_eq!(verdict, AuthVerdict::Authenticated(TokenKind::Jwt));
+    }
+
+    #[test]
+    fn rotation_new_token_validates_via_primary_secret() {
+        let state = test_state_with_dual_jwt();
+        let new_token = state.sign_jwt("user2", "orders", "search", 900).unwrap();
+
+        let validated = state.validate_jwt(&new_token).unwrap();
+        assert_eq!(validated.sub, "user2");
+        assert_eq!(validated.idx, "orders");
+    }
+
+    #[test]
+    fn rotation_wrong_secret_returns_invalid_signature() {
+        let state = AuthState {
+            master_key: "m".to_string(),
+            admin_key: "a".to_string(),
+            jwt_primary: Some("correct-secret-key-32bytes-long!!!".to_string()),
+            jwt_previous: Some("previous-secret-key-32bytes-long!!".to_string()),
+        };
+
+        // Token signed with a completely different secret
+        let now = epoch_seconds();
+        let claims = JwtClaims {
+            sub: "user1".to_string(),
+            idx: "products".to_string(),
+            scope: "search".to_string(),
+            iat: now,
+            exp: now + 900,
+        };
+        let header = JwtHeader {
+            alg: "HS256".to_string(),
+            kid: KID_PRIMARY.to_string(),
+            typ: "JWT".to_string(),
+        };
+        let token = jwt_encode(
+            &header,
+            &claims,
+            "wrong-secret-key-32bytes-long!!!!".as_bytes(),
+        )
+        .unwrap();
+
+        let result = state.validate_jwt(&token);
+        assert_eq!(result, Err(JwtValidationError::InvalidSignature));
+    }
+
+    #[test]
+    fn leak_response_empty_previous_rejects_old_tokens() {
+        let state = AuthState {
+            master_key: "m".to_string(),
+            admin_key: "a".to_string(),
+            jwt_primary: Some("new-primary-secret-key-32bytes!!".to_string()),
+            jwt_previous: Some(String::new()), // empty = leak response
+        };
+
+        let result = state.validate_jwt("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.fake");
+        assert_eq!(result, Err(JwtValidationError::PreviousSecretEmpty));
+    }
+
+    #[test]
+    fn rotation_after_step5_steady_state_previous_removed() {
+        let primary = "final-primary-secret-key-32bytes";
+        let state = AuthState {
+            master_key: "m".to_string(),
+            admin_key: "a".to_string(),
+            jwt_primary: Some(primary.to_string()),
+            jwt_previous: None,
+        };
+
+        // Tokens signed with current primary work
+        let token = state.sign_jwt("user1", "products", "search", 900).unwrap();
+        assert!(state.validate_jwt(&token).is_ok());
+
+        // Old tokens signed with now-removed previous fail
+        let old_claims = JwtClaims {
+            sub: "user1".to_string(),
+            idx: "products".to_string(),
+            scope: "search".to_string(),
+            iat: epoch_seconds() - 100,
+            exp: epoch_seconds() + 800,
+        };
+        let old_header = JwtHeader {
+            alg: "HS256".to_string(),
+            kid: KID_PREVIOUS.to_string(),
+            typ: "JWT".to_string(),
+        };
+        let old_token = jwt_encode(
+            &old_header,
+            &old_claims,
+            "old-previous-secret-now-removed".as_bytes(),
+        )
+        .unwrap();
+        assert!(state.validate_jwt(&old_token).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // End-to-end rotation scenario
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn full_rotation_e2e() {
+        let secret_v1 = "version-1-secret-key-32bytes-long!";
+        let secret_v2 = "version-2-secret-key-32bytes-long!";
+
+        // Pre-rotation: only v1
+        let pre = AuthState {
+            master_key: "m".into(),
+            admin_key: "a".into(),
+            jwt_primary: Some(secret_v1.into()),
+            jwt_previous: None,
+        };
+        let token_v1 = pre.sign_jwt("alice", "idx", "search", 900).unwrap();
+        assert!(pre.validate_jwt(&token_v1).is_ok());
+
+        // During rotation: v2 primary, v1 previous
+        let during = AuthState {
+            master_key: "m".into(),
+            admin_key: "a".into(),
+            jwt_primary: Some(secret_v2.into()),
+            jwt_previous: Some(secret_v1.into()),
+        };
+        // Old token still validates
+        assert!(during.validate_jwt(&token_v1).is_ok());
+        // New tokens work too
+        let token_v2 = during.sign_jwt("bob", "idx", "search", 900).unwrap();
+        assert!(during.validate_jwt(&token_v2).is_ok());
+
+        // Post-rotation: only v2
+        let post = AuthState {
+            master_key: "m".into(),
+            admin_key: "a".into(),
+            jwt_primary: Some(secret_v2.into()),
+            jwt_previous: None,
+        };
+        // New token still works
+        assert!(post.validate_jwt(&token_v2).is_ok());
+        // Old token is rejected (signed with v1, no previous loaded)
+        assert!(post.validate_jwt(&token_v1).is_err());
     }
 
     // -----------------------------------------------------------------------
@@ -719,15 +1186,13 @@ mod tests {
 
     /// Timing-injection harness: verify no measurable delta between
     /// "all bytes wrong" and "one byte wrong" comparisons at the same length.
-    /// Uses many iterations to detect statistical differences; constant-time
-    /// ops should show negligible difference.
     #[test]
     fn constant_time_no_timing_leak() {
         use std::time::Instant;
 
         let expected = b"admin-key-456";
-        let all_wrong = b"xxxxxxxxxxxxx"; // same length, all bytes wrong
-        let one_wrong = b"admin-key-457"; // same length, one byte different
+        let all_wrong = b"xxxxxxxxxxxxx";
+        let one_wrong = b"admin-key-457";
 
         let iterations = 100_000u64;
 
@@ -743,9 +1208,6 @@ mod tests {
         }
         let one_wrong_duration = start.elapsed();
 
-        // The ratio should be close to 1.0 for constant-time comparison.
-        // We allow 2x tolerance to account for system noise but anything
-        // significantly different would indicate a timing leak.
         let ratio = all_wrong_duration.as_secs_f64() / one_wrong_duration.as_secs_f64();
         assert!(
             ratio > 0.5 && ratio < 2.0,
@@ -829,7 +1291,6 @@ mod tests {
 
     #[test]
     fn all_rule5_exempt_endpoints_covered() {
-        // Every row in plan §5 rule 5 exempt list tested for dispatch exemption
         let cases = vec![
             (Method::GET, "/_miroir/ui/search/locale/en-US"),
             (Method::GET, "/_miroir/ui/search/locale/fr"),

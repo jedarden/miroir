@@ -44,9 +44,21 @@ impl UnifiedState {
         let admin_key = std::env::var("MIROIR_ADMIN_API_KEY")
             .unwrap_or_else(|_| config.admin.api_key.clone());
 
+        let jwt_primary = if config.search_ui.enabled {
+            std::env::var(&config.search_ui.auth.jwt_secret_env).ok()
+        } else {
+            None
+        };
+
+        let jwt_previous = std::env::var(&config.search_ui.auth.jwt_secret_previous_env)
+            .ok()
+            .filter(|v| !v.is_empty());
+
         let auth = AuthState {
             master_key,
             admin_key: admin_key.clone(),
+            jwt_primary,
+            jwt_previous,
         };
 
         let admin = admin_endpoints::AppState::new(config.clone(), metrics.clone());
