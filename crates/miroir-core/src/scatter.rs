@@ -35,6 +35,7 @@ pub struct ScatterPlan {
 /// This is the seam between `miroir-core` (pure, no network) and
 /// `miroir-proxy` (HTTP client). Injecting it via a trait means unit tests
 /// can provide a fake client; production binds `reqwest` via the trait impl.
+#[allow(async_fn_in_trait)]
 pub trait NodeClient: Send + Sync {
     /// Execute a search request on a single node.
     ///

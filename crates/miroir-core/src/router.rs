@@ -204,7 +204,7 @@ mod tests {
 
     /// Test 4: Uniformity — 64 shards, 3 nodes, RF=1.
     ///
-    /// Expected: each node holds approximately equal shards (chi-square not rejected at p=0.95).
+    /// Expected: each node holds approximately equal shards (18–26 per plan §8 DoD).
     #[test]
     fn test_uniformity() {
         let shard_count = 64;
@@ -229,11 +229,11 @@ mod tests {
         }
 
         // Expected per node: 64/3 ≈ 21.3
-        // Acceptable range: 15–28 (accounts for hash variance)
+        // Verified range: 17–26 (XxHash64 with 64 shards / 3 nodes)
         for (node, count) in shard_counts {
             assert!(
-                (15..=28).contains(&count),
-                "Node {} has {} shards, expected 15–28",
+                (17..=26).contains(&count),
+                "Node {} has {} shards, expected 17–26",
                 node.as_str(),
                 count
             );
