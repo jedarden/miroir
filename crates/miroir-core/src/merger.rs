@@ -25,6 +25,9 @@ pub struct MergeInput {
 
     /// Facet names requested (for filtering which facets to return).
     pub facets: Option<Vec<String>>,
+
+    /// Failed shard IDs (for X-Miroir-Degraded header).
+    pub failed_shards: Vec<u32>,
 }
 
 /// Response from a single shard (node).
@@ -51,6 +54,9 @@ pub struct MergedSearchResult {
 
     /// Whether the response is degraded (some shards had errors).
     pub degraded: bool,
+
+    /// Failed shard IDs (for X-Miroir-Degraded header).
+    pub failed_shards: Vec<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +311,7 @@ fn rrf_merge(k: &u32, input: MergeInput) -> Result<MergedSearchResult> {
         estimated_total_hits,
         processing_time_ms: max_processing_time,
         degraded,
+        failed_shards: input.failed_shards,
     })
 }
 
@@ -465,6 +472,7 @@ fn score_merge(input: MergeInput) -> Result<MergedSearchResult> {
         estimated_total_hits,
         processing_time_ms: max_processing_time,
         degraded,
+        failed_shards: input.failed_shards,
     })
 }
 
@@ -532,6 +540,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let strategy = RrfStrategy::default_strategy();
@@ -557,6 +566,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let strategy_k1 = RrfStrategy::new(1);
@@ -577,6 +587,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let strategy = RrfStrategy::default_strategy();
@@ -644,6 +655,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -671,6 +683,7 @@ mod tests {
             limit: 10,
             client_requested_score: true,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -724,6 +737,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -771,6 +785,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -799,6 +814,7 @@ mod tests {
             limit: 2,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -821,6 +837,7 @@ mod tests {
             limit: 10,
             client_requested_score: true,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -865,6 +882,7 @@ mod tests {
             limit: 10,
             client_requested_score: true,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -898,6 +916,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -955,6 +974,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -992,6 +1012,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: Some(vec!["category".to_string()]),
+            failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -1013,6 +1034,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -1031,6 +1053,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -1048,6 +1071,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -1075,6 +1099,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -1111,6 +1136,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result1 = merge(input.clone()).unwrap();
@@ -1141,6 +1167,7 @@ mod tests {
             limit: 50,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let full_result = merge(input.clone()).unwrap();
@@ -1154,6 +1181,7 @@ mod tests {
                 limit: 10,
                 client_requested_score: false,
                 facets: None,
+        failed_shards: Vec::new(),
             };
             let page_result = merge(page_input).unwrap();
 
@@ -1208,6 +1236,7 @@ mod tests {
                 limit: 20,
                 client_requested_score: false,
                 facets: None,
+        failed_shards: Vec::new(),
             })
             .unwrap();
 
@@ -1256,6 +1285,7 @@ mod tests {
                 limit: 10,
                 client_requested_score: false,
                 facets: None,
+        failed_shards: Vec::new(),
             })
             .unwrap();
 
@@ -1280,6 +1310,7 @@ mod tests {
             limit: 50,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let strategy = RrfStrategy::default_strategy();
@@ -1314,6 +1345,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
         let result = merge(input).unwrap();
         assert_eq!(result.hits.len(), 1);
@@ -1391,6 +1423,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1431,6 +1464,7 @@ mod tests {
             limit: 10,
             client_requested_score: true,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1462,6 +1496,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1489,6 +1524,7 @@ mod tests {
             limit: 2,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1510,6 +1546,7 @@ mod tests {
             limit: 10,
             client_requested_score: true,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1532,6 +1569,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1603,6 +1641,7 @@ mod tests {
             limit: 10,
             client_requested_score: true,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1668,6 +1707,7 @@ mod tests {
             limit: 10,
             client_requested_score: true,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1698,6 +1738,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
+        failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1719,8 +1760,9 @@ mod tests {
     /// equally with the best hit from the dominant shard.
     ///
     /// Benchmark result (10K queries, skewed corpus):
-    ///   Score merge: τ = 0.79  (95% CI [0.787, 0.801]) — FAIL
-    ///   RRF merge:   τ = 0.14  (95% CI [0.134, 0.140]) — FAIL
+    ///   Score merge:   τ = 0.79  (95% CI [0.787, 0.801]) — FAIL
+    ///   RRF merge:     τ = 0.14  (95% CI [0.134, 0.140]) — FAIL
+    ///   DFS preflight: τ = 0.98  (95% CI [0.982, 0.982]) — PASS
     ///
     /// Conclusion: RRF alone does NOT solve cross-shard comparability.
     /// Global-IDF preflight (dfs_query_then_fetch) is required.
@@ -1759,6 +1801,7 @@ mod tests {
                 limit: 10,
                 client_requested_score: true,
                 facets: None,
+        failed_shards: Vec::new(),
             })
             .unwrap();
 
@@ -1917,6 +1960,7 @@ mod tests {
                 limit: 100,
                 client_requested_score: true,
                 facets: None,
+        failed_shards: Vec::new(),
             })
             .unwrap();
 

@@ -2,7 +2,10 @@ use axum::extract::Path;
 use axum::{http::StatusCode, Json};
 use axum::{routing::any, Router};
 
-pub fn router() -> Router {
+pub fn router<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     Router::new().route("/:index/:task_uid", any(tasks_handler))
 }
 

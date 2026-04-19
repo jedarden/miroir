@@ -21,7 +21,7 @@ mod routes;
 use auth::AuthState;
 use middleware::{Metrics, metrics_router};
 use routes::{
-    admin, admin_endpoints, documents, health, indexes, search, settings, tasks, version,
+    admin, admin_endpoints, health, indexes, keys, search, settings, tasks, version,
 };
 
 /// Unified application state containing all shared state.
@@ -97,15 +97,18 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health::get_health))
         .route("/version", get(version::get_version::<UnifiedState>))
+        .route("/stats", get(indexes::global_stats_handler))
         .nest("/_miroir", admin::router::<UnifiedState>())
         .nest("/indexes", indexes::router::<UnifiedState>())
-        .nest("/documents", documents::router::<UnifiedState>())
+        .nest("/keys", keys::router::<UnifiedState>())
         .nest("/search", search::router::<UnifiedState>())
         .nest("/settings", settings::router::<UnifiedState>())
         .nest("/tasks", tasks::router::<UnifiedState>())
         .layer(axum::extract::DefaultBodyLimit::max(
             config.server.max_body_bytes as usize,
         ))
+        .layer(axum::Extension(state.admin.config.clone()))
+        .layer(axum::Extension(std::sync::Arc::new(state.admin.clone())))
         .layer(axum::middleware::from_fn_with_state(
             state.auth.clone(),
             auth::auth_middleware,

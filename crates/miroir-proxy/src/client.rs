@@ -1,6 +1,9 @@
 //! HTTP client for communicating with Meilisearch nodes.
 
-use miroir_core::scatter::{NodeClient, NodeError, PreflightRequest, PreflightResponse, SearchRequest, TermStats};
+use miroir_core::scatter::{
+    DeleteByIdsRequest, DeleteByFilterRequest, DeleteResponse, NodeClient, NodeError,
+    PreflightRequest, PreflightResponse, SearchRequest, TermStats, WriteRequest, WriteResponse,
+};
 use miroir_core::topology::NodeId;
 use reqwest::Client;
 use serde_json::Value;
@@ -34,6 +37,15 @@ impl HttpClient {
     fn preflight_url(&self, address: &str, index_uid: &str) -> String {
         format!("{}/indexes/{}/_preflight", address.trim_end_matches('/'), index_uid)
     }
+
+    /// Build the documents URL for a node and index.
+    fn documents_url(&self, address: &str, index_uid: &str) -> String {
+        format!(
+            "{}/indexes/{}/documents",
+            address.trim_end_matches('/'),
+            index_uid
+        )
+    }
 }
 
 #[allow(async_fn_in_trait)]
@@ -46,8 +58,9 @@ impl NodeClient for HttpClient {
     ) -> std::result::Result<Value, NodeError> {
         let url = self.search_url(address, &request.index_uid);
 
-        // Build the request body with global_idf if present
-        let mut body = request.body.clone();
+        // Build the request body using to_node_body() which injects
+        // showRankingScore: true and sets limit to offset + limit
+        let mut body = request.to_node_body();
 
         // Inject global IDF into the request if present
         if let Some(global_idf) = &request.global_idf {
@@ -79,6 +92,183 @@ impl NodeClient for HttpClient {
 
         serde_json::from_str(&body_text).map_err(|e| {
             NodeError::NetworkError(format!("Failed to parse JSON response: {}", e))
+        })
+    }
+
+    async fn write_documents(
+        &self,
+        _node: &NodeId,
+        address: &str,
+        request: &WriteRequest,
+    ) -> std::result::Result<WriteResponse, NodeError> {
+        let url = self.documents_url(address, &request.index_uid);
+
+        let mut query_params = Vec::new();
+        if let Some(pk) = &request.primary_key {
+            query_params.push(("primaryKey", pk.as_str()));
+        }
+
+        let mut req_builder = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.master_key))
+            .json(&request.documents);
+
+        if !query_params.is_empty() {
+            req_builder = req_builder.query(&query_params);
+        }
+
+        let response = req_builder
+            .send()
+            .await
+            .map_err(|e| NodeError::NetworkError(format!("Request failed: {}", e)))?;
+
+        let status = response.status();
+        let body_text = response
+            .text()
+            .await
+            .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {}", e)))?;
+
+        if !status.is_success() {
+            // Try to parse as Meilisearch error
+            if let Ok(meili_err) = serde_json::from_str::<Value>(&body_text) {
+                return Ok(WriteResponse {
+                    success: false,
+                    task_uid: None,
+                    message: meili_err.get("message").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    code: meili_err.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    error_type: meili_err.get("type").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                });
+            }
+            return Err(NodeError::HttpError {
+                status: status.as_u16(),
+                body: body_text,
+            });
+        }
+
+        // Parse successful response
+        let json: Value = serde_json::from_str(&body_text).map_err(|e| {
+            NodeError::NetworkError(format!("Failed to parse JSON response: {}", e))
+        })?;
+
+        Ok(WriteResponse {
+            success: true,
+            task_uid: json.get("taskUid").and_then(|v| v.as_u64()),
+            message: None,
+            code: None,
+            error_type: None,
+        })
+    }
+
+    async fn delete_documents(
+        &self,
+        _node: &NodeId,
+        address: &str,
+        request: &DeleteByIdsRequest,
+    ) -> std::result::Result<DeleteResponse, NodeError> {
+        let url = self.documents_url(address, &request.index_uid);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.master_key))
+            .json(&request.ids)
+            .send()
+            .await
+            .map_err(|e| NodeError::NetworkError(format!("Request failed: {}", e)))?;
+
+        let status = response.status();
+        let body_text = response
+            .text()
+            .await
+            .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {}", e)))?;
+
+        if !status.is_success() {
+            // Try to parse as Meilisearch error
+            if let Ok(meili_err) = serde_json::from_str::<Value>(&body_text) {
+                return Ok(DeleteResponse {
+                    success: false,
+                    task_uid: None,
+                    message: meili_err.get("message").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    code: meili_err.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    error_type: meili_err.get("type").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                });
+            }
+            return Err(NodeError::HttpError {
+                status: status.as_u16(),
+                body: body_text,
+            });
+        }
+
+        // Parse successful response
+        let json: Value = serde_json::from_str(&body_text).map_err(|e| {
+            NodeError::NetworkError(format!("Failed to parse JSON response: {}", e))
+        })?;
+
+        Ok(DeleteResponse {
+            success: true,
+            task_uid: json.get("taskUid").and_then(|v| v.as_u64()),
+            message: None,
+            code: None,
+            error_type: None,
+        })
+    }
+
+    async fn delete_documents_by_filter(
+        &self,
+        _node: &NodeId,
+        address: &str,
+        request: &DeleteByFilterRequest,
+    ) -> std::result::Result<DeleteResponse, NodeError> {
+        let url = format!(
+            "{}/indexes/{}/documents/delete",
+            address.trim_end_matches('/'),
+            request.index_uid
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.master_key))
+            .json(&request.filter)
+            .send()
+            .await
+            .map_err(|e| NodeError::NetworkError(format!("Request failed: {}", e)))?;
+
+        let status = response.status();
+        let body_text = response
+            .text()
+            .await
+            .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {}", e)))?;
+
+        if !status.is_success() {
+            // Try to parse as Meilisearch error
+            if let Ok(meili_err) = serde_json::from_str::<Value>(&body_text) {
+                return Ok(DeleteResponse {
+                    success: false,
+                    task_uid: None,
+                    message: meili_err.get("message").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    code: meili_err.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    error_type: meili_err.get("type").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                });
+            }
+            return Err(NodeError::HttpError {
+                status: status.as_u16(),
+                body: body_text,
+            });
+        }
+
+        // Parse successful response
+        let json: Value = serde_json::from_str(&body_text).map_err(|e| {
+            NodeError::NetworkError(format!("Failed to parse JSON response: {}", e))
+        })?;
+
+        Ok(DeleteResponse {
+            success: true,
+            task_uid: json.get("taskUid").and_then(|v| v.as_u64()),
+            message: None,
+            code: None,
+            error_type: None,
         })
     }
 
