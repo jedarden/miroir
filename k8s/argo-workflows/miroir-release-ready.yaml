@@ -1,0 +1,51 @@
+---
+# WorkflowTemplate: miroir-release-ready
+# PR validation: verifies Cargo.toml workspace version, Chart.yaml appVersion,
+# and CHANGELOG header all agree. Runs on any PR that touches Cargo.toml,
+# Chart.yaml, or CHANGELOG.md.
+#
+# To deploy: copy to jedarden/declarative-config → k8s/iad-ci/argo-workflows/
+# and wire an Argo Events Sensor targeting GitHub PR events for this repo.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: miroir-release-ready
+  namespace: argo-workflows
+  annotations:
+    workflows.argoproj.io/description: "PR gate: ensure version fields are consistent"
+spec:
+  entrypoint: check
+  serviceAccountName: argo-runner
+  arguments:
+    parameters:
+      - name: sha
+        value: ""
+      - name: ref
+        value: "main"
+
+  templates:
+    - name: check
+      inputs:
+        parameters:
+          - name: sha
+          - name: ref
+      script:
+        image: alpine/git:latest
+        command: [sh]
+        source: |
+          set -e
+          apk add --no-cache bash
+
+          SHA="{{inputs.parameters.sha}}"
+          REF="{{inputs.parameters.ref}}"
+
+          git clone https://github.com/jedarden/miroir.git /src
+          cd /src
+
+          if [ -n "$SHA" ]; then
+            git checkout "$SHA"
+          else
+            git checkout "$REF"
+          fi
+
+          bash scripts/release-ready-check.sh
