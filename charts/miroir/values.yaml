@@ -12,6 +12,9 @@ miroir:
   shards: 64
   replicationFactor: 1  # dev default: override to 2 in production
   replicaGroups: 1  # dev default: override to 2 in production
+  masterKey: ""  # auto-generated if empty; ignored when existingSecret is set
+  adminApiKey: ""  # auto-generated if empty; ignored when existingSecret is set
+  logLevel: info  # RUST_LOG: trace, debug, info, warn, error
   existingSecret: ""  # name of K8s Secret with masterKey, nodeMasterKey, adminApiKey
   podAnnotations: {}
   podLabels: {}

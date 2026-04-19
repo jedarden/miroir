@@ -1,0 +1,140 @@
+{{/*
+Miroir Deployment
+*/}}
+{{- if .Values.miroir.replicas }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "miroir.fullname" . }}-miroir
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app.kubernetes.io/component: miroir
+spec:
+  {{- if not .Values.hpa.enabled }}
+  replicas: {{ .Values.miroir.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "miroir.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: miroir
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+        {{- with .Values.miroir.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "miroir.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: miroir
+        {{- with .Values.miroir.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "miroir.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        {{- if eq (include "miroir.cdcPvcEnabled" .) "true" }}
+        fsGroupChangePolicy: OnRootMismatch
+        {{- end }}
+      containers:
+        - name: miroir
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: false
+          image: "{{ .Values.miroir.image.repository }}:{{ .Values.miroir.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.miroir.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 7700
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: MIROIR_CONFIG_PATH
+              value: /config/miroir.yaml
+            - name: MIROIR_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miroir.secretName" . }}
+                  key: masterKey
+            - name: MIROIR_NODE_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miroir.secretName" . }}
+                  key: nodeMasterKey
+            - name: MIROIR_ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miroir.secretName" . }}
+                  key: adminApiKey
+            - name: RUST_LOG
+              value: {{ .Values.miroir.logLevel | default "info" }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: data
+              mountPath: /data
+            {{- if eq (include "miroir.cdcPvcEnabled" .) "true" }}
+            - name: cdc-buffer
+              mountPath: /cdc
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          resources:
+            {{- toYaml .Values.miroir.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "miroir.fullname" . }}-config
+        - name: data
+          emptyDir: {}
+        {{- if eq (include "miroir.cdcPvcEnabled" .) "true" }}
+        - name: cdc-buffer
+          persistentVolumeClaim:
+            claimName: {{ include "miroir.fullname" . }}-cdc-pvc
+        {{- end }}
+      {{- with .Values.miroir.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.miroir.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.miroir.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

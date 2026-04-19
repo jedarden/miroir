@@ -1,0 +1,15 @@
+{{/*
+Miroir ConfigMap
+*/}}
+{{- if .Values.miroir.replicas }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "miroir.fullname" . }}-config
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app.kubernetes.io/component: miroir
+data:
+  miroir.yaml: |
+{{ include "miroir.config" . | indent 4 }}
+{{- end }}

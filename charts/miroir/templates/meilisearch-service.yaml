@@ -1,0 +1,45 @@
+{{/*
+Meilisearch Service
+*/}}
+{{- if .Values.meilisearch.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "miroir.fullname" . }}-meili
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app.kubernetes.io/component: meilisearch
+spec:
+  type: ClusterIP
+  ports:
+    - port: 7700
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "miroir.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: meilisearch
+---
+{{/*
+Meilisearch Headless Service for StatefulSet DNS
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "miroir.fullname" . }}-meili-headless
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app.kubernetes.io/component: meilisearch
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - port: 7700
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "miroir.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: meilisearch
+{{- end }}

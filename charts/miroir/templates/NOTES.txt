@@ -1,0 +1,25 @@
+Miroir has been installed!
+
+Get the service URL:
+  export POD_NAME=$(kubectl get pods -n {{ .Release.Namespace }} -l "app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=miroir" -o jsonpath="{.items[0].metadata.name}")
+  kubectl port-forward -n {{ .Release.Namespace }} "$POD_NAME" 7700:7700
+
+Then visit http://localhost:7700/health to verify the proxy is running.
+
+Components deployed:
+  - Miroir proxy ({{ .Values.miroir.replicas }} replica(s))
+  - Meilisearch ({{ .Values.meilisearch.replicas }} node(s))
+{{- if eq (include "miroir.redisEnabled" .) "true" }}
+  - Redis (task store)
+{{- else }}
+  - SQLite task store (embedded)
+{{- end }}
+
+!!! PRODUCTION UPGRADE PATH !!!
+These defaults are for dev/CI (single-pod evaluation). For production, override:
+  miroir.replicas=2+
+  miroir.replicationFactor=2
+  miroir.replicaGroups=2
+  taskStore.backend=redis
+  redis.enabled=true
+  hpa.enabled=true
