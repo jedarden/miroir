@@ -727,6 +727,112 @@ nodes:
         assert_eq!(topo2.group(1).unwrap().node_count(), 3);
     }
 
+    // ── NodeId conversions ────────────────────────────────────────────
+
+    #[test]
+    fn nodeid_from_string_and_as_ref() {
+        let id: NodeId = "test-node".to_string().into();
+        assert_eq!(id.as_str(), "test-node");
+        assert_eq!(AsRef::<str>::as_ref(&id), "test-node");
+    }
+
+    #[test]
+    fn nodeid_display_impl() {
+        let id = NodeId::new("my-node".to_string());
+        assert_eq!(format!("{}", id), "my-node");
+    }
+
+    // ── NodeStatus helpers ────────────────────────────────────────────
+
+    #[test]
+    fn is_readable_covers_all_statuses() {
+        use NodeStatus::*;
+        assert!(Active.is_readable());
+        assert!(Healthy.is_readable());
+        assert!(Degraded.is_readable());
+        assert!(Draining.is_readable());
+        assert!(!Failed.is_readable());
+        assert!(!Joining.is_readable());
+        assert!(!Removed.is_readable());
+    }
+
+    #[test]
+    fn is_active_covers_all_statuses() {
+        use NodeStatus::*;
+        assert!(Active.is_active());
+        assert!(Healthy.is_active());
+        assert!(Degraded.is_active());
+        assert!(!Draining.is_active());
+        assert!(!Failed.is_active());
+        assert!(!Joining.is_active());
+        assert!(!Removed.is_active());
+    }
+
+    // ── Node::is_healthy ──────────────────────────────────────────────
+
+    #[test]
+    fn node_is_healthy_covers_all_statuses() {
+        use NodeStatus::*;
+        for (status, expected) in [
+            (Active, true),
+            (Healthy, true),
+            (Degraded, true),
+            (Draining, false),
+            (Failed, false),
+            (Joining, false),
+            (Removed, false),
+        ] {
+            let node = Node {
+                id: NodeId::new("test".into()),
+                address: "http://test:7700".into(),
+                replica_group: 0,
+                status,
+            };
+            assert_eq!(node.is_healthy(), expected, "{:?} is_healthy", status);
+        }
+    }
+
+    // ── Group::add_node duplicate prevention ──────────────────────────
+
+    #[test]
+    fn group_add_node_prevents_duplicates() {
+        let mut g = Group::new(0);
+        g.add_node(NodeId::new("a".into()));
+        g.add_node(NodeId::new("a".into()));
+        g.add_node(NodeId::new("b".into()));
+        assert_eq!(g.node_count(), 2);
+    }
+
+    // ── Topology with auto-derived replica_groups ─────────────────────
+
+    #[test]
+    fn topology_auto_derives_replica_groups_from_nodes() {
+        let mut topo = Topology::new(64, 1, 1);
+        topo.add_node(Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("n1".into()), "http://n1:7700".into(), 2));
+        // replica_groups should auto-derive to 3
+        assert_eq!(topo.replica_groups, 3);
+        assert!(topo.group(2).is_some());
+    }
+
+    #[test]
+    fn topology_node_lookup() {
+        let mut topo = make_test_topology();
+        assert!(topo.node(&NodeId::new("meili-0".into())).is_some());
+        assert!(topo.node(&NodeId::new("nonexistent".into())).is_none());
+
+        // Mutate via node_mut
+        let id = NodeId::new("meili-0".into());
+        topo.node_mut(&id).unwrap().status = NodeStatus::Failed;
+        assert_eq!(topo.node(&id).unwrap().status, NodeStatus::Failed);
+    }
+
+    #[test]
+    fn topology_replica_group_count() {
+        let topo = make_test_topology();
+        assert_eq!(topo.replica_group_count(), 2);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────
 
     fn make_test_topology() -> Topology {

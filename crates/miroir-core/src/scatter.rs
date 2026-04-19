@@ -1,7 +1,7 @@
 //! Scatter orchestration: fan-out logic and covering set builder.
 
 use crate::config::UnavailableShardPolicy;
-use crate::merger::{merge, MergeInput, MergedSearchResult, ShardHitPage};
+use crate::merger::{MergeInput, MergedSearchResult, MergeStrategy, ShardHitPage};
 use crate::router::{covering_set, query_group};
 use crate::topology::{NodeId, Topology};
 use crate::Result;
@@ -292,10 +292,10 @@ pub async fn execute_scatter<C: NodeClient>(
     })
 }
 
-/// Execute a full scatter-gather search: fan out to nodes, then RRF-merge results.
+/// Execute a full scatter-gather search: fan out to nodes, then merge results.
 ///
 /// This is the primary entry point for the read path. It combines
-/// `execute_scatter` (fan-out) with `merge` (RRF result merging)
+/// `execute_scatter` (fan-out) with the configured merge strategy
 /// into a single operation.
 ///
 /// # Arguments
@@ -304,15 +304,17 @@ pub async fn execute_scatter<C: NodeClient>(
 /// * `req` - Search request to execute
 /// * `topology` - Current topology (for resolving node addresses)
 /// * `policy` - Policy for handling unavailable shards
+/// * `strategy` - Merge strategy (e.g. `RrfStrategy`)
 ///
 /// # Returns
-/// A `MergedSearchResult` with globally ranked hits using RRF.
+/// A `MergedSearchResult` with globally ranked hits.
 pub async fn scatter_gather_search<C: NodeClient>(
     plan: ScatterPlan,
     client: &C,
     req: SearchRequest,
     topology: &Topology,
     policy: UnavailableShardPolicy,
+    strategy: &dyn MergeStrategy,
 ) -> Result<MergedSearchResult> {
     let scatter_result = execute_scatter(plan, client, req.clone(), topology, policy).await?;
 
@@ -338,7 +340,7 @@ pub async fn scatter_gather_search<C: NodeClient>(
         facets: req.facets.clone(),
     };
 
-    merge(merge_input)
+    strategy.merge(merge_input)
 }
 
 /// Stubs for testing (no actual network calls).
@@ -582,6 +584,92 @@ mod tests {
     }
 
     #[test]
+    fn test_plan_search_scatter_empty_topology() {
+        // Topology with 0 nodes in group 1 — query_seq=1 targets group 1 which has no nodes
+        let mut topo = Topology::new(64, 2, 1);
+        for i in 0u32..3 {
+            let mut node = Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                0,
+            );
+            node.status = crate::topology::NodeStatus::Active;
+            topo.add_node(node);
+        }
+
+        let plan = plan_search_scatter(&topo, 0, 1, 64);
+        assert_eq!(plan.chosen_group, 0);
+        assert_eq!(plan.shard_to_node.len(), 64);
+    }
+
+    #[test]
+    fn test_plan_search_scatter_invalid_group_returns_empty() {
+        // Create a topology with no groups at all
+        let topo = Topology::new(64, 0, 1);
+        let plan = plan_search_scatter(&topo, 0, 1, 64);
+        // Should return empty plan since no group exists
+        assert!(plan.shard_to_node.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_scatter_fallback_policy() {
+        let topo = make_test_topology();
+        let plan = plan_search_scatter(&topo, 0, 2, 64);
+
+        let mut client = MockNodeClient::default();
+        client.errors.insert(
+            NodeId::new("node-0".to_string()),
+            NodeError::Timeout,
+        );
+
+        let req = SearchRequest {
+            index_uid: "test".to_string(),
+            query: Some("test".to_string()),
+            offset: 0,
+            limit: 10,
+            filter: None,
+            facets: None,
+            ranking_score: false,
+            body: serde_json::json!({}),
+        };
+
+        // Fallback policy should behave like Partial for now
+        let result = execute_scatter(plan, &client, req, &topo, UnavailableShardPolicy::Fallback)
+            .await
+            .unwrap();
+        assert!(result.partial);
+    }
+
+    #[tokio::test]
+    async fn test_execute_scatter_node_not_in_topology() {
+        // Build a plan, then use a topology that doesn't have the plan's nodes
+        let mut topo = make_test_topology();
+        let plan = plan_search_scatter(&topo, 0, 2, 64);
+
+        // Empty topology — none of the plan's nodes exist
+        let empty_topo = Topology::new(64, 2, 2);
+
+        let client = MockNodeClient::default();
+        let req = SearchRequest {
+            index_uid: "test".to_string(),
+            query: Some("test".to_string()),
+            offset: 0,
+            limit: 10,
+            filter: None,
+            facets: None,
+            ranking_score: false,
+            body: serde_json::json!({}),
+        };
+
+        let result = execute_scatter(plan, &client, req, &empty_topo, UnavailableShardPolicy::Partial)
+            .await
+            .unwrap();
+        // All shards should fail since no nodes in topology
+        assert!(result.partial);
+        assert!(!result.failed_shards.is_empty());
+    }
+
+    #[test]
     fn test_node_error_variants() {
         let timeout = NodeError::Timeout;
         assert!(matches!(timeout, NodeError::Timeout));
@@ -642,7 +730,8 @@ mod tests {
             body: serde_json::json!({}),
         };
 
-        let result = scatter_gather_search(plan, &client, req, &topo, UnavailableShardPolicy::Partial)
+        let strategy = crate::merger::RrfStrategy::default_strategy();
+        let result = scatter_gather_search(plan, &client, req, &topo, UnavailableShardPolicy::Partial, &strategy)
             .await
             .unwrap();
 
@@ -683,10 +772,47 @@ mod tests {
             body: serde_json::json!({}),
         };
 
-        let result = scatter_gather_search(plan, &client, req, &topo, UnavailableShardPolicy::Partial)
+        let strategy = crate::merger::RrfStrategy::default_strategy();
+        let result = scatter_gather_search(plan, &client, req, &topo, UnavailableShardPolicy::Partial, &strategy)
             .await
             .unwrap();
 
         assert!(result.degraded);
+    }
+
+    #[tokio::test]
+    async fn test_scatter_gather_with_custom_k() {
+        let topo = make_test_topology();
+        let plan = plan_search_scatter(&topo, 0, 2, 64);
+
+        let mut client = MockNodeClient::default();
+        client.responses.insert(
+            NodeId::new("node-0".to_string()),
+            serde_json::json!({
+                "hits": [{"id": "doc-a", "title": "Doc A"}],
+                "estimatedTotalHits": 1,
+                "processingTimeMs": 5,
+            }),
+        );
+
+        let req = SearchRequest {
+            index_uid: "test".to_string(),
+            query: Some("test".to_string()),
+            offset: 0,
+            limit: 10,
+            filter: None,
+            facets: None,
+            ranking_score: false,
+            body: serde_json::json!({}),
+        };
+
+        let strategy = crate::merger::RrfStrategy::new(1);
+        let result = scatter_gather_search(plan, &client, req, &topo, UnavailableShardPolicy::Partial, &strategy)
+            .await
+            .unwrap();
+
+        assert_eq!(strategy.name(), "rrf");
+        assert_eq!(strategy.k(), 1);
+        assert!(!result.degraded);
     }
 }
