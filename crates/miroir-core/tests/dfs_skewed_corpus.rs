@@ -209,6 +209,7 @@ fn test_score_merge_without_global_idf_fails_skewed_corpus() {
         limit: 10,
         client_requested_score: true,
         facets: None,
+        failed_shards: Vec::new(),
     };
 
     let result = strategy.merge(input).unwrap();
@@ -242,6 +243,7 @@ fn test_score_merge_with_global_idf_corrects_skew() {
         limit: 10,
         client_requested_score: true,
         facets: None,
+        failed_shards: Vec::new(),
     };
 
     let result = strategy.merge(input).unwrap();

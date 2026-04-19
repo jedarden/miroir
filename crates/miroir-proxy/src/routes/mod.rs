@@ -5,6 +5,7 @@ pub mod admin_endpoints;
 pub mod documents;
 pub mod health;
 pub mod indexes;
+pub mod keys;
 pub mod search;
 pub mod settings;
 pub mod tasks;
