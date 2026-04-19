@@ -8,3 +8,4 @@
 __pycache__/
 *.pyc
 tarpaulin-report.json
+tests/benches/score-comparability/results/*.jsonl

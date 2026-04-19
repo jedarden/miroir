@@ -618,4 +618,26 @@ task_store:
         assert_eq!(format!("{}", UnavailableShardPolicy::Error), "error");
         assert_eq!(format!("{}", UnavailableShardPolicy::Fallback), "fallback");
     }
+
+    #[test]
+    fn load_from_file_reads_yaml() {
+        let yaml = r#"
+shards: 16
+replication_factor: 1
+nodes: []
+task_store:
+  backend: sqlite
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("miroir.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        let cfg = MiroirConfig::load_from(&path).unwrap();
+        assert_eq!(cfg.shards, 16);
+    }
+
+    #[test]
+    fn load_from_missing_file_fails() {
+        let cfg = MiroirConfig::load_from(std::path::Path::new("/nonexistent/miroir.yaml"));
+        assert!(cfg.is_err());
+    }
 }

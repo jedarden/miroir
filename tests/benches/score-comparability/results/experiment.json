@@ -4,6 +4,11 @@
   "shard_count": 10,
   "limit": 100,
   "total_queries": 10000,
+  "merge_strategies": [
+    "score",
+    "rrf"
+  ],
+  "rrf_k": 60,
   "global_stats": {
     "N": 100000,
     "avgdl": 53.56222
