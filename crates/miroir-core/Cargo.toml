@@ -16,6 +16,7 @@ tracing = { workspace = true }
 uuid = { version = "1", features = ["v4", "serde"] }
 config = "0.14"
 rusqlite = { workspace = true }
+futures-util = "0.3"
 
 # Raft prototype (P12.OP2 research) — not for production use
 # openraft 0.9.22 fails on stable Rust 1.87 (validit uses let_chains).
@@ -44,3 +45,4 @@ harness = false
 tempfile = "3"
 proptest = "1"
 criterion = "0.5"
+tokio = { version = "1", features = ["rt", "macros", "time"] }

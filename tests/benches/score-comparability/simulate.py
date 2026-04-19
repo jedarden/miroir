@@ -245,6 +245,80 @@ def simulate_distributed_search(
     }
 
 
+RRF_K = 60  # RRF constant, matching merger.rs
+
+
+def simulate_distributed_search_rrf(
+    shards: Dict[int, List[Dict]],
+    shard_stats: Dict[int, Tuple[Dict, int, float]],
+    query: Dict,
+    limit: int = 100,
+) -> Dict:
+    """
+    Simulate distributed search using Reciprocal Rank Fusion.
+
+    RRF score for a document: sum over shards of 1/(k + rank + 1)
+    where rank is 0-based position in shard's result list.
+
+    This avoids the score comparability issue entirely because
+    RRF only uses rank position, not raw scores.
+    """
+    query_terms = tokenize(query["q"])
+    per_shard_limit = limit * 2
+
+    # Accumulate RRF scores per document
+    rrf_scores: Dict[str, float] = defaultdict(float)
+    doc_info: Dict[str, Tuple[Dict, int]] = {}  # id -> (doc, shard_id)
+
+    for shard_id, docs in shards.items():
+        df, N, avgdl = shard_stats[shard_id]
+
+        if query.get("filter"):
+            category_filter = query["filter"].split("=")[1].strip()
+            filtered_docs = [d for d in docs if d["category"] == category_filter]
+        else:
+            filtered_docs = docs
+
+        scores = []
+        for doc in filtered_docs:
+            score = score_document_bm25(doc, query_terms, df, N, avgdl)
+            if score > 0:
+                scores.append((doc, score))
+
+        scores.sort(key=lambda x: x[1], reverse=True)
+
+        for rank, (doc, _score) in enumerate(scores[:per_shard_limit]):
+            doc_id = doc["id"]
+            rrf_contribution = 1.0 / (RRF_K + rank + 1)
+            rrf_scores[doc_id] += rrf_contribution
+            if doc_id not in doc_info:
+                doc_info[doc_id] = (doc, shard_id)
+
+    # Sort by RRF score descending
+    sorted_docs = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+
+    hits = []
+    for doc_id, rrf_score in sorted_docs[:limit]:
+        doc, shard_id = doc_info[doc_id]
+        hits.append({
+            "id": doc_id,
+            "title": doc["title"],
+            "score": rrf_score,
+            "shard": shard_id,
+        })
+
+    return {
+        "query_id": query["id"],
+        "type": query.get("type", "unknown"),
+        "q": query["q"],
+        "filter": query.get("filter"),
+        "hits": hits,
+        "total_hits": len(sorted_docs),
+        "shards_queried": list(shards.keys()),
+        "merge_strategy": "rrf",
+    }
+
+
 def run_experiment(
     corpus_dir: Path,
     query_file: Path,
@@ -293,10 +367,13 @@ def run_experiment(
 
     ground_truth_file = output_dir / "ground-truth.jsonl"
     distributed_file = output_dir / "distributed.jsonl"
+    rrf_file = output_dir / "distributed-rrf.jsonl"
 
     print(f"\nRunning experiments...")
 
-    with open(ground_truth_file, "w") as gt_f, open(distributed_file, "w") as dist_f:
+    with open(ground_truth_file, "w") as gt_f, \
+         open(distributed_file, "w") as dist_f, \
+         open(rrf_file, "w") as rrf_f:
         for i, query in enumerate(queries):
             if (i + 1) % 1000 == 0:
                 print(f"  Processed {i + 1} queries...")
@@ -305,16 +382,23 @@ def run_experiment(
             gt_result = simulate_search(docs, query, global_stats, limit)
             gt_f.write(json.dumps(gt_result) + "\n")
 
-            # Distributed: each shard uses local statistics
+            # Distributed: each shard uses local statistics (score-based merge)
             dist_result = simulate_distributed_search(
                 shards, shard_stats, query, limit
             )
             dist_f.write(json.dumps(dist_result) + "\n")
 
+            # RRF: rank-based merge (no score comparability needed)
+            rrf_result = simulate_distributed_search_rrf(
+                shards, shard_stats, query, limit
+            )
+            rrf_f.write(json.dumps(rrf_result) + "\n")
+
     print(f"  Completed {len(queries)} queries")
     print(f"\nResults saved to:")
     print(f"  {ground_truth_file}")
     print(f"  {distributed_file}")
+    print(f"  {rrf_file}")
 
     # Save experiment metadata
     exp_meta = {
@@ -323,6 +407,8 @@ def run_experiment(
         "shard_count": shard_count,
         "limit": limit,
         "total_queries": len(queries),
+        "merge_strategies": ["score", "rrf"],
+        "rrf_k": RRF_K,
         "global_stats": {"N": global_stats[1], "avgdl": global_stats[2]},
         "shard_stats": {
             str(k): {"N": v[1], "avgdl": v[2]}
@@ -381,6 +467,7 @@ def main():
 
     print("\nTo compare results, run:")
     print(f"  python3 {output_dir}/compare.py {output_dir}/ground-truth.jsonl {output_dir}/distributed.jsonl --verbose")
+    print(f"  python3 {output_dir}/compare.py {output_dir}/ground-truth.jsonl {output_dir}/distributed-rrf.jsonl --verbose")
 
 
 if __name__ == "__main__":

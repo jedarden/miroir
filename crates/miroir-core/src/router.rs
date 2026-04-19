@@ -99,7 +99,7 @@ pub fn count_assignment_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::topology::NodeId;
+    use crate::topology::{Node, NodeId};
     use std::collections::HashMap;
 
     /// Test 1: Determinism — same inputs always produce the same output.
@@ -335,5 +335,229 @@ mod tests {
 
         // Verify determinism
         assert_eq!(score(0, node_a), score_0_a, "Score is non-deterministic");
+    }
+
+    // ── P1.3 acceptance tests: write_targets, query_group, covering_set ───
+
+    /// P1.3-A1: write_targets returns exactly RG × RF nodes (counting duplicates).
+    #[test]
+    fn test_write_targets_returns_rg_x_rf_nodes() {
+        let mut topo = Topology::new(64, 3, 2);
+        // Add 5 nodes to each of 3 groups
+        for i in 0u32..15 {
+            let rg = i / 5;
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        let targets = write_targets(0, &topo);
+        // RG=3, RF=2 → 6 nodes total (may include duplicates)
+        assert_eq!(targets.len(), 6, "write_targets should return RG × RF nodes");
+    }
+
+    /// P1.3-A2: write_targets assigns one-per-group.
+    #[test]
+    fn test_write_targets_one_per_group() {
+        let mut topo = Topology::new(64, 2, 2);
+        // Group 0: nodes 0-2, Group 1: nodes 3-5
+        for i in 0u32..6 {
+            let rg = if i < 3 { 0 } else { 1 };
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        let shard_id = 7;
+        let targets = write_targets(shard_id, &topo);
+
+        // Verify that the subset in group 0 matches assign_shard_in_group
+        let g0 = topo.group(0).unwrap();
+        let g0_targets: Vec<_> = targets
+            .iter()
+            .filter(|n| g0.nodes().contains(n))
+            .collect();
+        let g0_expected = assign_shard_in_group(shard_id, g0.nodes(), 2);
+        assert_eq!(
+            g0_targets.len(),
+            g0_expected.len(),
+            "Group 0 should have exactly RF nodes"
+        );
+        for node in &g0_expected {
+            assert!(g0_targets.contains(&node), "Group 0 missing expected node");
+        }
+
+        // Verify that the subset in group 1 matches assign_shard_in_group
+        let g1 = topo.group(1).unwrap();
+        let g1_targets: Vec<_> = targets
+            .iter()
+            .filter(|n| g1.nodes().contains(n))
+            .collect();
+        let g1_expected = assign_shard_in_group(shard_id, g1.nodes(), 2);
+        assert_eq!(
+            g1_targets.len(),
+            g1_expected.len(),
+            "Group 1 should have exactly RF nodes"
+        );
+        for node in &g1_expected {
+            assert!(g1_targets.contains(&node), "Group 1 missing expected node");
+        }
+    }
+
+    /// P1.3-A3: covering_set covers all shards within the chosen group.
+    #[test]
+    fn test_covering_set_covers_all_shards() {
+        let mut topo = Topology::new(16, 1, 2);
+        for i in 0u32..4 {
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                0,
+            ));
+        }
+
+        let group = topo.group(0).unwrap();
+        let shard_count = 16;
+        let covering = covering_set(shard_count, group, 2, 0);
+
+        // Verify that every shard is represented in the covering set
+        for shard_id in 0..shard_count {
+            let replicas = assign_shard_in_group(shard_id, group.nodes(), 2);
+            let selected = &replicas[0]; // query_seq=0 → first replica
+            assert!(
+                covering.contains(selected),
+                "Shard {}'s selected node {:?} not in covering set",
+                shard_id,
+                selected
+            );
+        }
+    }
+
+    /// P1.3-A4: covering_set size is bounded by Ng (nodes in group).
+    #[test]
+    fn test_covering_set_size_bound() {
+        let mut topo = Topology::new(1000, 1, 3);
+        for i in 0u32..5 {
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                0,
+            ));
+        }
+
+        let group = topo.group(0).unwrap();
+        let ng = group.node_count();
+        let covering = covering_set(1000, group, 3, 0);
+
+        assert!(
+            covering.len() <= ng,
+            "covering_set size {} exceeds group node count {}",
+            covering.len(),
+            ng
+        );
+    }
+
+    /// P1.3-A5: Two identical Topologies produce identical covering_set outputs.
+    #[test]
+    fn test_covering_set_determinism() {
+        let mut topo1 = Topology::new(64, 2, 2);
+        let mut topo2 = Topology::new(64, 2, 2);
+
+        for i in 0u32..6 {
+            let rg = if i < 3 { 0 } else { 1 };
+            let node = Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            );
+            topo1.add_node(node.clone());
+            topo2.add_node(node);
+        }
+
+        let g1 = topo1.group(0).unwrap();
+        let g2 = topo2.group(0).unwrap();
+
+        for query_seq in 0..10 {
+            let c1 = covering_set(64, g1, 2, query_seq);
+            let c2 = covering_set(64, g2, 2, query_seq);
+            // Compare as sets since order may vary due to HashSet iteration
+            let s1: std::collections::HashSet<_> = c1.into_iter().collect();
+            let s2: std::collections::HashSet<_> = c2.into_iter().collect();
+            assert_eq!(
+                s1, s2,
+                "covering_set differs for identical topologies at query_seq={}",
+                query_seq
+            );
+        }
+    }
+
+    /// P1.3-A6: query_group distribution is uniform (chi-square test).
+    #[test]
+    fn test_query_group_uniform_distribution() {
+        let replica_groups = 5u32;
+        let samples = 10_000;
+
+        let mut counts = vec![0usize; replica_groups as usize];
+        for query_seq in 0..samples {
+            let g = query_group(query_seq as u64, replica_groups);
+            counts[g as usize] += 1;
+        }
+
+        // Expected count per group: samples / RG
+        let expected = samples as f64 / replica_groups as f64;
+
+        // Chi-square statistic: sum((observed - expected)^2 / expected)
+        let chi_square: f64 = counts
+            .iter()
+            .map(|&observed| {
+                let diff = observed as f64 - expected;
+                (diff * diff) / expected
+            })
+            .sum();
+
+        // Degrees of freedom = RG - 1 = 4
+        // Critical value at p=0.95 is ~9.49
+        let critical_value = 9.49;
+
+        assert!(
+            chi_square < critical_value,
+            "query_group distribution not uniform: chi-square={} > {}",
+            chi_square,
+            critical_value
+        );
+    }
+
+    /// P1.3-A7: covering_set rotates replicas by query_seq.
+    #[test]
+    fn test_covering_set_rotates_replicas() {
+        let mut topo = Topology::new(8, 1, 3);
+        for i in 0u32..4 {
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                0,
+            ));
+        }
+
+        let group = topo.group(0).unwrap();
+        let c0 = covering_set(8, group, 3, 0);
+        let c1 = covering_set(8, group, 3, 1);
+        let c2 = covering_set(8, group, 3, 2);
+
+        // For each shard, verify that the selected node rotates
+        for shard_id in 0..8 {
+            let replicas = assign_shard_in_group(shard_id, group.nodes(), 3);
+            let r0 = &replicas[0];
+            let r1 = &replicas[1];
+            let r2 = &replicas[2];
+
+            assert!(c0.contains(r0), "query_seq=0 should select first replica");
+            assert!(c1.contains(r1), "query_seq=1 should select second replica");
+            assert!(c2.contains(r2), "query_seq=2 should select third replica");
+        }
     }
 }

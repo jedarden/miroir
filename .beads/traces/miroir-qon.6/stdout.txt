@@ -1,0 +1,1 @@
+Done. Created `LICENSE` (MIT), `CHANGELOG.md` (Keep a Changelog 1.1.0 skeleton), and `.gitignore` (Rust + editor junk). All acceptance criteria verified — awk extractor returns content for `[0.1.0]`, `Cargo.lock` stays in VCS. Root commit `409f952` initialized the git repo. Bead `miroir-qon.6` closed.

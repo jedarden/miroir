@@ -1,0 +1,3 @@
+Done. Research doc published at `docs/research/raft-task-store.md`, committed as `fe274a5`, pushed to master, bead `miroir-zc2.2` closed.
+
+**Decision: Revisit before v2.0, do not ship in v0.x or v1.0.** Raft fails the plan's decision gate — it's 3–8x slower on writes, adds 90–185 MB per pod, and has lower correctness maturity than Redis. The one genuine win (no external dependency) doesn't compensate for the regression on the other metrics. The hybrid approach (all three backends behind the same `TaskStore` trait) is documented as the migration path if we decide to ship Raft later.
