@@ -66,8 +66,13 @@ impl AuthVerdict {
 /// (plan §5 rule 5). Exempt endpoints run their handler directly; rules 1–4
 /// are never consulted.
 pub fn is_dispatch_exempt(method: &Method, path: &str) -> bool {
-    // `GET /_miroir/metrics` — admin-key-optional
-    if method == Method::GET && path == "/_miroir/metrics" {
+    // `GET /health` — unauthenticated liveness probe (Meilisearch-compatible)
+    if method == Method::GET && path == "/health" {
+        return true;
+    }
+
+    // `GET /version` — unauthenticated version endpoint (Meilisearch-compatible)
+    if method == Method::GET && path == "/version" {
         return true;
     }
 
@@ -309,12 +314,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn exempt_get_metrics() {
-        assert!(is_dispatch_exempt(&Method::GET, "/_miroir/metrics"));
-    }
-
-    #[test]
-    fn exempt_post_metrics_not_exempt() {
+    fn get_metrics_requires_admin_key() {
+        // GET /_miroir/metrics is NOT exempt - requires admin key
+        assert!(!is_dispatch_exempt(&Method::GET, "/_miroir/metrics"));
+        // POST still not exempt either
         assert!(!is_dispatch_exempt(&Method::POST, "/_miroir/metrics"));
     }
 
@@ -376,49 +379,12 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn exempt_endpoint_ignores_master_key() {
-        let state = test_state();
-        // Even with correct master_key, exempt endpoint returns Exempt
-        let verdict = dispatch_bearer(
-            &Method::GET,
-            "/_miroir/metrics",
-            Some("master-key-123"),
-            &state,
-        );
-        assert_eq!(verdict, AuthVerdict::Exempt);
-    }
-
-    #[test]
     fn exempt_endpoint_ignores_admin_key() {
         let state = test_state();
         let verdict = dispatch_bearer(
             &Method::POST,
             "/_miroir/admin/login",
             Some("admin-key-456"),
-            &state,
-        );
-        assert_eq!(verdict, AuthVerdict::Exempt);
-    }
-
-    #[test]
-    fn exempt_endpoint_ignores_wrong_key() {
-        let state = test_state();
-        let verdict = dispatch_bearer(
-            &Method::GET,
-            "/_miroir/metrics",
-            Some("wrong-key"),
-            &state,
-        );
-        assert_eq!(verdict, AuthVerdict::Exempt);
-    }
-
-    #[test]
-    fn exempt_endpoint_ignores_missing_auth() {
-        let state = test_state();
-        let verdict = dispatch_bearer(
-            &Method::GET,
-            "/_miroir/metrics",
-            None,
             &state,
         );
         assert_eq!(verdict, AuthVerdict::Exempt);
@@ -458,6 +424,48 @@ mod tests {
             &state,
         );
         assert_eq!(verdict, AuthVerdict::Exempt);
+    }
+
+    // -----------------------------------------------------------------------
+    // /_miroir/metrics requires admin key (not exempt)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn metrics_requires_admin_key() {
+        let state = test_state();
+        // With correct admin key, should authenticate
+        let verdict = dispatch_bearer(
+            &Method::GET,
+            "/_miroir/metrics",
+            Some("admin-key-456"),
+            &state,
+        );
+        assert_eq!(verdict, AuthVerdict::Authenticated(TokenKind::AdminKey));
+    }
+
+    #[test]
+    fn metrics_rejects_master_key() {
+        let state = test_state();
+        // Master key doesn't work on admin paths
+        let verdict = dispatch_bearer(
+            &Method::GET,
+            "/_miroir/metrics",
+            Some("master-key-123"),
+            &state,
+        );
+        assert_eq!(verdict, AuthVerdict::InvalidAuth);
+    }
+
+    #[test]
+    fn metrics_rejects_missing_auth() {
+        let state = test_state();
+        let verdict = dispatch_bearer(
+            &Method::GET,
+            "/_miroir/metrics",
+            None,
+            &state,
+        );
+        assert_eq!(verdict, AuthVerdict::InvalidAuth);
     }
 
     // -----------------------------------------------------------------------
@@ -797,7 +805,6 @@ mod tests {
     fn all_rule5_exempt_endpoints_covered() {
         // Every row in plan §5 rule 5 exempt list tested for dispatch exemption
         let cases = vec![
-            (Method::GET, "/_miroir/metrics"),
             (Method::GET, "/_miroir/ui/search/locale/en-US"),
             (Method::GET, "/_miroir/ui/search/locale/fr"),
             (Method::POST, "/_miroir/admin/login"),
