@@ -1,0 +1,16 @@
+target/
+.git/
+*.md
+LICENSE
+charts/
+dashboards/
+docs/
+k8s/
+scripts/
+tests/
+benches/
+miroir-proxy-linux-amd64
+miroir-proxy-linux-amd64.sha256
+tarpaulin-report.json
+.claude/
+.beads/
