@@ -62,6 +62,7 @@ pub struct MiroirConfig {
     pub explain: advanced::ExplainConfig,
     pub admin_ui: advanced::AdminUiConfig,
     pub search_ui: advanced::SearchUiConfig,
+    pub tracing: advanced::TracingConfig,
 
     // --- §14 horizontal scaling ---
     pub peer_discovery: PeerDiscoveryConfig,
@@ -112,6 +113,7 @@ impl Default for MiroirConfig {
             explain: advanced::ExplainConfig::default(),
             admin_ui: advanced::AdminUiConfig::default(),
             search_ui: advanced::SearchUiConfig::default(),
+            tracing: advanced::TracingConfig::default(),
             peer_discovery: PeerDiscoveryConfig::default(),
             leader_election: LeaderElectionConfig::default(),
             hpa: HpaConfig::default(),

@@ -1,6 +1,7 @@
 //! Search route handler with DFS (Distributed Frequency Search) support.
 
 use axum::extract::{Extension, Path};
+use tracing::instrument;
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Json;
@@ -12,6 +13,7 @@ use miroir_core::scatter::{
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::routes::admin_endpoints::AppState;
 
@@ -80,11 +82,13 @@ struct SearchRequestBody {
 /// Returns `X-Miroir-Degraded: shards=X,Y,Z` header when any shards are unavailable.
 /// Strips `_miroir_shard` from all hits; strips `_rankingScore` unless client
 /// explicitly requested it.
+#[instrument(skip_all, fields(index = %index))]
 async fn search_handler(
     Path(index): Path<String>,
     Extension(state): Extension<Arc<AppState>>,
     Json(body): Json<SearchRequestBody>,
 ) -> Result<Response, StatusCode> {
+    let start = Instant::now();
     let client_requested_score = body.ranking_score.unwrap_or(false);
 
     // Use live topology from shared state (updated by health checker)
@@ -96,8 +100,17 @@ async fn search_handler(
         _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
 
-    // Plan scatter using live topology
-    let plan = plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards);
+    // Plan scatter using live topology (span for plan construction)
+    let plan = {
+        let _plan_span = tracing::info_span!(
+            "scatter_plan",
+            replica_groups = state.config.replica_groups,
+            shards = state.config.shards,
+            rf = state.config.replication_factor,
+        ).entered();
+        plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards)
+    };
+    let node_count = plan.shard_to_node.len() as u64;
 
     // Build search request
     let search_req = SearchRequest {
@@ -177,6 +190,18 @@ async fn search_handler(
     let response = response
         .body(axum::body::Body::from(serde_json::to_string(&body).unwrap()))
         .unwrap();
+
+    // Structured log entry (plan §10 shape)
+    // Note: request_id and pod_id are inherited from the middleware span
+    tracing::info!(
+        target: "miroir.search",
+        index = %index,
+        node_count = node_count,
+        estimated_hits = result.estimated_total_hits,
+        degraded = result.degraded,
+        duration_ms = start.elapsed().as_millis(),
+        "search completed"
+    );
 
     Ok(response)
 }

@@ -1,6 +1,7 @@
 //! Scatter orchestration: fan-out logic and covering set builder.
 
 use crate::config::UnavailableShardPolicy;
+use tracing::{instrument, info_span, Instrument};
 use crate::merger::{MergeInput, MergedSearchResult, MergeStrategy, ShardHitPage};
 use crate::router::{covering_set, query_group};
 use crate::topology::{NodeId, Topology};
@@ -332,6 +333,7 @@ pub struct ScatterResult {
     pub deadline_exceeded: bool,
 }
 
+#[instrument(skip_all, fields(query_seq, rf, shard_count))]
 pub fn plan_search_scatter(
     topology: &Topology,
     query_seq: u64,
@@ -368,6 +370,7 @@ pub fn plan_search_scatter(
     }
 }
 
+#[instrument(skip_all, fields(node_count))]
 pub async fn execute_scatter<C: NodeClient>(
     plan: ScatterPlan,
     client: &C,
@@ -381,6 +384,7 @@ pub async fn execute_scatter<C: NodeClient>(
             node_to_shards.entry(node_id.clone()).or_default().push(shard_id);
         }
     }
+    tracing::Span::current().record("node_count", node_to_shards.len());
 
     let mut shard_pages = Vec::new();
     let mut failed_shards = HashMap::new();
@@ -400,10 +404,18 @@ pub async fn execute_scatter<C: NodeClient>(
         let client_ref = client;
         let req_clone = req.clone();
         let node_id_clone = node_id.clone();
+        let shard_count = shards.len();
+        // Create a span for this node's scatter call
+        let span = info_span!(
+            "scatter_node",
+            node_id = %node_id_clone,
+            address = %node.address,
+            shard_count = shard_count,
+        );
         tasks.push(async move {
             let result = client_ref.search_node(&node_id_clone, &node.address, &req_clone).await;
             (node_id_clone, shards, result)
-        });
+        }.instrument(span));
     }
 
     let results = futures_util::future::join_all(tasks).await;
@@ -505,6 +517,7 @@ pub async fn execute_scatter<C: NodeClient>(
     Ok(ScatterResult { shard_pages, failed_shards, partial, deadline_exceeded })
 }
 
+#[instrument(skip_all, fields(index = %req.index_uid))]
 pub async fn scatter_gather_search<C: NodeClient>(
     plan: ScatterPlan,
     client: &C,
@@ -536,6 +549,14 @@ pub async fn scatter_gather_search<C: NodeClient>(
         failed_shards,
     };
 
+    // Span for the merge operation
+    let _span = info_span!(
+        "merge",
+        shard_count = merge_input.shard_hits.len(),
+        offset = req.offset,
+        limit = req.limit,
+    ).entered();
+
     strategy.merge(merge_input)
 }
 
@@ -560,6 +581,7 @@ pub fn extract_query_terms(query: &Option<String>) -> Vec<String> {
 }
 
 /// Execute the preflight phase: gather term frequencies from all shards.
+#[instrument(skip_all, fields(node_count, term_count = req.terms.len()))]
 pub async fn execute_preflight<C: NodeClient>(
     plan: &ScatterPlan,
     client: &C,
@@ -595,6 +617,7 @@ pub async fn execute_preflight<C: NodeClient>(
 }
 
 /// Execute a full dfs_query_then_fetch search (OP#4 global-IDF preflight).
+#[instrument(skip_all, fields(index = %req.index_uid))]
 pub async fn dfs_query_then_fetch_search<C: NodeClient>(
     plan: ScatterPlan,
     client: &C,
