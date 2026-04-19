@@ -16,13 +16,23 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use dashmap::DashMap;
 use hmac::{Hmac, Mac};
 use miroir_core::{MeilisearchError, MiroirCode};
+use prometheus::Counter;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
+use crate::admin_session::{self, SealKey};
+
 type HmacSha256 = Hmac<Sha256>;
+
+/// Extension carried in the request after successful cookie unseal.
+/// Handlers extract this to look up the session in the task store.
+#[derive(Debug, Clone)]
+pub struct AdminSessionId(pub String);
 
 // ---------------------------------------------------------------------------
 // JWT claims (plan §13.21)
@@ -135,7 +145,7 @@ fn jwt_decode(
 // ---------------------------------------------------------------------------
 
 /// Configuration needed by the bearer-token dispatch chain.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AuthState {
     pub master_key: String,
     pub admin_key: String,
@@ -143,6 +153,25 @@ pub struct AuthState {
     pub jwt_primary: Option<String>,
     /// Optional previous secret active during rotation overlap window.
     pub jwt_previous: Option<String>,
+    /// Key for sealing/unsealing admin session cookies (XChaCha20-Poly1305).
+    pub seal_key: SealKey,
+    /// In-memory set of revoked admin session IDs (populated on logout, Pub/Sub).
+    pub revoked_sessions: Arc<DashMap<String, ()>>,
+    /// Counter for revoked admin sessions (miroir_admin_session_revoked_total).
+    pub admin_session_revoked_total: Counter,
+}
+
+impl std::fmt::Debug for AuthState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthState")
+            .field("master_key", &"[redacted]")
+            .field("admin_key", &"[redacted]")
+            .field("jwt_primary", &self.jwt_primary.as_ref().map(|_| "[set]"))
+            .field("jwt_previous", &self.jwt_previous.as_ref().map(|_| "[set]"))
+            .field("seal_key", &self.seal_key)
+            .field("revoked_sessions", &self.revoked_sessions.len())
+            .finish_non_exhaustive()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +266,8 @@ pub enum TokenKind {
     AdminKey,
     /// JWT validated against primary or previous secret.
     Jwt,
+    /// Admin session cookie — sealed session ID validated against task store.
+    AdminSession,
 }
 
 impl AuthVerdict {
@@ -417,6 +448,23 @@ fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
     auth.strip_prefix("Bearer ")
 }
 
+/// Extract the sealed admin session cookie value from the Cookie header.
+pub fn extract_admin_session_cookie(headers: &HeaderMap) -> Option<String> {
+    let cookie_header = headers.get("cookie")?.to_str().ok()?;
+    for pair in cookie_header.split(';') {
+        let pair = pair.trim();
+        if let Some(value) = pair.strip_prefix(&format!("{}=", admin_session::COOKIE_NAME)) {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+/// Unseal an admin session cookie, returning the session ID.
+pub fn unseal_admin_cookie(cookie_value: &str, key: &SealKey) -> Result<String, admin_session::SealError> {
+    admin_session::unseal_session(cookie_value, key)
+}
+
 /// Axum middleware implementing the bearer-token dispatch chain (plan §5).
 pub async fn auth_middleware(
     State(state): State<AuthState>,
@@ -434,6 +482,33 @@ pub async fn auth_middleware(
     // X-Admin-Key short-circuit for admin endpoints
     if is_admin_path(&path) && check_x_admin_key(req.headers(), state.admin_key.as_bytes()) {
         return next.run(req).await;
+    }
+
+    // Admin session cookie check for admin endpoints (plan §9, §13.19).
+    // If a sealed admin session cookie is present, unseal it and authenticate.
+    // Revoked sessions are rejected immediately.
+    if is_admin_path(&path) {
+        if let Some(cookie_value) = extract_admin_session_cookie(req.headers()) {
+            match unseal_admin_cookie(&cookie_value, &state.seal_key) {
+                Ok(session_id) => {
+                    // Check revocation cache (populated on logout + Pub/Sub).
+                    if state.revoked_sessions.contains_key(&session_id) {
+                        return MeilisearchError::new(
+                            MiroirCode::InvalidAuth,
+                            "Admin session has been revoked.",
+                        )
+                        .into_response();
+                    }
+                    let mut req = req;
+                    req.extensions_mut().insert(AdminSessionId(session_id));
+                    return next.run(req).await;
+                }
+                Err(_) => {
+                    // Cookie tampering or wrong key — fall through to bearer chain
+                    // which will reject with InvalidAuth for admin paths.
+                }
+            }
+        }
     }
 
     // Extract bearer token
@@ -508,12 +583,21 @@ fn epoch_seconds() -> u64 {
 mod tests {
     use super::*;
 
+    fn test_key() -> SealKey {
+        SealKey::from_bytes([42u8; 32])
+    }
+
     fn test_state() -> AuthState {
         AuthState {
             master_key: "master-key-123".to_string(),
             admin_key: "admin-key-456".to_string(),
             jwt_primary: None,
             jwt_previous: None,
+            seal_key: test_key(),
+            revoked_sessions: Arc::new(DashMap::new()),
+            admin_session_revoked_total: Counter::with_opts(
+                prometheus::Opts::new("test_revoked_total", "test")
+            ).unwrap(),
         }
     }
 
@@ -523,6 +607,11 @@ mod tests {
             admin_key: "admin-key-456".to_string(),
             jwt_primary: Some("test-secret-primary-key-32byte".to_string()),
             jwt_previous: None,
+            seal_key: test_key(),
+            revoked_sessions: Arc::new(DashMap::new()),
+            admin_session_revoked_total: Counter::with_opts(
+                prometheus::Opts::new("test_revoked_total", "test")
+            ).unwrap(),
         }
     }
 
@@ -532,6 +621,11 @@ mod tests {
             admin_key: "admin-key-456".to_string(),
             jwt_primary: Some("test-secret-primary-key-32byte".to_string()),
             jwt_previous: Some("test-secret-previous-key-32byte".to_string()),
+            seal_key: test_key(),
+            revoked_sessions: Arc::new(DashMap::new()),
+            admin_session_revoked_total: Counter::with_opts(
+                prometheus::Opts::new("test_revoked_total", "test")
+            ).unwrap(),
         }
     }
 
@@ -862,6 +956,11 @@ mod tests {
             admin_key: "a".to_string(),
             jwt_primary: Some(primary.to_string()),
             jwt_previous: Some(previous.to_string()),
+            seal_key: test_key(),
+            revoked_sessions: Arc::new(DashMap::new()),
+            admin_session_revoked_total: Counter::with_opts(
+                prometheus::Opts::new("test_revoked_total", "test")
+            ).unwrap(),
         };
 
         // Old token should still validate via previous secret
@@ -895,6 +994,11 @@ mod tests {
             admin_key: "a".to_string(),
             jwt_primary: Some("correct-secret-key-32bytes-long!!!".to_string()),
             jwt_previous: Some("previous-secret-key-32bytes-long!!".to_string()),
+            seal_key: test_key(),
+            revoked_sessions: Arc::new(DashMap::new()),
+            admin_session_revoked_total: Counter::with_opts(
+                prometheus::Opts::new("test_revoked_total", "test")
+            ).unwrap(),
         };
 
         // Token signed with a completely different secret
@@ -929,6 +1033,11 @@ mod tests {
             admin_key: "a".to_string(),
             jwt_primary: Some("new-primary-secret-key-32bytes!!".to_string()),
             jwt_previous: Some(String::new()), // empty = leak response
+            seal_key: test_key(),
+            revoked_sessions: Arc::new(DashMap::new()),
+            admin_session_revoked_total: Counter::with_opts(
+                prometheus::Opts::new("test_revoked_total", "test")
+            ).unwrap(),
         };
 
         let result = state.validate_jwt("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.fake");
@@ -943,6 +1052,11 @@ mod tests {
             admin_key: "a".to_string(),
             jwt_primary: Some(primary.to_string()),
             jwt_previous: None,
+            seal_key: test_key(),
+            revoked_sessions: Arc::new(DashMap::new()),
+            admin_session_revoked_total: Counter::with_opts(
+                prometheus::Opts::new("test_revoked_total", "test")
+            ).unwrap(),
         };
 
         // Tokens signed with current primary work
@@ -986,6 +1100,11 @@ mod tests {
             admin_key: "a".into(),
             jwt_primary: Some(secret_v1.into()),
             jwt_previous: None,
+            seal_key: test_key(),
+            revoked_sessions: Arc::new(DashMap::new()),
+            admin_session_revoked_total: Counter::with_opts(
+                prometheus::Opts::new("test_revoked_total", "test")
+            ).unwrap(),
         };
         let token_v1 = pre.sign_jwt("alice", "idx", "search", 900).unwrap();
         assert!(pre.validate_jwt(&token_v1).is_ok());
@@ -996,6 +1115,11 @@ mod tests {
             admin_key: "a".into(),
             jwt_primary: Some(secret_v2.into()),
             jwt_previous: Some(secret_v1.into()),
+            seal_key: test_key(),
+            revoked_sessions: Arc::new(DashMap::new()),
+            admin_session_revoked_total: Counter::with_opts(
+                prometheus::Opts::new("test_revoked_total", "test")
+            ).unwrap(),
         };
         // Old token still validates
         assert!(during.validate_jwt(&token_v1).is_ok());
@@ -1009,6 +1133,11 @@ mod tests {
             admin_key: "a".into(),
             jwt_primary: Some(secret_v2.into()),
             jwt_previous: None,
+            seal_key: test_key(),
+            revoked_sessions: Arc::new(DashMap::new()),
+            admin_session_revoked_total: Counter::with_opts(
+                prometheus::Opts::new("test_revoked_total", "test")
+            ).unwrap(),
         };
         // New token still works
         assert!(post.validate_jwt(&token_v2).is_ok());

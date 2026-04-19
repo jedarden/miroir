@@ -31,6 +31,9 @@ subtle = "2"
 hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
+chacha20poly1305 = "0.10"
+rand = "0.8"
+dashmap = "6"
 miroir-core = { path = "../miroir-core", features = ["axum"] }
 
 # OpenTelemetry (optional - use feature flag to enable)

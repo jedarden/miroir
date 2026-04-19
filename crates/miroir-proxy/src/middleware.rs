@@ -129,6 +129,10 @@ pub struct Metrics {
     search_ui_zero_hits_total: Option<CounterVec>,
     search_ui_click_through_total: Option<CounterVec>,
     search_ui_p95_ms: Option<GaugeVec>,
+
+    // ── Admin session sealing metrics (always present) ──
+    admin_session_key_generated: Gauge,
+    admin_session_revoked_total: Counter,
 }
 
 impl Clone for Metrics {
@@ -193,6 +197,8 @@ impl Clone for Metrics {
             search_ui_zero_hits_total: self.search_ui_zero_hits_total.clone(),
             search_ui_click_through_total: self.search_ui_click_through_total.clone(),
             search_ui_p95_ms: self.search_ui_p95_ms.clone(),
+            admin_session_key_generated: self.admin_session_key_generated.clone(),
+            admin_session_revoked_total: self.admin_session_revoked_total.clone(),
         }
     }
 }
@@ -633,6 +639,18 @@ impl Metrics {
             (None, None, None, None, None)
         };
 
+        // ── Admin session sealing metrics (always present) ──
+        let admin_session_key_generated = Gauge::with_opts(
+            Opts::new("miroir_admin_session_key_generated",
+                "Whether ADMIN_SESSION_SEAL_KEY was generated at startup (1=yes, 0=set via env)")
+        ).expect("create admin_session_key_generated");
+        let admin_session_revoked_total = Counter::with_opts(
+            Opts::new("miroir_admin_session_revoked_total",
+                "Admin sessions revoked via logout")
+        ).expect("create admin_session_revoked_total");
+        reg!(admin_session_key_generated);
+        reg!(admin_session_revoked_total);
+
         Self {
             registry,
             request_duration,
@@ -693,6 +711,8 @@ impl Metrics {
             search_ui_zero_hits_total,
             search_ui_click_through_total,
             search_ui_p95_ms,
+            admin_session_key_generated,
+            admin_session_revoked_total,
         }
     }
 
@@ -704,6 +724,14 @@ impl Metrics {
         Ok(String::from_utf8(buffer).map_err(|e| {
             prometheus::Error::Msg(format!("failed to convert metrics to UTF-8: {}", e))
         })?)
+    }
+
+    pub fn admin_session_key_generated(&self) -> Gauge {
+        self.admin_session_key_generated.clone()
+    }
+
+    pub fn admin_session_revoked_total(&self) -> Counter {
+        self.admin_session_revoked_total.clone()
     }
 }
 

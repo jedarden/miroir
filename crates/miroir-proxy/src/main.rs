@@ -13,12 +13,14 @@ use tokio::signal;
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, registry, util::SubscriberInitExt};
 
+mod admin_session;
 mod auth;
 mod client;
 mod middleware;
 mod otel;
 mod routes;
 
+use admin_session::SealKey;
 use auth::AuthState;
 use middleware::{Metrics, metrics_router, TelemetryState};
 use routes::{
@@ -54,11 +56,20 @@ impl UnifiedState {
             .ok()
             .filter(|v| !v.is_empty());
 
+        let seal_key = SealKey::from_env_or_generate();
+
+        // Set the key-generated gauge before constructing AuthState
+        // so the metric is accurate from the first scrape.
+        metrics.admin_session_key_generated().set(if seal_key.is_generated() { 1.0 } else { 0.0 });
+
         let auth = AuthState {
             master_key,
             admin_key: admin_key.clone(),
             jwt_primary,
             jwt_previous,
+            seal_key,
+            revoked_sessions: std::sync::Arc::new(dashmap::DashMap::new()),
+            admin_session_revoked_total: metrics.admin_session_revoked_total(),
         };
 
         let admin = admin_endpoints::AppState::new(config.clone(), metrics.clone());
