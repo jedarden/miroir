@@ -10,6 +10,7 @@ use axum::{
     Router,
     routing::get,
 };
+use miroir_core::config::MiroirConfig;
 use prometheus::{
     Counter, CounterVec, Encoder, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts,
     Registry, TextEncoder,
@@ -66,6 +67,68 @@ pub struct Metrics {
     rebalance_in_progress: Gauge,
     rebalance_documents_migrated: Counter,
     rebalance_duration: Histogram,
+
+    // ── §13.11 Multi-search metrics (feature-gated) ──
+    multisearch_queries_per_batch: Option<Histogram>,
+    multisearch_batches_total: Option<Counter>,
+    multisearch_partial_failures_total: Option<Counter>,
+    multisearch_tenant_session_pin_override_total: Option<CounterVec>,
+
+    // ── §13.12 Vector search metrics (feature-gated) ──
+    vector_search_over_fetched_total: Option<Counter>,
+    vector_merge_strategy: Option<CounterVec>,
+    vector_embedder_drift_total: Option<Counter>,
+
+    // ── §13.13 CDC metrics (feature-gated) ──
+    cdc_events_published_total: Option<CounterVec>,
+    cdc_lag_seconds: Option<GaugeVec>,
+    cdc_buffer_bytes: Option<GaugeVec>,
+    cdc_dropped_total: Option<CounterVec>,
+    cdc_events_suppressed_total: Option<CounterVec>,
+
+    // ── §13.14 TTL metrics (feature-gated) ──
+    ttl_documents_expired_total: Option<CounterVec>,
+    ttl_sweep_duration_seconds: Option<HistogramVec>,
+    ttl_pending_estimate: Option<GaugeVec>,
+
+    // ── §13.15 Tenant affinity metrics (feature-gated) ──
+    tenant_queries_total: Option<CounterVec>,
+    tenant_pinned_groups: Option<GaugeVec>,
+    tenant_fallback_total: Option<CounterVec>,
+
+    // ── §13.16 Shadow traffic metrics (feature-gated) ──
+    shadow_diff_total: Option<CounterVec>,
+    shadow_kendall_tau: Option<Gauge>,
+    shadow_latency_delta_seconds: Option<Histogram>,
+    shadow_errors_total: Option<CounterVec>,
+
+    // ── §13.17 ILM metrics (feature-gated) ──
+    rollover_events_total: Option<CounterVec>,
+    rollover_active_indexes: Option<GaugeVec>,
+    rollover_documents_expired_total: Option<CounterVec>,
+    rollover_last_action_seconds: Option<GaugeVec>,
+
+    // ── §13.18 Canary metrics (feature-gated) ──
+    canary_runs_total: Option<CounterVec>,
+    canary_latency_ms: Option<HistogramVec>,
+    canary_assertion_failures_total: Option<CounterVec>,
+
+    // ── §13.19 Admin UI metrics (feature-gated) ──
+    admin_ui_sessions_total: Option<Counter>,
+    admin_ui_action_total: Option<CounterVec>,
+    admin_ui_destructive_action_total: Option<CounterVec>,
+
+    // ── §13.20 Explain metrics (feature-gated) ──
+    explain_requests_total: Option<Counter>,
+    explain_warnings_total: Option<CounterVec>,
+    explain_execute_total: Option<Counter>,
+
+    // ── §13.21 Search UI metrics (feature-gated) ──
+    search_ui_sessions_total: Option<Counter>,
+    search_ui_queries_total: Option<CounterVec>,
+    search_ui_zero_hits_total: Option<CounterVec>,
+    search_ui_click_through_total: Option<CounterVec>,
+    search_ui_p95_ms: Option<GaugeVec>,
 }
 
 impl Clone for Metrics {
@@ -90,18 +153,58 @@ impl Clone for Metrics {
             rebalance_in_progress: self.rebalance_in_progress.clone(),
             rebalance_documents_migrated: self.rebalance_documents_migrated.clone(),
             rebalance_duration: self.rebalance_duration.clone(),
+            multisearch_queries_per_batch: self.multisearch_queries_per_batch.clone(),
+            multisearch_batches_total: self.multisearch_batches_total.clone(),
+            multisearch_partial_failures_total: self.multisearch_partial_failures_total.clone(),
+            multisearch_tenant_session_pin_override_total: self.multisearch_tenant_session_pin_override_total.clone(),
+            vector_search_over_fetched_total: self.vector_search_over_fetched_total.clone(),
+            vector_merge_strategy: self.vector_merge_strategy.clone(),
+            vector_embedder_drift_total: self.vector_embedder_drift_total.clone(),
+            cdc_events_published_total: self.cdc_events_published_total.clone(),
+            cdc_lag_seconds: self.cdc_lag_seconds.clone(),
+            cdc_buffer_bytes: self.cdc_buffer_bytes.clone(),
+            cdc_dropped_total: self.cdc_dropped_total.clone(),
+            cdc_events_suppressed_total: self.cdc_events_suppressed_total.clone(),
+            ttl_documents_expired_total: self.ttl_documents_expired_total.clone(),
+            ttl_sweep_duration_seconds: self.ttl_sweep_duration_seconds.clone(),
+            ttl_pending_estimate: self.ttl_pending_estimate.clone(),
+            tenant_queries_total: self.tenant_queries_total.clone(),
+            tenant_pinned_groups: self.tenant_pinned_groups.clone(),
+            tenant_fallback_total: self.tenant_fallback_total.clone(),
+            shadow_diff_total: self.shadow_diff_total.clone(),
+            shadow_kendall_tau: self.shadow_kendall_tau.clone(),
+            shadow_latency_delta_seconds: self.shadow_latency_delta_seconds.clone(),
+            shadow_errors_total: self.shadow_errors_total.clone(),
+            rollover_events_total: self.rollover_events_total.clone(),
+            rollover_active_indexes: self.rollover_active_indexes.clone(),
+            rollover_documents_expired_total: self.rollover_documents_expired_total.clone(),
+            rollover_last_action_seconds: self.rollover_last_action_seconds.clone(),
+            canary_runs_total: self.canary_runs_total.clone(),
+            canary_latency_ms: self.canary_latency_ms.clone(),
+            canary_assertion_failures_total: self.canary_assertion_failures_total.clone(),
+            admin_ui_sessions_total: self.admin_ui_sessions_total.clone(),
+            admin_ui_action_total: self.admin_ui_action_total.clone(),
+            admin_ui_destructive_action_total: self.admin_ui_destructive_action_total.clone(),
+            explain_requests_total: self.explain_requests_total.clone(),
+            explain_warnings_total: self.explain_warnings_total.clone(),
+            explain_execute_total: self.explain_execute_total.clone(),
+            search_ui_sessions_total: self.search_ui_sessions_total.clone(),
+            search_ui_queries_total: self.search_ui_queries_total.clone(),
+            search_ui_zero_hits_total: self.search_ui_zero_hits_total.clone(),
+            search_ui_click_through_total: self.search_ui_click_through_total.clone(),
+            search_ui_p95_ms: self.search_ui_p95_ms.clone(),
         }
     }
 }
 
 impl Default for Metrics {
     fn default() -> Self {
-        Self::new()
+        Self::new(&MiroirConfig::default())
     }
 }
 
 impl Metrics {
-    pub fn new() -> Self {
+    pub fn new(config: &MiroirConfig) -> Self {
         let registry = Registry::new();
 
         // ── Request metrics ──
@@ -238,6 +341,298 @@ impl Metrics {
         reg!(rebalance_documents_migrated);
         reg!(rebalance_duration);
 
+        // ── §13.11 Multi-search metrics (cardinality cap: top 100 tenants, rest bucketed) ──
+        let (
+            multisearch_queries_per_batch,
+            multisearch_batches_total,
+            multisearch_partial_failures_total,
+            multisearch_tenant_session_pin_override_total,
+        ) = if config.multi_search.enabled {
+            let q = Histogram::with_opts(
+                HistogramOpts::new("miroir_multisearch_queries_per_batch", "Number of queries in each multi-search batch")
+                    .buckets(vec![1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0]),
+            ).expect("create multisearch_queries_per_batch");
+            let b = Counter::with_opts(
+                Opts::new("miroir_multisearch_batches_total", "Total number of multi-search batches processed"),
+            ).expect("create multisearch_batches_total");
+            let p = Counter::with_opts(
+                Opts::new("miroir_multisearch_partial_failures_total", "Number of multi-search batches with at least one query failure"),
+            ).expect("create multisearch_partial_failures_total");
+            let t = CounterVec::new(
+                Opts::new("miroir_tenant_session_pin_override_total", "Session pin overrides triggered by multi-search tenant routing"),
+                &["tenant"],
+            ).expect("create multisearch_tenant_session_pin_override_total");
+            reg!(q); reg!(b); reg!(p); reg!(t);
+            (Some(q), Some(b), Some(p), Some(t))
+        } else {
+            (None, None, None, None)
+        };
+
+        // ── §13.12 Vector search metrics ──
+        let (
+            vector_search_over_fetched_total,
+            vector_merge_strategy,
+            vector_embedder_drift_total,
+        ) = if config.vector_search.enabled {
+            let o = Counter::with_opts(
+                Opts::new("miroir_vector_search_over_fetched_total", "Number of vector searches that over-fetched candidates"),
+            ).expect("create vector_search_over_fetched_total");
+            let m = CounterVec::new(
+                Opts::new("miroir_vector_merge_strategy", "Count of hybrid merge strategy selections"),
+                &["strategy"],
+            ).expect("create vector_merge_strategy");
+            let d = Counter::with_opts(
+                Opts::new("miroir_vector_embedder_drift_total", "Number of embedder drift detections"),
+            ).expect("create vector_embedder_drift_total");
+            reg!(o); reg!(m); reg!(d);
+            (Some(o), Some(m), Some(d))
+        } else {
+            (None, None, None)
+        };
+
+        // ── §13.13 CDC metrics (cardinality cap: top 100 sinks, rest bucketed) ──
+        let (
+            cdc_events_published_total,
+            cdc_lag_seconds,
+            cdc_buffer_bytes,
+            cdc_dropped_total,
+            cdc_events_suppressed_total,
+        ) = if config.cdc.enabled {
+            let e = CounterVec::new(
+                Opts::new("miroir_cdc_events_published_total", "Total CDC events published"),
+                &["sink", "index"],
+            ).expect("create cdc_events_published_total");
+            let l = GaugeVec::new(
+                Opts::new("miroir_cdc_lag_seconds", "CDC delivery lag in seconds"),
+                &["sink"],
+            ).expect("create cdc_lag_seconds");
+            let b = GaugeVec::new(
+                Opts::new("miroir_cdc_buffer_bytes", "CDC buffer size in bytes"),
+                &["sink"],
+            ).expect("create cdc_buffer_bytes");
+            let d = CounterVec::new(
+                Opts::new("miroir_cdc_dropped_total", "CDC events dropped due to buffer overflow"),
+                &["sink"],
+            ).expect("create cdc_dropped_total");
+            let s = CounterVec::new(
+                Opts::new("miroir_cdc_events_suppressed_total", "CDC events suppressed by origin deduplication"),
+                &["origin"],
+            ).expect("create cdc_events_suppressed_total");
+            reg!(e); reg!(l); reg!(b); reg!(d); reg!(s);
+            (Some(e), Some(l), Some(b), Some(d), Some(s))
+        } else {
+            (None, None, None, None, None)
+        };
+
+        // ── §13.14 TTL metrics (cardinality cap: top 100 indexes, rest bucketed) ──
+        let (
+            ttl_documents_expired_total,
+            ttl_sweep_duration_seconds,
+            ttl_pending_estimate,
+        ) = if config.ttl.enabled {
+            let e = CounterVec::new(
+                Opts::new("miroir_ttl_documents_expired_total", "Documents expired by TTL sweeper"),
+                &["index"],
+            ).expect("create ttl_documents_expired_total");
+            let d = HistogramVec::new(
+                HistogramOpts::new("miroir_ttl_sweep_duration_seconds", "Duration of TTL sweep cycles")
+                    .buckets(vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]),
+                &["index"],
+            ).expect("create ttl_sweep_duration_seconds");
+            let p = GaugeVec::new(
+                Opts::new("miroir_ttl_pending_estimate", "Estimated documents pending TTL expiry"),
+                &["index"],
+            ).expect("create ttl_pending_estimate");
+            reg!(e); reg!(d); reg!(p);
+            (Some(e), Some(d), Some(p))
+        } else {
+            (None, None, None)
+        };
+
+        // ── §13.15 Tenant affinity metrics (cardinality cap: top 100 tenants, rest bucketed) ──
+        let (
+            tenant_queries_total,
+            tenant_pinned_groups,
+            tenant_fallback_total,
+        ) = if config.tenant_affinity.enabled {
+            let q = CounterVec::new(
+                Opts::new("miroir_tenant_queries_total", "Queries routed per tenant and group"),
+                &["tenant", "group"],
+            ).expect("create tenant_queries_total");
+            let p = GaugeVec::new(
+                Opts::new("miroir_tenant_pinned_groups", "Current pinned group per tenant"),
+                &["tenant"],
+            ).expect("create tenant_pinned_groups");
+            let f = CounterVec::new(
+                Opts::new("miroir_tenant_fallback_total", "Tenant affinity fallback invocations"),
+                &["reason"],
+            ).expect("create tenant_fallback_total");
+            reg!(q); reg!(p); reg!(f);
+            (Some(q), Some(p), Some(f))
+        } else {
+            (None, None, None)
+        };
+
+        // ── §13.16 Shadow traffic metrics ──
+        let (
+            shadow_diff_total,
+            shadow_kendall_tau,
+            shadow_latency_delta_seconds,
+            shadow_errors_total,
+        ) = if config.shadow.enabled {
+            let d = CounterVec::new(
+                Opts::new("miroir_shadow_diff_total", "Shadow comparison diffs by kind"),
+                &["kind"],
+            ).expect("create shadow_diff_total");
+            let k = Gauge::with_opts(
+                Opts::new("miroir_shadow_kendall_tau", "Kendall tau rank correlation between shadow and primary"),
+            ).expect("create shadow_kendall_tau");
+            let l = Histogram::with_opts(
+                HistogramOpts::new("miroir_shadow_latency_delta_seconds", "Latency difference between shadow and primary")
+                    .buckets(vec![-1.0, -0.5, -0.1, -0.01, 0.0, 0.01, 0.1, 0.5, 1.0]),
+            ).expect("create shadow_latency_delta_seconds");
+            let e = CounterVec::new(
+                Opts::new("miroir_shadow_errors_total", "Shadow pipeline errors"),
+                &["target", "side"],
+            ).expect("create shadow_errors_total");
+            reg!(d); reg!(k); reg!(l); reg!(e);
+            (Some(d), Some(k), Some(l), Some(e))
+        } else {
+            (None, None, None, None)
+        };
+
+        // ── §13.17 ILM metrics (cardinality cap: top 100 policies/aliases, rest bucketed) ──
+        let (
+            rollover_events_total,
+            rollover_active_indexes,
+            rollover_documents_expired_total,
+            rollover_last_action_seconds,
+        ) = if config.ilm.enabled {
+            let e = CounterVec::new(
+                Opts::new("miroir_rollover_events_total", "ILM rollover events"),
+                &["policy"],
+            ).expect("create rollover_events_total");
+            let a = GaugeVec::new(
+                Opts::new("miroir_rollover_active_indexes", "Active write indexes per alias"),
+                &["alias"],
+            ).expect("create rollover_active_indexes");
+            let d = CounterVec::new(
+                Opts::new("miroir_rollover_documents_expired_total", "Documents expired by ILM retention policies"),
+                &["policy"],
+            ).expect("create rollover_documents_expired_total");
+            let l = GaugeVec::new(
+                Opts::new("miroir_rollover_last_action_seconds", "Seconds since last rollover action per policy"),
+                &["policy"],
+            ).expect("create rollover_last_action_seconds");
+            reg!(e); reg!(a); reg!(d); reg!(l);
+            (Some(e), Some(a), Some(d), Some(l))
+        } else {
+            (None, None, None, None)
+        };
+
+        // ── §13.18 Canary metrics (cardinality cap: top 100 canaries, rest bucketed) ──
+        let (
+            canary_runs_total,
+            canary_latency_ms,
+            canary_assertion_failures_total,
+        ) = if config.canary_runner.enabled {
+            let r = CounterVec::new(
+                Opts::new("miroir_canary_runs_total", "Canary run results"),
+                &["canary", "result"],
+            ).expect("create canary_runs_total");
+            let l = HistogramVec::new(
+                HistogramOpts::new("miroir_canary_latency_ms", "Canary execution latency")
+                    .buckets(vec![1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0]),
+                &["canary"],
+            ).expect("create canary_latency_ms");
+            let a = CounterVec::new(
+                Opts::new("miroir_canary_assertion_failures_total", "Canary assertion failures"),
+                &["canary", "assertion_type"],
+            ).expect("create canary_assertion_failures_total");
+            reg!(r); reg!(l); reg!(a);
+            (Some(r), Some(l), Some(a))
+        } else {
+            (None, None, None)
+        };
+
+        // ── §13.19 Admin UI metrics ──
+        let (
+            admin_ui_sessions_total,
+            admin_ui_action_total,
+            admin_ui_destructive_action_total,
+        ) = if config.admin_ui.enabled {
+            let s = Counter::with_opts(
+                Opts::new("miroir_admin_ui_sessions_total", "Admin UI sessions started"),
+            ).expect("create admin_ui_sessions_total");
+            let a = CounterVec::new(
+                Opts::new("miroir_admin_ui_action_total", "Admin UI actions by type"),
+                &["action"],
+            ).expect("create admin_ui_action_total");
+            let d = CounterVec::new(
+                Opts::new("miroir_admin_ui_destructive_action_total", "Admin UI destructive actions (delete, drop, etc.)"),
+                &["action"],
+            ).expect("create admin_ui_destructive_action_total");
+            reg!(s); reg!(a); reg!(d);
+            (Some(s), Some(a), Some(d))
+        } else {
+            (None, None, None)
+        };
+
+        // ── §13.20 Explain metrics ──
+        let (
+            explain_requests_total,
+            explain_warnings_total,
+            explain_execute_total,
+        ) = if config.explain.enabled {
+            let r = Counter::with_opts(
+                Opts::new("miroir_explain_requests_total", "Explain API requests"),
+            ).expect("create explain_requests_total");
+            let w = CounterVec::new(
+                Opts::new("miroir_explain_warnings_total", "Explain warnings by type"),
+                &["warning_type"],
+            ).expect("create explain_warnings_total");
+            let e = Counter::with_opts(
+                Opts::new("miroir_explain_execute_total", "Explain requests with execute=true"),
+            ).expect("create explain_execute_total");
+            reg!(r); reg!(w); reg!(e);
+            (Some(r), Some(w), Some(e))
+        } else {
+            (None, None, None)
+        };
+
+        // ── §13.21 Search UI metrics (cardinality cap: top 100 indexes, rest bucketed) ──
+        let (
+            search_ui_sessions_total,
+            search_ui_queries_total,
+            search_ui_zero_hits_total,
+            search_ui_click_through_total,
+            search_ui_p95_ms,
+        ) = if config.search_ui.enabled {
+            let s = Counter::with_opts(
+                Opts::new("miroir_search_ui_sessions_total", "Search UI sessions"),
+            ).expect("create search_ui_sessions_total");
+            let q = CounterVec::new(
+                Opts::new("miroir_search_ui_queries_total", "Search UI queries per index"),
+                &["index"],
+            ).expect("create search_ui_queries_total");
+            let z = CounterVec::new(
+                Opts::new("miroir_search_ui_zero_hits_total", "Search UI zero-hit queries per index"),
+                &["index"],
+            ).expect("create search_ui_zero_hits_total");
+            let c = CounterVec::new(
+                Opts::new("miroir_search_ui_click_through_total", "Search UI click-through events per index"),
+                &["index"],
+            ).expect("create search_ui_click_through_total");
+            let p = GaugeVec::new(
+                Opts::new("miroir_search_ui_p95_ms", "Search UI p95 query latency per index"),
+                &["index"],
+            ).expect("create search_ui_p95_ms");
+            reg!(s); reg!(q); reg!(z); reg!(c); reg!(p);
+            (Some(s), Some(q), Some(z), Some(c), Some(p))
+        } else {
+            (None, None, None, None, None)
+        };
+
         Self {
             registry,
             request_duration,
@@ -258,6 +653,46 @@ impl Metrics {
             rebalance_in_progress,
             rebalance_documents_migrated,
             rebalance_duration,
+            multisearch_queries_per_batch,
+            multisearch_batches_total,
+            multisearch_partial_failures_total,
+            multisearch_tenant_session_pin_override_total,
+            vector_search_over_fetched_total,
+            vector_merge_strategy,
+            vector_embedder_drift_total,
+            cdc_events_published_total,
+            cdc_lag_seconds,
+            cdc_buffer_bytes,
+            cdc_dropped_total,
+            cdc_events_suppressed_total,
+            ttl_documents_expired_total,
+            ttl_sweep_duration_seconds,
+            ttl_pending_estimate,
+            tenant_queries_total,
+            tenant_pinned_groups,
+            tenant_fallback_total,
+            shadow_diff_total,
+            shadow_kendall_tau,
+            shadow_latency_delta_seconds,
+            shadow_errors_total,
+            rollover_events_total,
+            rollover_active_indexes,
+            rollover_documents_expired_total,
+            rollover_last_action_seconds,
+            canary_runs_total,
+            canary_latency_ms,
+            canary_assertion_failures_total,
+            admin_ui_sessions_total,
+            admin_ui_action_total,
+            admin_ui_destructive_action_total,
+            explain_requests_total,
+            explain_warnings_total,
+            explain_execute_total,
+            search_ui_sessions_total,
+            search_ui_queries_total,
+            search_ui_zero_hits_total,
+            search_ui_click_through_total,
+            search_ui_p95_ms,
         }
     }
 
@@ -538,6 +973,268 @@ impl Metrics {
         self.rebalance_duration.observe(secs);
     }
 
+    // ── §13.11 Multi-search ──
+
+    pub fn observe_multisearch_queries_per_batch(&self, count: u64) {
+        if let Some(ref m) = self.multisearch_queries_per_batch {
+            m.observe(count as f64);
+        }
+    }
+
+    pub fn inc_multisearch_batches_total(&self) {
+        if let Some(ref m) = self.multisearch_batches_total {
+            m.inc();
+        }
+    }
+
+    pub fn inc_multisearch_partial_failures(&self) {
+        if let Some(ref m) = self.multisearch_partial_failures_total {
+            m.inc();
+        }
+    }
+
+    pub fn inc_multisearch_tenant_session_pin_override(&self, tenant: &str) {
+        if let Some(ref m) = self.multisearch_tenant_session_pin_override_total {
+            m.with_label_values(&[tenant]).inc();
+        }
+    }
+
+    // ── §13.12 Vector search ──
+
+    pub fn inc_vector_search_over_fetched(&self) {
+        if let Some(ref m) = self.vector_search_over_fetched_total {
+            m.inc();
+        }
+    }
+
+    pub fn inc_vector_merge_strategy(&self, strategy: &str) {
+        if let Some(ref m) = self.vector_merge_strategy {
+            m.with_label_values(&[strategy]).inc();
+        }
+    }
+
+    pub fn inc_vector_embedder_drift(&self) {
+        if let Some(ref m) = self.vector_embedder_drift_total {
+            m.inc();
+        }
+    }
+
+    // ── §13.13 CDC ──
+
+    pub fn inc_cdc_events_published(&self, sink: &str, index: &str) {
+        if let Some(ref m) = self.cdc_events_published_total {
+            m.with_label_values(&[sink, index]).inc();
+        }
+    }
+
+    pub fn set_cdc_lag_seconds(&self, sink: &str, lag: f64) {
+        if let Some(ref m) = self.cdc_lag_seconds {
+            m.with_label_values(&[sink]).set(lag);
+        }
+    }
+
+    pub fn set_cdc_buffer_bytes(&self, sink: &str, bytes: f64) {
+        if let Some(ref m) = self.cdc_buffer_bytes {
+            m.with_label_values(&[sink]).set(bytes);
+        }
+    }
+
+    pub fn inc_cdc_dropped(&self, sink: &str) {
+        if let Some(ref m) = self.cdc_dropped_total {
+            m.with_label_values(&[sink]).inc();
+        }
+    }
+
+    pub fn inc_cdc_events_suppressed(&self, origin: &str) {
+        if let Some(ref m) = self.cdc_events_suppressed_total {
+            m.with_label_values(&[origin]).inc();
+        }
+    }
+
+    // ── §13.14 TTL ──
+
+    pub fn inc_ttl_documents_expired(&self, index: &str) {
+        if let Some(ref m) = self.ttl_documents_expired_total {
+            m.with_label_values(&[index]).inc();
+        }
+    }
+
+    pub fn observe_ttl_sweep_duration(&self, index: &str, secs: f64) {
+        if let Some(ref m) = self.ttl_sweep_duration_seconds {
+            m.with_label_values(&[index]).observe(secs);
+        }
+    }
+
+    pub fn set_ttl_pending_estimate(&self, index: &str, count: f64) {
+        if let Some(ref m) = self.ttl_pending_estimate {
+            m.with_label_values(&[index]).set(count);
+        }
+    }
+
+    // ── §13.15 Tenant affinity ──
+
+    pub fn inc_tenant_queries(&self, tenant: &str, group: &str) {
+        if let Some(ref m) = self.tenant_queries_total {
+            m.with_label_values(&[tenant, group]).inc();
+        }
+    }
+
+    pub fn set_tenant_pinned_groups(&self, tenant: &str, group: u32) {
+        if let Some(ref m) = self.tenant_pinned_groups {
+            m.with_label_values(&[tenant]).set(group as f64);
+        }
+    }
+
+    pub fn inc_tenant_fallback(&self, reason: &str) {
+        if let Some(ref m) = self.tenant_fallback_total {
+            m.with_label_values(&[reason]).inc();
+        }
+    }
+
+    // ── §13.16 Shadow ──
+
+    pub fn inc_shadow_diff(&self, kind: &str) {
+        if let Some(ref m) = self.shadow_diff_total {
+            m.with_label_values(&[kind]).inc();
+        }
+    }
+
+    pub fn set_shadow_kendall_tau(&self, tau: f64) {
+        if let Some(ref m) = self.shadow_kendall_tau {
+            m.set(tau);
+        }
+    }
+
+    pub fn observe_shadow_latency_delta(&self, delta: f64) {
+        if let Some(ref m) = self.shadow_latency_delta_seconds {
+            m.observe(delta);
+        }
+    }
+
+    pub fn inc_shadow_errors(&self, target: &str, side: &str) {
+        if let Some(ref m) = self.shadow_errors_total {
+            m.with_label_values(&[target, side]).inc();
+        }
+    }
+
+    // ── §13.17 ILM ──
+
+    pub fn inc_rollover_events(&self, policy: &str) {
+        if let Some(ref m) = self.rollover_events_total {
+            m.with_label_values(&[policy]).inc();
+        }
+    }
+
+    pub fn set_rollover_active_indexes(&self, alias: &str, count: f64) {
+        if let Some(ref m) = self.rollover_active_indexes {
+            m.with_label_values(&[alias]).set(count);
+        }
+    }
+
+    pub fn inc_rollover_documents_expired(&self, policy: &str) {
+        if let Some(ref m) = self.rollover_documents_expired_total {
+            m.with_label_values(&[policy]).inc();
+        }
+    }
+
+    pub fn set_rollover_last_action_seconds(&self, policy: &str, secs: f64) {
+        if let Some(ref m) = self.rollover_last_action_seconds {
+            m.with_label_values(&[policy]).set(secs);
+        }
+    }
+
+    // ── §13.18 Canary ──
+
+    pub fn inc_canary_runs(&self, canary: &str, result: &str) {
+        if let Some(ref m) = self.canary_runs_total {
+            m.with_label_values(&[canary, result]).inc();
+        }
+    }
+
+    pub fn observe_canary_latency_ms(&self, canary: &str, ms: f64) {
+        if let Some(ref m) = self.canary_latency_ms {
+            m.with_label_values(&[canary]).observe(ms);
+        }
+    }
+
+    pub fn inc_canary_assertion_failures(&self, canary: &str, assertion_type: &str) {
+        if let Some(ref m) = self.canary_assertion_failures_total {
+            m.with_label_values(&[canary, assertion_type]).inc();
+        }
+    }
+
+    // ── §13.19 Admin UI ──
+
+    pub fn inc_admin_ui_sessions(&self) {
+        if let Some(ref m) = self.admin_ui_sessions_total {
+            m.inc();
+        }
+    }
+
+    pub fn inc_admin_ui_action(&self, action: &str) {
+        if let Some(ref m) = self.admin_ui_action_total {
+            m.with_label_values(&[action]).inc();
+        }
+    }
+
+    pub fn inc_admin_ui_destructive_action(&self, action: &str) {
+        if let Some(ref m) = self.admin_ui_destructive_action_total {
+            m.with_label_values(&[action]).inc();
+        }
+    }
+
+    // ── §13.20 Explain ──
+
+    pub fn inc_explain_requests(&self) {
+        if let Some(ref m) = self.explain_requests_total {
+            m.inc();
+        }
+    }
+
+    pub fn inc_explain_warnings(&self, warning_type: &str) {
+        if let Some(ref m) = self.explain_warnings_total {
+            m.with_label_values(&[warning_type]).inc();
+        }
+    }
+
+    pub fn inc_explain_execute(&self) {
+        if let Some(ref m) = self.explain_execute_total {
+            m.inc();
+        }
+    }
+
+    // ── §13.21 Search UI ──
+
+    pub fn inc_search_ui_sessions(&self) {
+        if let Some(ref m) = self.search_ui_sessions_total {
+            m.inc();
+        }
+    }
+
+    pub fn inc_search_ui_queries(&self, index: &str) {
+        if let Some(ref m) = self.search_ui_queries_total {
+            m.with_label_values(&[index]).inc();
+        }
+    }
+
+    pub fn inc_search_ui_zero_hits(&self, index: &str) {
+        if let Some(ref m) = self.search_ui_zero_hits_total {
+            m.with_label_values(&[index]).inc();
+        }
+    }
+
+    pub fn inc_search_ui_click_through(&self, index: &str) {
+        if let Some(ref m) = self.search_ui_click_through_total {
+            m.with_label_values(&[index]).inc();
+        }
+    }
+
+    pub fn set_search_ui_p95_ms(&self, index: &str, ms: f64) {
+        if let Some(ref m) = self.search_ui_p95_ms {
+            m.with_label_values(&[index]).set(ms);
+        }
+    }
+
     pub fn registry(&self) -> &Registry {
         &self.registry
     }
@@ -571,7 +1268,8 @@ mod tests {
 
     #[test]
     fn test_metrics_creation() {
-        let metrics = Metrics::new();
+        // Default config has all §13 features enabled
+        let metrics = Metrics::new(&MiroirConfig::default());
 
         // Add some sample data to ensure metrics show up in output
         metrics.request_duration.with_label_values(&["GET", "/test", "200"]).observe(0.1);
@@ -593,12 +1291,43 @@ mod tests {
         metrics.rebalance_documents_migrated.inc();
         metrics.rebalance_duration.observe(10.0);
 
+        // Write to advanced Vec metrics so they appear in output
+        metrics.inc_multisearch_tenant_session_pin_override("t1");
+        metrics.inc_vector_merge_strategy("convex");
+        metrics.inc_cdc_events_published("webhook", "idx1");
+        metrics.set_cdc_lag_seconds("webhook", 0.5);
+        metrics.set_cdc_buffer_bytes("webhook", 1024.0);
+        metrics.inc_cdc_dropped("webhook");
+        metrics.inc_cdc_events_suppressed("origin1");
+        metrics.inc_ttl_documents_expired("idx1");
+        metrics.observe_ttl_sweep_duration("idx1", 0.1);
+        metrics.set_ttl_pending_estimate("idx1", 50.0);
+        metrics.inc_tenant_queries("t1", "g1");
+        metrics.set_tenant_pinned_groups("t1", 1);
+        metrics.inc_tenant_fallback("no_group");
+        metrics.inc_shadow_diff("rank");
+        metrics.inc_shadow_errors("target1", "primary");
+        metrics.inc_rollover_events("policy1");
+        metrics.set_rollover_active_indexes("alias1", 1.0);
+        metrics.inc_rollover_documents_expired("policy1");
+        metrics.set_rollover_last_action_seconds("policy1", 60.0);
+        metrics.inc_canary_runs("canary1", "pass");
+        metrics.observe_canary_latency_ms("canary1", 50.0);
+        metrics.inc_canary_assertion_failures("canary1", "latency");
+        metrics.inc_admin_ui_action("login");
+        metrics.inc_admin_ui_destructive_action("delete_index");
+        metrics.inc_explain_warnings("slow_plan");
+        metrics.inc_search_ui_queries("idx1");
+        metrics.inc_search_ui_zero_hits("idx1");
+        metrics.inc_search_ui_click_through("idx1");
+        metrics.set_search_ui_p95_ms("idx1", 150.0);
+
         let encoded = metrics.encode_metrics();
         assert!(encoded.is_ok());
 
         let output = encoded.unwrap();
 
-        // Verify all 18 plan §10 metric names appear in the output
+        // Verify all 18 core plan §10 metric names appear in the output
         let expected_metrics = [
             // Request metrics
             "miroir_request_duration_seconds",
@@ -628,6 +1357,170 @@ mod tests {
         for name in &expected_metrics {
             assert!(output.contains(name), "missing metric: {}", name);
         }
+
+        // With defaults (all §13 enabled), advanced metrics should be present
+        let advanced_metrics = [
+            // §13.11 Multi-search
+            "miroir_multisearch_queries_per_batch",
+            "miroir_multisearch_batches_total",
+            "miroir_multisearch_partial_failures_total",
+            "miroir_tenant_session_pin_override_total",
+            // §13.12 Vector
+            "miroir_vector_search_over_fetched_total",
+            "miroir_vector_merge_strategy",
+            "miroir_vector_embedder_drift_total",
+            // §13.13 CDC
+            "miroir_cdc_events_published_total",
+            "miroir_cdc_lag_seconds",
+            "miroir_cdc_buffer_bytes",
+            "miroir_cdc_dropped_total",
+            "miroir_cdc_events_suppressed_total",
+            // §13.14 TTL
+            "miroir_ttl_documents_expired_total",
+            "miroir_ttl_sweep_duration_seconds",
+            "miroir_ttl_pending_estimate",
+            // §13.15 Tenant
+            "miroir_tenant_queries_total",
+            "miroir_tenant_pinned_groups",
+            "miroir_tenant_fallback_total",
+            // §13.16 Shadow
+            "miroir_shadow_diff_total",
+            "miroir_shadow_kendall_tau",
+            "miroir_shadow_latency_delta_seconds",
+            "miroir_shadow_errors_total",
+            // §13.17 ILM
+            "miroir_rollover_events_total",
+            "miroir_rollover_active_indexes",
+            "miroir_rollover_documents_expired_total",
+            "miroir_rollover_last_action_seconds",
+            // §13.18 Canary
+            "miroir_canary_runs_total",
+            "miroir_canary_latency_ms",
+            "miroir_canary_assertion_failures_total",
+            // §13.19 Admin UI
+            "miroir_admin_ui_sessions_total",
+            "miroir_admin_ui_action_total",
+            "miroir_admin_ui_destructive_action_total",
+            // §13.20 Explain
+            "miroir_explain_requests_total",
+            "miroir_explain_warnings_total",
+            "miroir_explain_execute_total",
+            // §13.21 Search UI
+            "miroir_search_ui_sessions_total",
+            "miroir_search_ui_queries_total",
+            "miroir_search_ui_zero_hits_total",
+            "miroir_search_ui_click_through_total",
+            "miroir_search_ui_p95_ms",
+        ];
+        for name in &advanced_metrics {
+            assert!(output.contains(name), "missing advanced metric: {}", name);
+        }
+    }
+
+    #[test]
+    fn test_metrics_feature_flags_off() {
+        // Build a config with all §13.11-13.21 features disabled
+        let mut config = MiroirConfig::default();
+        config.multi_search.enabled = false;
+        config.vector_search.enabled = false;
+        config.cdc.enabled = false;
+        config.ttl.enabled = false;
+        config.tenant_affinity.enabled = false;
+        config.shadow.enabled = false;
+        config.ilm.enabled = false;
+        config.canary_runner.enabled = false;
+        config.admin_ui.enabled = false;
+        config.explain.enabled = false;
+        config.search_ui.enabled = false;
+
+        let metrics = Metrics::new(&config);
+
+        // Write to core Vec metrics so they appear in output
+        metrics.request_duration.with_label_values(&["GET", "/test", "200"]).observe(0.1);
+
+        let encoded = metrics.encode_metrics().unwrap();
+
+        // Core metrics should still be present
+        assert!(encoded.contains("miroir_request_duration_seconds"));
+        assert!(encoded.contains("miroir_rebalance_duration_seconds"));
+
+        // Advanced metrics should NOT appear
+        let advanced_names = [
+            "miroir_multisearch_queries_per_batch",
+            "miroir_vector_search_over_fetched_total",
+            "miroir_cdc_events_published_total",
+            "miroir_ttl_documents_expired_total",
+            "miroir_tenant_queries_total",
+            "miroir_shadow_diff_total",
+            "miroir_rollover_events_total",
+            "miroir_canary_runs_total",
+            "miroir_admin_ui_sessions_total",
+            "miroir_explain_requests_total",
+            "miroir_search_ui_sessions_total",
+        ];
+        for name in &advanced_names {
+            assert!(!encoded.contains(name), "advanced metric should not appear when disabled: {}", name);
+        }
+    }
+
+    #[test]
+    fn test_feature_gated_accessors_noop_when_disabled() {
+        let mut config = MiroirConfig::default();
+        config.multi_search.enabled = false;
+        config.vector_search.enabled = false;
+        config.cdc.enabled = false;
+        config.ttl.enabled = false;
+        config.tenant_affinity.enabled = false;
+        config.shadow.enabled = false;
+        config.ilm.enabled = false;
+        config.canary_runner.enabled = false;
+        config.admin_ui.enabled = false;
+        config.explain.enabled = false;
+        config.search_ui.enabled = false;
+
+        let metrics = Metrics::new(&config);
+
+        // All accessor methods should be safe to call (no-op)
+        metrics.observe_multisearch_queries_per_batch(5);
+        metrics.inc_multisearch_batches_total();
+        metrics.inc_multisearch_partial_failures();
+        metrics.inc_multisearch_tenant_session_pin_override("t1");
+        metrics.inc_vector_search_over_fetched();
+        metrics.inc_vector_merge_strategy("convex");
+        metrics.inc_vector_embedder_drift();
+        metrics.inc_cdc_events_published("webhook", "idx");
+        metrics.set_cdc_lag_seconds("webhook", 1.5);
+        metrics.set_cdc_buffer_bytes("webhook", 1024.0);
+        metrics.inc_cdc_dropped("webhook");
+        metrics.inc_cdc_events_suppressed("origin1");
+        metrics.inc_ttl_documents_expired("idx");
+        metrics.observe_ttl_sweep_duration("idx", 0.1);
+        metrics.set_ttl_pending_estimate("idx", 50.0);
+        metrics.inc_tenant_queries("t1", "0");
+        metrics.set_tenant_pinned_groups("t1", 1);
+        metrics.inc_tenant_fallback("no_group");
+        metrics.inc_shadow_diff("rank");
+        metrics.set_shadow_kendall_tau(0.95);
+        metrics.observe_shadow_latency_delta(0.01);
+        metrics.inc_shadow_errors("target1", "primary");
+        metrics.inc_rollover_events("policy1");
+        metrics.set_rollover_active_indexes("alias1", 1.0);
+        metrics.inc_rollover_documents_expired("policy1");
+        metrics.set_rollover_last_action_seconds("policy1", 60.0);
+        metrics.inc_canary_runs("canary1", "pass");
+        metrics.observe_canary_latency_ms("canary1", 50.0);
+        metrics.inc_canary_assertion_failures("canary1", "latency");
+        metrics.inc_admin_ui_sessions();
+        metrics.inc_admin_ui_action("login");
+        metrics.inc_admin_ui_destructive_action("delete_index");
+        metrics.inc_explain_requests();
+        metrics.inc_explain_warnings("slow_plan");
+        metrics.inc_explain_execute();
+        metrics.inc_search_ui_sessions();
+        metrics.inc_search_ui_queries("idx");
+        metrics.inc_search_ui_zero_hits("idx");
+        metrics.inc_search_ui_click_through("idx");
+        metrics.set_search_ui_p95_ms("idx", 150.0);
     }
 
     #[test]
