@@ -9,8 +9,11 @@ pub mod merger;
 pub mod migration;
 pub mod reshard;
 pub mod router;
+pub mod schema_migrations;
 pub mod scatter;
 pub mod task;
+pub mod task_pruner;
+pub mod task_store;
 pub mod topology;
 
 #[cfg(feature = "raft-proto")]

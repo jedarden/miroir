@@ -304,12 +304,18 @@ impl Default for ConnectionPoolConfig {
     }
 }
 
-/// Task registry cache settings (§14.8).
+/// Task registry cache settings (§14.8) and TTL pruner config (plan §4).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TaskRegistryConfig {
     pub cache_size: u32,
     pub redis_pool_max: u32,
+    /// TTL for completed tasks in seconds. Tasks older than this are pruned.
+    pub ttl_seconds: u64,
+    /// How often the pruner runs, in seconds.
+    pub prune_interval_s: u64,
+    /// Maximum rows deleted per pruner iteration.
+    pub prune_batch_size: u32,
 }
 
 impl Default for TaskRegistryConfig {
@@ -317,6 +323,9 @@ impl Default for TaskRegistryConfig {
         Self {
             cache_size: 10000,
             redis_pool_max: 50,
+            ttl_seconds: 7 * 24 * 3600, // 7 days
+            prune_interval_s: 300,       // 5 min
+            prune_batch_size: 10000,
         }
     }
 }
