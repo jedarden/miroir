@@ -12,7 +12,7 @@ metadata:
     workflows.argoproj.io/description: "Build and publish a miroir release from a semver tag"
 spec:
   entrypoint: release-pipeline
-  serviceAccountName: argo-runner
+  serviceAccountName: argo-workflow
   arguments:
     parameters:
       - name: tag
@@ -94,17 +94,35 @@ spec:
               - key: .dockerconfigjson
                 path: config.json
       container:
-        image: gcr.io/kaniko-project/executor:latest
+        image: gcr.io/kaniko-project/executor:v1.23.0-debug
+        command: [/busybox/sh, -c]
         args:
-          - --context=git://github.com/jedarden/miroir#refs/tags/{{inputs.parameters.tag}}
-          - --dockerfile=Dockerfile
-          - --destination=ghcr.io/jedarden/miroir:{{inputs.parameters.tag}}
-          - --build-arg=VERSION={{inputs.parameters.tag}}
-          # Float tags only for stable releases (no '-' in version suffix)
-          - --destination={{=sprig.regexMatch("^v[0-9]+\\.[0-9]+\\.[0-9]+$", inputs.parameters.tag) ? "ghcr.io/jedarden/miroir:" + sprig.regexReplaceAll("^v([0-9]+)\\..*", inputs.parameters.tag, "$1") : "ghcr.io/jedarden/miroir:_skip_major"}}
-          - --destination={{=sprig.regexMatch("^v[0-9]+\\.[0-9]+\\.[0-9]+$", inputs.parameters.tag) ? "ghcr.io/jedarden/miroir:" + sprig.regexReplaceAll("^v([0-9]+\\.[0-9]+).*", inputs.parameters.tag, "$1") : "ghcr.io/jedarden/miroir:_skip_minor"}}
-          - --destination={{=sprig.regexMatch("^v[0-9]+\\.[0-9]+\\.[0-9]+$", inputs.parameters.tag) ? "ghcr.io/jedarden/miroir:latest" : "ghcr.io/jedarden/miroir:_skip_latest"}}
-          - --ignore-path=/skip_nonexistent
+          - |
+            set -e
+            TAG="{{inputs.parameters.tag}}"
+            REGISTRY="ghcr.io/jedarden/miroir"
+            VERSION="${TAG#v}"
+
+            DESTS="--destination=${REGISTRY}:${TAG}"
+
+            # Float tags only for stable releases (no '-' in version suffix)
+            if echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              MINOR=$(echo "$TAG" | sed 's/^v\([0-9]*\.[0-9]*\)\..*/\1/')
+              MAJOR=$(echo "$TAG" | sed 's/^v\([0-9]*\)\..*/\1/')
+              DESTS="${DESTS} --destination=${REGISTRY}:${MINOR}"
+              DESTS="${DESTS} --destination=${REGISTRY}:${MAJOR}"
+              DESTS="${DESTS} --destination=${REGISTRY}:latest"
+            fi
+
+            /kaniko/executor \
+              --context=git://github.com/jedarden/miroir#refs/tags/${TAG} \
+              --dockerfile=Dockerfile \
+              --build-arg=VERSION=${VERSION} \
+              $DESTS \
+              --cache=true \
+              --cache-repo=${REGISTRY}/cache \
+              --snapshot-mode=redo \
+              --use-new-run=true
         volumeMounts:
           - name: docker-config
             mountPath: /kaniko/.docker
