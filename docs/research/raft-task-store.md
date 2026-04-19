@@ -32,8 +32,8 @@ Open Problem #2 asks: can we embed a Raft consensus module so that N Miroir pods
 
 | Crate | Version | Stars | Last Activity | Status |
 |-------|---------|-------|---------------|--------|
-| **openraft** | 0.9.22 (stable), 0.10.0-alpha.17 | ~1,890 | 2026-04-18 (today) | Actively maintained |
-| **raft-rs** (tikv) | 0.7.0 | ~3,324 | 2026-04-14 | Actively maintained, mature |
+| **openraft** | 0.9.22 (stable), 0.10.0-alpha.17 | 1,890 | 2026-04-18 (verified) | Actively maintained |
+| **raft-rs** (tikv) | 0.7.0 | 3,324 | 2026-04-14 (verified) | Actively maintained, mature |
 | **async-raft** | 0.6.1 | ~1,091 | 2023-02-12 | **Abandoned — do not use** |
 
 ### 2.2 Elimination
@@ -225,20 +225,20 @@ The prototype benchmark (`raft_proto::benchmark`) measures the actual apply-path
 cargo test -p miroir-core --features raft-proto raft_proto::benchmark -- --nocapture
 ```
 
-**Results** (50,000 ops, 3 nodes per task, stable Rust 1.87):
+**Results** (50,000 ops, 3 nodes per task, stable Rust 1.87, run 2026-04-18):
 
 | Operation | State Machine | Direct HashMap | Overhead |
 |-----------|-------------|----------------|----------|
-| Insert | 1,860 ns | 1,847 ns | 1.0x |
-| Read | 251 ns | 235 ns | 1.1x |
-| Update | 320 ns | 309 ns | 1.0x |
+| Insert | 1,993 ns | 2,088 ns | 1.0x |
+| Read | 263 ns | 262 ns | 1.0x |
+| Update | 338 ns | 335 ns | 1.0x |
 
 | Serialization | Avg Latency | Size per Command |
 |---------------|-------------|-----------------|
-| JSON | 1,474 ns | 73 bytes |
-| Bincode | 428 ns | 26 bytes |
+| JSON | 1,573 ns | 73 bytes |
+| Bincode | 448 ns | 26 bytes |
 
-**Throughput (single-threaded, local apply only):** ~538K ops/sec
+**Throughput (single-threaded, local apply only):** ~501K ops/sec (state machine) vs ~479K ops/sec (direct)
 
 **Key finding:** The state machine apply path adds negligible overhead (~1.0x) vs. direct HashMap access. Both are sub-microsecond. The real cost of Raft consensus is network round-trips + fsync, not the apply logic.
 
