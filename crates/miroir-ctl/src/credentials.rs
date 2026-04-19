@@ -129,6 +129,9 @@ mod tests {
     use super::*;
     use std::env;
     use std::fs;
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     // Test isolation: each test gets its own temp config dir
     fn setup_test_config_dir(_test_name: &str) -> tempfile::TempDir {
@@ -145,6 +148,7 @@ mod tests {
 
     #[test]
     fn test_env_var_takes_precedence() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         // Create a credentials file with a key
         let temp_dir = setup_test_config_dir("env_precedence");
         write_credentials_file(
@@ -190,6 +194,7 @@ mod tests {
 
     #[test]
     fn test_flag_as_fallback() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         // No env var, no file - flag should be used
         env::remove_var(ENV_VAR);
         let result = load_admin_key(Some("flag-key-xyz".to_string())).unwrap();
@@ -205,6 +210,7 @@ mod tests {
 
     #[test]
     fn test_empty_key_is_ignored() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         env::set_var(ENV_VAR, "");
         let result = load_admin_key(Some("flag-key".to_string())).unwrap();
         // Empty env var should be skipped, flag key used
