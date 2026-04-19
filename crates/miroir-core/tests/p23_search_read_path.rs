@@ -11,7 +11,7 @@
 //! - X-Miroir-Degraded: shards=... stamped when a shard has zero live replicas
 
 use miroir_core::config::UnavailableShardPolicy;
-use miroir_core::merger::{ScoreMergeStrategy, ShardHitPage};
+use miroir_core::merger::ScoreMergeStrategy;
 use miroir_core::scatter::{plan_search_scatter, MockNodeClient, SearchRequest};
 use miroir_core::topology::{Node, NodeId, Topology};
 use serde_json::json;
