@@ -7,9 +7,11 @@
 //!
 //! Run with: `cargo test -p miroir-core raft_proto::benchmark -- --nocapture`
 
+#![allow(dead_code)]
+
 use super::command::TaskStoreCommand;
 use super::state_machine::TaskStateMachine;
-use crate::task::{MiroirTask, NodeTask, NodeTaskStatus, TaskFilter, TaskStatus};
+use crate::task::{MiroirTask, NodeTask, NodeTaskStatus, TaskStatus};
 use std::collections::HashMap;
 use std::time::Instant;
 

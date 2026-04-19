@@ -32,7 +32,7 @@ Open Problem #2 asks: can we embed a Raft consensus module so that N Miroir pods
 
 | Crate | Version | Stars | Last Activity | Status |
 |-------|---------|-------|---------------|--------|
-| **openraft** | 0.9.22 (stable), 0.10.0-alpha.17 | 1,890 | 2026-04-18 (verified) | Actively maintained |
+| **openraft** | 0.9.20 (stable), 0.10.0-alpha.17 | 1,890 | 2026-04-18 (verified) | Actively maintained |
 | **raft-rs** (tikv) | 0.7.0 | 3,324 | 2026-04-14 (verified) | Maintenance mode — no active roadmap, TiKV internalized much of the logic |
 | **async-raft** | 0.6.1 | ~1,091 | 2023-02-12 | **Abandoned — do not use** |
 
@@ -232,16 +232,16 @@ cargo test -p miroir-core --features raft-proto raft_proto::benchmark -- --nocap
 
 | Operation | State Machine | Direct HashMap | Overhead |
 |-----------|-------------|----------------|----------|
-| Insert | 1,900 ns | 1,865 ns | 1.0x |
-| Read | 255 ns | 237 ns | 1.1x |
-| Update | 326 ns | 335 ns | 1.0x |
+| Insert | 1,889 ns | 1,925 ns | 1.0x |
+| Read | 250 ns | 242 ns | 1.0x |
+| Update | 312 ns | 337 ns | 0.9x |
 
 | Serialization | Avg Latency | Size per Command |
 |---------------|-------------|-----------------|
-| JSON | 1,515 ns | 73 bytes |
-| Bincode | 442 ns | 26 bytes |
+| JSON | 1,464 ns | 73 bytes |
+| Bincode | 425 ns | 26 bytes |
 
-**Throughput (single-threaded, local apply only):** ~526K ops/sec (state machine) vs ~536K ops/sec (direct)
+**Throughput (single-threaded, local apply only):** ~529K ops/sec (state machine) vs ~519K ops/sec (direct)
 
 **Key finding:** The state machine apply path adds negligible overhead (~1.0x) vs. direct HashMap access. Both are sub-microsecond. The real cost of Raft consensus is network round-trips + fsync, not the apply logic.
 
@@ -395,7 +395,7 @@ This preserves the investment in the SQLite and Redis backends and avoids forcin
 
 ### Compilation Note
 
-openraft 0.9.22 fails to compile on stable Rust 1.87 because its dependency `validit 0.2.5` uses the unstable `let_chains` feature. The 0.10 alpha series compounds this by requiring Rust edition 2024. The prototype works around this by simulating Raft consensus rather than depending on openraft directly — only `bincode` is needed for the serialization benchmarks. This compilation failure is itself a data point: a dependency that requires nightly or bleeding-edge stable Rust is not suitable for production use in v1.0.
+openraft 0.9.20 fails to compile on stable Rust 1.87 because its dependency `validit 0.2.5` uses the unstable `let_chains` feature. The 0.10 alpha series compounds this by requiring Rust edition 2024. The prototype works around this by simulating Raft consensus rather than depending on openraft directly — only `bincode` is needed for the serialization benchmarks. This compilation failure is itself a data point: a dependency that requires nightly or bleeding-edge stable Rust is not suitable for production use in v1.0.
 
 ---
 
@@ -443,7 +443,7 @@ rrqlite validates that the openraft + SQLite combination works in production. Ho
 
 ## 9. Appendix: Crate Deep-Dive
 
-### openraft v0.9.22 (Stable)
+### openraft v0.9.20 (Stable)
 
 ```
 [dependencies]
