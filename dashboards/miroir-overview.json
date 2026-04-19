@@ -1,0 +1,1010 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Miroir search cluster overview — cluster health, request rates, latency, shard balance, rebalance activity, and feature-gated advanced panels.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Cluster Health",
+      "description": "Degraded shard count and per-node health status. All nodes should show 1 (healthy).",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "title": "Degraded Shards",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "expr": "miroir_degraded_shards_total",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "title": "Shard Coverage",
+      "type": "gauge",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "targets": [
+        {
+          "expr": "miroir_shard_coverage",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.8 },
+              { "color": "green", "value": 0.95 }
+            ]
+          },
+          "unit": "percentunit"
+        }
+      }
+    },
+    {
+      "title": "Node Health",
+      "type": "table",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 1 },
+      "targets": [
+        {
+          "expr": "miroir_node_healthy",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Value" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": { "type": "color-background", "mode": "basic" }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "red", "value": null },
+                    { "color": "green", "value": 1 }
+                  ]
+                }
+              },
+              { "id": "mappings", "value": [{ "type": "value", "options": { "0": { "text": "Unhealthy", "index": 0 }, "1": { "text": "Healthy", "index": 1 } } }] }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Time" },
+            "properties": [{ "id": "custom.hidden", "value": true }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "__name__" },
+            "properties": [{ "id": "custom.hidden", "value": true }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "job" },
+            "properties": [{ "id": "custom.hidden", "value": true }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "instance" },
+            "properties": [{ "id": "custom.hidden", "value": true }]
+          }
+        ]
+      },
+      "options": { "showHeader": true }
+    },
+
+    {
+      "title": "Request Rate",
+      "description": "Requests per second aggregated by path template.",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false
+    },
+    {
+      "title": "Requests/sec by Path",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "sum by (path_template) (rate(miroir_requests_total[$__rate_interval]))",
+          "legendFormat": "{{path_template}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "fillOpacity": 10 }
+        }
+      }
+    },
+    {
+      "title": "Requests/sec by Status",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(miroir_requests_total[$__rate_interval]))",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "fillOpacity": 10 }
+        }
+      }
+    },
+
+    {
+      "title": "Request Latency",
+      "description": "p50, p95, p99 latency across all requests.",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "collapsed": false
+    },
+    {
+      "title": "p50 / p95 / p99 Latency",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 15 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(miroir_request_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(miroir_request_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(miroir_request_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 5 }
+        }
+      }
+    },
+
+    {
+      "title": "Node Latency Comparison",
+      "description": "Per-node p50/p95/p99 latency from node-level histogram quantiles.",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "collapsed": false
+    },
+    {
+      "title": "Per-Node p99 Latency",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, node_id) (rate(miroir_node_request_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{node_id}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 5 }
+        }
+      }
+    },
+    {
+      "title": "Node Error Rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        {
+          "expr": "sum by (node_id, error_type) (rate(miroir_node_errors_total[$__rate_interval]))",
+          "legendFormat": "{{node_id}} {{error_type}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "fillOpacity": 10 }
+        }
+      }
+    },
+
+    {
+      "title": "Search Overhead",
+      "description": "Miroir scatter-gather latency vs. direct single-node Meilisearch latency ratio.",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "collapsed": false
+    },
+    {
+      "title": "Scatter Fan-Out",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 33 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(miroir_scatter_fan_out_size_bucket[$__rate_interval])))",
+          "legendFormat": "p50 fan-out",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(miroir_scatter_fan_out_size_bucket[$__rate_interval])))",
+          "legendFormat": "p95 fan-out",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "fillOpacity": 5 }
+        }
+      }
+    },
+    {
+      "title": "Partial Responses / Retries",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 33 },
+      "targets": [
+        {
+          "expr": "rate(miroir_scatter_partial_responses_total[$__rate_interval])",
+          "legendFormat": "partial responses/s",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(miroir_scatter_retries_total[$__rate_interval])",
+          "legendFormat": "retries/s",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "fillOpacity": 10 }
+        }
+      }
+    },
+    {
+      "title": "Requests in Flight",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 33 },
+      "targets": [
+        {
+          "expr": "miroir_requests_in_flight",
+          "legendFormat": "in flight",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "fillOpacity": 10 }
+        }
+      }
+    },
+
+    {
+      "title": "Task Lag",
+      "description": "Task processing age — how long tasks sit before being processed. High values indicate stuck or backlogged tasks.",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 },
+      "collapsed": false
+    },
+    {
+      "title": "Task Processing Age (p50/p95)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 42 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(miroir_task_processing_age_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(miroir_task_processing_age_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 5 }
+        }
+      }
+    },
+    {
+      "title": "Tasks by Status",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 42 },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(miroir_tasks_total[$__rate_interval]))",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "fillOpacity": 10 }
+        }
+      }
+    },
+    {
+      "title": "Task Registry Size",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 50 },
+      "targets": [
+        {
+          "expr": "miroir_task_registry_size",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 100 },
+              { "color": "red", "value": 500 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+
+    {
+      "title": "Shard Distribution",
+      "description": "Per-node shard counts. Imbalance indicates nodes with disproportionately many or few shards.",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 },
+      "collapsed": false
+    },
+    {
+      "title": "Shards per Node",
+      "type": "bargauge",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 55 },
+      "targets": [
+        {
+          "expr": "miroir_shard_distribution",
+          "instant": true,
+          "legendFormat": "{{node_id}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 40 },
+              { "color": "red", "value": 55 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "title": "Shard Imbalance (max - min)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 55 },
+      "targets": [
+        {
+          "expr": "max(miroir_shard_distribution) - min(miroir_shard_distribution)",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 15 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+
+    {
+      "title": "Rebalance Activity",
+      "description": "Ongoing rebalance operations, documents migrated, and rebalance duration.",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 63 },
+      "collapsed": false
+    },
+    {
+      "title": "Rebalance In Progress",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 64 },
+      "targets": [
+        {
+          "expr": "miroir_rebalance_in_progress",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "blue", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "Idle", "index": 0 }, "1": { "text": "Active", "index": 1 } } }
+          ]
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "title": "Documents Migrated",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 10, "x": 6, "y": 64 },
+      "targets": [
+        {
+          "expr": "rate(miroir_rebalance_documents_migrated_total[$__rate_interval])",
+          "legendFormat": "docs/s",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "fillOpacity": 10 }
+        }
+      }
+    },
+    {
+      "title": "Rebalance Duration",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 64 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(miroir_rebalance_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(miroir_rebalance_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 5 }
+        }
+      }
+    },
+
+    {
+      "title": "Multi-Search (§13.11)",
+      "description": "Visible when multi_search feature is enabled. Shows batch sizes, partial failures, and tenant pin overrides.",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 72 },
+      "collapsed": true,
+      "panels": [
+        {
+          "title": "Queries per Batch",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(miroir_multisearch_queries_per_batch_bucket[$__rate_interval])))",
+              "legendFormat": "p50",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(miroir_multisearch_queries_per_batch_bucket[$__rate_interval])))",
+              "legendFormat": "p95",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short" } }
+        },
+        {
+          "title": "Batches / Partial Failures",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+          "targets": [
+            {
+              "expr": "rate(miroir_multisearch_batches_total[$__rate_interval])",
+              "legendFormat": "batches/s",
+              "refId": "A"
+            },
+            {
+              "expr": "rate(miroir_multisearch_partial_failures_total[$__rate_interval])",
+              "legendFormat": "partial failures/s",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ops" } }
+        },
+        {
+          "title": "Tenant Pin Overrides",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+          "targets": [
+            {
+              "expr": "sum by (tenant) (rate(miroir_tenant_session_pin_override_total[$__rate_interval]))",
+              "legendFormat": "{{tenant}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ops" } }
+        }
+      ]
+    },
+
+    {
+      "title": "Anti-Entropy (§13.8)",
+      "description": "Visible when anti-entropy is active. Shows shards scanned, mismatches found, and documents repaired.",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 73 },
+      "collapsed": true,
+      "panels": [
+        {
+          "title": "Shards Scanned / Mismatches / Repairs",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 16, "x": 0, "y": 1 },
+          "targets": [
+            {
+              "expr": "rate(miroir_antientropy_shards_scanned_total[$__rate_interval])",
+              "legendFormat": "scanned/s",
+              "refId": "A"
+            },
+            {
+              "expr": "rate(miroir_antientropy_mismatches_found_total[$__rate_interval])",
+              "legendFormat": "mismatches/s",
+              "refId": "B"
+            },
+            {
+              "expr": "rate(miroir_antientropy_docs_repaired_total[$__rate_interval])",
+              "legendFormat": "repaired/s",
+              "refId": "C"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+        },
+        {
+          "title": "Last Scan Completed",
+          "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+          "targets": [
+            {
+              "expr": "time() - miroir_antientropy_last_scan_completed_seconds",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 3600 },
+                  { "color": "red", "value": 86400 }
+                ]
+              }
+            }
+          },
+          "options": {
+            "graphMode": "none",
+            "reduceOptions": { "calcs": ["lastNotNull"] }
+          }
+        }
+      ]
+    },
+
+    {
+      "title": "Settings Broadcast (§13.5)",
+      "description": "Settings divergence detection and drift repairs.",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 74 },
+      "collapsed": true,
+      "panels": [
+        {
+          "title": "Settings Hash Mismatches / Drift Repairs",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+          "targets": [
+            {
+              "expr": "rate(miroir_settings_hash_mismatch_total[$__rate_interval])",
+              "legendFormat": "mismatches/s",
+              "refId": "A"
+            },
+            {
+              "expr": "rate(miroir_settings_drift_repair_total[$__rate_interval])",
+              "legendFormat": "repairs/s",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+        },
+        {
+          "title": "Node Settings Values",
+          "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+          "targets": [
+            {
+              "expr": "miroir_node_setting_value",
+              "instant": true,
+              "legendFormat": "{{setting}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short" } },
+          "options": {
+            "colorMode": "background",
+            "reduceOptions": { "calcs": ["lastNotNull"] }
+          }
+        }
+      ]
+    },
+
+    {
+      "title": "CDC (§13.13)",
+      "description": "Change Data Capture lag, buffer usage, and events by sink.",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 75 },
+      "collapsed": true,
+      "panels": [
+        {
+          "title": "CDC Lag by Sink",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+          "targets": [
+            {
+              "expr": "miroir_cdc_lag_seconds",
+              "legendFormat": "{{sink}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 30 }] }
+            }
+          }
+        },
+        {
+          "title": "CDC Buffer Bytes by Sink",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+          "targets": [
+            {
+              "expr": "miroir_cdc_buffer_bytes",
+              "legendFormat": "{{sink}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "bytes" } }
+        },
+        {
+          "title": "CDC Events by Sink",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+          "targets": [
+            {
+              "expr": "sum by (sink) (rate(miroir_cdc_events_published_total[$__rate_interval]))",
+              "legendFormat": "{{sink}}",
+              "refId": "A"
+            },
+            {
+              "expr": "sum by (sink) (rate(miroir_cdc_dropped_total[$__rate_interval]))",
+              "legendFormat": "{{sink}} dropped",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ops" } }
+        }
+      ]
+    },
+
+    {
+      "title": "Canary Tests (§13.18)",
+      "description": "Canary pass/fail results and assertion failures as a heatmap-style table.",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 76 },
+      "collapsed": true,
+      "panels": [
+        {
+          "title": "Canary Results",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+          "targets": [
+            {
+              "expr": "sum by (canary, result) (rate(miroir_canary_runs_total[$__rate_interval]))",
+              "legendFormat": "{{canary}} {{result}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+        },
+        {
+          "title": "Canary Latency (p95)",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, canary) (rate(miroir_canary_latency_ms_bucket[$__rate_interval])))",
+              "legendFormat": "{{canary}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ms" } }
+        },
+        {
+          "title": "Assertion Failures",
+          "type": "table",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 9 },
+          "targets": [
+            {
+              "expr": "topk(20, sum by (canary, assertion_type) (rate(miroir_canary_assertion_failures_total[$__rate_interval])))",
+              "format": "table",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "Time" },
+                "properties": [{ "id": "custom.hidden", "value": true }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "__name__" },
+                "properties": [{ "id": "custom.hidden", "value": true }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "Value" },
+                "properties": [
+                  {
+                    "id": "custom.cellOptions",
+                    "value": { "type": "color-background", "mode": "basic" }
+                  },
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        { "color": "transparent", "value": null },
+                        { "color": "red", "value": 0.001 }
+                      ]
+                    }
+                  },
+                  { "id": "unit", "value": "ops" }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+
+    {
+      "title": "Search UI (§13.21)",
+      "description": "Search UI sessions, queries, zero-hit rate, click-through, and client-reported p95 latency.",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 77 },
+      "collapsed": true,
+      "panels": [
+        {
+          "title": "Sessions / Queries",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+          "targets": [
+            {
+              "expr": "rate(miroir_search_ui_sessions_total[$__rate_interval])",
+              "legendFormat": "sessions/s",
+              "refId": "A"
+            },
+            {
+              "expr": "sum by (index) (rate(miroir_search_ui_queries_total[$__rate_interval]))",
+              "legendFormat": "queries {{index}}",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+        },
+        {
+          "title": "Zero-Hit Rate by Index",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+          "targets": [
+            {
+              "expr": "sum by (index) (rate(miroir_search_ui_zero_hits_total[$__rate_interval]))",
+              "legendFormat": "{{index}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+        },
+        {
+          "title": "Client p95 Latency by Index",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+          "targets": [
+            {
+              "expr": "miroir_search_ui_p95_ms",
+              "legendFormat": "{{index}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 200 }, { "color": "red", "value": 500 }] }
+            }
+          }
+        },
+        {
+          "title": "Click-Through by Index",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 9 },
+          "targets": [
+            {
+              "expr": "sum by (index) (rate(miroir_search_ui_click_through_total[$__rate_interval]))",
+              "legendFormat": "{{index}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+        }
+      ]
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["miroir", "search"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": { "refresh_intervals": ["10s", "30s", "1m", "5m", "15m"] },
+  "timezone": "browser",
+  "title": "Miroir Overview",
+  "uid": "miroir-overview",
+  "version": 0
+}

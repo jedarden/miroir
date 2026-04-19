@@ -1,0 +1,20 @@
+{{/*
+Grafana dashboard ConfigMap — auto-imported by grafana-dashboard sidecar
+when labeled grafana_dashboard=1.
+*/}}
+{{- if .Values.dashboards.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "miroir.fullname" . }}-dashboard
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+  {{- with .Values.dashboards.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  miroir-overview.json: |
+{{ .Files.Get "dashboards/miroir-overview.json" | indent 4 }}
+{{- end }}

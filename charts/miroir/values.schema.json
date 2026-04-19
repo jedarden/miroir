@@ -108,6 +108,13 @@
         "annotations": { "type": "object" }
       }
     },
+    "dashboards": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "annotations": { "type": "object" }
+      }
+    },
     "prometheusRule": {
       "type": "object",
       "properties": {

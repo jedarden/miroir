@@ -148,6 +148,11 @@ prometheusRule:
   enabled: false  # requires prometheus-operator in cluster
   annotations: {}
 
+# Grafana dashboard ConfigMap (requires grafana-dashboard sidecar)
+dashboards:
+  enabled: false  # creates a ConfigMap labeled grafana_dashboard=1
+  annotations: {}
+
 # OpenTelemetry tracing (plan §10)
 tracing:
   enabled: false  # disabled by default for zero overhead
