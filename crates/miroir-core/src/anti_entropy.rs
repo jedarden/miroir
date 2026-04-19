@@ -115,6 +115,8 @@ mod tests {
 
     #[test]
     fn test_warning_when_ae_disabled() {
+        // INTENTIONAL BREAK: verify CI smoke catches test failures
+        assert!(false);
         assert!(migration_warning_if_ae_disabled(false).is_some());
         assert!(migration_warning_if_ae_disabled(true).is_none());
     }
