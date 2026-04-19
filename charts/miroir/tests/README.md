@@ -1,26 +1,39 @@
-# Helm Chart Tests
+# Helm Chart Validation Tests
 
-This directory contains test cases for validating the `values.schema.json` constraints.
-
-## Running Tests
-
-Use `helm lint --strict` with the test values files:
+## Running All Tests
 
 ```bash
-# Valid: single replica with SQLite (should pass)
-helm lint --strict miroir -f miroir/tests/valid-single-replica-sqlite.yaml
-
-# Invalid: multiple replicas with SQLite (should fail with constraint error)
-helm lint --strict miroir -f miroir/tests/invalid-multi-replica-sqlite.yaml
-
-# Valid: multiple replicas with Redis (should pass)
-helm lint --strict miroir -f miroir/tests/valid-multi-replica-redis.yaml
+./charts/miroir/tests/run-tests.sh
 ```
+
+This runs both `helm lint --strict` (schema rules) and `helm template` (render-time rules) for all test cases.
 
 ## Test Cases
 
-| Test Case | Description | Expected Result |
-|-----------|-------------|-----------------|
-| `valid-single-replica-sqlite.yaml` | `replicas: 1, backend: sqlite` | ✅ Pass |
-| `invalid-multi-replica-sqlite.yaml` | `replicas: 2, backend: sqlite` | ❌ Fail with constraint error |
-| `valid-multi-replica-redis.yaml` | `replicas: 2, backend: redis` | ✅ Pass |
+### Schema rejection tests (`helm lint --strict`)
+
+| File | Rule | Description |
+|------|------|-------------|
+| `invalid-multi-replica-sqlite.yaml` | 1 | `replicas>1` with `taskStore.backend: sqlite` — SQLite cannot be shared across pods |
+| `bad-hpa-no-redis.yaml` | 2a | `hpa.enabled: true` with `taskStore.backend: sqlite` — autoscaling requires Redis |
+| `bad-hpa-single-replica.yaml` | 2b | `hpa.enabled: true` with `replicas: 1` — HPA requires `replicas >= 2` |
+| `bad-search-ui-rate-limit-local-multi.yaml` | 3 | `search_ui.rate_limit.backend: local` with `replicas>1` — per-pod limits don't share state |
+| `bad-admin-login-rate-limit-local-multi.yaml` | 4 | `admin_ui.login_rate_limit.backend: local` with `replicas>1` — per-pod limits don't share state |
+
+### Template rejection tests (`helm template`)
+
+| File | Rule | Description |
+|------|------|-------------|
+| `bad-scoped-key-rotate-gte-max.yaml` | 5a | `rotate_before_expiry >= max_age` — rotation fires at/before issuance |
+| `bad-scoped-key-rotate-gt-max.yaml` | 5b | `rotate_before_expiry > max_age` — negative rotation window |
+
+Rule 5 uses template-level `fail()` because JSON Schema draft-7 cannot compare sibling property values.
+
+### Positive tests
+
+| File | Description |
+|------|-------------|
+| `valid-single-replica-sqlite.yaml` | Single replica with SQLite (dev default) |
+| `valid-multi-replica-redis.yaml` | Multi-replica with Redis |
+| `good-production.yaml` | Full production config with HPA, Redis rate limiting, and scoped keys |
+| `good-dev-no-ui.yaml` | Minimal dev defaults |

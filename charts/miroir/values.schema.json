@@ -250,8 +250,7 @@
           "taskStore": {
             "properties": {
               "backend": {
-                "const": "redis",
-                "errorMessage": "SQLite task store cannot run with multiple replicas; set taskStore.backend=redis"
+                "const": "redis"
               }
             },
             "required": ["backend"]
@@ -281,8 +280,7 @@
                 "properties": {
                   "replicas": {
                     "type": "integer",
-                    "minimum": 2,
-                    "errorMessage": "HPA requires miroir.replicas >= 2; increase replicas or disable hpa"
+                    "minimum": 2
                   }
                 },
                 "required": ["replicas"]
@@ -295,8 +293,7 @@
               "taskStore": {
                 "properties": {
                   "backend": {
-                    "const": "redis",
-                    "errorMessage": "HPA requires taskStore.backend=redis; SQLite is single-writer and cannot be shared across autoscaled pods"
+                    "const": "redis"
                   }
                 },
                 "required": ["backend"]
@@ -308,37 +305,17 @@
       }
     },
     {
-      "description": "Rule 3: search_ui.rate_limit.backend: local rejected when miroir.replicas > 1",
+      "description": "Rule 3: search_ui.rate_limit.backend must be redis when miroir.replicas > 1 (local is per-pod, not shared)",
       "if": {
-        "allOf": [
-          {
+        "properties": {
+          "miroir": {
             "properties": {
-              "miroir": {
-                "properties": {
-                  "replicas": { "type": "integer", "exclusiveMinimum": 1 }
-                },
-                "required": ["replicas"]
-              }
+              "replicas": { "type": "integer", "exclusiveMinimum": 1 }
             },
-            "required": ["miroir"]
-          },
-          {
-            "properties": {
-              "search_ui": {
-                "properties": {
-                  "rate_limit": {
-                    "properties": {
-                      "backend": { "const": "local" }
-                    },
-                    "required": ["backend"]
-                  }
-                },
-                "required": ["rate_limit"]
-              }
-            },
-            "required": ["search_ui"]
+            "required": ["replicas"]
           }
-        ]
+        },
+        "required": ["miroir"]
       },
       "then": {
         "properties": {
@@ -347,8 +324,7 @@
               "rate_limit": {
                 "properties": {
                   "backend": {
-                    "not": { "const": "local" },
-                    "description": "Local rate limiting is incompatible with multiple replicas — effective per_ip limit is multiplied by pod count. Use backend: redis instead."
+                    "enum": ["redis"]
                   }
                 }
               }
@@ -358,37 +334,17 @@
       }
     },
     {
-      "description": "Rule 4: admin_ui.login_rate_limit.backend: local rejected when miroir.replicas > 1",
+      "description": "Rule 4: admin_ui.login_rate_limit.backend must be redis when miroir.replicas > 1 (local is per-pod, not shared)",
       "if": {
-        "allOf": [
-          {
+        "properties": {
+          "miroir": {
             "properties": {
-              "miroir": {
-                "properties": {
-                  "replicas": { "type": "integer", "exclusiveMinimum": 1 }
-                },
-                "required": ["replicas"]
-              }
+              "replicas": { "type": "integer", "exclusiveMinimum": 1 }
             },
-            "required": ["miroir"]
-          },
-          {
-            "properties": {
-              "admin_ui": {
-                "properties": {
-                  "login_rate_limit": {
-                    "properties": {
-                      "backend": { "const": "local" }
-                    },
-                    "required": ["backend"]
-                  }
-                },
-                "required": ["login_rate_limit"]
-              }
-            },
-            "required": ["admin_ui"]
+            "required": ["replicas"]
           }
-        ]
+        },
+        "required": ["miroir"]
       },
       "then": {
         "properties": {
@@ -397,8 +353,7 @@
               "login_rate_limit": {
                 "properties": {
                   "backend": {
-                    "not": { "const": "local" },
-                    "description": "Local login rate limiting is incompatible with multiple replicas — limits are not shared across pods. Use backend: redis instead."
+                    "enum": ["redis"]
                   }
                 }
               }
