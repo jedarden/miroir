@@ -429,15 +429,22 @@ impl MigrationCoordinator {
 
     /// Complete the drain and move to delta pass or activation.
     pub fn complete_drain(&mut self, id: MigrationId) -> Result<MigrationPhase, MigrationError> {
-        let state = self.migrations.get_mut(&id).ok_or(MigrationError::NotFound(id))?;
+        // First check phase exists without holding mutable borrow
+        let phase = self
+            .migrations
+            .get(&id)
+            .ok_or(MigrationError::NotFound(id))?
+            .phase
+            .clone();
 
-        if !matches!(state.phase, MigrationPhase::CutoverDraining) {
+        if !matches!(phase, MigrationPhase::CutoverDraining) {
             return Err(MigrationError::InvalidTransition(
                 ShardId(0),
-                format!("expected CutoverDraining, got {}", state.phase),
+                format!("expected CutoverDraining, got {}", phase),
             ));
         }
 
+        // Check drain status
         if !self.is_drained() {
             let remaining = self
                 .in_flight
@@ -449,19 +456,21 @@ impl MigrationCoordinator {
             return Err(MigrationError::DrainTimeout(remaining));
         }
 
-        // Collect docs that need delta pass (written to OLD but may not be on NEW)
+        // Collect docs that need delta pass
         let needs_delta = self.collect_delta_candidates(id)?;
+        let skip_delta = self.config.skip_delta_pass;
 
-        if self.config.skip_delta_pass {
+        // Now get mutable borrow to update state
+        let state = self.migrations.get_mut(&id).ok_or(MigrationError::NotFound(id))?;
+
+        if skip_delta {
             // Skip delta pass — safe only if anti-entropy is enabled
             state.phase = MigrationPhase::CutoverActivate;
-            self.activate_shards(id)?;
         } else if needs_delta.is_empty() {
             state.phase = MigrationPhase::CutoverActivate;
-            self.activate_shards(id)?;
         } else {
             state.phase = MigrationPhase::CutoverDeltaPass;
-            for (shard, shard_state) in state.affected_shards.iter_mut() {
+            for (_shard, shard_state) in state.affected_shards.iter_mut() {
                 if let ShardMigrationState::Draining { docs_copied, .. } = shard_state {
                     *shard_state = ShardMigrationState::DeltaPass {
                         docs_copied: *docs_copied,
@@ -472,7 +481,21 @@ impl MigrationCoordinator {
         }
 
         self.in_flight.clear();
-        Ok(state.phase.clone())
+
+        // If going to activate, do that now (drop mutable borrow first)
+        let next_phase = state.phase.clone();
+        if matches!(next_phase, MigrationPhase::CutoverActivate) {
+            drop(state); // Drop mutable borrow before calling activate_shards
+            self.activate_shards(id)?;
+            // Return the new phase after activation
+            return Ok(self
+                .migrations
+                .get(&id)
+                .map(|s| s.phase.clone())
+                .unwrap_or(MigrationPhase::CutoverCleanup));
+        }
+
+        Ok(next_phase)
     }
 
     /// Identify writes that need the delta pass — those that succeeded on OLD but
