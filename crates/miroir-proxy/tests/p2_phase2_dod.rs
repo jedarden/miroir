@@ -539,6 +539,7 @@ fn test_topology_response_shape() {
         nodes: vec![
             NodeInfo {
                 id: "node-0".to_string(),
+                address: "http://meili-0.search.svc:7700".to_string(),
                 status: "active".to_string(),
                 shard_count: 32,
                 last_seen_ms: 100,
@@ -546,6 +547,7 @@ fn test_topology_response_shape() {
             },
             NodeInfo {
                 id: "node-1".to_string(),
+                address: "http://meili-1.search.svc:7700".to_string(),
                 status: "degraded".to_string(),
                 shard_count: 32,
                 last_seen_ms: 5000,
