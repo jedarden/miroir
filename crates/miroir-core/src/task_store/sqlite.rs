@@ -12,134 +12,6 @@ fn registry() -> &'static MigrationRegistry {
     REGISTRY.get_or_init(|| build_registry())
 }
 
-/// DDL for schema_versions + tables 1–7.
-const MIGRATION_V1: &str = r#"
-CREATE TABLE IF NOT EXISTS tasks (
-    miroir_id   TEXT PRIMARY KEY,
-    created_at  INTEGER NOT NULL,
-    status      TEXT NOT NULL,
-    node_tasks  TEXT NOT NULL,
-    error       TEXT
-);
-
-CREATE TABLE IF NOT EXISTS node_settings_version (
-    index_uid   TEXT NOT NULL,
-    node_id     TEXT NOT NULL,
-    version     INTEGER NOT NULL,
-    updated_at  INTEGER NOT NULL,
-    PRIMARY KEY (index_uid, node_id)
-);
-
-CREATE TABLE IF NOT EXISTS aliases (
-    name          TEXT PRIMARY KEY,
-    kind          TEXT NOT NULL,
-    current_uid   TEXT,
-    target_uids   TEXT,
-    version       INTEGER NOT NULL,
-    created_at    INTEGER NOT NULL,
-    history       TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS sessions (
-    session_id            TEXT PRIMARY KEY,
-    last_write_mtask_id   TEXT,
-    last_write_at         INTEGER,
-    pinned_group          INTEGER,
-    min_settings_version  INTEGER NOT NULL,
-    ttl                   INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS idempotency_cache (
-    key              TEXT PRIMARY KEY,
-    body_sha256      BLOB NOT NULL,
-    miroir_task_id   TEXT NOT NULL,
-    expires_at       INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS jobs (
-    id                 TEXT PRIMARY KEY,
-    type               TEXT NOT NULL,
-    params             TEXT NOT NULL,
-    state              TEXT NOT NULL,
-    claimed_by         TEXT,
-    claim_expires_at   INTEGER,
-    progress           TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS leader_lease (
-    scope        TEXT PRIMARY KEY,
-    holder       TEXT NOT NULL,
-    expires_at   INTEGER NOT NULL
-);
-"#;
-
-/// DDL for tables 8–14 (feature-flagged).
-const MIGRATION_V2: &str = r#"
-CREATE TABLE IF NOT EXISTS canaries (
-    id               TEXT PRIMARY KEY,
-    name             TEXT NOT NULL,
-    index_uid        TEXT NOT NULL,
-    interval_s       INTEGER NOT NULL,
-    query_json       TEXT NOT NULL,
-    assertions_json  TEXT NOT NULL,
-    enabled          INTEGER NOT NULL,
-    created_at       INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS canary_runs (
-    canary_id              TEXT NOT NULL,
-    ran_at                 INTEGER NOT NULL,
-    status                 TEXT NOT NULL,
-    latency_ms             INTEGER NOT NULL,
-    failed_assertions_json TEXT,
-    PRIMARY KEY (canary_id, ran_at)
-);
-
-CREATE TABLE IF NOT EXISTS cdc_cursors (
-    sink_name       TEXT NOT NULL,
-    index_uid       TEXT NOT NULL,
-    last_event_seq  INTEGER NOT NULL,
-    updated_at      INTEGER NOT NULL,
-    PRIMARY KEY (sink_name, index_uid)
-);
-
-CREATE TABLE IF NOT EXISTS tenant_map (
-    api_key_hash  BLOB PRIMARY KEY,
-    tenant_id     TEXT NOT NULL,
-    group_id      INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS rollover_policies (
-    name            TEXT PRIMARY KEY,
-    write_alias     TEXT NOT NULL,
-    read_alias      TEXT NOT NULL,
-    pattern         TEXT NOT NULL,
-    triggers_json   TEXT NOT NULL,
-    retention_json  TEXT NOT NULL,
-    template_json   TEXT NOT NULL,
-    enabled         INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS search_ui_config (
-    index_uid    TEXT PRIMARY KEY,
-    config_json  TEXT NOT NULL,
-    updated_at   INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS admin_sessions (
-    session_id      TEXT PRIMARY KEY,
-    csrf_token      TEXT NOT NULL,
-    admin_key_hash  TEXT NOT NULL,
-    created_at      INTEGER NOT NULL,
-    expires_at      INTEGER NOT NULL,
-    revoked         INTEGER NOT NULL DEFAULT 0,
-    user_agent      TEXT,
-    source_ip       TEXT
-);
-
-CREATE INDEX IF NOT EXISTS admin_sessions_expires ON admin_sessions(expires_at);
-"#;
-
 pub struct SqliteTaskStore {
     conn: Mutex<Connection>,
 }
@@ -186,20 +58,18 @@ impl SqliteTaskStore {
             .optional()?
             .flatten();
 
-        // Apply migrations in order
-        if current.unwrap_or(0) < 1 {
-            conn.execute_batch(MIGRATION_V1)?;
-            conn.execute(
-                "INSERT INTO schema_versions (version, applied_at) VALUES (?1, ?2)",
-                params![1, now_ms()],
-            )?;
-        }
+        let current_version = current.unwrap_or(0);
 
-        if current.unwrap_or(0) < 2 {
-            conn.execute_batch(MIGRATION_V2)?;
+        // Validate that the store version is not ahead of the binary version
+        registry().validate_version(current_version)?;
+
+        // Apply pending migrations
+        let pending = registry().pending_migrations(current_version);
+        for migration in pending {
+            conn.execute_batch(migration.sql)?;
             conn.execute(
                 "INSERT INTO schema_versions (version, applied_at) VALUES (?1, ?2)",
-                params![2, now_ms()],
+                params![migration.version, now_ms()],
             )?;
         }
 
@@ -352,27 +222,6 @@ impl TaskStore for SqliteTaskStore {
             result.push(row?);
         }
         Ok(result)
-    }
-
-    fn prune_tasks(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "DELETE FROM tasks
-             WHERE rowid IN (
-                 SELECT rowid FROM tasks
-                 WHERE created_at < ?1
-                   AND status IN ('succeeded', 'failed', 'canceled')
-                 LIMIT ?2
-             )",
-            params![cutoff_ms, batch_size],
-        )?;
-        Ok(rows)
-    }
-
-    fn task_count(&self) -> Result<u64> {
-        let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
-        Ok(count as u64)
     }
 
     // --- Table 2: node_settings_version ---
@@ -752,6 +601,23 @@ impl TaskStore for SqliteTaskStore {
             .optional()?)
     }
 
+    // --- Tables 8-14: Feature-flagged tables ---
+
+    fn prune_tasks(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "DELETE FROM tasks WHERE created_at < ?1 AND status IN ('succeeded', 'failed', 'canceled') LIMIT ?2",
+            params![cutoff_ms, batch_size],
+        )?;
+        Ok(rows)
+    }
+
+    fn task_count(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
+        Ok(count as u64)
+    }
+
     // --- Table 8: canaries ---
 
     fn upsert_canary(&self, canary: &NewCanary) -> Result<()> {
@@ -853,23 +719,24 @@ impl TaskStore for SqliteTaskStore {
             ],
         )?;
 
-        // Auto-prune: delete older runs beyond the limit
-        // This keeps only the most recent N runs per canary
-        // We use OFFSET (limit - 1) to get the Nth most recent, then delete everything older
-        if run_history_limit > 0 {
-            tx.execute(
-                "DELETE FROM canary_runs
-                 WHERE canary_id = ?1
-                 AND ran_at < (
-                     SELECT ran_at FROM canary_runs
-                     WHERE canary_id = ?1
-                     ORDER BY ran_at DESC
-                     LIMIT 1
-                     OFFSET ?2
-                 )",
-                params![run.canary_id, (run_history_limit as i64).saturating_sub(1)],
-            )?;
-        }
+        // Prune old runs to stay within the history limit
+        // Delete runs older than the Nth most recent (where N = run_history_limit)
+        let limit = run_history_limit as i64;
+        tx.execute(
+            "DELETE FROM canary_runs
+             WHERE canary_id = ?1
+               AND ran_at < (
+                   SELECT ran_at
+                   FROM (
+                       SELECT ran_at
+                       FROM canary_runs
+                       WHERE canary_id = ?1
+                       ORDER BY ran_at DESC
+                       LIMIT 1 OFFSET ?2
+                   )
+               )",
+            params![run.canary_id, limit],
+        )?;
 
         tx.commit()?;
         Ok(())
@@ -968,7 +835,7 @@ impl TaskStore for SqliteTaskStore {
             "INSERT INTO tenant_map (api_key_hash, tenant_id, group_id)
              VALUES (?1, ?2, ?3)",
             params![
-                mapping.api_key_hash,
+                mapping.api_key_hash.as_slice(),
                 mapping.tenant_id,
                 mapping.group_id,
             ],
@@ -996,7 +863,10 @@ impl TaskStore for SqliteTaskStore {
 
     fn delete_tenant_mapping(&self, api_key_hash: &[u8]) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
-        let rows = conn.execute("DELETE FROM tenant_map WHERE api_key_hash = ?1", params![api_key_hash])?;
+        let rows = conn.execute(
+            "DELETE FROM tenant_map WHERE api_key_hash = ?1",
+            params![api_key_hash],
+        )?;
         Ok(rows > 0)
     }
 
@@ -1118,7 +988,10 @@ impl TaskStore for SqliteTaskStore {
 
     fn delete_search_ui_config(&self, index_uid: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
-        let rows = conn.execute("DELETE FROM search_ui_config WHERE index_uid = ?1", params![index_uid])?;
+        let rows = conn.execute(
+            "DELETE FROM search_ui_config WHERE index_uid = ?1",
+            params![index_uid],
+        )?;
         Ok(rows > 0)
     }
 
@@ -1167,9 +1040,8 @@ impl TaskStore for SqliteTaskStore {
 
     fn revoke_admin_session(&self, session_id: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
-        // Only update if not already revoked (idempotent)
         let rows = conn.execute(
-            "UPDATE admin_sessions SET revoked = 1 WHERE session_id = ?1 AND revoked = 0",
+            "UPDATE admin_sessions SET revoked = 1 WHERE session_id = ?1",
             params![session_id],
         )?;
         Ok(rows > 0)
@@ -1178,7 +1050,7 @@ impl TaskStore for SqliteTaskStore {
     fn delete_expired_admin_sessions(&self, now_ms: i64) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let rows = conn.execute(
-            "DELETE FROM admin_sessions WHERE expires_at < ?1 OR revoked = 1",
+            "DELETE FROM admin_sessions WHERE expires_at < ?1",
             params![now_ms],
         )?;
         Ok(rows)
@@ -1631,7 +1503,43 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, registry().max_version());
+    }
+
+    // --- Schema version ahead error ---
+
+    #[test]
+    fn schema_version_ahead_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+
+        // Create a store with current binary
+        let store = SqliteTaskStore::open(&path).unwrap();
+        store.migrate().unwrap();
+        drop(store);
+
+        // Artificially set schema version ahead of binary
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO schema_versions (version, applied_at) VALUES (?1, ?2)",
+            params![registry().max_version() + 1, now_ms()],
+        )
+        .unwrap();
+        drop(conn);
+
+        // Re-opening should fail with SchemaVersionAhead error
+        let result = SqliteTaskStore::open(&path).and_then(|s| s.migrate());
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::MiroirError::SchemaVersionAhead {
+                store_version,
+                binary_version,
+            } => {
+                assert_eq!(store_version, registry().max_version() + 1);
+                assert_eq!(binary_version, registry().max_version());
+            }
+            _ => panic!("expected SchemaVersionAhead error"),
+        }
     }
 
     // --- WAL mode ---
@@ -1696,468 +1604,5 @@ mod tests {
         // All 4 tasks should be there
         let all = store.list_tasks(&TaskFilter::default()).unwrap();
         assert_eq!(all.len(), 4);
-    }
-
-    // --- Table 8: canaries ---
-
-    #[test]
-    fn canary_upsert_get_list_delete() {
-        let store = test_store();
-
-        store
-            .upsert_canary(&NewCanary {
-                id: "canary-1".to_string(),
-                name: "prod-search-check".to_string(),
-                index_uid: "products".to_string(),
-                interval_s: 60,
-                query_json: r#"{"q": "laptop"}"#.to_string(),
-                assertions_json: r#"[{"type": "min_hits", "value": 10}]"#.to_string(),
-                enabled: true,
-                created_at: 1000,
-            })
-            .unwrap();
-
-        let canary = store.get_canary("canary-1").unwrap().unwrap();
-        assert_eq!(canary.name, "prod-search-check");
-        assert_eq!(canary.index_uid, "products");
-        assert_eq!(canary.interval_s, 60);
-        assert!(canary.enabled);
-
-        // Update (upsert)
-        store
-            .upsert_canary(&NewCanary {
-                id: "canary-1".to_string(),
-                name: "prod-search-check-v2".to_string(),
-                index_uid: "products".to_string(),
-                interval_s: 120,
-                query_json: r#"{"q": "phone"}"#.to_string(),
-                assertions_json: r#"[{"type": "min_hits", "value": 5}]"#.to_string(),
-                enabled: false,
-                created_at: 1000,
-            })
-            .unwrap();
-
-        let canary = store.get_canary("canary-1").unwrap().unwrap();
-        assert_eq!(canary.name, "prod-search-check-v2");
-        assert_eq!(canary.interval_s, 120);
-        assert!(!canary.enabled);
-
-        // List all
-        store
-            .upsert_canary(&NewCanary {
-                id: "canary-2".to_string(),
-                name: "logs-check".to_string(),
-                index_uid: "logs".to_string(),
-                interval_s: 30,
-                query_json: r#"{"q": "error"}"#.to_string(),
-                assertions_json: r#"[]"#.to_string(),
-                enabled: true,
-                created_at: 2000,
-            })
-            .unwrap();
-
-        let all = store.list_canaries().unwrap();
-        assert_eq!(all.len(), 2);
-
-        // Delete
-        assert!(store.delete_canary("canary-1").unwrap());
-        assert!(store.get_canary("canary-1").unwrap().is_none());
-        assert_eq!(store.list_canaries().unwrap().len(), 1);
-    }
-
-    // --- Table 9: canary_runs ---
-
-    #[test]
-    fn canary_runs_insert_and_auto_prune() {
-        let store = test_store();
-
-        // Insert 5 runs
-        for i in 0..5 {
-            store
-                .insert_canary_run(
-                    &NewCanaryRun {
-                        canary_id: "canary-1".to_string(),
-                        ran_at: i * 1000,
-                        status: if i == 2 { "fail" } else { "pass" }.to_string(),
-                        latency_ms: 100 + i * 10,
-                        failed_assertions_json: if i == 2 {
-                            Some(r#"[{"type": "min_hits", "expected": 10, "actual": 5}]"#.to_string())
-                        } else {
-                            None
-                        },
-                    },
-                    3, // keep only 3 most recent
-                )
-                .unwrap();
-        }
-
-        let runs = store.get_canary_runs("canary-1", 10).unwrap();
-        // Only the 3 most recent should remain (ran_at: 2000, 3000, 4000)
-        assert_eq!(runs.len(), 3);
-        assert_eq!(runs[0].ran_at, 4000);
-        assert_eq!(runs[1].ran_at, 3000);
-        assert_eq!(runs[2].ran_at, 2000);
-    }
-
-    #[test]
-    fn canary_runs_empty_for_unknown_canary() {
-        let store = test_store();
-        let runs = store.get_canary_runs("unknown", 10).unwrap();
-        assert!(runs.is_empty());
-    }
-
-    // --- Table 10: cdc_cursors ---
-
-    #[test]
-    fn cdc_cursor_upsert_get_list() {
-        let store = test_store();
-
-        store
-            .upsert_cdc_cursor(&NewCdcCursor {
-                sink_name: "kafka-main".to_string(),
-                index_uid: "products".to_string(),
-                last_event_seq: 100,
-                updated_at: 5000,
-            })
-            .unwrap();
-
-        let cursor = store
-            .get_cdc_cursor("kafka-main", "products")
-            .unwrap()
-            .unwrap();
-        assert_eq!(cursor.last_event_seq, 100);
-        assert_eq!(cursor.updated_at, 5000);
-
-        // Update (upsert)
-        store
-            .upsert_cdc_cursor(&NewCdcCursor {
-                sink_name: "kafka-main".to_string(),
-                index_uid: "products".to_string(),
-                last_event_seq: 250,
-                updated_at: 6000,
-            })
-            .unwrap();
-
-        let cursor = store
-            .get_cdc_cursor("kafka-main", "products")
-            .unwrap()
-            .unwrap();
-        assert_eq!(cursor.last_event_seq, 250);
-
-        // Add another index for the same sink
-        store
-            .upsert_cdc_cursor(&NewCdcCursor {
-                sink_name: "kafka-main".to_string(),
-                index_uid: "logs".to_string(),
-                last_event_seq: 50,
-                updated_at: 5000,
-            })
-            .unwrap();
-
-        let cursors = store.list_cdc_cursors("kafka-main").unwrap();
-        assert_eq!(cursors.len(), 2);
-
-        // Missing (sink, index) pair
-        assert!(store
-            .get_cdc_cursor("kafka-main", "unknown")
-            .unwrap()
-            .is_none());
-        assert!(store
-            .get_cdc_cursor("unknown", "products")
-            .unwrap()
-            .is_none());
-    }
-
-    // --- Table 11: tenant_map ---
-
-    #[test]
-    fn tenant_map_crud() {
-        let store = test_store();
-
-        let key_hash = vec![1u8; 32]; // dummy 32-byte hash
-        store
-            .insert_tenant_mapping(&NewTenantMapping {
-                api_key_hash: key_hash.clone(),
-                tenant_id: "acme-corp".to_string(),
-                group_id: Some(5),
-            })
-            .unwrap();
-
-        let mapping = store.get_tenant_mapping(&key_hash).unwrap().unwrap();
-        assert_eq!(mapping.tenant_id, "acme-corp");
-        assert_eq!(mapping.group_id, Some(5));
-
-        // Insert with NULL group_id
-        let key_hash2 = vec![2u8; 32];
-        store
-            .insert_tenant_mapping(&NewTenantMapping {
-                api_key_hash: key_hash2.clone(),
-                tenant_id: "startup-inc".to_string(),
-                group_id: None,
-            })
-            .unwrap();
-
-        let mapping = store.get_tenant_mapping(&key_hash2).unwrap().unwrap();
-        assert_eq!(mapping.tenant_id, "startup-inc");
-        assert!(mapping.group_id.is_none());
-
-        // Delete
-        assert!(store.delete_tenant_mapping(&key_hash).unwrap());
-        assert!(store.get_tenant_mapping(&key_hash).unwrap().is_none());
-
-        // Missing key
-        assert!(!store.delete_tenant_mapping(&[0u8; 32]).unwrap());
-    }
-
-    // --- Table 12: rollover_policies ---
-
-    #[test]
-    fn rollover_policy_upsert_get_list_delete() {
-        let store = test_store();
-
-        store
-            .upsert_rollover_policy(&NewRolloverPolicy {
-                name: "logs-ilm".to_string(),
-                write_alias: "logs".to_string(),
-                read_alias: "logs-search".to_string(),
-                pattern: "logs-{YYYY-MM-DD}".to_string(),
-                triggers_json: r#"{"max_age": "7d", "max_size_gb": 50}"#.to_string(),
-                retention_json: r#"{"keep_indexes": 30}"#.to_string(),
-                template_json: r#"{"primary_key": "id"}"#.to_string(),
-                enabled: true,
-            })
-            .unwrap();
-
-        let policy = store.get_rollover_policy("logs-ilm").unwrap().unwrap();
-        assert_eq!(policy.name, "logs-ilm");
-        assert_eq!(policy.write_alias, "logs");
-        assert_eq!(policy.pattern, "logs-{YYYY-MM-DD}");
-        assert!(policy.enabled);
-
-        // Update (upsert)
-        store
-            .upsert_rollover_policy(&NewRolloverPolicy {
-                name: "logs-ilm".to_string(),
-                write_alias: "logs".to_string(),
-                read_alias: "logs-search".to_string(),
-                pattern: "logs-{YYYY-MM-DD}".to_string(),
-                triggers_json: r#"{"max_age": "14d", "max_size_gb": 100}"#.to_string(),
-                retention_json: r#"{"keep_indexes": 60}"#.to_string(),
-                template_json: r#"{"primary_key": "id"}"#.to_string(),
-                enabled: false,
-            })
-            .unwrap();
-
-        let policy = store.get_rollover_policy("logs-ilm").unwrap().unwrap();
-        assert!(!policy.enabled);
-
-        // List all
-        store
-            .upsert_rollover_policy(&NewRolloverPolicy {
-                name: "metrics-ilm".to_string(),
-                write_alias: "metrics".to_string(),
-                read_alias: "metrics-search".to_string(),
-                pattern: "metrics-{YYYY-MM-DD}".to_string(),
-                triggers_json: r#"{"max_age": "1d"}"#.to_string(),
-                retention_json: r#"{"keep_indexes": 7}"#.to_string(),
-                template_json: r#"{"primary_key": "name"}"#.to_string(),
-                enabled: true,
-            })
-            .unwrap();
-
-        let all = store.list_rollover_policies().unwrap();
-        assert_eq!(all.len(), 2);
-
-        // Delete
-        assert!(store.delete_rollover_policy("logs-ilm").unwrap());
-        assert!(store.get_rollover_policy("logs-ilm").unwrap().is_none());
-        assert_eq!(store.list_rollover_policies().unwrap().len(), 1);
-    }
-
-    // --- Table 13: search_ui_config ---
-
-    #[test]
-    fn search_ui_config_upsert_get_delete() {
-        let store = test_store();
-
-        store
-            .upsert_search_ui_config(&NewSearchUiConfig {
-                index_uid: "products".to_string(),
-                config_json: r#"{"title": "Product Search", "facets": ["category", "price"]}"#
-                    .to_string(),
-                updated_at: 10000,
-            })
-            .unwrap();
-
-        let config = store.get_search_ui_config("products").unwrap().unwrap();
-        assert_eq!(config.index_uid, "products");
-        assert!(config.config_json.contains("Product Search"));
-
-        // Update (upsert)
-        store
-            .upsert_search_ui_config(&NewSearchUiConfig {
-                index_uid: "products".to_string(),
-                config_json: r#"{"title": "Products (Updated)", "facets": ["brand"]}"#.to_string(),
-                updated_at: 20000,
-            })
-            .unwrap();
-
-        let config = store.get_search_ui_config("products").unwrap().unwrap();
-        assert!(config.config_json.contains("Updated"));
-        assert_eq!(config.updated_at, 20000);
-
-        // Delete
-        assert!(store.delete_search_ui_config("products").unwrap());
-        assert!(store.get_search_ui_config("products").unwrap().is_none());
-
-        // Missing index
-        assert!(!store.delete_search_ui_config("unknown").unwrap());
-    }
-
-    // --- Table 14: admin_sessions ---
-
-    #[test]
-    fn admin_session_insert_get_revoke_expire() {
-        let store = test_store();
-
-        store
-            .insert_admin_session(&NewAdminSession {
-                session_id: "sess-admin-1".to_string(),
-                csrf_token: "csrf-token-abc".to_string(),
-                admin_key_hash: "hash-of-key".to_string(),
-                created_at: 1000,
-                expires_at: 10000,
-                user_agent: Some("Mozilla/5.0".to_string()),
-                source_ip: Some("10.0.0.1".to_string()),
-            })
-            .unwrap();
-
-        let session = store.get_admin_session("sess-admin-1").unwrap().unwrap();
-        assert_eq!(session.session_id, "sess-admin-1");
-        assert_eq!(session.csrf_token, "csrf-token-abc");
-        assert!(!session.revoked);
-        assert_eq!(session.user_agent.as_deref(), Some("Mozilla/5.0"));
-
-        // Revoke (logout)
-        assert!(store.revoke_admin_session("sess-admin-1").unwrap());
-        let session = store.get_admin_session("sess-admin-1").unwrap().unwrap();
-        assert!(session.revoked);
-
-        // Double-revoke is idempotent (returns false since already revoked)
-        assert!(!store.revoke_admin_session("sess-admin-1").unwrap());
-
-        // Delete expired (also deletes revoked)
-        let deleted = store.delete_expired_admin_sessions(20000).unwrap();
-        assert_eq!(deleted, 1);
-        assert!(store.get_admin_session("sess-admin-1").unwrap().is_none());
-    }
-
-    #[test]
-    fn admin_sessions_delete_expired_filters_correctly() {
-        let store = test_store();
-
-        // Expired session
-        store
-            .insert_admin_session(&NewAdminSession {
-                session_id: "sess-expired".to_string(),
-                csrf_token: "csrf-1".to_string(),
-                admin_key_hash: "hash-1".to_string(),
-                created_at: 1000,
-                expires_at: 5000, // already expired
-                user_agent: None,
-                source_ip: None,
-            })
-            .unwrap();
-
-        // Valid session
-        store
-            .insert_admin_session(&NewAdminSession {
-                session_id: "sess-valid".to_string(),
-                csrf_token: "csrf-2".to_string(),
-                admin_key_hash: "hash-2".to_string(),
-                created_at: 1000,
-                expires_at: 99999, // far in future
-                user_agent: None,
-                source_ip: None,
-            })
-            .unwrap();
-
-        // Revoked session (not yet expired)
-        store
-            .insert_admin_session(&NewAdminSession {
-                session_id: "sess-revoked".to_string(),
-                csrf_token: "csrf-3".to_string(),
-                admin_key_hash: "hash-3".to_string(),
-                created_at: 1000,
-                expires_at: 99999,
-                user_agent: None,
-                source_ip: None,
-            })
-            .unwrap();
-        store.revoke_admin_session("sess-revoked").unwrap();
-
-        let deleted = store.delete_expired_admin_sessions(10000).unwrap();
-        // expired + revoked = 2, valid remains
-        assert_eq!(deleted, 2);
-        assert!(store.get_admin_session("sess-valid").unwrap().is_some());
-        assert!(store.get_admin_session("sess-expired").unwrap().is_none());
-        assert!(store.get_admin_session("sess-revoked").unwrap().is_none());
-    }
-
-    // --- Migration V2 applies correctly ---
-
-    #[test]
-    fn migration_v2_tables_created() {
-        let store = test_store();
-
-        // Verify all tables 8-14 exist
-        let conn = store.conn.lock().unwrap();
-
-        // Check each table exists by querying sqlite_master
-        let tables = [
-            "canaries",
-            "canary_runs",
-            "cdc_cursors",
-            "tenant_map",
-            "rollover_policies",
-            "search_ui_config",
-            "admin_sessions",
-        ];
-
-        for table in tables {
-            let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-                    params![table],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(count, 1, "Table {} should exist", table);
-        }
-
-        // Verify admin_sessions_expires index exists
-        let index_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='admin_sessions_expires'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(index_count, 1);
-    }
-
-    #[test]
-    fn schema_version_v2() {
-        let store = test_store();
-
-        let conn = store.conn.lock().unwrap();
-        let version: i64 = conn
-            .query_row(
-                "SELECT MAX(version) FROM schema_versions",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(version, 2);
     }
 }

@@ -28,6 +28,10 @@ pub enum MiroirError {
     #[error("task error: {0}")]
     Task(String),
 
+    /// Task store error.
+    #[error("task store error: {0}")]
+    TaskStore(String),
+
     /// IO error.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -35,4 +39,19 @@ pub enum MiroirError {
     /// JSON serialization/deserialization error.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+
+    /// SQLite error.
+    #[error("SQLite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+
+    /// Schema version mismatch.
+    #[error("schema version {store_version} is ahead of binary version {binary_version}; cannot safely start. Restore from backup or upgrade binary.")]
+    SchemaVersionAhead {
+        store_version: i64,
+        binary_version: i64,
+    },
+
+    /// Migration error.
+    #[error("migration error: {0}")]
+    Migration(String),
 }
