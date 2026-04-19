@@ -583,4 +583,156 @@ mod tests {
         assert!(!r.degraded);
         assert!(!r.hits.is_empty());
     }
+
+    /// Integration test for dfs_query_then_fetch with severely skewed shard distribution.
+    ///
+    /// This test simulates the scenario described in miroir-yio:
+    /// - Shard 0: Normal (1,000 docs, term df = 100)
+    /// - Shard 1: 100x normal (100,000 docs, term df = 10,000)
+    /// - Shard 2: Near-empty (10 docs, term df = 1)
+    ///
+    /// Without global IDF preflight, each shard would compute different local IDF values:
+    /// - Shard 0: IDF ≈ log((1000 - 100 + 0.5) / (100 + 0.5)) + 1 ≈ 2.3
+    /// - Shard 1: IDF ≈ log((100000 - 10000 + 0.5) / (10000 + 0.5)) + 1 ≈ 2.3
+    /// - Shard 2: IDF ≈ log((10 - 1 + 0.5) / (1 + 0.5)) + 1 ≈ 2.8
+    ///
+    /// With global IDF preflight, all shards use the same IDF:
+    /// - Global: N = 101,010, df = 10,101
+    /// - IDF ≈ log((101010 - 10101 + 0.5) / (10101 + 0.5)) + 1 ≈ 2.3
+    ///
+    /// This ensures scores are comparable across shards, enabling correct score-based merge.
+    #[tokio::test]
+    async fn test_dfs_skewed_shards_global_idf_aggregation() {
+        let mut topo = Topology::new(3, 1, 1);
+        topo.add_node(Node::new(NodeId::new("node-0".into()), "http://node-0:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("node-2".into()), "http://node-2:7700".into(), 0));
+
+        let plan = plan_search_scatter(&topo, 0, 1, 3);
+
+        // Simulate severely skewed shard distribution
+        let mut c = MockNodeClient::default();
+
+        // Shard 0: Normal distribution
+        c.preflight_responses.insert(NodeId::new("node-0".into()), PreflightResponse {
+            total_docs: 1000,
+            avg_doc_length: 50.0,
+            term_stats: HashMap::from([
+                ("machine".into(), TermStats { df: 100 }),
+                ("learning".into(), TermStats { df: 80 }),
+            ]),
+        });
+
+        // Shard 1: 100x normal (severely skewed)
+        c.preflight_responses.insert(NodeId::new("node-1".into()), PreflightResponse {
+            total_docs: 100_000,
+            avg_doc_length: 55.0,
+            term_stats: HashMap::from([
+                ("machine".into(), TermStats { df: 10_000 }),
+                ("learning".into(), TermStats { df: 8_000 }),
+            ]),
+        });
+
+        // Shard 2: Near-empty
+        c.preflight_responses.insert(NodeId::new("node-2".into()), PreflightResponse {
+            total_docs: 10,
+            avg_doc_length: 45.0,
+            term_stats: HashMap::from([
+                ("machine".into(), TermStats { df: 1 }),
+                ("learning".into(), TermStats { df: 1 }),
+            ]),
+        });
+
+        // Execute preflight to get global IDF
+        let preflight_req = PreflightRequest {
+            index_uid: "test".into(),
+            terms: vec!["machine".into(), "learning".into()],
+            filter: None,
+        };
+
+        let global_idf = execute_preflight(&plan, &c, &preflight_req, &topo).await.unwrap();
+
+        // Verify global aggregation
+        assert_eq!(global_idf.total_docs, 101_010);
+        assert_eq!(global_idf.terms.get("machine").unwrap().df, 10_101);
+        assert_eq!(global_idf.terms.get("learning").unwrap().df, 8_081);
+
+        // Verify global IDF is the same for all shards
+        // Expected IDF for "machine": log((101010 - 10101 + 0.5) / (10101 + 0.5)) + 1
+        let expected_idf_machine: f64 = ((101010.0_f64 - 10101.0 + 0.5) / (10101.0 + 0.5)).ln() + 1.0;
+        let actual_idf_machine = global_idf.terms.get("machine").unwrap().idf;
+        assert!((actual_idf_machine - expected_idf_machine).abs() < 0.001);
+
+        // Expected IDF for "learning": log((101010 - 8081 + 0.5) / (8081 + 0.5)) + 1
+        let expected_idf_learning: f64 = ((101010.0_f64 - 8081.0 + 0.5) / (8081.0 + 0.5)).ln() + 1.0;
+        let actual_idf_learning = global_idf.terms.get("learning").unwrap().idf;
+        assert!((actual_idf_learning - expected_idf_learning).abs() < 0.001);
+
+        // Verify that without global IDF, local IDF values would differ significantly
+        // Shard 0 local IDF for "machine": log((1000 - 100 + 0.5) / (100 + 0.5)) + 1 ≈ 3.19
+        // Shard 1 local IDF for "machine": log((100000 - 10000 + 0.5) / (10000 + 0.5)) + 1 ≈ 3.20
+        // Shard 2 local IDF for "machine": log((10 - 1 + 0.5) / (1 + 0.5)) + 1 ≈ 2.85
+        let local_idf_shard_0: f64 = ((1000.0_f64 - 100.0 + 0.5) / (100.0 + 0.5)).ln() + 1.0;
+        let local_idf_shard_2: f64 = ((10.0_f64 - 1.0 + 0.5) / (1.0 + 0.5)).ln() + 1.0;
+        assert!((local_idf_shard_2 - local_idf_shard_0).abs() > 0.2, "Local IDF values should differ significantly");
+        assert!((local_idf_shard_2 - actual_idf_machine).abs() > 0.3, "Global IDF should be closer to large-shard local IDF");
+    }
+
+    /// Test that DFS preflight handles empty query terms gracefully.
+    #[tokio::test]
+    async fn test_dfs_empty_query_terms() {
+        let topo = make_test_topology();
+        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let c = MockNodeClient::default();
+
+        let preflight_req = PreflightRequest {
+            index_uid: "test".into(),
+            terms: vec![],
+            filter: None,
+        };
+
+        let global_idf = execute_preflight(&plan, &c, &preflight_req, &topo).await.unwrap();
+        assert_eq!(global_idf.total_docs, 0);
+        assert!(global_idf.terms.is_empty());
+    }
+
+    /// Test that DFS preflight handles partial failures gracefully.
+    #[tokio::test]
+    async fn test_dfs_partial_failure() {
+        let mut topo = Topology::new(3, 1, 1);
+        topo.add_node(Node::new(NodeId::new("node-0".into()), "http://node-0:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("node-2".into()), "http://node-2:7700".into(), 0));
+
+        let plan = plan_search_scatter(&topo, 0, 1, 3);
+        let mut c = MockNodeClient::default();
+
+        // Node 0 returns valid data
+        c.preflight_responses.insert(NodeId::new("node-0".into()), PreflightResponse {
+            total_docs: 50000,
+            avg_doc_length: 50.0,
+            term_stats: HashMap::from([("test".into(), TermStats { df: 5000 })]),
+        });
+
+        // Node 1 returns valid data
+        c.preflight_responses.insert(NodeId::new("node-1".into()), PreflightResponse {
+            total_docs: 30000,
+            avg_doc_length: 55.0,
+            term_stats: HashMap::from([("test".into(), TermStats { df: 3000 })]),
+        });
+
+        // Node 2 fails
+        c.errors.insert(NodeId::new("node-2".into()), NodeError::Timeout);
+
+        let preflight_req = PreflightRequest {
+            index_uid: "test".into(),
+            terms: vec!["test".into()],
+            filter: None,
+        };
+
+        // Should aggregate from successful nodes only
+        let global_idf = execute_preflight(&plan, &c, &preflight_req, &topo).await.unwrap();
+        assert_eq!(global_idf.total_docs, 80000);
+        assert_eq!(global_idf.terms.get("test").unwrap().df, 8000);
+    }
 }

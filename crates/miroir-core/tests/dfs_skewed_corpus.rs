@@ -20,14 +20,12 @@
 //! - Both shards use the same IDF, so the doc with higher term density (shard 1)
 //!   correctly ranks higher after normalization.
 
-use miroir_core::merger::{MergeInput, ScoreMergeStrategy, MergedSearchResult, MergeStrategy};
+use miroir_core::merger::{MergeInput, ScoreMergeStrategy, MergeStrategy};
 use miroir_core::scatter::{
-    PreflightRequest, PreflightResponse, TermStats, GlobalIdf, SearchRequest,
-    plan_search_scatter, execute_preflight, dfs_query_then_fetch_search,
-    MockNodeClient,
+    PreflightRequest, PreflightResponse, TermStats, GlobalIdf,
+    plan_search_scatter, MockNodeClient,
 };
 use miroir_core::topology::{Node, NodeId, Topology};
-use miroir_core::config::UnavailableShardPolicy;
 use serde_json::json;
 use std::collections::HashMap;
 
