@@ -1,0 +1,211 @@
+---
+# WorkflowTemplate: miroir-release
+# Triggered by tags matching v[0-9]+.[0-9]+.[0-9]+* via Argo Events sensor.
+# Produces: GitHub release, ghcr.io image (with tags), Helm chart on gh-pages + OCI.
+# Pre-release tags (containing '-') skip :latest and float tags.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: miroir-release
+  namespace: argo-workflows
+  annotations:
+    workflows.argoproj.io/description: "Build and publish a miroir release from a semver tag"
+spec:
+  entrypoint: release-pipeline
+  serviceAccountName: argo-runner
+  arguments:
+    parameters:
+      - name: tag
+        value: ""
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 4Gi
+
+  templates:
+
+    # ------------------------------------------------------------------ #
+    # Top-level pipeline
+    # ------------------------------------------------------------------ #
+    - name: release-pipeline
+      steps:
+        - - name: check-release-ready
+            template: release-ready
+            arguments:
+              parameters:
+                - name: tag
+                  value: "{{workflow.parameters.tag}}"
+
+        - - name: build
+            template: build-image
+            arguments:
+              parameters:
+                - name: tag
+                  value: "{{workflow.parameters.tag}}"
+
+        - - name: publish-chart
+            template: helm-publish
+            arguments:
+              parameters:
+                - name: tag
+                  value: "{{workflow.parameters.tag}}"
+
+        - - name: github-release
+            template: create-github-release
+            arguments:
+              parameters:
+                - name: tag
+                  value: "{{workflow.parameters.tag}}"
+
+    # ------------------------------------------------------------------ #
+    # 1. Release-ready gate
+    # ------------------------------------------------------------------ #
+    - name: release-ready
+      inputs:
+        parameters:
+          - name: tag
+      container:
+        image: alpine/git:latest
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone https://github.com/jedarden/miroir.git /src
+            cd /src
+            git checkout "{{inputs.parameters.tag}}"
+            sh scripts/release-ready-check.sh "{{inputs.parameters.tag}}"
+
+    # ------------------------------------------------------------------ #
+    # 2. Build Docker image and push
+    # ------------------------------------------------------------------ #
+    - name: build-image
+      inputs:
+        parameters:
+          - name: tag
+      volumes:
+        - name: docker-config
+          secret:
+            secretName: ghcr-credentials
+            items:
+              - key: .dockerconfigjson
+                path: config.json
+      container:
+        image: gcr.io/kaniko-project/executor:latest
+        args:
+          - --context=git://github.com/jedarden/miroir#refs/tags/{{inputs.parameters.tag}}
+          - --dockerfile=Dockerfile
+          - --destination=ghcr.io/jedarden/miroir:{{inputs.parameters.tag}}
+          - --build-arg=VERSION={{inputs.parameters.tag}}
+          # Float tags only for stable releases (no '-' in version suffix)
+          - --destination={{=sprig.regexMatch("^v[0-9]+\\.[0-9]+\\.[0-9]+$", inputs.parameters.tag) ? "ghcr.io/jedarden/miroir:" + sprig.regexReplaceAll("^v([0-9]+)\\..*", inputs.parameters.tag, "$1") : "ghcr.io/jedarden/miroir:_skip_major"}}
+          - --destination={{=sprig.regexMatch("^v[0-9]+\\.[0-9]+\\.[0-9]+$", inputs.parameters.tag) ? "ghcr.io/jedarden/miroir:" + sprig.regexReplaceAll("^v([0-9]+\\.[0-9]+).*", inputs.parameters.tag, "$1") : "ghcr.io/jedarden/miroir:_skip_minor"}}
+          - --destination={{=sprig.regexMatch("^v[0-9]+\\.[0-9]+\\.[0-9]+$", inputs.parameters.tag) ? "ghcr.io/jedarden/miroir:latest" : "ghcr.io/jedarden/miroir:_skip_latest"}}
+          - --ignore-path=/skip_nonexistent
+        volumeMounts:
+          - name: docker-config
+            mountPath: /kaniko/.docker
+
+    # ------------------------------------------------------------------ #
+    # 3. Helm chart: gh-pages + OCI
+    # ------------------------------------------------------------------ #
+    - name: helm-publish
+      inputs:
+        parameters:
+          - name: tag
+      script:
+        image: alpine/helm:latest
+        command: [sh]
+        source: |
+          set -e
+          TAG="{{inputs.parameters.tag}}"
+          VERSION="${TAG#v}"
+          IS_STABLE=$(echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' && echo true || echo false)
+
+          apk add --no-cache git
+
+          # Clone and checkout the release tag
+          git clone https://github.com/jedarden/miroir.git /src
+          cd /src
+          git checkout "$TAG"
+
+          # Package the chart
+          helm package charts/miroir --version "$VERSION" --app-version "$VERSION" -d /dist
+
+          # Push chart as OCI to ghcr.io
+          echo "$GHCR_TOKEN" | helm registry login ghcr.io -u jedarden --password-stdin
+          helm push /dist/miroir-${VERSION}.tgz oci://ghcr.io/jedarden/charts
+
+          # Publish to gh-pages (index.yaml)
+          git clone --branch gh-pages \
+              https://x-access-token:${GITHUB_TOKEN}@github.com/jedarden/miroir.git /ghpages || \
+            (git clone https://x-access-token:${GITHUB_TOKEN}@github.com/jedarden/miroir.git /ghpages && \
+             cd /ghpages && git checkout --orphan gh-pages && git rm -rf . && \
+             echo "# Miroir Helm Charts" > index.yaml && git add index.yaml && \
+             git commit -m "init gh-pages" && git push origin gh-pages && cd /)
+
+          cp /dist/miroir-${VERSION}.tgz /ghpages/
+          cd /ghpages
+          helm repo index . --url https://jedarden.github.io/miroir
+          git add .
+          git config user.email "ci@jedarden.com"
+          git config user.name "miroir-release-bot"
+          git commit -m "Release chart $VERSION"
+          git push origin gh-pages
+        env:
+          - name: GHCR_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: ghcr-credentials
+                key: token
+          - name: GITHUB_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: github-token
+                key: token
+
+    # ------------------------------------------------------------------ #
+    # 4. GitHub release with CHANGELOG notes
+    # ------------------------------------------------------------------ #
+    - name: create-github-release
+      inputs:
+        parameters:
+          - name: tag
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: |
+          set -e
+          apk add --no-cache curl git
+
+          TAG="{{inputs.parameters.tag}}"
+          VERSION="${TAG#v}"
+          IS_PRERELEASE=$(echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' && echo false || echo true)
+
+          git clone --depth 1 --branch "$TAG" https://github.com/jedarden/miroir.git /src
+          cd /src
+
+          # Extract release notes from CHANGELOG.md using plan §7 awk script
+          NOTES=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## /{exit} found{print}" CHANGELOG.md)
+
+          if [ -z "$NOTES" ]; then
+            NOTES="See CHANGELOG.md for details."
+          fi
+
+          # Create GitHub release via API
+          curl -sf -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/repos/jedarden/miroir/releases \
+            -d "$(printf '{"tag_name":"%s","name":"miroir %s","body":%s,"prerelease":%s,"draft":false}' \
+              "$TAG" "$TAG" "$(echo "$NOTES" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+              "$IS_PRERELEASE")"
+        env:
+          - name: GITHUB_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: github-token
+                key: token
