@@ -1,0 +1,152 @@
+{{/*
+Miroir PrometheusRule — alerting rules (plan §10 + §14.9)
+*/}}
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "miroir.fullname" . }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+  {{- with .Values.prometheusRule.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  groups:
+    - name: miroir.availability
+      rules:
+        - alert: MiroirDegradedShards
+          expr: miroir_degraded_shards_total > 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Miroir has degraded shards"
+            description: >-
+              {{ include "miroir.fullname" . }} has {{ "{{ $value }}" }} degraded shard(s).
+              Self-healing should resolve this; alert fires when healing failed.
+
+        - alert: MiroirNodeDown
+          expr: miroir_node_healthy == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Miroir node is down"
+            description: >-
+              Node {{ "{{ $labels.node_id }}" }} in replica group
+              {{ "{{ $labels.replica_group }}" }} has been unhealthy for 5 minutes.
+
+        - alert: MiroirHighSearchLatency
+          expr: histogram_quantile(0.95, sum(rate(miroir_search_duration_seconds_bucket[5m])) by (le)) > 2
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Miroir search latency is high"
+            description: >-
+              p95 search latency is {{ "{{ $value | humanizeDuration }}" }},
+              exceeding the 2s threshold.
+
+        - alert: MiroirTaskStuck
+          expr: miroir_task_processing_age_seconds > 3600
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Miroir task stuck in processing"
+            description: >-
+              Task {{ "{{ $labels.task_type }}" }} has been processing for
+              {{ "{{ $value | humanizeDuration }}" }}.
+
+        - alert: MiroirRebalanceStuck
+          expr: miroir_rebalance_in_progress == 1
+          for: 2h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Miroir rebalance has been running for over 2 hours"
+            description: >-
+              A shard rebalance has been in progress for {{ "{{ $value }}" }}.
+              This usually indicates a stuck migration.
+
+        - alert: MiroirSettingsDivergence
+          expr: count(count by (setting) (miroir_node_setting_value)) by (setting) > 1
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Miroir settings divergence detected"
+            description: >-
+              Setting {{ "{{ $labels.setting }}" }} has divergent values across nodes.
+              Self-healing (§13.5) should auto-repair; alert fires when it hasn't.
+
+        - alert: MiroirAntientropyMismatch
+          expr: increase(miroir_antientropy_mismatch_total[6h]) >= 3
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Miroir anti-entropy found persistent mismatches"
+            description: >-
+              Anti-entropy repair has detected mismatches on
+              {{ "{{ $value }}" }} consecutive passes (≈18h default schedule).
+              Self-healing (§13.8) failed to close the gap.
+
+    - name: miroir.resource_pressure
+      rules:
+        - alert: MiroirMemoryPressure
+          expr: miroir_memory_pressure >= 2
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Miroir memory pressure is elevated"
+            description: >-
+              Memory pressure level {{ "{{ $value }}" }} (>=2 means moderate or higher)
+              sustained for 5 minutes.
+
+        - alert: MiroirRequestQueueBacklog
+          expr: miroir_request_queue_depth > 500
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Miroir request queue backlog is high"
+            description: >-
+              Request queue depth is {{ "{{ $value }}" }}, exceeding the 500 threshold.
+
+        - alert: MiroirBackgroundJobBacklog
+          expr: miroir_background_queue_depth > 100
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Miroir background job queue backlog is high"
+            description: >-
+              Background job queue depth is {{ "{{ $value }}" }},
+              exceeding the 100 threshold for 10 minutes.
+
+        - alert: MiroirPeerDiscoveryGap
+          expr: count(miroir_peer_known) by (namespace, job) != count(miroir_node_healthy == 1) by (namespace, job)
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Miroir peer discovery is out of sync"
+            description: >-
+              Number of discovered peers does not match number of healthy nodes.
+
+        - alert: MiroirNoLeader
+          expr: sum(miroir_leader) == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Miroir has no elected leader"
+            description: >-
+              No miroir instance holds the leader lease.
+              Cluster coordination is stalled.
+{{- end }}
