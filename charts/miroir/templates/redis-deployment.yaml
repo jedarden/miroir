@@ -1,5 +1,5 @@
 {{/*
-Redis Deployment (only when taskStore.backend=redis)
+Redis Deployment (only when redis.enabled=true)
 */}}
 {{- if eq (include "miroir.redisEnabled" .) "true" }}
 apiVersion: apps/v1
@@ -40,6 +40,19 @@ spec:
             - name: redis
               containerPort: 6379
               protocol: TCP
+          {{- if .Values.redis.auth.enabled }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miroir.redisSecretName" . }}
+                  key: redis-password
+          {{- end }}
+          args:
+            {{- if .Values.redis.auth.enabled }}
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            {{- end }}
           {{- if .Values.redis.persistence.enabled }}
           volumeMounts:
             - name: data
@@ -47,12 +60,24 @@ spec:
           {{- end }}
           livenessProbe:
             exec:
-              command: ["redis-cli", "ping"]
+              command:
+                - redis-cli
+                {{- if .Values.redis.auth.enabled }}
+                - -a
+                - $(REDIS_PASSWORD)
+                {{- end }}
+                - ping
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             exec:
-              command: ["redis-cli", "ping"]
+              command:
+                - redis-cli
+                {{- if .Values.redis.auth.enabled }}
+                - -a
+                - $(REDIS_PASSWORD)
+                {{- end }}
+                - ping
             initialDelaySeconds: 3
             periodSeconds: 5
           resources:

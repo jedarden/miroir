@@ -1,6 +1,6 @@
 {{/*
 Miroir CDC Buffer PVC
-Only rendered when cdcPvc.enabled=true
+Only rendered when cdc.buffer.primary=="pvc" or cdc.buffer.overflow=="pvc"
 */}}
 {{- if eq (include "miroir.cdcPvcEnabled" .) "true" }}
 apiVersion: v1
@@ -15,8 +15,8 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: {{ .Values.cdcPvc.size | default "5Gi" }}
-  {{- if .Values.cdcPvc.storageClass }}
-  storageClassName: {{ .Values.cdcPvc.storageClass }}
+      storage: {{ .Values.miroir.cdc.buffer.pvc_size | default "10Gi" }}
+  {{- if .Values.miroir.cdc.buffer.pvc_storage_class }}
+  storageClassName: {{ .Values.miroir.cdc.buffer.pvc_storage_class }}
   {{- end }}
 {{- end }}
