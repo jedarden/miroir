@@ -1,0 +1,3 @@
+[env]
+CC_x86_64_unknown_linux_musl = "gcc"
+CFLAGS_x86_64_unknown_linux_musl = "-static"
