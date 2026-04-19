@@ -21,6 +21,8 @@ futures-util = "0.3"
 redis = { version = "0.27", features = ["aio", "tokio-comp", "connection-manager"], optional = true }
 hex = "0.4"
 tokio = { version = "1", features = ["rt", "time"] }
+# Axum integration (optional — enable via `axum` feature)
+axum = { version = "0.7", optional = true }
 
 # Raft prototype (P12.OP2 research) — not for production use
 # openraft 0.9.22 fails on stable Rust 1.87 (validit uses let_chains).
@@ -31,6 +33,7 @@ bincode = { version = "2", features = ["serde"], optional = true }
 default = []
 raft-proto = ["bincode"]
 redis-store = ["redis"]
+axum = ["dep:axum"]
 # Enable when openraft compiles on stable Rust:
 # raft-full = ["openraft", "bincode"]
 # (openraft dep removed from manifest — restore when upstream fixes let_chains on stable)

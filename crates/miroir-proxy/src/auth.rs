@@ -6,10 +6,11 @@
 
 use axum::{
     extract::{Request, State},
-    http::{HeaderMap, Method, StatusCode},
+    http::{HeaderMap, Method},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use miroir_core::{MeilisearchError, MiroirCode};
 use subtle::ConstantTimeEq;
 
 // ---------------------------------------------------------------------------
@@ -216,17 +217,6 @@ fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
     auth.strip_prefix("Bearer ")
 }
 
-/// Error response bodies matching Meilisearch error shape.
-fn auth_error_body(code: &str, message: &str) -> String {
-    serde_json::json!({
-        "message": message,
-        "code": code,
-        "type": "auth",
-        "link": format!("https://docs.miroir.dev/errors#{}", code)
-    })
-    .to_string()
-}
-
 /// Axum middleware implementing the bearer-token dispatch chain (plan §5).
 pub async fn auth_middleware(
     State(state): State<AuthState>,
@@ -253,44 +243,22 @@ pub async fn auth_middleware(
     let verdict = dispatch_bearer(&method, &path, bearer, &state);
 
     match verdict {
-        AuthVerdict::Authenticated(_) => next.run(req).await,
-        AuthVerdict::Exempt => next.run(req).await,
-        AuthVerdict::JwtInvalid => {
-            let body = auth_error_body(
-                "miroir_jwt_invalid",
-                "The provided JWT is invalid or expired.",
-            );
-            (
-                StatusCode::UNAUTHORIZED,
-                [(axum::http::header::CONTENT_TYPE, "application/json")],
-                body,
-            )
-                .into_response()
-        }
-        AuthVerdict::JwtScopeDenied => {
-            let body = auth_error_body(
-                "miroir_jwt_scope_denied",
-                "The provided JWT does not grant access to this resource.",
-            );
-            (
-                StatusCode::FORBIDDEN,
-                [(axum::http::header::CONTENT_TYPE, "application/json")],
-                body,
-            )
-                .into_response()
-        }
-        AuthVerdict::InvalidAuth => {
-            let body = auth_error_body(
-                "miroir_invalid_auth",
-                "The provided authorization is invalid.",
-            );
-            (
-                StatusCode::UNAUTHORIZED,
-                [(axum::http::header::CONTENT_TYPE, "application/json")],
-                body,
-            )
-                .into_response()
-        }
+        AuthVerdict::Authenticated(_) | AuthVerdict::Exempt => next.run(req).await,
+        AuthVerdict::JwtInvalid => MeilisearchError::new(
+            MiroirCode::JwtInvalid,
+            "The provided JWT is invalid or expired.",
+        )
+        .into_response(),
+        AuthVerdict::JwtScopeDenied => MeilisearchError::new(
+            MiroirCode::JwtScopeDenied,
+            "The provided JWT does not grant access to this resource.",
+        )
+        .into_response(),
+        AuthVerdict::InvalidAuth => MeilisearchError::new(
+            MiroirCode::InvalidAuth,
+            "The provided authorization is invalid.",
+        )
+        .into_response(),
     }
 }
 

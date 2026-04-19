@@ -10,6 +10,9 @@
 
 use serde::Serialize;
 
+#[cfg(feature = "axum")]
+use axum::{http::{StatusCode, header}, response::{IntoResponse, Response}};
+
 /// Error type categories matching Meilisearch's classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -183,6 +186,24 @@ impl MeilisearchError {
                 ErrorType::Internal => 500,
                 ErrorType::System => 503,
             })
+    }
+}
+
+#[cfg(feature = "axum")]
+impl IntoResponse for MeilisearchError {
+    fn into_response(self) -> Response {
+        let status = self.http_status();
+
+        let body = serde_json::to_string(&self).unwrap_or_else(|_| {
+            r#"{"message":"internal error","code":"internal","type":"internal"}"#.to_string()
+        });
+
+        (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            [(header::CONTENT_TYPE, "application/json")],
+            body,
+        )
+            .into_response()
     }
 }
 

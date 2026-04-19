@@ -24,7 +24,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 prometheus = "0.13"
 uuid = { version = "1.11", features = ["v7"] }
 subtle = "2"
-miroir-core = { path = "../miroir-core" }
+miroir-core = { path = "../miroir-core", features = ["axum"] }
 
 [dev-dependencies]
 tower = "0.5"

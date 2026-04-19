@@ -48,12 +48,12 @@ async fn main() -> anyhow::Result<()> {
         .nest("/_miroir", admin::router())
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(axum::middleware::from_fn_with_state(
-            metrics.clone(),
-            middleware::telemetry_middleware,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
             auth_state,
             auth::auth_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            metrics.clone(),
+            middleware::telemetry_middleware,
         ))
         .with_state(());
 
