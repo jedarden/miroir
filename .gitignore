@@ -5,3 +5,6 @@
 *.swo
 *~
 .DS_Store
+__pycache__/
+*.pyc
+tarpaulin-report.json

@@ -317,6 +317,7 @@ mod tests {
     /// Acceptance: miroir_task_registry_size gauge drops after a prune cycle.
     #[test]
     fn gauge_drops_after_prune() {
+        let _lock = GAUGE_LOCK.lock().unwrap();
         let store = test_store();
         let ten_days_ms: i64 = 10 * 24 * 3600 * 1000;
         let old_time = now() - ten_days_ms;
