@@ -72,6 +72,7 @@ impl TimeWindow {
 /// Resharding configuration (plan §13.1 + schedule window guard).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReshardingConfig {
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_backfill_concurrency")]
     pub backfill_concurrency: usize,
