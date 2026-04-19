@@ -73,7 +73,7 @@ pub fn shard_for_key(primary_key: &str, shard_count: u32) -> u32 {
 ///
 /// Returns the number of shard-node pairs that differ between old and new.
 /// For each shard, counts nodes in new assignment that weren't in old.
-fn count_assignment_diff(
+pub fn count_assignment_diff(
     old_shards: &[(u32, Vec<NodeId>)],
     new_shards: &[(u32, Vec<NodeId>)],
 ) -> usize {

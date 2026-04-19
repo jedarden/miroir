@@ -7,14 +7,15 @@ repository.workspace = true
 autobenches = false
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml = "0.9"
 twox-hash = "2"
-thiserror = "2"
-tracing = "0.1"
+thiserror = { workspace = true }
+tracing = { workspace = true }
 uuid = { version = "1", features = ["v4", "serde"] }
 config = "0.14"
+rusqlite = { workspace = true }
 
 # Raft prototype (P12.OP2 research) — not for production use
 # openraft 0.9.22 fails on stable Rust 1.87 (validit uses let_chains).
@@ -31,4 +32,15 @@ raft-proto = ["bincode"]
 name = "bench-reshard-load"
 path = "benches/reshard_load.rs"
 
+[[bench]]
+name = "merger_bench"
+harness = false
+
+[[bench]]
+name = "router_bench"
+harness = false
+
 [dev-dependencies]
+tempfile = "3"
+proptest = "1"
+criterion = "0.5"
