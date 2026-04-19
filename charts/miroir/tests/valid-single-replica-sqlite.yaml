@@ -1,0 +1,9 @@
+# Test case: replicas: 1, backend: sqlite
+# Expected: helm lint --strict passes (single replica can use SQLite)
+---
+miroir:
+  replicas: 1
+
+taskStore:
+  backend: sqlite
+  path: /data/miroir-tasks.db

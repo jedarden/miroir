@@ -1,0 +1,9 @@
+# Test case: replicas: 2, backend: redis
+# Expected: helm lint --strict passes (multiple replicas with Redis)
+---
+miroir:
+  replicas: 2
+
+taskStore:
+  backend: redis
+  url: redis://redis:6379

@@ -1,0 +1,9 @@
+# Test case: replicas: 2, backend: sqlite
+# Expected: helm lint --strict fails (multiple replicas require Redis)
+---
+miroir:
+  replicas: 2
+
+taskStore:
+  backend: sqlite
+  path: /data/miroir-tasks.db

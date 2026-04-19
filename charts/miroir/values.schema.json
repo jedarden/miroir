@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-7/schema#",
+  "title": "Miroir Helm Chart Values",
+  "type": "object",
+  "properties": {
+    "miroir": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string" },
+            "tag": { "type": "string" }
+          }
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "shards": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "replicationFactor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "replicaGroups": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "existingSecret": { "type": "string" }
+      }
+    },
+    "taskStore": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": ["sqlite", "redis"]
+        },
+        "path": { "type": "string" },
+        "url": { "type": "string" }
+      },
+      "required": ["backend"]
+    }
+  },
+  "if": {
+    "properties": {
+      "miroir": {
+        "properties": {
+          "replicas": {
+            "type": "integer",
+            "exclusiveMinimum": 1
+          }
+        },
+        "required": ["replicas"]
+      }
+    },
+    "required": ["miroir"]
+  },
+  "then": {
+    "properties": {
+      "taskStore": {
+        "properties": {
+          "backend": {
+            "const": "redis",
+            "errorMessage": "SQLite task store cannot run with multiple replicas; set taskStore.backend=redis"
+          }
+        },
+        "required": ["backend"]
+      }
+    },
+    "required": ["taskStore"]
+  }
+}
