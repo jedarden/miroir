@@ -33,7 +33,7 @@ Open Problem #2 asks: can we embed a Raft consensus module so that N Miroir pods
 | Crate | Version | Stars | Last Activity | Status |
 |-------|---------|-------|---------------|--------|
 | **openraft** | 0.9.22 (stable), 0.10.0-alpha.17 | 1,890 | 2026-04-18 (verified) | Actively maintained |
-| **raft-rs** (tikv) | 0.7.0 | 3,324 | 2026-04-14 (verified) | Actively maintained, mature |
+| **raft-rs** (tikv) | 0.7.0 | 3,324 | 2026-04-14 (verified) | Maintenance mode — no active roadmap, TiKV internalized much of the logic |
 | **async-raft** | 0.6.1 | ~1,091 | 2023-02-12 | **Abandoned — do not use** |
 
 ### 2.2 Elimination
@@ -61,8 +61,11 @@ Open Problem #2 asks: can we embed a Raft consensus module so that N Miroir pods
 | Databend (cloud data warehouse — original sponsor) | TiKV / TiDB (distributed DB — original sponsor) |
 | GreptimeDB (time-series DB) | RisingWave (streaming DB) |
 | CnosDB (time-series DB) | HStreamDB (streaming platform) |
+| Helyim (SeaweedFS-in-Rust object store) | |
+| RobustMQ (message queue) | |
+| **rrqlite** (Raft-replicated SQLite) | |
 
-Both are battle-tested in production databases handling petabytes of data.
+openraft is battle-tested in 5+ production systems. raft-rs is production-proven within TiKV but has limited adoption outside its original sponsor.
 
 #### SQLite Compatibility
 
@@ -392,7 +395,7 @@ This preserves the investment in the SQLite and Redis backends and avoids forcin
 
 ### Compilation Note
 
-openraft 0.9.22 fails to compile on stable Rust 1.87 because its dependency `validit 0.2.5` uses the unstable `let_chains` feature. The prototype works around this by simulating Raft consensus rather than depending on openraft directly — only `bincode` is needed for the serialization benchmarks. This compilation failure is itself a data point: a dependency that requires nightly Rust is not suitable for production use in v1.0.
+openraft 0.9.22 fails to compile on stable Rust 1.87 because its dependency `validit 0.2.5` uses the unstable `let_chains` feature. The 0.10 alpha series compounds this by requiring Rust edition 2024. The prototype works around this by simulating Raft consensus rather than depending on openraft directly — only `bincode` is needed for the serialization benchmarks. This compilation failure is itself a data point: a dependency that requires nightly or bleeding-edge stable Rust is not suitable for production use in v1.0.
 
 ---
 
@@ -410,7 +413,35 @@ Not suitable for Miroir's multi-writer K8s deployment model.
 
 ---
 
-## 8. Appendix: Crate Deep-Dive
+## 8. Reference Project: rrqlite
+
+[rrqlite](https://github.com/yuyang0/rrqlite) is a Rust implementation of rqlite that uses **openraft to replicate SQLite** across nodes. This is the closest existing project to Miroir's proposed Raft architecture.
+
+### How it works
+
+1. Each node runs a local SQLite instance
+2. Writes are proposed as WAL frame entries through openraft consensus
+3. On commit, entries are applied to each node's SQLite
+4. Reads are served from the local SQLite (no network hop)
+5. Linearizable reads use openraft's `read_index`
+
+### Relevance to Miroir
+
+| Aspect | rrqlite | Miroir's proposed design |
+|--------|---------|--------------------------|
+| State machine | SQLite (full DB) | SQLite (14 specific tables) |
+| Log replication unit | WAL frames | Serialized `TaskStoreCommand` |
+| Command granularity | Row-level SQL | Operation-level (InsertTask, etc.) |
+| Raft library | openraft | openraft (if shipped) |
+| Snapshot | Full SQLite dump | Serialized state machine |
+
+rrqlite validates that the openraft + SQLite combination works in production. However, rrqlite's approach (replicating raw WAL frames) is coarser than Miroir's proposed approach (replicating typed commands), which means Miroir's log entries would be smaller and more inspectable.
+
+### libSQL / Turso
+
+[libSQL](https://github.com/tursodatabase/libsql) (Turso) is another reference: a SQLite fork with built-in replication using a Raft-like protocol. It validates the pattern at scale (Turso is a managed service). However, it uses a custom consensus protocol rather than a pluggable Raft library, making it less directly applicable as an integration model.
+
+## 9. Appendix: Crate Deep-Dive
 
 ### openraft v0.9.22 (Stable)
 
@@ -450,7 +481,7 @@ Key types:
 
 ---
 
-## 9. References
+## 10. References
 
 - openraft repository: https://github.com/databendlabs/openraft
 - openraft docs: https://docs.rs/openraft
@@ -459,6 +490,8 @@ Key types:
 - TiKV (raft-rs user): https://github.com/tikv/tikv
 - GreptimeDB (openraft user): https://github.com/GreptimeTeam/greptimedb
 - LiteFS: https://github.com/superfly/litefs
+- rrqlite (openraft + SQLite): https://github.com/yuyang0/rrqlite
+- libSQL / Turso: https://github.com/tursodatabase/libsql
 - Miroir plan §4 (task store schema): `docs/plan/plan.md` lines 531–766
 - Miroir plan §14.2 (per-pod memory budget): `docs/plan/plan.md` lines 3397–3432
 - Miroir plan §15 (open problems): `docs/plan/plan.md` lines 3725–3731
