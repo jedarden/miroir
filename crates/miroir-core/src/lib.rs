@@ -13,5 +13,8 @@ pub mod scatter;
 pub mod task;
 pub mod topology;
 
+#[cfg(feature = "raft-proto")]
+pub mod raft_proto;
+
 // Public re-exports
 pub use error::{MiroirError, Result};

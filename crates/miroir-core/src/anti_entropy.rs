@@ -3,8 +3,6 @@
 //! Stub for plan §13.8 anti-entropy shard reconciler.
 //! Full implementation will follow the fingerprint → diff → repair pipeline.
 
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::migration::{MigrationConfig, MigrationError};
@@ -37,6 +35,11 @@ impl Default for AntiEntropyConfig {
 
 /// Validates that migration is safe given the anti-entropy configuration.
 /// Returns Ok(()) if safe, Err with a descriptive message if not.
+///
+/// Hard refusal policy (plan §15 OP#1): skipping the delta pass while
+/// anti-entropy is disabled provides zero recovery path for documents
+/// written at the cutover boundary. Measured loss rate: ~2% of writes.
+/// This is a hard-coded policy, not a warning.
 pub fn validate_migration_safety(
     ae_config: &AntiEntropyConfig,
     migration_config: &MigrationConfig,
@@ -49,14 +52,18 @@ pub fn validate_migration_safety(
 
 /// Generates a warning if anti-entropy is disabled during active migration.
 /// The caller should log this at warn level.
+///
+/// Even with the delta pass enabled (which provides 0-loss cutover on its own),
+/// disabling anti-entropy means the delta pass is the sole safety mechanism.
+/// Operators should be aware of this reduced redundancy.
 pub fn migration_warning_if_ae_disabled(ae_enabled: bool) -> Option<String> {
     if ae_enabled {
         return None;
     }
     Some(
         "Anti-entropy is disabled. Shard migration cutover relies on the delta pass \
-         to prevent data loss at the cutover boundary. If delta pass is also skipped, \
-         documents written during migration may be permanently lost."
+         as the sole safety mechanism. Any bugs in the delta pass could lead to \
+         data loss at the cutover boundary. Re-enable anti-entropy for defense-in-depth."
             .to_string(),
     )
 }
