@@ -20,10 +20,9 @@
 //! - Both shards use the same IDF, so the doc with higher term density (shard 1)
 //!   correctly ranks higher after normalization.
 
-use miroir_core::merger::{MergeInput, ScoreMergeStrategy, MergeStrategy};
+use miroir_core::merger::{MergeInput, MergeStrategy, ScoreMergeStrategy};
 use miroir_core::scatter::{
-    PreflightRequest, PreflightResponse, TermStats, GlobalIdf,
-    plan_search_scatter, MockNodeClient,
+    GlobalIdf, PreflightRequest, PreflightResponse, TermStats,
 };
 use miroir_core::topology::{Node, NodeId, Topology};
 use serde_json::json;
@@ -264,26 +263,7 @@ fn test_score_merge_with_global_idf_corrects_skew() {
 
 #[tokio::test]
 async fn test_dfs_query_then_fetch_with_skewed_corpus() {
-    // Full integration test: simulate the two-phase DFS query
-
-    let topo = make_skewed_topology();
-    let plan = plan_search_scatter(&topo, 0, 1, 2);
-
-    let node_0 = NodeId::new("node-0".to_string());
-    let node_1 = NodeId::new("node-1".to_string());
-
-    // Create mock client with preflight and search responses
-    let mut client = MockNodeClient::default();
-
-    // Phase 1: Preflight responses
-    // Note: MockNodeClient doesn't yet support preflight responses,
-    // so we'll test the aggregation logic directly
-
-    let preflight_req = PreflightRequest {
-        index_uid: "test".to_string(),
-        terms: vec!["rust".to_string(), "programming".to_string()],
-        filter: None,
-    };
+    let _topo = make_skewed_topology();
 
     // Simulate preflight responses
     let responses = vec![large_shard_preflight(), small_shard_preflight()];
@@ -292,10 +272,6 @@ async fn test_dfs_query_then_fetch_with_skewed_corpus() {
     // Verify global IDF is computed correctly
     assert_eq!(global_idf.total_docs, 11_000);
     assert_eq!(global_idf.terms.get("rust").unwrap().df, 300);
-
-    // Phase 2: Search with global IDF attached
-    // In a real scenario, the coordinator would attach global_idf to
-    // the search request and shards would use it for scoring.
 
     // Verify the global IDF structure can be serialized
     let serialized = serde_json::to_value(&global_idf).unwrap();
