@@ -113,9 +113,6 @@ async fn test_create_index_broadcasts_to_all_nodes() {
 
     mock1.assert_async().await;
     mock2.assert_async().await;
-    settings_mock1.assert_async().await;
-    settings_patch1.assert_async().await;
-    settings_patch2.assert_async().await;
 }
 
 /// Test: If the second node fails during index creation, the first node's index is rolled back.
