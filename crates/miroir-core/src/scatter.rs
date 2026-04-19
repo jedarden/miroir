@@ -141,6 +141,40 @@ pub struct DeleteByFilterRequest {
 /// Response from a delete operation.
 pub type DeleteResponse = WriteResponse;
 
+/// Request to get task status from a node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskStatusRequest {
+    /// The task UID to query
+    pub task_uid: u64,
+}
+
+/// Response from a single node's task status query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskStatusResponse {
+    /// The task UID
+    pub task_uid: u64,
+    /// Current task status
+    pub status: String,
+    /// Error message if failed
+    pub error: Option<String>,
+    /// Error type if failed
+    #[serde(rename = "type")]
+    pub error_type: Option<String>,
+}
+
+impl TaskStatusResponse {
+    /// Convert Meilisearch status string to NodeTaskStatus.
+    pub fn to_node_status(&self) -> crate::task::NodeTaskStatus {
+        match self.status.as_str() {
+            "enqueued" => crate::task::NodeTaskStatus::Enqueued,
+            "processing" => crate::task::NodeTaskStatus::Processing,
+            "succeeded" => crate::task::NodeTaskStatus::Succeeded,
+            "failed" => crate::task::NodeTaskStatus::Failed,
+            _ => crate::task::NodeTaskStatus::Enqueued,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // NodeClient trait
 // ---------------------------------------------------------------------------
@@ -179,6 +213,23 @@ pub trait NodeClient: Send + Sync {
             code: None,
             error_type: None,
         })
+    }
+
+    /// Get task status from a node.
+    fn get_task_status(
+        &self,
+        _node: &NodeId,
+        _address: &str,
+        _request: &TaskStatusRequest,
+    ) -> impl std::future::Future<Output = std::result::Result<TaskStatusResponse, NodeError>> + Send {
+        async move {
+            Ok(TaskStatusResponse {
+                task_uid: _request.task_uid,
+                status: "succeeded".to_string(),
+                error: None,
+                error_type: None,
+            })
+        }
     }
 
     /// Delete documents by IDs from a node.
@@ -632,6 +683,28 @@ impl NodeClient for MockNodeClient {
             code: None,
             error_type: None,
         })
+    }
+
+    fn get_task_status(
+        &self,
+        node: &NodeId,
+        _address: &str,
+        _request: &TaskStatusRequest,
+    ) -> impl std::future::Future<Output = std::result::Result<TaskStatusResponse, NodeError>> + Send {
+        let node = node.clone();
+        let task_uid = _request.task_uid;
+        let error = self.errors.get(&node).cloned();
+        async move {
+            if let Some(err) = error {
+                return Err(err);
+            }
+            Ok(TaskStatusResponse {
+                task_uid,
+                status: "succeeded".to_string(),
+                error: None,
+                error_type: None,
+            })
+        }
     }
 }
 

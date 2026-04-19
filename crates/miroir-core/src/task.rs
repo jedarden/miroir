@@ -6,9 +6,20 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Task registry: manages the unified task namespace.
+#[async_trait::async_trait]
 pub trait TaskRegistry: Send + Sync {
     /// Register a new Miroir task that fans out to multiple nodes.
-    fn register(&self, node_tasks: HashMap<String, u64>) -> Result<MiroirTask>;
+    fn register(&self, node_tasks: HashMap<String, u64>) -> Result<MiroirTask> {
+        self.register_with_metadata(node_tasks, None, None)
+    }
+
+    /// Register a new Miroir task with index UID and task type.
+    fn register_with_metadata(
+        &self,
+        node_tasks: HashMap<String, u64>,
+        index_uid: Option<String>,
+        task_type: Option<String>,
+    ) -> Result<MiroirTask>;
 
     /// Get a task by its Miroir ID.
     fn get(&self, miroir_id: &str) -> Result<Option<MiroirTask>>;
@@ -26,6 +37,9 @@ pub trait TaskRegistry: Send + Sync {
 
     /// List tasks with optional filtering.
     fn list(&self, filter: TaskFilter) -> Result<Vec<MiroirTask>>;
+
+    /// Count total tasks in the registry.
+    fn count(&self) -> usize;
 }
 
 /// A Miroir task: unified view of a fan-out write operation.
@@ -37,14 +51,34 @@ pub struct MiroirTask {
     /// Creation timestamp (Unix millis).
     pub created_at: u64,
 
+    /// Start timestamp (Unix millis).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<u64>,
+
+    /// Finish timestamp (Unix millis).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<u64>,
+
     /// Current task status.
     pub status: TaskStatus,
+
+    /// Index UID for this task.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_uid: Option<String>,
+
+    /// Task type (documentAdditionOrUpdate, documentDeletion, etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_type: Option<String>,
 
     /// Map of node ID to local Meilisearch task UID.
     pub node_tasks: HashMap<String, NodeTask>,
 
     /// Error message if the task failed.
     pub error: Option<String>,
+
+    /// Per-node error details (node_id -> error message).
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub node_errors: HashMap<String, String>,
 }
 
 /// Status of a Miroir task.
@@ -92,7 +126,7 @@ pub enum NodeTaskStatus {
     Failed,
 }
 
-/// Filter for listing tasks.
+/// Filter for listing tasks (Meilisearch-compatible).
 #[derive(Debug, Clone, Default)]
 pub struct TaskFilter {
     /// Filter by status.
@@ -100,6 +134,12 @@ pub struct TaskFilter {
 
     /// Filter by node ID.
     pub node_id: Option<String>,
+
+    /// Filter by index UID (Meilisearch-compatible).
+    pub index_uid: Option<String>,
+
+    /// Filter by task type (Meilisearch-compatible).
+    pub task_type: Option<String>,
 
     /// Maximum number of results.
     pub limit: Option<usize>,
@@ -113,13 +153,23 @@ pub struct TaskFilter {
 pub struct StubTaskRegistry;
 
 impl TaskRegistry for StubTaskRegistry {
-    fn register(&self, _node_tasks: HashMap<String, u64>) -> Result<MiroirTask> {
+    fn register_with_metadata(
+        &self,
+        _node_tasks: HashMap<String, u64>,
+        _index_uid: Option<String>,
+        _task_type: Option<String>,
+    ) -> Result<MiroirTask> {
         Ok(MiroirTask {
             miroir_id: Uuid::new_v4().to_string(),
             created_at: 0,
+            started_at: None,
+            finished_at: None,
             status: TaskStatus::Enqueued,
+            index_uid: None,
+            task_type: None,
             node_tasks: HashMap::new(),
             error: None,
+            node_errors: HashMap::new(),
         })
     }
 
@@ -142,6 +192,10 @@ impl TaskRegistry for StubTaskRegistry {
 
     fn list(&self, _filter: TaskFilter) -> Result<Vec<MiroirTask>> {
         Ok(Vec::new())
+    }
+
+    fn count(&self) -> usize {
+        0
     }
 }
 
