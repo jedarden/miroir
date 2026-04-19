@@ -819,3 +819,35 @@ impl Default for SearchUiAnalyticsConfig {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// §10 OpenTelemetry tracing
+// ---------------------------------------------------------------------------
+
+/// OpenTelemetry distributed tracing configuration (plan §10).
+///
+/// When enabled, every search produces a trace with parallel spans for each node
+/// in the covering set. A slow node shows up as an outlier span in Tempo.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TracingConfig {
+    /// Enable or disable OTel tracing. Default: false (zero overhead when disabled).
+    pub enabled: bool,
+    /// OTLP endpoint (e.g., "http://tempo.monitoring.svc:4317" for gRPC).
+    pub endpoint: String,
+    /// Service name for trace identification.
+    pub service_name: String,
+    /// Head-based sampling rate (0.0 to 1.0). 0.1 = ~10% of requests traced.
+    pub sample_rate: f64,
+}
+
+impl Default for TracingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: "http://tempo.monitoring.svc:4317".into(),
+            service_name: "miroir".into(),
+            sample_rate: 0.1,
+        }
+    }
+}

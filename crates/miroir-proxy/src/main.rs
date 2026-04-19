@@ -11,15 +11,16 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::signal;
 use tracing::{error, info};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, registry};
 
 mod auth;
 mod client;
 mod middleware;
+mod otel;
 mod routes;
 
 use auth::AuthState;
-use middleware::{Metrics, metrics_router};
+use middleware::{Metrics, metrics_router, TelemetryState};
 use routes::{
     admin, admin_endpoints, health, indexes, keys, search, settings, tasks, version,
 };
@@ -30,6 +31,7 @@ struct UnifiedState {
     auth: AuthState,
     metrics: Metrics,
     admin: admin_endpoints::AppState,
+    pod_id: String,
 }
 
 impl UnifiedState {
@@ -49,7 +51,9 @@ impl UnifiedState {
 
         let admin = admin_endpoints::AppState::new(config.clone(), metrics.clone());
 
-        Self { auth, metrics, admin }
+        let pod_id = std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string());
+
+        Self { auth, metrics, admin, pod_id }
     }
 }
 
@@ -60,6 +64,16 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
     }
 }
 
+// Implement FromRef so that TelemetryState can be extracted from UnifiedState
+impl FromRef<UnifiedState> for TelemetryState {
+    fn from_ref(state: &UnifiedState) -> Self {
+        TelemetryState {
+            metrics: state.metrics.clone(),
+            pod_id: state.pod_id.clone(),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load configuration (file → env → CLI overlay)
@@ -67,15 +81,38 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
 
     // Initialize structured JSON logging (plan §10 format)
+    // Fields: timestamp, level, target, message, request_id, pod_id
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .json()
-        .with_current_span(false)
-        .with_span_list(false)
-        .init();
+    // Build subscriber - conditionally add OTel layer
+    // Note: We rebuild the layers in each branch because the types differ
+    // OTel layer must be applied to the bare registry first
+    if let Some(otel_layer) = otel::init_otel_layer(&config) {
+        let json_layer = tracing_subscriber::fmt::layer()
+            .json()
+            .with_target(true)
+            .with_current_span(false)
+            .with_span_list(false);
+        // Apply OTel layer to registry first, then add filter and json layer
+        let subscriber = registry()
+            .with(otel_layer)
+            .with(filter)
+            .with(json_layer);
+        tracing::subscriber::set_global_default(subscriber)
+            .map_err(|e| anyhow::anyhow!("Failed to set subscriber: {}", e))?;
+    } else {
+        let json_layer = tracing_subscriber::fmt::layer()
+            .json()
+            .with_target(true)
+            .with_current_span(false)
+            .with_span_list(false);
+        let subscriber = registry()
+            .with(filter)
+            .with(json_layer);
+        tracing::subscriber::set_global_default(subscriber)
+            .map_err(|e| anyhow::anyhow!("Failed to set subscriber: {}", e))?;
+    }
 
     info!(
         shards = config.shards,
@@ -114,7 +151,10 @@ async fn main() -> anyhow::Result<()> {
             auth::auth_middleware,
         ))
         .layer(axum::middleware::from_fn_with_state(
-            state.metrics.clone(),
+            TelemetryState {
+                metrics: state.metrics.clone(),
+                pod_id: state.pod_id.clone(),
+            },
             middleware::telemetry_middleware,
         ))
         .with_state(state.clone());
@@ -251,4 +291,7 @@ async fn shutdown_signal() {
     }
 
     info!("shutdown signal received, draining in-flight requests...");
+
+    // Shutdown OpenTelemetry to flush any pending traces
+    otel::shutdown_otel();
 }
