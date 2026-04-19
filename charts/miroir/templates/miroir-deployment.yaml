@@ -86,6 +86,13 @@ spec:
                   key: adminApiKey
             - name: RUST_LOG
               value: {{ .Values.miroir.logLevel | default "info" }}
+            {{- if and (eq (include "miroir.redisEnabled" .) "true") .Values.redis.auth.enabled }}
+            - name: MIROIR_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miroir.redisSecretName" . }}
+                  key: redis-password
+            {{- end }}
           volumeMounts:
             - name: config
               mountPath: /config
@@ -94,7 +101,7 @@ spec:
               mountPath: /data
             {{- if eq (include "miroir.cdcPvcEnabled" .) "true" }}
             - name: cdc-buffer
-              mountPath: /cdc
+              mountPath: /data/cdc
             {{- end }}
           livenessProbe:
             httpGet:

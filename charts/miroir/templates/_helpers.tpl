@@ -172,6 +172,9 @@ cdc:
     {{- if eq (include "miroir.redisEnabled" .) "true" }}
     redis_bytes: {{ .Values.miroir.cdc.buffer.redis_bytes | default 1073741824 }}
     {{- end }}
+    {{- if eq (include "miroir.cdcPvcEnabled" .) "true" }}
+    pvc_path: /data/cdc
+    {{- end }}
 {{- end }}
 {{- end -}}
 
@@ -183,10 +186,22 @@ Return "true" if Redis is enabled, "false" otherwise.
 {{- end -}}
 
 {{/*
+Redis auth secret name.
+*/}}
+{{- define "miroir.redisSecretName" -}}
+{{- if .Values.redis.auth.existingSecret -}}
+{{- .Values.redis.auth.existingSecret -}}
+{{- else -}}
+{{- include "miroir.fullname" . }}-redis-secret
+{{- end -}}
+{{- end -}}
+
+{{/*
 Return "true" if CDC PVC should be created, "false" otherwise.
+PVC is rendered when cdc.buffer.primary=="pvc" or cdc.buffer.overflow=="pvc".
 */}}
 {{- define "miroir.cdcPvcEnabled" -}}
-{{- if .Values.cdcPvc.enabled -}}true{{- else -}}false{{- end -}}
+{{- if and .Values.miroir.cdc (or (eq .Values.miroir.cdc.buffer.primary "pvc") (eq .Values.miroir.cdc.buffer.overflow "pvc")) -}}true{{- else -}}false{{- end -}}
 {{- end -}}
 
 {{/*

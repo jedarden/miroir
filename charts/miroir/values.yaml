@@ -28,6 +28,16 @@ miroir:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  cdc:
+    enabled: true
+    emit_ttl_deletes: false
+    emit_internal_writes: false
+    buffer:
+      primary: memory  # memory | pvc | redis
+      overflow: drop   # drop | pvc | redis
+      pvc_size: 10Gi
+      pvc_storage_class: ""
+      memory_bytes: 67108864
 
 taskStore:
   backend: sqlite  # sqlite | redis
@@ -109,7 +119,7 @@ redis:
   enabled: false  # dev default: enable for production
   image:
     repository: redis
-    tag: 7-alpine
+    tag: 7.4-alpine
     pullPolicy: IfNotPresent
   replicas: 1
   podAnnotations: {}
@@ -126,17 +136,14 @@ redis:
   affinity: {}
   persistence:
     enabled: true
-    size: 1Gi
+    size: 5Gi
     storageClass: ""
   service:
     type: ClusterIP
     port: 6379
-
-# PVC for CDC buffer (when cdc.buffer.primary=pvc or overflow=pvc)
-cdcPvc:
-  enabled: false
-  size: 5Gi
-  storageClass: ""
+  auth:
+    enabled: true
+    existingSecret: ""  # auto-generated as <release>-redis-secret when empty; password comes from K8s Secret or ESO
 
 # Prometheus Operator integration (plan §10 + §14.9)
 serviceMonitor:

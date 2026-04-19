@@ -43,7 +43,26 @@
         },
         "nodeSelector": { "type": "object" },
         "tolerations": { "type": "array" },
-        "affinity": { "type": "object" }
+        "affinity": { "type": "object" },
+        "cdc": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "emit_ttl_deletes": { "type": "boolean" },
+            "emit_internal_writes": { "type": "boolean" },
+            "buffer": {
+              "type": "object",
+              "properties": {
+                "primary": { "type": "string", "enum": ["memory", "pvc", "redis"] },
+                "overflow": { "type": "string", "enum": ["drop", "pvc", "redis"] },
+                "pvc_size": { "type": "string" },
+                "pvc_storage_class": { "type": "string" },
+                "memory_bytes": { "type": "integer", "minimum": 0 },
+                "redis_bytes": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        }
       }
     },
     "taskStore": {
@@ -193,15 +212,14 @@
             "type": { "type": "string" },
             "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
           }
+        },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "existingSecret": { "type": "string" }
+          }
         }
-      }
-    },
-    "cdcPvc": {
-      "type": "object",
-      "properties": {
-        "enabled": { "type": "boolean" },
-        "size": { "type": "string" },
-        "storageClass": { "type": "string" }
       }
     },
     "search_ui": {
