@@ -143,12 +143,12 @@ impl Topology {
     /// Add a node to the topology.
     pub fn add_node(&mut self, node: Node) {
         let group_id = node.replica_group as usize;
-        
+
         // Ensure group exists
         while self.groups.len() <= group_id {
             self.groups.push(Group::new(self.groups.len() as u32));
         }
-        
+
         self.groups[group_id].add_node(node.id.clone());
         self.nodes.insert(node.id.clone(), node);
     }

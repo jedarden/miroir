@@ -17,7 +17,12 @@ pub trait TaskRegistry: Send + Sync {
     fn update_status(&self, miroir_id: &str, status: TaskStatus) -> Result<()>;
 
     /// Update node task status.
-    fn update_node_task(&self, miroir_id: &str, node_id: &str, node_status: NodeTaskStatus) -> Result<()>;
+    fn update_node_task(
+        &self,
+        miroir_id: &str,
+        node_id: &str,
+        node_status: NodeTaskStatus,
+    ) -> Result<()>;
 
     /// List tasks with optional filtering.
     fn list(&self, filter: TaskFilter) -> Result<Vec<MiroirTask>>;
@@ -126,7 +131,12 @@ impl TaskRegistry for StubTaskRegistry {
         Ok(())
     }
 
-    fn update_node_task(&self, _miroir_id: &str, _node_id: &str, _node_status: NodeTaskStatus) -> Result<()> {
+    fn update_node_task(
+        &self,
+        _miroir_id: &str,
+        _node_id: &str,
+        _node_status: NodeTaskStatus,
+    ) -> Result<()> {
         Ok(())
     }
 

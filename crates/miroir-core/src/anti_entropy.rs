@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::migration::{MigrationConfig, MigrationCoordinator, MigrationError};
+use crate::migration::{MigrationConfig, MigrationError};
 
 /// Anti-entropy configuration (plan §13.8).
 #[derive(Debug, Clone, Serialize, Deserialize)]
