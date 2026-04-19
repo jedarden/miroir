@@ -62,10 +62,6 @@ impl RedisPool {
             .map_err(|e| MiroirError::Redis(e.to_string()))
     }
 
-    /// Get a connection from the pool.
-    async fn conn(&self) -> tokio::sync::MutexGuard<'_, ConnectionManager> {
-        self.manager.lock().await
-    }
 
     /// Block on an async future using the dedicated runtime.
     /// If we're already inside a tokio runtime (e.g., in tests), spawn a thread

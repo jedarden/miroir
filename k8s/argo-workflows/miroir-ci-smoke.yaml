@@ -43,7 +43,7 @@ spec:
           - name: GH_TOKEN
             valueFrom:
               secretKeyRef:
-                name: github-webhook-secret
+                name: github-token
                 key: token
         resources:
           requests:

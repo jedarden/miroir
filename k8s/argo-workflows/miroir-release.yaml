@@ -146,7 +146,7 @@ spec:
           apk add --no-cache git
 
           # Clone and checkout the release tag
-          git clone https://github.com/jedarden/miroir.git /src
+          git clone https://x-access-token:${GITHUB_TOKEN}@github.com/jedarden/miroir.git /src
           cd /src
           git checkout "$TAG"
 
@@ -192,38 +192,78 @@ spec:
       inputs:
         parameters:
           - name: tag
-      script:
-        image: alpine:latest
-        command: [sh]
-        source: |
-          set -e
-          apk add --no-cache curl git
+      container:
+        image: ghcr.io/cli/cli:2.49.0
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            TAG="{{inputs.parameters.tag}}"
+            VER="${TAG#v}"
 
-          TAG="{{inputs.parameters.tag}}"
-          VERSION="${TAG#v}"
-          IS_PRERELEASE=$(echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' && echo false || echo true)
+            git clone --depth 1 --branch "$TAG" https://github.com/jedarden/miroir.git /src
+            cd /src
 
-          git clone --depth 1 --branch "$TAG" https://github.com/jedarden/miroir.git /src
-          cd /src
+            # Extract release notes from CHANGELOG.md
+            NOTES=$(awk -v ver="$VER" '
+              found && /^## \[/ { exit }
+              $0 ~ ("^## \\[" ver "\\]") { found=1; next }
+              found { print }
+            ' CHANGELOG.md)
 
-          # Extract release notes from CHANGELOG.md using plan §7 awk script
-          NOTES=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## /{exit} found{print}" CHANGELOG.md)
+            if [ -z "$NOTES" ]; then
+              NOTES="Release ${TAG}"
+            fi
 
-          if [ -z "$NOTES" ]; then
-            NOTES="See CHANGELOG.md for details."
-          fi
+            # Skip if release already exists
+            if gh release view "${TAG}" --repo jedarden/miroir >/dev/null 2>&1; then
+              echo "Release ${TAG} already exists, skipping."
+              exit 0
+            fi
 
-          # Create GitHub release via API
-          curl -sf -X POST \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Content-Type: application/json" \
-            https://api.github.com/repos/jedarden/miroir/releases \
-            -d "$(printf '{"tag_name":"%s","name":"miroir %s","body":%s,"prerelease":%s,"draft":false}' \
-              "$TAG" "$TAG" "$(echo "$NOTES" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
-              "$IS_PRERELEASE")"
+            # Pre-release detection
+            PRERELEASE_FLAG=""
+            if echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+[-+]'; then
+              PRERELEASE_FLAG="--prerelease"
+            fi
+
+            # Build binaries for release assets
+            apk add --no-cache musl-dev gcc 2>/dev/null || true
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            . "$HOME/.cargo/env"
+            rustup target add x86_64-unknown-linux-musl
+            cargo build --release --target x86_64-unknown-linux-musl -p miroir-proxy -p miroir-ctl
+
+            strip -s target/x86_64-unknown-linux-musl/release/miroir-proxy
+            strip -s target/x86_64-unknown-linux-musl/release/miroir-ctl
+
+            cp target/x86_64-unknown-linux-musl/release/miroir-proxy miroir-proxy-linux-amd64
+            cp target/x86_64-unknown-linux-musl/release/miroir-ctl miroir-ctl-linux-amd64
+            sha256sum miroir-proxy-linux-amd64 > miroir-proxy-linux-amd64.sha256
+            sha256sum miroir-ctl-linux-amd64 > miroir-ctl-linux-amd64.sha256
+
+            gh release create "${TAG}" \
+              --repo jedarden/miroir \
+              --title "miroir ${TAG}" \
+              --notes "${NOTES}" \
+              ${PRERELEASE_FLAG} \
+              --target "$TAG" \
+              miroir-proxy-linux-amd64 \
+              miroir-proxy-linux-amd64.sha256 \
+              miroir-ctl-linux-amd64 \
+              miroir-ctl-linux-amd64.sha256
+
+            echo "Release ${TAG} created successfully."
         env:
-          - name: GITHUB_TOKEN
+          - name: GH_TOKEN
             valueFrom:
               secretKeyRef:
                 name: github-token
                 key: token
+        resources:
+          requests:
+            cpu: 2000m
+            memory: 4Gi
+          limits:
+            cpu: 4000m
+            memory: 8Gi
