@@ -3726,7 +3726,7 @@ This is supported but **not** the recommended production topology — horizontal
 
 These are documented constraints, not blockers. Initial release ships with known limitations.
 
-1. **Shard migration write safety** — Dual-write during migration must not lose documents that arrive exactly at the migration cutover boundary. Requires careful sequencing: new writes go to both old and new nodes until the new node is confirmed complete, then old node stops receiving those shards. Race condition analysis needed before implementation. **Status:** Race window mitigated by the anti-entropy reconciler (§13.8); any document slipped by the cutover is caught and repaired on the next reconciliation pass.
+1. **Shard migration write safety** — Dual-write during migration must not lose documents that arrive exactly at the migration cutover boundary. Requires careful sequencing: new writes go to both old and new nodes until the new node is confirmed complete, then old node stops receiving those shards. Race condition analysis needed before implementation. **Status:** Verified empirically via chaos tests (`cutover_race.rs`). Loss rate: 0/1M writes with AE on + delta pass on; 0/50K with delta pass alone. Hard refusal policy blocks `skip_delta_pass + anti_entropy_enabled=false`. See `docs/trade-offs.md` for full results and rationale.
 
 2. **Task state HA** — SQLite is single-writer. Running 2 Miroir replicas requires Redis. A future enhancement is a lightweight Raft-based in-process consensus so Redis is not required for HA mode.
 
