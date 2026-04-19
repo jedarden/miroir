@@ -1,0 +1,28 @@
+{{/*
+Miroir ServiceMonitor (requires prometheus-operator)
+*/}}
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "miroir.fullname" . }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+  {{- with .Values.serviceMonitor.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "miroir.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: miroir
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.serviceMonitor.interval | default "30s" }}
+      path: /metrics
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+{{- end }}
