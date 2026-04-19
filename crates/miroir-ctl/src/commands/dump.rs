@@ -63,28 +63,27 @@ pub enum DumpSubcommand {
 
 pub async fn run(cmd: DumpSubcommand) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        DumpSubcommand::Import { file, index, mode, .. } => {
-            Err(format!(
-                "Dump import is not yet implemented. See bead miroir-zc2.5 for tracking.\n\n\
+        DumpSubcommand::Import {
+            file, index, mode, ..
+        } => Err(format!(
+            "Dump import is not yet implemented. See bead miroir-zc2.5 for tracking.\n\n\
                  For dump compatibility information, see:\n\
                  docs/dump-import/compatibility-matrix.md\n\n\
                  Requested:\n\
                  File: {file}\n\
-                 Index: {index}\n\
+                 Index: {index:?}\n\
                  Mode: {mode}"
-            ).into())
-        }
-        DumpSubcommand::Export { output, index, .. } => {
-            Err(format!(
-                "Dump export is not yet implemented. See bead miroir-qon for tracking.\n\n\
+        )
+        .into()),
+        DumpSubcommand::Export { output, index, .. } => Err(format!(
+            "Dump export is not yet implemented. See bead miroir-qon for tracking.\n\n\
                  Requested:\n\
                  Output: {output}\n\
                  Index: {index:?}"
-            ).into())
-        }
-        DumpSubcommand::Analyze { file } => {
-            Err(format!(
-                "Dump analysis is not yet implemented. See bead miroir-zc2.5 for tracking.\n\n\
+        )
+        .into()),
+        DumpSubcommand::Analyze { file } => Err(format!(
+            "Dump analysis is not yet implemented. See bead miroir-zc2.5 for tracking.\n\n\
                  This command will analyze {file} and report:\n\
                  - Whether streaming mode can reconstruct the dump\n\
                  - Any field conflicts (e.g., existing `_miroir_shard`)\n\
@@ -92,7 +91,7 @@ pub async fn run(cmd: DumpSubcommand) -> Result<(), Box<dyn std::error::Error>> 
                  - Recommended import mode\n\n\
                  See compatibility matrix:\n\
                  docs/dump-import/compatibility-matrix.md"
-            ).into())
-        }
+        )
+        .into()),
     }
 }

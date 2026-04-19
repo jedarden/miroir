@@ -113,6 +113,7 @@ fn load_from_credentials_file() -> Result<Option<String>, CredentialError> {
 }
 
 /// Get the credentials file path for diagnostic messages
+#[allow(dead_code)]
 pub fn credentials_file_path() -> Option<PathBuf> {
     let config_dir = dirs::config_dir()?;
     let miroir_config_dir = config_dir.join("miroir");
