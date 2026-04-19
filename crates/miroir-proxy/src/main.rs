@@ -127,6 +127,22 @@ async fn main() -> anyhow::Result<()> {
         "miroir-proxy starting"
     );
 
+    // Validate critical secrets at startup (plan §9: "orchestrator refuses to
+    // start the search UI without it").
+    if config.search_ui.enabled {
+        let jwt_env = &config.search_ui.auth.jwt_secret_env;
+        match std::env::var(jwt_env) {
+            Ok(v) if !v.is_empty() => {}
+            _ => {
+                anyhow::bail!(
+                    "search_ui is enabled but {} is not set — refusing to start. \
+                     Either set the env var or disable search_ui (search_ui.enabled: false)",
+                    jwt_env
+                );
+            }
+        }
+    }
+
     // Build unified state
     let state = UnifiedState::new(config.clone());
 

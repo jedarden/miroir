@@ -84,6 +84,30 @@ spec:
                 secretKeyRef:
                   name: {{ include "miroir.secretName" . }}
                   key: adminApiKey
+            - name: ADMIN_SESSION_SEAL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miroir.secretName" . }}
+                  key: adminSessionSealKey
+                  optional: true
+            - name: SEARCH_UI_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miroir.secretName" . }}
+                  key: searchUiJwtSecret
+                  optional: true
+            - name: SEARCH_UI_JWT_SECRET_PREVIOUS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miroir.secretName" . }}
+                  key: searchUiJwtSecretPrevious
+                  optional: true
+            - name: SEARCH_UI_SHARED_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miroir.secretName" . }}
+                  key: searchUiSharedKey
+                  optional: true
             - name: RUST_LOG
               value: {{ .Values.miroir.logLevel | default "info" }}
             {{- if and (eq (include "miroir.redisEnabled" .) "true") .Values.redis.auth.enabled }}
