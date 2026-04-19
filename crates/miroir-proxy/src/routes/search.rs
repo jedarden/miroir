@@ -1,16 +1,19 @@
 //! Search route handler with DFS (Distributed Frequency Search) support.
 
-use axum::extract::Path;
+use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
-use axum::{Extension, Json, response::Response};
-use miroir_core::config::{Config, UnavailableShardPolicy};
+use axum::response::Response;
+use axum::Json;
+use miroir_core::config::UnavailableShardPolicy;
 use miroir_core::merger::ScoreMergeStrategy;
 use miroir_core::scatter::{
     dfs_query_then_fetch_search, plan_search_scatter, SearchRequest, NodeClient,
 };
-use miroir_core::topology::Topology;
+use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
+
+use crate::routes::admin_endpoints::AppState;
 
 /// Node client implementation using the HTTP client.
 pub struct ProxyNodeClient {
@@ -53,7 +56,7 @@ where
 }
 
 /// Search request body.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Deserialize)]
 struct SearchRequestBody {
     q: Option<String>,
     offset: Option<usize>,
@@ -74,36 +77,27 @@ struct SearchRequestBody {
 /// 2. **Search phase**: Send the search query with global IDF attached so that
 ///    scoring uses corpus-wide statistics instead of per-shard local IDF.
 ///
-/// This produces globally-comparable scores across shards with skewed document
-/// distributions, enabling score-based merge with τ ≥ 0.95.
-///
 /// Returns `X-Miroir-Degraded: shards=X,Y,Z` header when any shards are unavailable.
+/// Strips `_miroir_shard` from all hits; strips `_rankingScore` unless client
+/// explicitly requested it.
 async fn search_handler(
     Path(index): Path<String>,
-    Extension(config): Extension<Arc<Config>>,
-    Extension(_topology): Extension<Arc<Topology>>,
+    Extension(state): Extension<Arc<AppState>>,
     Json(body): Json<SearchRequestBody>,
 ) -> Result<Response, StatusCode> {
-    // Build topology from config
-    let mut topo = Topology::new(config.shards, config.replica_groups, config.replication_factor as usize);
-    for node in &config.nodes {
-        topo.add_node(miroir_core::topology::Node::new(
-            miroir_core::topology::NodeId::new(node.id.clone()),
-            node.address.clone(),
-            node.replica_group,
-        ));
-    }
+    let client_requested_score = body.ranking_score.unwrap_or(false);
 
-    // Parse unavailable shard policy
-    let policy = match config.scatter.unavailable_shard_policy.as_str() {
+    // Use live topology from shared state (updated by health checker)
+    let topo = state.topology.read().await;
+    let policy = match state.config.scatter.unavailable_shard_policy.as_str() {
         "partial" => UnavailableShardPolicy::Partial,
         "error" => UnavailableShardPolicy::Error,
         "fallback" => UnavailableShardPolicy::Fallback,
         _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
 
-    // Plan scatter
-    let plan = plan_search_scatter(&topo, 0, config.replication_factor as usize, config.shards);
+    // Plan scatter using live topology
+    let plan = plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards);
 
     // Build search request
     let search_req = SearchRequest {
@@ -113,15 +107,15 @@ async fn search_handler(
         limit: body.limit.unwrap_or(20),
         filter: body.filter,
         facets: body.facets,
-        ranking_score: body.ranking_score.unwrap_or(false),
+        ranking_score: client_requested_score,
         body: body.rest,
-        global_idf: None, // Will be populated by dfs_query_then_fetch_search
+        global_idf: None,
     };
 
     // Create node client
     let http_client = Arc::new(crate::client::HttpClient::new(
-        config.node_master_key.clone(),
-        config.scatter.node_timeout_ms,
+        state.config.node_master_key.clone(),
+        state.config.scatter.node_timeout_ms,
     ));
     let client = ProxyNodeClient::new(http_client);
 
@@ -129,7 +123,7 @@ async fn search_handler(
     let strategy = ScoreMergeStrategy::new();
 
     // Execute DFS query-then-fetch
-    let result = dfs_query_then_fetch_search(
+    let mut result = dfs_query_then_fetch_search(
         plan,
         &client,
         search_req,
@@ -143,24 +137,32 @@ async fn search_handler(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    // Drop topology lock before building response
+    drop(topo);
+
+    // Strip internal fields from hits
+    for hit in &mut result.hits {
+        strip_internal_fields(hit, client_requested_score);
+    }
+
     // Build response body
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "hits": result.hits,
         "estimatedTotalHits": result.estimated_total_hits,
         "processingTimeMs": result.processing_time_ms,
-        "facetDistribution": result.facet_distribution,
     });
+
+    // Only include facetDistribution if facets were requested
+    if let Some(facets) = &result.facet_distribution {
+        body["facetDistribution"] = serde_json::to_value(facets).unwrap_or(Value::Null);
+    }
 
     // Build response with optional X-Miroir-Degraded header
     let mut response = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json");
 
-    // Add X-Miroir-Degraded header if the result is degraded
-    // The header format is: X-Miroir-Degraded: shards=3,7,11
-    // This indicates which shards had zero live replicas
     if result.degraded && !result.failed_shards.is_empty() {
-        // Sort shard IDs for deterministic output
         let mut sorted_shards = result.failed_shards.clone();
         sorted_shards.sort();
         let shard_ids = sorted_shards.iter()
@@ -177,4 +179,15 @@ async fn search_handler(
         .unwrap();
 
     Ok(response)
+}
+
+/// Strip `_miroir_shard` from all hits (always).
+/// Strip `_rankingScore` unless the client explicitly requested it.
+pub fn strip_internal_fields(hit: &mut Value, client_requested_score: bool) {
+    if let Some(obj) = hit.as_object_mut() {
+        obj.remove("_miroir_shard");
+        if !client_requested_score {
+            obj.remove("_rankingScore");
+        }
+    }
 }

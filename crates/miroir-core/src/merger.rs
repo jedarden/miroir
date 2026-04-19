@@ -367,9 +367,12 @@ fn score_merge(input: MergeInput) -> Result<MergedSearchResult> {
     let mut estimated_total_hits = 0u64;
     let mut max_processing_time = 0u64;
     let mut degraded = false;
+    let mut seen_pks = std::collections::HashSet::new();
     let mut all_hits = Vec::new();
 
-    // Collect all hits from all shards.
+    // Collect all hits from all shards, deduplicating by primary key.
+    // Dedup is needed because execute_scatter may push the same node response
+    // once per shard when multiple shards map to the same node.
     for shard_page in &input.shard_hits {
         let body = &shard_page.body;
 
@@ -397,7 +400,15 @@ fn score_merge(input: MergeInput) -> Result<MergedSearchResult> {
         if let Some(Value::Array(hits)) = body.get("hits") {
             for hit in hits {
                 if let Value::Object(map) = hit {
-                    all_hits.push(map.clone());
+                    let pk = map
+                        .get("id")
+                        .or_else(|| map.get("pk"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if seen_pks.insert(pk) {
+                        all_hits.push(map.clone());
+                    }
                 }
             }
         }
