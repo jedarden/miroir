@@ -5,6 +5,11 @@
 //! - `_miroir_shard` injection
 //! - Reserved field rejection
 //! - Two-rule quorum
+//!
+//! Implements P2.5 task reconciliation:
+//! - Collects per-node task UIDs
+//! - Registers Miroir task ID (mtask-<uuid>)
+//! - Returns mtask ID to client
 
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
@@ -13,6 +18,7 @@ use axum::{Json, Router};
 use miroir_core::api_error::{MiroirCode, MeilisearchError};
 use miroir_core::router::{shard_for_key, write_targets};
 use miroir_core::scatter::{DeleteByIdsRequest, DeleteByFilterRequest, NodeClient, WriteRequest, WriteResponse};
+use miroir_core::task::TaskRegistry;
 use miroir_core::topology::{Topology, NodeId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,7 +51,7 @@ pub struct TaskResponse {
 #[derive(Debug, Serialize)]
 pub struct DocumentsWriteResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
-    taskUid: Option<u64>,
+    taskUid: Option<String>, // Changed to String to hold mtask-<uuid>
     #[serde(skip_serializing_if = "Option::is_none")]
     indexUid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -276,7 +282,7 @@ async fn write_documents_impl(
     );
 
     let mut quorum_state = QuorumState::default();
-    let mut first_task_uid: Option<u64> = None;
+    let mut node_task_uids: HashMap<String, u64> = HashMap::new();
 
     // For each shard, write to all RF nodes in each replica group
     for (shard_id, docs) in node_documents {
@@ -308,8 +314,8 @@ async fn write_documents_impl(
             match client.write_documents(&node_id, &node.address, &req).await {
                 Ok(resp) if resp.success => {
                     quorum_state.record_success(group_id, &node_id);
-                    if first_task_uid.is_none() {
-                        first_task_uid = resp.task_uid;
+                    if let Some(task_uid) = resp.task_uid {
+                        node_task_uids.insert(node_id.as_str().to_string(), task_uid);
                     }
                 }
                 Ok(resp) => {
@@ -335,10 +341,23 @@ async fn write_documents_impl(
         ));
     }
 
-    // Build success response with degraded header
+    // 7. Register Miroir task with collected node task UIDs
+    let miroir_task = state
+        .task_registry
+        .register_with_metadata(
+            node_task_uids.clone(),
+            Some(index.clone()),
+            Some("documentAdditionOrUpdate".to_string()),
+        )
+        .map_err(|e| MeilisearchError::new(
+            MiroirCode::ShardUnavailable,
+            format!("failed to register task: {}", e),
+        ))?;
+
+    // Build success response with degraded header and mtask ID
     build_response_with_degraded_header(
         DocumentsWriteResponse {
-            taskUid: first_task_uid,
+            taskUid: Some(miroir_task.miroir_id),
             indexUid: Some(index.clone()),
             status: Some("enqueued".to_string()),
             error: None,
@@ -380,7 +399,7 @@ async fn delete_by_ids_impl(
     );
 
     let mut quorum_state = QuorumState::default();
-    let mut first_task_uid: Option<u64> = None;
+    let mut node_task_uids: HashMap<String, u64> = HashMap::new();
 
     // For each shard, write to all RF nodes in each replica group
     for (shard_id, ids) in shard_ids {
@@ -409,8 +428,8 @@ async fn delete_by_ids_impl(
             match client.delete_documents(&node_id, &node.address, &delete_req).await {
                 Ok(resp) if resp.success => {
                     quorum_state.record_success(group_id, &node_id);
-                    if first_task_uid.is_none() {
-                        first_task_uid = resp.task_uid;
+                    if let Some(task_uid) = resp.task_uid {
+                        node_task_uids.insert(node_id.as_str().to_string(), task_uid);
                     }
                 }
                 Ok(resp) => {
@@ -435,9 +454,22 @@ async fn delete_by_ids_impl(
         ));
     }
 
+    // Register Miroir task with collected node task UIDs
+    let miroir_task = state
+        .task_registry
+        .register_with_metadata(
+            node_task_uids.clone(),
+            Some(index.clone()),
+            Some("documentDeletion".to_string()),
+        )
+        .map_err(|e| MeilisearchError::new(
+            MiroirCode::ShardUnavailable,
+            format!("failed to register task: {}", e),
+        ))?;
+
     build_response_with_degraded_header(
         DocumentsWriteResponse {
-            taskUid: first_task_uid,
+            taskUid: Some(miroir_task.miroir_id),
             indexUid: Some(index.clone()),
             status: Some("enqueued".to_string()),
             error: None,
@@ -465,7 +497,7 @@ async fn delete_by_filter_impl(
     );
 
     let mut quorum_state = QuorumState::default();
-    let mut first_task_uid: Option<u64> = None;
+    let mut node_task_uids: HashMap<String, u64> = HashMap::new();
 
     // Broadcast to all nodes (cannot shard-route for filters)
     for node in topology.nodes() {
@@ -478,8 +510,8 @@ async fn delete_by_filter_impl(
         {
             Ok(resp) if resp.success => {
                 quorum_state.record_success(group_id, &node.id);
-                if first_task_uid.is_none() {
-                    first_task_uid = resp.task_uid;
+                if let Some(task_uid) = resp.task_uid {
+                    node_task_uids.insert(node.id.as_str().to_string(), task_uid);
                 }
             }
             Ok(resp) => {
@@ -503,9 +535,22 @@ async fn delete_by_filter_impl(
         ));
     }
 
+    // Register Miroir task with collected node task UIDs
+    let miroir_task = state
+        .task_registry
+        .register_with_metadata(
+            node_task_uids.clone(),
+            Some(index.clone()),
+            Some("documentDeletion".to_string()),
+        )
+        .map_err(|e| MeilisearchError::new(
+            MiroirCode::ShardUnavailable,
+            format!("failed to register task: {}", e),
+        ))?;
+
     build_response_with_degraded_header(
         DocumentsWriteResponse {
-            taskUid: first_task_uid,
+            taskUid: Some(miroir_task.miroir_id),
             indexUid: Some(index.clone()),
             status: Some("enqueued".to_string()),
             error: None,
@@ -564,7 +609,7 @@ fn group_documents_by_shard(
 /// Build an error response from a node error.
 fn build_error_response(resp: WriteResponse) -> DocumentsWriteResponse {
     DocumentsWriteResponse {
-        taskUid: resp.task_uid,
+        taskUid: resp.task_uid.map(|uid| uid.to_string()),
         indexUid: None,
         status: None,
         error: resp.message,

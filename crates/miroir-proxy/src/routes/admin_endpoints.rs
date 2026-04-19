@@ -9,6 +9,7 @@ use axum::{
 use miroir_core::{
     config::MiroirConfig,
     router,
+    task_registry::InMemoryTaskRegistry,
     topology::{Node, NodeId, Topology},
 };
 use serde::{Deserialize, Serialize};
@@ -91,6 +92,7 @@ pub struct AppState {
     pub ready: Arc<RwLock<bool>>,
     pub metrics: super::super::middleware::Metrics,
     pub version_state: VersionState,
+    pub task_registry: Arc<InMemoryTaskRegistry>,
 }
 
 impl AppState {
@@ -126,6 +128,7 @@ impl AppState {
             ready: Arc::new(RwLock::new(false)),
             metrics,
             version_state,
+            task_registry: Arc::new(InMemoryTaskRegistry::new()),
         }
     }
 

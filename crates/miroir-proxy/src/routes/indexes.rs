@@ -256,6 +256,7 @@ where
         .route(
             "/:index",
             get(get_index_handler)
+                .patch(update_index_handler)
                 .delete(delete_index_handler),
         )
         .route("/:index/stats", get(get_index_stats_handler))
@@ -321,9 +322,31 @@ async fn create_index_handler(
         }
     }
 
-    // Phase 2: Add `_miroir_shard` to filterableAttributes on every node
+    // Phase 2: Add `_miroir_shard` to filterableAttributes on every node.
+    // Read current filterableAttributes from first node, merge `_miroir_shard`,
+    // then broadcast the merged list to all nodes.
+    let mut merged_attrs: Vec<Value> = vec![serde_json::json!("_miroir_shard")];
+
+    if let Some(first_addr) = nodes.first() {
+        match client.get_raw(first_addr, &format!("/indexes/{}/settings", uid)).await {
+            Ok((status, text)) if status >= 200 && status < 300 => {
+                if let Ok(settings) = serde_json::from_str::<Value>(&text) {
+                    if let Some(existing) = settings.get("filterableAttributes").and_then(|v| v.as_array()) {
+                        for attr in existing {
+                            let attr_str = attr.as_str().unwrap_or("");
+                            if attr_str != "_miroir_shard" && !attr_str.is_empty() {
+                                merged_attrs.push(attr.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     let filterable_patch = serde_json::json!({
-        "filterableAttributes": ["_miroir_shard"]
+        "filterableAttributes": merged_attrs
     });
 
     let mut patch_ok: Vec<String> = Vec::new();
@@ -415,6 +438,106 @@ async fn get_index_handler(
         Ok(Json(serde_json::from_str(&text).unwrap_or(Value::Null)))
     } else {
         Err(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PATCH /indexes/{uid} — update index metadata (broadcast with rollback)
+// ---------------------------------------------------------------------------
+
+async fn update_index_handler(
+    Path(index): Path<String>,
+    Extension(_state): Extension<Arc<AppState>>,
+    Extension(config): Extension<Arc<Config>>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, MeilisearchError> {
+    let client = MeilisearchClient::new(config.node_master_key.clone());
+    let nodes = all_node_addresses(&config);
+    let path = format!("/indexes/{}", index);
+
+    // Snapshot current index state from all nodes before applying changes
+    let mut snapshots: Vec<(String, Value)> = Vec::new();
+    for address in &nodes {
+        match client.get_raw(address, &path).await {
+            Ok((status, text)) if status >= 200 && status < 300 => {
+                let snapshot: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+                snapshots.push((address.clone(), snapshot));
+            }
+            Ok((status, text)) => {
+                return Err(forward_or_miroir(
+                    status,
+                    &text,
+                    &format!("failed to snapshot index on {}: HTTP {}", address, status),
+                ));
+            }
+            Err(e) => {
+                return Err(MeilisearchError::new(
+                    MiroirCode::NoQuorum,
+                    format!("failed to snapshot index on {}: {}", address, e),
+                ));
+            }
+        }
+    }
+
+    // Apply update sequentially to each node
+    let mut applied: Vec<String> = Vec::new();
+    let mut first_response: Option<Value> = None;
+
+    for (address, _) in &snapshots {
+        match client.patch_raw(address, &path, &body).await {
+            Ok((status, text)) if status >= 200 && status < 300 => {
+                if first_response.is_none() {
+                    first_response = serde_json::from_str(&text).ok();
+                }
+                applied.push(address.clone());
+            }
+            Ok((status, text)) => {
+                rollback_index_update(&client, &path, &snapshots, &applied).await;
+                let msg = format!(
+                    "index update failed on {}: HTTP {} — {}",
+                    address, status, text
+                );
+                return Err(forward_or_miroir(status, &text, &msg));
+            }
+            Err(e) => {
+                rollback_index_update(&client, &path, &snapshots, &applied).await;
+                return Err(MeilisearchError::new(
+                    MiroirCode::NoQuorum,
+                    format!("index update failed on {}: {}", address, e),
+                ));
+            }
+        }
+    }
+
+    Ok(Json(first_response.unwrap_or(serde_json::json!({"uid": index, "status": "updated"}))))
+}
+
+/// Rollback index metadata updates by restoring pre-change snapshots.
+async fn rollback_index_update(
+    client: &MeilisearchClient,
+    path: &str,
+    snapshots: &[(String, Value)],
+    applied: &[String],
+) {
+    for address in applied {
+        if let Some((_, snapshot)) = snapshots.iter().find(|(a, _)| a == address) {
+            match client.patch_raw(address, path, snapshot).await {
+                Ok((_status, _text)) if _status >= 200 && _status < 300 => {
+                    tracing::info!(node = %address, "index update rollback succeeded");
+                }
+                Ok((status, text)) => {
+                    tracing::error!(
+                        node = %address,
+                        status,
+                        "index update rollback failed: {}",
+                        text
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(node = %address, error = %e, "index update rollback failed");
+                }
+            }
+        }
     }
 }
 

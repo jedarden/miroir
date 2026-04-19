@@ -2,7 +2,8 @@
 
 use miroir_core::scatter::{
     DeleteByIdsRequest, DeleteByFilterRequest, DeleteResponse, NodeClient, NodeError,
-    PreflightRequest, PreflightResponse, SearchRequest, TermStats, WriteRequest, WriteResponse,
+    PreflightRequest, PreflightResponse, SearchRequest, TaskStatusRequest, TaskStatusResponse,
+    TermStats, WriteRequest, WriteResponse,
 };
 use miroir_core::topology::NodeId;
 use reqwest::Client;
@@ -45,6 +46,16 @@ impl HttpClient {
             address.trim_end_matches('/'),
             index_uid
         )
+    }
+
+    /// Build the task URL for a node.
+    fn task_url(&self, address: &str, task_uid: u64) -> String {
+        format!("{}/tasks/{}", address.trim_end_matches('/'), task_uid)
+    }
+
+    /// Static version of task_url for use in async blocks.
+    fn task_url_static(address: &str, task_uid: u64) -> String {
+        format!("{}/tasks/{}", address.trim_end_matches('/'), task_uid)
     }
 }
 
@@ -346,6 +357,61 @@ impl NodeClient for HttpClient {
             avg_doc_length,
             term_stats,
         })
+    }
+
+    fn get_task_status(
+        &self,
+        _node: &NodeId,
+        address: &str,
+        request: &TaskStatusRequest,
+    ) -> impl std::future::Future<Output = std::result::Result<TaskStatusResponse, NodeError>> + Send {
+        let task_uid = request.task_uid;
+        let url = Self::task_url_static(address, task_uid);
+        let master_key = self.master_key.clone();
+        let client = self.client.clone();
+
+        async move {
+            let response = client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", master_key))
+                .send()
+                .await
+                .map_err(|e| NodeError::NetworkError(format!("Request failed: {}", e)))?;
+
+            let status = response.status();
+            let body_text = response
+                .text()
+                .await
+                .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {}", e)))?;
+
+            if !status.is_success() {
+                return Err(NodeError::HttpError {
+                    status: status.as_u16(),
+                    body: body_text,
+                });
+            }
+
+            // Parse successful response
+            let json: Value = serde_json::from_str(&body_text).map_err(|e| {
+                NodeError::NetworkError(format!("Failed to parse JSON response: {}", e))
+            })?;
+
+            Ok(TaskStatusResponse {
+                task_uid,
+                status: json.get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("enqueued")
+                    .to_string(),
+                error: json.get("error")
+                    .and_then(|v| v.get("message"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                error_type: json.get("error")
+                    .and_then(|v| v.get("type"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+            })
+        }
     }
 }
 

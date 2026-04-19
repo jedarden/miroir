@@ -14,6 +14,7 @@ pub mod schema_migrations;
 pub mod scatter;
 pub mod task;
 pub mod task_pruner;
+pub mod task_registry;
 pub mod task_store;
 pub mod topology;
 
