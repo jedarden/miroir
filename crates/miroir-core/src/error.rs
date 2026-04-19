@@ -44,6 +44,10 @@ pub enum MiroirError {
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
+    /// Redis error.
+    #[error("Redis error: {0}")]
+    Redis(String),
+
     /// Schema version mismatch.
     #[error("schema version {store_version} is ahead of binary version {binary_version}; cannot safely start. Restore from backup or upgrade binary.")]
     SchemaVersionAhead {

@@ -1,11 +1,15 @@
+#[cfg(feature = "redis-store")]
+mod redis;
 mod sqlite;
 
+#[cfg(feature = "redis-store")]
+pub use redis::{RedisTaskStore, SearchUiScopedKey};
 pub use sqlite::SqliteTaskStore;
 
 use crate::Result;
 use std::collections::HashMap;
 
-/// Per-table store operations covering tables 1–7 from plan §4.
+/// Per-table store operations covering tables 1–14 from plan §4.
 pub trait TaskStore: Send + Sync {
     // --- Lifecycle ---
 
@@ -352,7 +356,7 @@ pub struct CanaryRow {
 }
 
 /// New or updated canary (table 8).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NewCanary {
     pub id: String,
     pub name: String,
@@ -365,7 +369,7 @@ pub struct NewCanary {
 }
 
 /// Canary run row (table 9).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CanaryRunRow {
     pub canary_id: String,
     pub ran_at: i64,
@@ -375,7 +379,7 @@ pub struct CanaryRunRow {
 }
 
 /// New canary run to insert (table 9).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NewCanaryRun {
     pub canary_id: String,
     pub ran_at: i64,
