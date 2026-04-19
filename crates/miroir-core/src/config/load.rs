@@ -29,7 +29,7 @@ pub fn load() -> Result<MiroirConfig, ConfigError> {
 
     for path in CONFIG_SEARCH_PATHS {
         if std::path::Path::new(path).exists() {
-            builder = builder.add_source(ext_config::File::with_name(path));
+            builder = builder.add_source(ext_config::File::from(std::path::Path::new(path)));
             break;
         }
     }
@@ -50,7 +50,7 @@ pub fn load_from(path: &std::path::Path) -> Result<MiroirConfig, ConfigError> {
     let mut builder = ext_config::Config::builder();
 
     builder = builder.add_source(ext_config::Config::try_from(&MiroirConfig::default())?);
-    builder = builder.add_source(ext_config::File::with_name(path.to_string_lossy().as_ref()));
+    builder = builder.add_source(ext_config::File::from(path));
 
     builder = builder.add_source(
         ext_config::Environment::with_prefix(ENV_PREFIX)

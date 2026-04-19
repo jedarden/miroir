@@ -76,6 +76,11 @@ pub fn is_dispatch_exempt(method: &Method, path: &str) -> bool {
         return true;
     }
 
+    // `GET /_miroir/ready` — unauthenticated readiness probe (plan §10)
+    if method == Method::GET && path == "/_miroir/ready" {
+        return true;
+    }
+
     // `GET /_miroir/ui/search/locale/*` — unauthenticated public locale fetch
     if method == Method::GET {
         if let Some(rest) = path.strip_prefix("/_miroir/ui/search/locale/") {
@@ -374,6 +379,14 @@ mod tests {
         assert!(!is_dispatch_exempt(&Method::GET, "/_miroir/other"));
     }
 
+    #[test]
+    fn exempt_get_miroir_ready() {
+        // `GET /_miroir/ready` is exempt for Kubernetes readiness probes
+        assert!(is_dispatch_exempt(&Method::GET, "/_miroir/ready"));
+        // POST should not be exempt
+        assert!(!is_dispatch_exempt(&Method::POST, "/_miroir/ready"));
+    }
+
     // -----------------------------------------------------------------------
     // Rule 0 — exempt endpoints skip auth entirely
     // -----------------------------------------------------------------------
@@ -421,6 +434,19 @@ mod tests {
             &Method::GET,
             "/ui/search/products",
             None,
+            &state,
+        );
+        assert_eq!(verdict, AuthVerdict::Exempt);
+    }
+
+    #[test]
+    fn exempt_ready_ignores_all_tokens() {
+        let state = test_state();
+        // `GET /_miroir/ready` should be exempt from auth (Kubernetes readiness probe)
+        let verdict = dispatch_bearer(
+            &Method::GET,
+            "/_miroir/ready",
+            Some("bogus-token"),
             &state,
         );
         assert_eq!(verdict, AuthVerdict::Exempt);
