@@ -405,15 +405,15 @@ mod tests {
                 backend: "sqlite".into(),
                 ..Default::default()
             },
-            cdc: CdcConfig {
-                buffer: CdcBufferConfig {
+            cdc: advanced::CdcConfig {
+                buffer: advanced::CdcBufferConfig {
                     overflow: "drop".into(),
                     ..Default::default()
                 },
                 ..Default::default()
             },
-            search_ui: SearchUiConfig {
-                rate_limit: RateLimitConfig {
+            search_ui: advanced::SearchUiConfig {
+                rate_limit: advanced::SearchUiRateLimitConfig {
                     backend: "local".into(),
                     ..Default::default()
                 },
