@@ -2,7 +2,7 @@
 
 use axum::extract::Path;
 use axum::http::StatusCode;
-use axum::{Extension, Json};
+use axum::{Extension, Json, response::Response};
 use miroir_core::config::{Config, UnavailableShardPolicy};
 use miroir_core::merger::ScoreMergeStrategy;
 use miroir_core::scatter::{
@@ -44,7 +44,10 @@ impl NodeClient for ProxyNodeClient {
     }
 }
 
-pub fn router() -> axum::Router {
+pub fn router<S>() -> axum::Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     axum::Router::new()
         .route("/:index", axum::routing::post(search_handler))
 }
@@ -73,12 +76,14 @@ struct SearchRequestBody {
 ///
 /// This produces globally-comparable scores across shards with skewed document
 /// distributions, enabling score-based merge with τ ≥ 0.95.
+///
+/// Returns `X-Miroir-Degraded: shards=X,Y,Z` header when any shards are unavailable.
 async fn search_handler(
     Path(index): Path<String>,
     Extension(config): Extension<Arc<Config>>,
     Extension(_topology): Extension<Arc<Topology>>,
     Json(body): Json<SearchRequestBody>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Response, StatusCode> {
     // Build topology from config
     let mut topo = Topology::new(config.shards, config.replica_groups, config.replication_factor as usize);
     for node in &config.nodes {
@@ -138,11 +143,38 @@ async fn search_handler(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    Ok(Json(serde_json::json!({
+    // Build response body
+    let body = serde_json::json!({
         "hits": result.hits,
         "estimatedTotalHits": result.estimated_total_hits,
         "processingTimeMs": result.processing_time_ms,
         "facetDistribution": result.facet_distribution,
-        "degraded": result.degraded,
-    })))
+    });
+
+    // Build response with optional X-Miroir-Degraded header
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json");
+
+    // Add X-Miroir-Degraded header if the result is degraded
+    // The header format is: X-Miroir-Degraded: shards=3,7,11
+    // This indicates which shards had zero live replicas
+    if result.degraded && !result.failed_shards.is_empty() {
+        // Sort shard IDs for deterministic output
+        let mut sorted_shards = result.failed_shards.clone();
+        sorted_shards.sort();
+        let shard_ids = sorted_shards.iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        response = response.header("X-Miroir-Degraded", format!("shards={}", shard_ids));
+    } else if result.degraded {
+        response = response.header("X-Miroir-Degraded", "partial");
+    }
+
+    let response = response
+        .body(axum::body::Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+
+    Ok(response)
 }
