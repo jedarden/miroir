@@ -32,13 +32,25 @@ Open Problem #2 asks: can we embed a Raft consensus module so that N Miroir pods
 
 | Crate | Version | Stars | Last Activity | Status |
 |-------|---------|-------|---------------|--------|
-| **openraft** | 0.9.20 (stable), 0.10.0-alpha.17 | 1,890 | 2026-04-18 (verified) | Actively maintained |
-| **raft-rs** (tikv) | 0.7.0 | 3,324 | 2026-04-14 (verified) | Maintenance mode — no active roadmap, TiKV internalized much of the logic |
-| **async-raft** | 0.6.1 | ~1,091 | 2023-02-12 | **Abandoned — do not use** |
+| **openraft** | 0.9.22 (stable), 0.10.0-alpha.17 | ~1,900 | 2026-04-08 (crates.io verified) | Actively maintained |
+| **raft-rs** (tikv) | 0.7.0 | ~3,300 | 2023-03-07 (crates.io verified) | Maintenance mode — no active roadmap, TiKV internalized much of the logic |
+| **async-raft** | 0.6.1 | ~1,091 | 2021-05-19 (crates.io verified) | **Abandoned — do not use** |
 
 ### 2.2 Elimination
 
-**async-raft** is eliminated immediately. It has been abandoned since February 2023 with known correctness bugs in membership changes and snapshot replication. openraft was created specifically as a bug-fixed fork of async-raft. No new project should use async-raft.
+**async-raft** is eliminated immediately. It has been abandoned since May 2021 (last release v0.6.1, 2021-05-19) with known correctness bugs in membership changes and snapshot replication. Recent downloads: ~2,500 (vs openraft's ~153,000). openraft was created specifically as a bug-fixed fork of async-raft. No new project should use async-raft.
+
+### 2.2.1 Other Raft-related crates surveyed (not recommended)
+
+| Crate | Downloads | Last Update | Notes |
+|-------|-----------|-------------|-------|
+| **raft-proto** | 468K | 2023-03-07 | Protobuf definitions for raft-rs; not standalone |
+| **raft-engine** | 306K | 2024-04-26 | Persistent log storage engine for Multi-Raft (TiKV); low-level, not a consensus library |
+| **iggy** | 195K | 2026-03-30 | Message streaming platform (Apache Iggy); includes consensus internally but not a pluggable Raft library |
+| **stateright** | 14M | 2025-07-27 | Model checker for distributed systems (Paxos/Raft); verification tool, not a production consensus library |
+| **openraft-rt** | 21K | 2026-03-11 | Runtime abstraction layer for openraft 0.10.x (companion crate) |
+
+No new Raft consensus libraries suitable for Miroir's use case have emerged since the initial survey. openraft remains the only viable option.
 
 ### 2.3 Detailed Comparison: openraft vs. raft-rs
 
@@ -66,6 +78,20 @@ Open Problem #2 asks: can we embed a Raft consensus module so that N Miroir pods
 | **rrqlite** (Raft-replicated SQLite) | |
 
 openraft is battle-tested in 5+ production systems. raft-rs is production-proven within TiKV but has limited adoption outside its original sponsor.
+
+#### openraft Performance (from official benchmark)
+
+The openraft README reports framework-level benchmarks (minimal store/network, 3 nodes):
+
+| Clients | Single writes/sec | Batch writes/sec (4 entries) |
+|---------|-------------------|------------------------------|
+| 1 | 33,000 | — |
+| 64 | 912,000 | — |
+| 256 | 1,808,000 | — |
+| 1,024 | 3,006,000 | — |
+| 4,096 | 3,548,000 | 5,615,000 |
+
+These are framework-level numbers with minimal persistence. Real-world throughput with SQLite persistence and network I/O will be significantly lower (see Section 4.3 for Miroir-specific estimates).
 
 #### SQLite Compatibility
 
@@ -232,16 +258,16 @@ cargo test -p miroir-core --features raft-proto raft_proto::benchmark -- --nocap
 
 | Operation | State Machine | Direct HashMap | Overhead |
 |-----------|-------------|----------------|----------|
-| Insert | 1,889 ns | 1,925 ns | 1.0x |
-| Read | 250 ns | 242 ns | 1.0x |
-| Update | 312 ns | 337 ns | 0.9x |
+| Insert | 1,976 ns | 1,829 ns | 1.1x |
+| Read | 265 ns | 232 ns | 1.1x |
+| Update | 319 ns | 286 ns | 1.1x |
 
 | Serialization | Avg Latency | Size per Command |
 |---------------|-------------|-----------------|
-| JSON | 1,464 ns | 73 bytes |
-| Bincode | 425 ns | 26 bytes |
+| JSON | 1,389 ns | 73 bytes |
+| Bincode | 393 ns | 26 bytes |
 
-**Throughput (single-threaded, local apply only):** ~529K ops/sec (state machine) vs ~519K ops/sec (direct)
+**Throughput (single-threaded, local apply only):** ~506K ops/sec (state machine) vs ~547K ops/sec (direct)
 
 **Key finding:** The state machine apply path adds negligible overhead (~1.0x) vs. direct HashMap access. Both are sub-microsecond. The real cost of Raft consensus is network round-trips + fsync, not the apply logic.
 
@@ -395,7 +421,7 @@ This preserves the investment in the SQLite and Redis backends and avoids forcin
 
 ### Compilation Note
 
-openraft 0.9.20 fails to compile on stable Rust 1.87 because its dependency `validit 0.2.5` uses the unstable `let_chains` feature. The 0.10 alpha series compounds this by requiring Rust edition 2024. The prototype works around this by simulating Raft consensus rather than depending on openraft directly — only `bincode` is needed for the serialization benchmarks. This compilation failure is itself a data point: a dependency that requires nightly or bleeding-edge stable Rust is not suitable for production use in v1.0.
+openraft 0.9.20/0.9.22 fails to compile on stable Rust 1.87 because its dependency `validit 0.2.5` uses the unstable `let_chains` feature. The 0.10 alpha series compounds this by requiring Rust edition 2024. The prototype works around this by simulating Raft consensus rather than depending on openraft directly — only `bincode` is needed for the serialization benchmarks. This compilation failure is itself a data point: a dependency that requires nightly or bleeding-edge stable Rust is not suitable for production use in v1.0.
 
 ---
 
@@ -443,7 +469,7 @@ rrqlite validates that the openraft + SQLite combination works in production. Ho
 
 ## 9. Appendix: Crate Deep-Dive
 
-### openraft v0.9.20 (Stable)
+### openraft v0.9.22 (Stable)
 
 ```
 [dependencies]
