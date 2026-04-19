@@ -15,7 +15,7 @@ metadata:
     workflows.argoproj.io/description: "PR gate: ensure version fields are consistent"
 spec:
   entrypoint: check
-  serviceAccountName: argo-runner
+  serviceAccountName: argo-workflow
   arguments:
     parameters:
       - name: sha

@@ -95,7 +95,7 @@ spec:
             apt-get update -qq && apt-get install -y -qq pkg-config libssl-dev >/dev/null 2>&1
             cd /workspace/src
             export CARGO_TARGET_DIR=/workspace/target-lint
-            cargo fmt --check
+            cargo fmt --all -- --check
             cargo clippy --all-targets -- -D warnings
         volumeMounts:
           - name: workspace
@@ -250,10 +250,17 @@ spec:
               exit 0
             fi
 
+            # Pre-release detection: tags like vX.Y.Z-rc.N, vX.Y.Z-beta.1, etc.
+            PRERELEASE_FLAG=""
+            if echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+[-+]'; then
+              PRERELEASE_FLAG="--prerelease"
+            fi
+
             gh release create "${TAG}" \
               --repo jedarden/miroir \
               --title "miroir ${TAG}" \
               --notes "${NOTES}" \
+              ${PRERELEASE_FLAG} \
               --target "{{workflow.parameters.revision}}" \
               /workspace/dist/miroir-proxy-linux-amd64 \
               /workspace/dist/miroir-proxy-linux-amd64.sha256 \
