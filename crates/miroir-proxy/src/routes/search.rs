@@ -57,7 +57,8 @@ struct SearchRequestBody {
     limit: Option<usize>,
     filter: Option<Value>,
     facets: Option<Vec<String>>,
-    rankingScore: Option<bool>,
+    #[serde(rename = "rankingScore")]
+    ranking_score: Option<bool>,
     #[serde(flatten)]
     rest: Value,
 }
@@ -107,7 +108,7 @@ async fn search_handler(
         limit: body.limit.unwrap_or(20),
         filter: body.filter,
         facets: body.facets,
-        ranking_score: body.rankingScore.unwrap_or(false),
+        ranking_score: body.ranking_score.unwrap_or(false),
         body: body.rest,
         global_idf: None, // Will be populated by dfs_query_then_fetch_search
     };

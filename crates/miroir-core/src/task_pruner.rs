@@ -231,7 +231,7 @@ mod tests {
     /// next pruner cycle drops all 10k.
     #[test]
     fn pruner_deletes_10k_old_terminal_tasks() {
-        let _lock = GAUGE_LOCK.lock().unwrap();
+        let _lock = GAUGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let store = test_store();
         let eight_days_ms: i64 = 8 * 24 * 3600 * 1000;
         let old_time = now() - eight_days_ms;
@@ -260,6 +260,7 @@ mod tests {
     /// Acceptance: A single in-flight `processing` task at created_at = now - 10d is preserved.
     #[test]
     fn pruner_preserves_processing_tasks() {
+        let _lock = GAUGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let store = test_store();
         let ten_days_ms: i64 = 10 * 24 * 3600 * 1000;
         let old_time = now() - ten_days_ms;
@@ -286,6 +287,7 @@ mod tests {
     /// Acceptance: Pruner advisory lock prevents two instances pruning simultaneously.
     #[test]
     fn advisory_lock_prevents_concurrent_pruning() {
+        let _lock = GAUGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let store = test_store();
         let ten_days_ms: i64 = 10 * 24 * 3600 * 1000;
         let old_time = now() - ten_days_ms;
@@ -317,7 +319,7 @@ mod tests {
     /// Acceptance: miroir_task_registry_size gauge drops after a prune cycle.
     #[test]
     fn gauge_drops_after_prune() {
-        let _lock = GAUGE_LOCK.lock().unwrap();
+        let _lock = GAUGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let store = test_store();
         let ten_days_ms: i64 = 10 * 24 * 3600 * 1000;
         let old_time = now() - ten_days_ms;
@@ -343,6 +345,7 @@ mod tests {
     /// Test that pruner respects batch_size — multiple iterations needed.
     #[test]
     fn pruner_batches_correctly() {
+        let _lock = GAUGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let store = test_store();
         let ten_days_ms: i64 = 10 * 24 * 3600 * 1000;
         let old_time = now() - ten_days_ms;
@@ -357,5 +360,43 @@ mod tests {
 
         assert_eq!(deleted, 25); // all deleted via multiple batches
         assert_eq!(store.task_count().unwrap(), 0);
+    }
+
+    /// Acceptance: spawn_pruner runs in background, PrunerHandle::stop joins cleanly.
+    #[test]
+    fn spawn_pruner_runs_and_stops() {
+        let _lock = GAUGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let store = Arc::new(test_store());
+        let ten_days_ms: i64 = 10 * 24 * 3600 * 1000;
+        let old_time = now() - ten_days_ms;
+
+        for i in 0..5 {
+            insert_task(store.as_ref(), &format!("old-{i}"), old_time, "succeeded");
+        }
+
+        let mut cfg = default_cfg();
+        cfg.prune_interval_s = 1;
+        let mut handle = spawn_pruner(store.clone(), cfg);
+
+        // Give the pruner a moment to run at least one cycle
+        thread::sleep(Duration::from_millis(200));
+        handle.stop();
+
+        // Old tasks should be pruned
+        assert_eq!(store.task_count().unwrap(), 0);
+    }
+
+    /// Acceptance: dropping PrunerHandle signals stop and joins.
+    #[test]
+    fn pruner_handle_drop_stops_thread() {
+        let _lock = GAUGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let store = Arc::new(test_store());
+        let mut cfg = default_cfg();
+        cfg.prune_interval_s = 600; // long interval so it sleeps in the loop
+        {
+            let _handle = spawn_pruner(store, cfg);
+            // handle dropped here
+        }
+        // Thread should have stopped — if this hangs, the test will time out
     }
 }

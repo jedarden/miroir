@@ -181,7 +181,7 @@ async fn preflight_handler(
     let node = config
         .nodes
         .first()
-        .ok_or_else(|| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let client = MeilisearchClient::new(config.node_master_key.clone());
 

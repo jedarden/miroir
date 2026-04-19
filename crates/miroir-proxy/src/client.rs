@@ -11,7 +11,6 @@ use std::time::Duration;
 pub struct HttpClient {
     client: Client,
     master_key: String,
-    timeout_ms: u64,
 }
 
 impl HttpClient {
@@ -22,11 +21,7 @@ impl HttpClient {
             .build()
             .expect("Failed to create HTTP client");
 
-        Self {
-            client,
-            master_key,
-            timeout_ms,
-        }
+        Self { client, master_key }
     }
 
     /// Build the search URL for a node and index.
@@ -35,6 +30,7 @@ impl HttpClient {
     }
 
     /// Build the preflight URL for a node and index.
+    #[allow(dead_code)]
     fn preflight_url(&self, address: &str, index_uid: &str) -> String {
         format!("{}/indexes/{}/_preflight", address.trim_end_matches('/'), index_uid)
     }
