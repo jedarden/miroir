@@ -582,10 +582,102 @@
     },
 
     {
+      "title": "Resharding (§13.1)",
+      "description": "Visible when resharding feature is enabled. Shows resharding progress, current phase, and backfill rate.",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 72 },
+      "collapsed": true,
+      "panels": [
+        {
+          "title": "Reshard In Progress",
+          "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+          "targets": [
+            {
+              "expr": "miroir_reshard_in_progress",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "blue", "value": 1 }
+                ]
+              },
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "Idle", "index": 0 }, "1": { "text": "Active", "index": 1 } } }
+              ]
+            }
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": { "calcs": ["lastNotNull"] }
+          }
+        },
+        {
+          "title": "Reshard Phase",
+          "type": "gauge",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+          "targets": [
+            {
+              "expr": "miroir_reshard_phase",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "min": 0,
+              "max": 5,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 2 },
+                  { "color": "blue", "value": 4 }
+                ]
+              },
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "Idle", "index": 0 }, "1": { "text": "Planning", "index": 1 }, "2": { "text": "Provisioning", "index": 2 }, "3": { "text": "Backfilling", "index": 3 }, "4": { "text": "Cutover", "index": 4 }, "5": { "text": "Cleanup", "index": 5 } } }
+              ]
+            }
+          }
+        },
+        {
+          "title": "Documents Backfilled",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+          "targets": [
+            {
+              "expr": "rate(miroir_reshard_documents_backfilled_total[$__rate_interval])",
+              "legendFormat": "docs/s",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": { "fillOpacity": 10 }
+            }
+          }
+        }
+      ]
+    },
+
+    {
       "title": "Multi-Search (§13.11)",
       "description": "Visible when multi_search feature is enabled. Shows batch sizes, partial failures, and tenant pin overrides.",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 72 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 73 },
       "collapsed": true,
       "panels": [
         {
@@ -647,7 +739,7 @@
       "title": "Anti-Entropy (§13.8)",
       "description": "Visible when anti-entropy is active. Shows shards scanned, mismatches found, and documents repaired.",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 73 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 74 },
       "collapsed": true,
       "panels": [
         {
@@ -711,7 +803,7 @@
       "title": "Settings Broadcast (§13.5)",
       "description": "Settings divergence detection and drift repairs.",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 74 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 75 },
       "collapsed": true,
       "panels": [
         {
@@ -759,7 +851,7 @@
       "title": "CDC (§13.13)",
       "description": "Change Data Capture lag, buffer usage, and events by sink.",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 75 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 76 },
       "collapsed": true,
       "panels": [
         {
@@ -821,7 +913,7 @@
       "title": "Canary Tests (§13.18)",
       "description": "Canary pass/fail results and assertion failures as a heatmap-style table.",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 76 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 77 },
       "collapsed": true,
       "panels": [
         {
@@ -906,7 +998,7 @@
       "title": "Search UI (§13.21)",
       "description": "Search UI sessions, queries, zero-hit rate, click-through, and client-reported p95 latency.",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 77 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 78 },
       "collapsed": true,
       "panels": [
         {
