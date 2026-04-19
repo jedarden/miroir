@@ -277,7 +277,7 @@ mod tests {
         })
     }
 
-    /// Make a hit without score (for testing RRF rank-based ordering).
+    #[allow(dead_code)]
     fn make_hit_ranked(id: &str, shard: u32) -> Value {
         json!({
             "id": id,
