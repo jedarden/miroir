@@ -178,7 +178,7 @@ impl MeilisearchClient {
             .await?;
 
         if !response.status().is_success() {
-            return Err(format!("Failed to search for term '{}': {}", term, response.status()).into());
+            return Err(format!("DF lookup failed: HTTP {}", response.status()).into());
         }
 
         let json: Value = response.json().await?;
@@ -924,7 +924,7 @@ async fn preflight_handler(
                 term_stats.insert(term.clone(), TermStats { df });
             }
             Err(e) => {
-                tracing::warn!("Failed to get DF for term '{}': {}", term, e);
+                tracing::warn!(term_len = term.len(), error = %e, "preflight DF lookup failed");
             }
         }
     }
