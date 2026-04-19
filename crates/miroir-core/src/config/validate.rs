@@ -143,3 +143,129 @@ pub fn validate(cfg: &MiroirConfig) -> Result<(), ConfigError> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        advanced, MiroirConfig, TaskStoreConfig,
+    };
+
+    fn dev_config() -> MiroirConfig {
+        MiroirConfig {
+            replication_factor: 1,
+            task_store: TaskStoreConfig {
+                backend: "sqlite".into(),
+                ..Default::default()
+            },
+            cdc: advanced::CdcConfig {
+                buffer: advanced::CdcBufferConfig {
+                    overflow: "drop".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            search_ui: advanced::SearchUiConfig {
+                rate_limit: advanced::SearchUiRateLimitConfig {
+                    backend: "local".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn rejects_replica_groups_gt1_with_sqlite() {
+        let mut cfg = dev_config();
+        cfg.replica_groups = 2;
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("replica_groups > 1"));
+    }
+
+    #[test]
+    fn rejects_hpa_enabled_with_sqlite() {
+        let mut cfg = dev_config();
+        cfg.hpa.enabled = true;
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("hpa.enabled"));
+    }
+
+    #[test]
+    fn rejects_cdc_overflow_redis_without_redis() {
+        let mut cfg = dev_config();
+        cfg.cdc.enabled = true;
+        cfg.cdc.buffer.overflow = "redis".into();
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("cdc.buffer.overflow"));
+    }
+
+    #[test]
+    fn rejects_search_ui_rate_limit_redis_without_redis() {
+        let mut cfg = dev_config();
+        cfg.search_ui.enabled = true;
+        cfg.search_ui.rate_limit.backend = "redis".into();
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("search_ui.rate_limit"));
+    }
+
+    #[test]
+    fn rejects_replica_groups_gt1_without_leader_election() {
+        let mut cfg = dev_config();
+        cfg.task_store.backend = "redis".into();
+        cfg.replica_groups = 2;
+        cfg.leader_election.enabled = false;
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("leader_election"));
+    }
+
+    #[test]
+    fn rejects_tenant_affinity_group_out_of_range() {
+        let mut cfg = dev_config();
+        cfg.tenant_affinity.enabled = true;
+        cfg.tenant_affinity.dedicated_groups = vec![99];
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("tenant_affinity"));
+    }
+
+    #[test]
+    fn rejects_tenant_affinity_static_map_out_of_range() {
+        let mut cfg = dev_config();
+        cfg.tenant_affinity.enabled = true;
+        cfg.tenant_affinity.static_map.insert("tenant-a".into(), 99);
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("tenant_affinity.static_map"));
+    }
+
+    #[test]
+    fn rejects_shadow_invalid_sample_rate() {
+        let mut cfg = dev_config();
+        cfg.shadow.enabled = true;
+        cfg.shadow.targets = vec![advanced::ShadowTargetConfig {
+            name: "t".into(),
+            url: "http://t".into(),
+            api_key_env: "MIROIR_SHADOW_KEY".into(),
+            sample_rate: 0.0,
+            operations: vec!["search".into()],
+        }];
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("sample_rate"));
+    }
+
+    #[test]
+    fn rejects_zero_server_port() {
+        let mut cfg = dev_config();
+        cfg.server.port = 0;
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("server.port"));
+    }
+
+    #[test]
+    fn rejects_zero_replication_factor() {
+        let mut cfg = dev_config();
+        cfg.replication_factor = 0;
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("replication_factor"));
+    }
+}

@@ -1159,7 +1159,7 @@ mod tests {
 
     #[test]
     fn test_rrf_document_equality() {
-        use super::{RRFDocument, Ordering};
+        use super::Ordering;
         let a = super::RRFDocument {
             rrf_score: 1.0,
             primary_key: "doc1".into(),
