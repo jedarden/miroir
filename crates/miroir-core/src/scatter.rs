@@ -1,7 +1,7 @@
 //! Scatter orchestration: fan-out logic and covering set builder.
 
 use crate::config::UnavailableShardPolicy;
-use crate::merger::ShardHitPage;
+use crate::merger::{merge, MergeInput, MergedSearchResult, ShardHitPage};
 use crate::router::{covering_set, query_group};
 use crate::topology::{NodeId, Topology};
 use crate::Result;
@@ -292,6 +292,55 @@ pub async fn execute_scatter<C: NodeClient>(
     })
 }
 
+/// Execute a full scatter-gather search: fan out to nodes, then RRF-merge results.
+///
+/// This is the primary entry point for the read path. It combines
+/// `execute_scatter` (fan-out) with `merge` (RRF result merging)
+/// into a single operation.
+///
+/// # Arguments
+/// * `plan` - Scatter plan from `plan_search_scatter`
+/// * `client` - HTTP client for communicating with nodes
+/// * `req` - Search request to execute
+/// * `topology` - Current topology (for resolving node addresses)
+/// * `policy` - Policy for handling unavailable shards
+///
+/// # Returns
+/// A `MergedSearchResult` with globally ranked hits using RRF.
+pub async fn scatter_gather_search<C: NodeClient>(
+    plan: ScatterPlan,
+    client: &C,
+    req: SearchRequest,
+    topology: &Topology,
+    policy: UnavailableShardPolicy,
+) -> Result<MergedSearchResult> {
+    let scatter_result = execute_scatter(plan, client, req.clone(), topology, policy).await?;
+
+    // Mark failed shards as degraded in the shard pages
+    let mut shard_pages = scatter_result.shard_pages;
+    if scatter_result.partial {
+        // Add failed shard markers so the merger sets the degraded flag
+        for shard_id in scatter_result.failed_shards.keys() {
+            shard_pages.push(ShardHitPage {
+                body: serde_json::json!({
+                    "success": false,
+                    "message": format!("shard {} unavailable", shard_id),
+                }),
+            });
+        }
+    }
+
+    let merge_input = MergeInput {
+        shard_hits: shard_pages,
+        offset: req.offset,
+        limit: req.limit,
+        client_requested_score: req.ranking_score,
+        facets: req.facets.clone(),
+    };
+
+    merge(merge_input)
+}
+
 /// Stubs for testing (no actual network calls).
 
 /// Mock `NodeClient` for testing.
@@ -545,5 +594,99 @@ mod tests {
 
         let net_err = NodeError::NetworkError("connection refused".to_string());
         assert!(matches!(net_err, NodeError::NetworkError(_)));
+    }
+
+    #[tokio::test]
+    async fn test_scatter_gather_search_rrf_merge() {
+        let topo = make_test_topology();
+        let plan = plan_search_scatter(&topo, 0, 2, 64);
+
+        let mut client = MockNodeClient::default();
+        // Each node returns different hits
+        client.responses.insert(
+            NodeId::new("node-0".to_string()),
+            serde_json::json!({
+                "hits": [
+                    {"id": "doc-a", "title": "Doc A", "_rankingScore": 0.9},
+                    {"id": "doc-b", "title": "Doc B", "_rankingScore": 0.7},
+                ],
+                "estimatedTotalHits": 2,
+                "processingTimeMs": 5,
+            }),
+        );
+        client.responses.insert(
+            NodeId::new("node-1".to_string()),
+            serde_json::json!({
+                "hits": [{"id": "doc-c", "title": "Doc C", "_rankingScore": 0.8}],
+                "estimatedTotalHits": 1,
+                "processingTimeMs": 3,
+            }),
+        );
+        client.responses.insert(
+            NodeId::new("node-2".to_string()),
+            serde_json::json!({
+                "hits": [{"id": "doc-d", "title": "Doc D", "_rankingScore": 0.6}],
+                "estimatedTotalHits": 1,
+                "processingTimeMs": 4,
+            }),
+        );
+
+        let req = SearchRequest {
+            index_uid: "test".to_string(),
+            query: Some("test".to_string()),
+            offset: 0,
+            limit: 10,
+            filter: None,
+            facets: None,
+            ranking_score: false,
+            body: serde_json::json!({}),
+        };
+
+        let result = scatter_gather_search(plan, &client, req, &topo, UnavailableShardPolicy::Partial)
+            .await
+            .unwrap();
+
+        assert!(!result.degraded);
+        assert_eq!(result.hits.len(), 4); // 4 unique docs across all nodes
+        assert!(result.estimated_total_hits > 0);
+    }
+
+    #[tokio::test]
+    async fn test_scatter_gather_search_degraded() {
+        let topo = make_test_topology();
+        let plan = plan_search_scatter(&topo, 0, 2, 64);
+
+        let mut client = MockNodeClient::default();
+        client.responses.insert(
+            NodeId::new("node-0".to_string()),
+            serde_json::json!({
+                "hits": [{"id": "doc-a", "title": "Doc A"}],
+                "estimatedTotalHits": 1,
+                "processingTimeMs": 5,
+            }),
+        );
+        // node-1 and node-2 get default empty responses, but node-0 returns data
+        // Make node-2 fail
+        client.errors.insert(
+            NodeId::new("node-2".to_string()),
+            NodeError::Timeout,
+        );
+
+        let req = SearchRequest {
+            index_uid: "test".to_string(),
+            query: Some("test".to_string()),
+            offset: 0,
+            limit: 10,
+            filter: None,
+            facets: None,
+            ranking_score: false,
+            body: serde_json::json!({}),
+        };
+
+        let result = scatter_gather_search(plan, &client, req, &topo, UnavailableShardPolicy::Partial)
+            .await
+            .unwrap();
+
+        assert!(result.degraded);
     }
 }

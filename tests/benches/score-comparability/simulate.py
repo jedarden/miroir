@@ -138,30 +138,59 @@ def score_document_bm25(
     return score
 
 
-def simulate_search(
-    docs: List[Dict],
+def build_inverted_index(docs: List[Dict]) -> Dict[str, List[Tuple[int, Dict]]]:
+    """Build inverted index: term -> [(doc_index, doc), ...]."""
+    index: Dict[str, List[Tuple[int, Dict]]] = defaultdict(list)
+    for i, doc in enumerate(docs):
+        text = f"{doc['title']} {doc['content']}".lower()
+        terms = set(text.split())
+        for term in terms:
+            index[term].append((i, doc))
+    return dict(index)
+
+
+def _collect_candidates(
+    inv_index: Dict[str, List[Tuple[int, Dict]]],
+    doc_categories: List[str],
+    query_terms: Set[str],
+    category_filter: str | None,
+) -> List[Dict]:
+    """Collect unique candidate documents from inverted index."""
+    seen: Set[int] = set()
+    candidates = []
+    for term in query_terms:
+        if term not in inv_index:
+            continue
+        for doc_idx, doc in inv_index[term]:
+            if doc_idx in seen:
+                continue
+            if category_filter and doc_categories[doc_idx] != category_filter:
+                continue
+            seen.add(doc_idx)
+            candidates.append(doc)
+    return candidates
+
+
+def simulate_search_indexed(
+    inv_index: Dict[str, List[Tuple[int, Dict]]],
+    doc_categories: List[str],
     query: Dict,
     stats: Tuple[Dict, int, float],
     limit: int = 100,
 ) -> Dict:
-    """Simulate search on a single index/shard."""
+    """Simulate search using inverted index for fast lookup."""
     df, N, avgdl = stats
     query_terms = tokenize(query["q"])
+    category_filter = query["filter"].split("=")[1].strip() if query.get("filter") else None
+
+    candidates = _collect_candidates(inv_index, doc_categories, query_terms, category_filter)
 
     scores = []
-    for doc in docs:
-        # Apply filter if present
-        if query.get("filter"):
-            category_filter = query["filter"].split("=")[1].strip()
-            if doc["category"] != category_filter:
-                continue
-
+    for doc in candidates:
         score = score_document_bm25(doc, query_terms, df, N, avgdl)
-
         if score > 0:
             scores.append((doc, score))
 
-    # Sort by score descending
     scores.sort(key=lambda x: x[1], reverse=True)
 
     hits = []
@@ -182,47 +211,34 @@ def simulate_search(
     }
 
 
-def simulate_distributed_search(
-    shards: Dict[int, List[Dict]],
+def simulate_distributed_search_indexed(
+    shard_indexes: Dict[int, Dict[str, List[Tuple[int, Dict]]]],
+    shard_doc_categories: Dict[int, List[str]],
     shard_stats: Dict[int, Tuple[Dict, int, float]],
     query: Dict,
     limit: int = 100,
 ) -> Dict:
-    """
-    Simulate distributed search across shards.
-
-    This is where the score comparability issue manifests:
-    - Each shard computes scores using LOCAL statistics
-    - The merger combines results assuming scores are comparable
-    - When shards have different document distributions, this breaks
-    """
+    """Distributed search with score-based merge (the problematic approach)."""
     query_terms = tokenize(query["q"])
-
-    # Collect top results from each shard
-    # Each shard returns offset + limit results (we use limit * 2 for safety)
+    category_filter = query["filter"].split("=")[1].strip() if query.get("filter") else None
     per_shard_limit = limit * 2
     all_hits = []
 
-    for shard_id, docs in shards.items():
+    for shard_id, inv_index in shard_indexes.items():
         df, N, avgdl = shard_stats[shard_id]
+        doc_cats = shard_doc_categories[shard_id]
+        candidates = _collect_candidates(inv_index, doc_cats, query_terms, category_filter)
 
-        # Apply filter at shard level
-        if query.get("filter"):
-            category_filter = query["filter"].split("=")[1].strip()
-            filtered_docs = [d for d in docs if d["category"] == category_filter]
-        else:
-            filtered_docs = docs
-
-        scores = []
-        for doc in filtered_docs:
+        shard_scores = []
+        for doc in candidates:
             score = score_document_bm25(doc, query_terms, df, N, avgdl)
             if score > 0:
-                scores.append((doc, score, shard_id))
+                shard_scores.append((doc, score))
 
-        scores.sort(key=lambda x: x[1], reverse=True)
-        all_hits.extend(scores[:per_shard_limit])
+        shard_scores.sort(key=lambda x: x[1], reverse=True)
+        for doc, score in shard_scores[:per_shard_limit]:
+            all_hits.append((doc, score, shard_id))
 
-    # Merge: global sort by score (ASSUMING SCORES ARE COMPARABLE)
     all_hits.sort(key=lambda x: x[1], reverse=True)
 
     hits = []
@@ -241,60 +257,48 @@ def simulate_distributed_search(
         "filter": query.get("filter"),
         "hits": hits,
         "total_hits": len(all_hits),
-        "shards_queried": list(shards.keys()),
+        "shards_queried": list(shard_indexes.keys()),
     }
 
 
 RRF_K = 60  # RRF constant, matching merger.rs
 
 
-def simulate_distributed_search_rrf(
-    shards: Dict[int, List[Dict]],
+def simulate_distributed_search_rrf_indexed(
+    shard_indexes: Dict[int, Dict[str, List[Tuple[int, Dict]]]],
+    shard_doc_categories: Dict[int, List[str]],
     shard_stats: Dict[int, Tuple[Dict, int, float]],
     query: Dict,
     limit: int = 100,
 ) -> Dict:
-    """
-    Simulate distributed search using Reciprocal Rank Fusion.
-
-    RRF score for a document: sum over shards of 1/(k + rank + 1)
-    where rank is 0-based position in shard's result list.
-
-    This avoids the score comparability issue entirely because
-    RRF only uses rank position, not raw scores.
-    """
+    """Distributed search using Reciprocal Rank Fusion."""
     query_terms = tokenize(query["q"])
+    category_filter = query["filter"].split("=")[1].strip() if query.get("filter") else None
     per_shard_limit = limit * 2
 
-    # Accumulate RRF scores per document
     rrf_scores: Dict[str, float] = defaultdict(float)
-    doc_info: Dict[str, Tuple[Dict, int]] = {}  # id -> (doc, shard_id)
+    doc_info: Dict[str, Tuple[Dict, int]] = {}
 
-    for shard_id, docs in shards.items():
+    for shard_id, inv_index in shard_indexes.items():
         df, N, avgdl = shard_stats[shard_id]
+        doc_cats = shard_doc_categories[shard_id]
+        candidates = _collect_candidates(inv_index, doc_cats, query_terms, category_filter)
 
-        if query.get("filter"):
-            category_filter = query["filter"].split("=")[1].strip()
-            filtered_docs = [d for d in docs if d["category"] == category_filter]
-        else:
-            filtered_docs = docs
-
-        scores = []
-        for doc in filtered_docs:
+        shard_scores = []
+        for doc in candidates:
             score = score_document_bm25(doc, query_terms, df, N, avgdl)
             if score > 0:
-                scores.append((doc, score))
+                shard_scores.append((doc, score))
 
-        scores.sort(key=lambda x: x[1], reverse=True)
+        shard_scores.sort(key=lambda x: x[1], reverse=True)
 
-        for rank, (doc, _score) in enumerate(scores[:per_shard_limit]):
+        for rank, (doc, _score) in enumerate(shard_scores[:per_shard_limit]):
             doc_id = doc["id"]
             rrf_contribution = 1.0 / (RRF_K + rank + 1)
             rrf_scores[doc_id] += rrf_contribution
             if doc_id not in doc_info:
                 doc_info[doc_id] = (doc, shard_id)
 
-    # Sort by RRF score descending
     sorted_docs = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
 
     hits = []
@@ -314,7 +318,7 @@ def simulate_distributed_search_rrf(
         "filter": query.get("filter"),
         "hits": hits,
         "total_hits": len(sorted_docs),
-        "shards_queried": list(shards.keys()),
+        "shards_queried": list(shard_indexes.keys()),
         "merge_strategy": "rrf",
     }
 
@@ -362,6 +366,19 @@ def run_experiment(
     queries = load_queries(query_file)
     print(f"  {len(queries)} queries")
 
+    # Build inverted indexes for fast lookup
+    print("\nBuilding inverted indexes...")
+    global_inv_index = build_inverted_index(docs)
+    global_doc_categories = [doc.get("category", "") for doc in docs]
+    print(f"  Global index: {len(global_inv_index)} terms")
+
+    shard_indexes = {}
+    shard_doc_categories = {}
+    for shard_id, shard_docs in shards.items():
+        shard_indexes[shard_id] = build_inverted_index(shard_docs)
+        shard_doc_categories[shard_id] = [d.get("category", "") for d in shard_docs]
+        print(f"  Shard {shard_id}: {len(shard_indexes[shard_id])} terms")
+
     # Run experiments
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -379,18 +396,23 @@ def run_experiment(
                 print(f"  Processed {i + 1} queries...")
 
             # Ground truth: single index with global statistics
-            gt_result = simulate_search(docs, query, global_stats, limit)
+            gt_result = simulate_search_indexed(
+                global_inv_index, global_doc_categories,
+                query, global_stats, limit,
+            )
             gt_f.write(json.dumps(gt_result) + "\n")
 
             # Distributed: each shard uses local statistics (score-based merge)
-            dist_result = simulate_distributed_search(
-                shards, shard_stats, query, limit
+            dist_result = simulate_distributed_search_indexed(
+                shard_indexes, shard_doc_categories,
+                shard_stats, query, limit,
             )
             dist_f.write(json.dumps(dist_result) + "\n")
 
             # RRF: rank-based merge (no score comparability needed)
-            rrf_result = simulate_distributed_search_rrf(
-                shards, shard_stats, query, limit
+            rrf_result = simulate_distributed_search_rrf_indexed(
+                shard_indexes, shard_doc_categories,
+                shard_stats, query, limit,
             )
             rrf_f.write(json.dumps(rrf_result) + "\n")
 
