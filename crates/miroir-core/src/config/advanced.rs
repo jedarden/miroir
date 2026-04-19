@@ -741,6 +741,8 @@ pub struct SearchUiAuthConfig {
     pub session_ttl_s: u64,
     pub session_rate_limit: String,
     pub jwt_secret_env: String,
+    pub jwt_secret_previous_env: String,
+    pub jwt_rotation_buffer_s: u64,
     pub oauth_proxy: OAuthProxyConfig,
 }
 
@@ -752,6 +754,8 @@ impl Default for SearchUiAuthConfig {
             session_ttl_s: 900,
             session_rate_limit: "10/minute".into(),
             jwt_secret_env: "SEARCH_UI_JWT_SECRET".into(),
+            jwt_secret_previous_env: "SEARCH_UI_JWT_SECRET_PREVIOUS".into(),
+            jwt_rotation_buffer_s: 300,
             oauth_proxy: OAuthProxyConfig::default(),
         }
     }
