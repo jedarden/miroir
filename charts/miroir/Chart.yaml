@@ -1,6 +1,26 @@
 apiVersion: v2
 name: miroir
-description: Distributed search orchestrator for Meilisearch
-type: application
 version: 0.1.0
-appVersion: "0.1.0"
+appVersion: 0.1.0
+description: RAID-like sharding and HA for Meilisearch Community Edition
+keywords:
+  - search
+  - meilisearch
+  - sharding
+  - kubernetes
+home: https://github.com/jedarden/miroir
+sources:
+  - https://github.com/jedarden/miroir
+maintainers:
+  - name: jedarden
+    url: https://github.com/jedarden
+icon: https://raw.githubusercontent.com/meilisearch/meilisearch/main/assets/logo.svg
+annotations:
+  artifacthub.io/category: database
+  artifacthub.io/license: MIT
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://github.com/jedarden/miroir
+  artifacthub.io/operator: "false"
+  artifacthub.io/prerelease: "false"
+kubeVersion: ">=1.25.0-0"

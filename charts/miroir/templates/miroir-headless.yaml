@@ -1,0 +1,27 @@
+{{/*
+Miroir Headless Service for peer discovery
+*/}}
+{{- if .Values.miroir.replicas }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "miroir.fullname" . }}-headless
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app.kubernetes.io/component: miroir
+  {{- with .Values.headless.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: {{ .Values.service.ports.http | default 7700 }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "miroir.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: miroir
+{{- end }}

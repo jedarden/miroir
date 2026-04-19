@@ -1,0 +1,22 @@
+{{/*
+Miroir CDC Buffer PVC
+Only rendered when cdcPvc.enabled=true
+*/}}
+{{- if eq (include "miroir.cdcPvcEnabled" .) "true" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "miroir.fullname" . }}-cdc-pvc
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app.kubernetes.io/component: miroir
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.cdcPvc.size | default "5Gi" }}
+  {{- if .Values.cdcPvc.storageClass }}
+  storageClassName: {{ .Values.cdcPvc.storageClass }}
+  {{- end }}
+{{- end }}

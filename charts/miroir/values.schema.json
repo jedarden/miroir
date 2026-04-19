@@ -31,6 +31,7 @@
           "minimum": 1
         },
         "existingSecret": { "type": "string" },
+        "logLevel": { "type": "string", "enum": ["trace", "debug", "info", "warn", "error"] },
         "podAnnotations": { "type": "object" },
         "podLabels": { "type": "object" },
         "resources": {
