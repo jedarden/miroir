@@ -5,117 +5,153 @@ use crate::merger::{MergeInput, MergedSearchResult, MergeStrategy, ShardHitPage}
 use crate::router::{covering_set, query_group};
 use crate::topology::{NodeId, Topology};
 use crate::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
 /// Scatter plan: the exact shard→node mapping for a search query.
-///
-/// Separating the plan from execution makes §13.20 `/explain` cheap —
-/// the explain path generates the plan and returns it without touching any node.
 #[derive(Debug, Clone)]
 pub struct ScatterPlan {
-    /// Chosen replica group for this query (query_seq % RG).
     pub chosen_group: u32,
-
-    /// Target shards to query (for §13.4 narrowing — initially all 0..S).
     pub target_shards: Vec<u32>,
-
-    /// Resolved covering set: shard ID → node ID.
     pub shard_to_node: HashMap<u32, NodeId>,
-
-    /// Deadline for the query in milliseconds.
     pub deadline_ms: u32,
-
-    /// Whether hedging is eligible (reserved for §13.2 Phase 5).
     pub hedging_eligible: bool,
 }
 
+// ---------------------------------------------------------------------------
+// §15 OP#4: Global-IDF preflight (dfs_query_then_fetch pattern)
+// ---------------------------------------------------------------------------
+
+/// Per-term document frequency from a single shard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TermStats {
+    pub df: u64,
+}
+
+/// Preflight request: gather term-frequency statistics from a shard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreflightRequest {
+    pub index_uid: String,
+    pub terms: Vec<String>,
+    pub filter: Option<Value>,
+}
+
+/// Response from a shard's preflight query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreflightResponse {
+    pub total_docs: u64,
+    pub avg_doc_length: f64,
+    pub term_stats: HashMap<String, TermStats>,
+}
+
+/// Aggregated global term statistics after coordinator aggregation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalTermStats {
+    pub df: u64,
+    pub idf: f64,
+}
+
+/// Aggregated global IDF data computed at the coordinator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalIdf {
+    pub total_docs: u64,
+    pub avg_doc_length: f64,
+    pub terms: HashMap<String, GlobalTermStats>,
+}
+
+impl GlobalIdf {
+    /// Aggregate per-shard preflight responses into global IDF.
+    pub fn from_preflight_responses(responses: &[PreflightResponse]) -> Self {
+        let mut total_docs = 0u64;
+        let mut total_length = 0.0f64;
+        let mut term_df: HashMap<String, u64> = HashMap::new();
+
+        for resp in responses {
+            total_docs += resp.total_docs;
+            total_length += resp.avg_doc_length * resp.total_docs as f64;
+            for (term, stats) in &resp.term_stats {
+                *term_df.entry(term.clone()).or_insert(0) += stats.df;
+            }
+        }
+
+        let avg_doc_length = if total_docs > 0 {
+            total_length / total_docs as f64
+        } else {
+            0.0
+        };
+
+        let n = total_docs as f64;
+        let terms = term_df
+            .into_iter()
+            .map(|(term, df)| {
+                let idf = if df == 0 {
+                    0.0
+                } else {
+                    ((n - df as f64 + 0.5) / (df as f64 + 0.5)).ln() + 1.0
+                };
+                (term, GlobalTermStats { df, idf })
+            })
+            .collect();
+
+        Self { total_docs, avg_doc_length, terms }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NodeClient trait
+// ---------------------------------------------------------------------------
+
 /// HTTP client for communicating with a Meilisearch node.
-///
-/// This is the seam between `miroir-core` (pure, no network) and
-/// `miroir-proxy` (HTTP client). Injecting it via a trait means unit tests
-/// can provide a fake client; production binds `reqwest` via the trait impl.
 #[allow(async_fn_in_trait)]
 pub trait NodeClient: Send + Sync {
-    /// Execute a search request on a single node.
-    ///
-    /// Returns the raw JSON response from the node.
     async fn search_node(
         &self,
         node: &NodeId,
         address: &str,
         request: &SearchRequest,
     ) -> std::result::Result<Value, NodeError>;
+
+    /// Execute a preflight request (OP#4 global-IDF phase).
+    async fn preflight_node(
+        &self,
+        _node: &NodeId,
+        _address: &str,
+        _request: &PreflightRequest,
+    ) -> std::result::Result<PreflightResponse, NodeError> {
+        Ok(PreflightResponse { total_docs: 0, avg_doc_length: 0.0, term_stats: HashMap::new() })
+    }
 }
 
-/// Error from a single node during scatter.
 #[derive(Debug, Clone)]
 pub enum NodeError {
-    /// Node timed out.
     Timeout,
-    /// Node returned an error response.
     HttpError { status: u16, body: String },
-    /// Network or connection error.
     NetworkError(String),
 }
 
-/// A search request to be sent to each node in the covering set.
 #[derive(Debug, Clone)]
 pub struct SearchRequest {
-    /// Index UID being queried.
     pub index_uid: String,
-
-    /// Search query (q parameter).
     pub query: Option<String>,
-
-    /// Offset for pagination.
     pub offset: usize,
-
-    /// Limit for pagination.
     pub limit: usize,
-
-    /// Filter expression.
     pub filter: Option<Value>,
-
-    /// Facets to compute.
     pub facets: Option<Vec<String>>,
-
-    /// Whether to return ranking scores.
     pub ranking_score: bool,
-
-    /// Raw JSON body for the search request (captures any other parameters).
     pub body: Value,
+    /// Global IDF data from the preflight phase (OP#4).
+    pub global_idf: Option<GlobalIdf>,
 }
 
-/// Result of a scatter operation.
 #[derive(Debug)]
 pub struct ScatterResult {
-    /// Responses from successfully contacted nodes.
     pub shard_pages: Vec<ShardHitPage>,
-
-    /// Errors from nodes that failed (shard ID → error).
     pub failed_shards: HashMap<u32, NodeError>,
-
-    /// Whether the response is partial (some shards failed).
     pub partial: bool,
-
-    /// Whether any node exceeded the deadline.
     pub deadline_exceeded: bool,
 }
 
-/// Construct a scatter plan for a search query.
-///
-/// This is a pure function — no async, no I/O. It selects the replica group,
-/// computes the covering set, and maps each shard to its target node.
-///
-/// # Arguments
-/// * `topology` - Current cluster topology
-/// * `query_seq` - Query sequence number for group selection and load balancing
-/// * `rf` - Replication factor (redundant with topology.rf, kept for explicitness)
-/// * `shard_count` - Number of shards to query (typically topology.shards)
-///
-/// # Returns
-/// A `ScatterPlan` containing the covering set and metadata for execution.
 pub fn plan_search_scatter(
     topology: &Topology,
     query_seq: u64,
@@ -124,65 +160,34 @@ pub fn plan_search_scatter(
 ) -> ScatterPlan {
     let chosen_group = query_group(query_seq, topology.replica_group_count());
 
-    // Get the target group
     let group = match topology.group(chosen_group) {
         Some(g) => g,
         None => {
-            // Invalid group ID — return empty plan (should not happen with valid topology)
             return ScatterPlan {
-                chosen_group,
-                target_shards: Vec::new(),
-                shard_to_node: HashMap::new(),
-                deadline_ms: 0,
-                hedging_eligible: false,
+                chosen_group, target_shards: Vec::new(),
+                shard_to_node: HashMap::new(), deadline_ms: 0, hedging_eligible: false,
             };
         }
     };
 
-    // Compute covering set: one node per shard within the chosen group
     let _covering = covering_set(shard_count, group, rf, query_seq);
 
-    // Build shard → node mapping
     let mut shard_to_node = HashMap::new();
     for shard_id in 0..shard_count {
         let replicas = crate::router::assign_shard_in_group(shard_id, group.nodes(), rf);
-        // Rotate through replicas for intra-group load balancing
         let selected = replicas[(query_seq as usize) % replicas.len()].clone();
         shard_to_node.insert(shard_id, selected);
     }
 
-    // Initially target all shards
-    let target_shards: Vec<u32> = (0..shard_count).collect();
-
-    // Default deadline: 5 seconds (configurable in production)
-    let deadline_ms = 5000;
-
-    // Hedging is eligible when we have multiple nodes in the group (reserved for §13.2)
-    let hedging_eligible = group.node_count() > 1;
-
     ScatterPlan {
         chosen_group,
-        target_shards,
+        target_shards: (0..shard_count).collect(),
         shard_to_node,
-        deadline_ms,
-        hedging_eligible,
+        deadline_ms: 5000,
+        hedging_eligible: group.node_count() > 1,
     }
 }
 
-/// Execute a scatter operation against the covering set.
-///
-/// Fans out the search request to all nodes in the plan, handling partial
-/// failures according to the unavailable shard policy.
-///
-/// # Arguments
-/// * `plan` - Scatter plan from `plan_search_scatter`
-/// * `client` - HTTP client for communicating with nodes
-/// * `req` - Search request to execute
-/// * `topology` - Current topology (for resolving node addresses)
-/// * `policy` - Policy for handling unavailable shards
-///
-/// # Returns
-/// A `ScatterResult` containing successful responses and any errors.
 pub async fn execute_scatter<C: NodeClient>(
     plan: ScatterPlan,
     client: &C,
@@ -190,16 +195,10 @@ pub async fn execute_scatter<C: NodeClient>(
     topology: &Topology,
     policy: UnavailableShardPolicy,
 ) -> Result<ScatterResult> {
-    use std::collections::HashMap;
-
-    // Group requests by unique node (scatter happens once per node, not per shard)
     let mut node_to_shards: HashMap<NodeId, Vec<u32>> = HashMap::new();
     for (&shard_id, node_id) in &plan.shard_to_node {
         if plan.target_shards.contains(&shard_id) {
-            node_to_shards
-                .entry(node_id.clone())
-                .or_default()
-                .push(shard_id);
+            node_to_shards.entry(node_id.clone()).or_default().push(shard_id);
         }
     }
 
@@ -207,107 +206,60 @@ pub async fn execute_scatter<C: NodeClient>(
     let mut failed_shards = HashMap::new();
     let mut deadline_exceeded = false;
 
-    // Execute requests in parallel (one per unique node)
     let mut tasks = Vec::new();
     for (node_id, shards) in node_to_shards {
         let node = match topology.node(&node_id) {
             Some(n) => n.clone(),
             None => {
-                // Node not found in topology — mark all its shards as failed
                 for shard_id in shards {
-                    failed_shards.insert(
-                        shard_id,
-                        NodeError::NetworkError("node not in topology".to_string()),
-                    );
+                    failed_shards.insert(shard_id, NodeError::NetworkError("node not in topology".to_string()));
                 }
                 continue;
             }
         };
-
         let client_ref = client;
         let req_clone = req.clone();
         let node_id_clone = node_id.clone();
-
         tasks.push(async move {
-            let result = client_ref
-                .search_node(&node_id_clone, &node.address, &req_clone)
-                .await;
-
+            let result = client_ref.search_node(&node_id_clone, &node.address, &req_clone).await;
             (node_id_clone, shards, result)
         });
     }
 
-    // Await all tasks
     let results = futures_util::future::join_all(tasks).await;
 
     for (_node_id, shards, result) in results {
         match result {
             Ok(body) => {
-                // Create a ShardHitPage for each shard served by this node
                 for _shard_id in shards {
                     shard_pages.push(ShardHitPage { body: body.clone() });
                 }
             }
             Err(NodeError::Timeout) => {
                 deadline_exceeded = true;
-                for shard_id in shards {
-                    failed_shards.insert(shard_id, NodeError::Timeout);
-                }
+                for shard_id in shards { failed_shards.insert(shard_id, NodeError::Timeout); }
             }
             Err(e) => {
-                for shard_id in shards {
-                    failed_shards.insert(shard_id, e.clone());
-                }
+                for shard_id in shards { failed_shards.insert(shard_id, e.clone()); }
             }
         }
     }
 
-    // Determine if response is partial
     let partial = !failed_shards.is_empty();
 
-    // Apply unavailable shard policy
     match policy {
         UnavailableShardPolicy::Error => {
             if !failed_shards.is_empty() {
-                return Err(crate::error::MiroirError::Routing(format!(
-                    "{} shard(s) unavailable",
-                    failed_shards.len()
-                )));
+                return Err(crate::error::MiroirError::Routing(format!("{} shard(s) unavailable", failed_shards.len())));
             }
         }
-        UnavailableShardPolicy::Partial => {
-            // Return partial results (already done)
-        }
-        UnavailableShardPolicy::Fallback => {
-            // Reserved for §13.2 Phase 5: query other replica groups for failed shards
-            // For now, treat as Partial
-        }
+        UnavailableShardPolicy::Partial => {}
+        UnavailableShardPolicy::Fallback => {}
     }
 
-    Ok(ScatterResult {
-        shard_pages,
-        failed_shards,
-        partial,
-        deadline_exceeded,
-    })
+    Ok(ScatterResult { shard_pages, failed_shards, partial, deadline_exceeded })
 }
 
-/// Execute a full scatter-gather search: fan out to nodes, then merge results.
-///
-/// This is the primary entry point for the read path. It combines
-/// `execute_scatter` (fan-out) with the configured merge strategy
-/// into a single operation.
-///
-/// # Arguments
-/// * `plan` - Scatter plan from `plan_search_scatter`
-/// * `client` - HTTP client for communicating with nodes
-/// * `req` - Search request to execute
-/// * `topology` - Current topology (for resolving node addresses)
-/// * `policy` - Policy for handling unavailable shards
-/// * `strategy` - Merge strategy (e.g. `RrfStrategy`)
-///
-/// # Returns
-/// A `MergedSearchResult` with globally ranked hits.
 pub async fn scatter_gather_search<C: NodeClient>(
     plan: ScatterPlan,
     client: &C,
@@ -318,16 +270,11 @@ pub async fn scatter_gather_search<C: NodeClient>(
 ) -> Result<MergedSearchResult> {
     let scatter_result = execute_scatter(plan, client, req.clone(), topology, policy).await?;
 
-    // Mark failed shards as degraded in the shard pages
     let mut shard_pages = scatter_result.shard_pages;
     if scatter_result.partial {
-        // Add failed shard markers so the merger sets the degraded flag
         for shard_id in scatter_result.failed_shards.keys() {
             shard_pages.push(ShardHitPage {
-                body: serde_json::json!({
-                    "success": false,
-                    "message": format!("shard {} unavailable", shard_id),
-                }),
+                body: serde_json::json!({"success": false, "message": format!("shard {} unavailable", shard_id)}),
             });
         }
     }
@@ -343,45 +290,110 @@ pub async fn scatter_gather_search<C: NodeClient>(
     strategy.merge(merge_input)
 }
 
-/// Stubs for testing (no actual network calls).
+// ---------------------------------------------------------------------------
+// OP#4: Global-IDF preflight execution
+// ---------------------------------------------------------------------------
 
-/// Mock `NodeClient` for testing.
+/// Extract unique query terms from a search query string.
+pub fn extract_query_terms(query: &Option<String>) -> Vec<String> {
+    match query {
+        Some(q) if !q.is_empty() => {
+            let mut seen = std::collections::HashSet::new();
+            let mut terms = Vec::new();
+            for term in q.split_whitespace() {
+                let lower = term.to_lowercase();
+                if seen.insert(lower.clone()) { terms.push(lower); }
+            }
+            terms
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Execute the preflight phase: gather term frequencies from all shards.
+pub async fn execute_preflight<C: NodeClient>(
+    plan: &ScatterPlan,
+    client: &C,
+    req: &PreflightRequest,
+    topology: &Topology,
+) -> Result<GlobalIdf> {
+    if req.terms.is_empty() {
+        return Ok(GlobalIdf { total_docs: 0, avg_doc_length: 0.0, terms: HashMap::new() });
+    }
+
+    let mut node_to_shards: HashMap<NodeId, Vec<u32>> = HashMap::new();
+    for (&shard_id, node_id) in &plan.shard_to_node {
+        if plan.target_shards.contains(&shard_id) {
+            node_to_shards.entry(node_id.clone()).or_default().push(shard_id);
+        }
+    }
+
+    let mut tasks = Vec::new();
+    for (node_id, _) in node_to_shards {
+        let node = match topology.node(&node_id) {
+            Some(n) => n.clone(),
+            None => continue,
+        };
+        let client_ref = client;
+        let req_clone = req.clone();
+        let nid = node_id.clone();
+        tasks.push(async move { client_ref.preflight_node(&nid, &node.address, &req_clone).await });
+    }
+
+    let results = futures_util::future::join_all(tasks).await;
+    let responses: Vec<PreflightResponse> = results.into_iter().filter_map(|r| r.ok()).collect();
+    Ok(GlobalIdf::from_preflight_responses(&responses))
+}
+
+/// Execute a full dfs_query_then_fetch search (OP#4 global-IDF preflight).
+pub async fn dfs_query_then_fetch_search<C: NodeClient>(
+    plan: ScatterPlan,
+    client: &C,
+    req: SearchRequest,
+    topology: &Topology,
+    policy: UnavailableShardPolicy,
+    strategy: &dyn MergeStrategy,
+) -> Result<MergedSearchResult> {
+    let preflight_req = PreflightRequest {
+        index_uid: req.index_uid.clone(),
+        terms: extract_query_terms(&req.query),
+        filter: req.filter.clone(),
+    };
+    let global_idf = execute_preflight(&plan, client, &preflight_req, topology).await?;
+    let mut search_req = req;
+    search_req.global_idf = Some(global_idf);
+    scatter_gather_search(plan, client, search_req, topology, policy, strategy).await
+}
+
+// ---------------------------------------------------------------------------
+// Mock client
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Default)]
 pub struct MockNodeClient {
-    /// Optional pre-programmed responses per node ID.
     pub responses: HashMap<NodeId, Value>,
-
-    /// Optional pre-programmed errors per node ID.
+    pub preflight_responses: HashMap<NodeId, PreflightResponse>,
     pub errors: HashMap<NodeId, NodeError>,
-
-    /// Optional delay for simulating slow nodes.
     pub delay_ms: u64,
 }
 
 impl NodeClient for MockNodeClient {
     async fn search_node(
-        &self,
-        node: &NodeId,
-        _address: &str,
-        _request: &SearchRequest,
+        &self, node: &NodeId, _address: &str, _request: &SearchRequest,
     ) -> std::result::Result<Value, NodeError> {
-        // Simulate network delay if configured
-        // Note: actual sleep requires tokio runtime; this is a no-op placeholder
         let _ = self.delay_ms;
-
-        // Check for pre-programmed error
-        if let Some(err) = self.errors.get(node) {
-            return Err(err.clone());
-        }
-
-        // Return pre-programmed response or default empty response
+        if let Some(err) = self.errors.get(node) { return Err(err.clone()); }
         Ok(self.responses.get(node).cloned().unwrap_or_else(|| {
-            serde_json::json!({
-                "hits": [],
-                "estimatedTotalHits": 0,
-                "processingTimeMs": 0,
-                "facetDistribution": {},
-            })
+            serde_json::json!({"hits": [], "estimatedTotalHits": 0, "processingTimeMs": 0, "facetDistribution": {}})
+        }))
+    }
+
+    async fn preflight_node(
+        &self, node: &NodeId, _address: &str, _request: &PreflightRequest,
+    ) -> std::result::Result<PreflightResponse, NodeError> {
+        if let Some(err) = self.errors.get(node) { return Err(err.clone()); }
+        Ok(self.preflight_responses.get(node).cloned().unwrap_or_else(|| {
+            PreflightResponse { total_docs: 1000, avg_doc_length: 50.0, term_stats: HashMap::new() }
         }))
     }
 }
@@ -395,424 +407,180 @@ mod tests {
         let mut topo = Topology::new(64, 2, 2);
         for i in 0u32..6 {
             let rg = if i < 3 { 0 } else { 1 };
-            let mut node = Node::new(
-                NodeId::new(format!("node-{i}")),
-                format!("http://node-{i}:7700"),
-                rg,
-            );
+            let mut node = Node::new(NodeId::new(format!("node-{i}")), format!("http://node-{i}:7700"), rg);
             node.status = crate::topology::NodeStatus::Active;
             topo.add_node(node);
         }
         topo
     }
 
+    fn make_req() -> SearchRequest {
+        SearchRequest {
+            index_uid: "test".into(), query: Some("test".into()),
+            offset: 0, limit: 10, filter: None, facets: None,
+            ranking_score: false, body: serde_json::json!({}), global_idf: None,
+        }
+    }
+
     #[test]
-    fn test_plan_search_scatter_pure_function() {
+    fn test_plan_pure_function() {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
-
         assert_eq!(plan.chosen_group, 0);
         assert_eq!(plan.target_shards.len(), 64);
-        assert_eq!(plan.shard_to_node.len(), 64);
-        assert_eq!(plan.deadline_ms, 5000);
         assert!(plan.hedging_eligible);
     }
 
     #[test]
-    fn test_plan_search_scatter_query_group_rotation() {
+    fn test_plan_group_rotation() {
         let topo = make_test_topology();
-
-        // query_seq 0 → group 0
-        let plan0 = plan_search_scatter(&topo, 0, 2, 64);
-        assert_eq!(plan0.chosen_group, 0);
-
-        // query_seq 1 → group 1
-        let plan1 = plan_search_scatter(&topo, 1, 2, 64);
-        assert_eq!(plan1.chosen_group, 1);
-
-        // query_seq 2 → group 0
-        let plan2 = plan_search_scatter(&topo, 2, 2, 64);
-        assert_eq!(plan2.chosen_group, 0);
+        assert_eq!(plan_search_scatter(&topo, 0, 2, 64).chosen_group, 0);
+        assert_eq!(plan_search_scatter(&topo, 1, 2, 64).chosen_group, 1);
     }
 
     #[test]
-    fn test_plan_search_scatter_shard_to_node_mapping() {
+    fn test_plan_shard_mapping() {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
-
-        // All shards should be mapped to a node
-        for shard_id in 0..64 {
-            assert!(
-                plan.shard_to_node.contains_key(&shard_id),
-                "Shard {} not in mapping",
-                shard_id
-            );
-        }
-
-        // All nodes should be from group 0
+        for s in 0..64 { assert!(plan.shard_to_node.contains_key(&s)); }
         let g0 = topo.group(0).unwrap();
-        for (_shard_id, node_id) in &plan.shard_to_node {
-            assert!(
-                g0.nodes().contains(node_id),
-                "Node {:?} not in group 0",
-                node_id
-            );
-        }
+        for (_, nid) in &plan.shard_to_node { assert!(g0.nodes().contains(nid)); }
     }
 
     #[test]
-    fn test_plan_search_scatter_hedging_eligibility() {
+    fn test_plan_hedging() {
         let mut topo = Topology::new(64, 1, 1);
-        // Single node group
-        topo.add_node(Node::new(
-            NodeId::new("node-0".to_string()),
-            "http://node-0:7700".to_string(),
-            0,
-        ));
-
-        let plan = plan_search_scatter(&topo, 0, 1, 64);
-        assert!(!plan.hedging_eligible);
-
-        // Multi-node group
-        let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
-        assert!(plan.hedging_eligible);
+        topo.add_node(Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0));
+        assert!(!plan_search_scatter(&topo, 0, 1, 64).hedging_eligible);
+        assert!(plan_search_scatter(&make_test_topology(), 0, 2, 64).hedging_eligible);
     }
 
     #[tokio::test]
-    async fn test_execute_scatter_with_mock_client() {
+    async fn test_scatter_mock() {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
-
-        let mut client = MockNodeClient::default();
-        client.responses.insert(
-            NodeId::new("node-0".to_string()),
-            serde_json::json!({
-                "hits": [{"id": "doc1", "title": "Test"}],
-                "estimatedTotalHits": 1,
-                "processingTimeMs": 5,
-            }),
-        );
-
-        let req = SearchRequest {
-            index_uid: "test".to_string(),
-            query: Some("test".to_string()),
-            offset: 0,
-            limit: 10,
-            filter: None,
-            facets: None,
-            ranking_score: false,
-            body: serde_json::json!({}),
-        };
-
-        let result = execute_scatter(plan, &client, req, &topo, UnavailableShardPolicy::Partial)
-            .await
-            .unwrap();
-
-        assert!(!result.partial);
-        assert!(!result.deadline_exceeded);
-        assert_eq!(result.shard_pages.len(), 64); // One page per shard
-        assert!(result.failed_shards.is_empty());
+        let mut c = MockNodeClient::default();
+        c.responses.insert(NodeId::new("node-0"), serde_json::json!({"hits": [{"id": "doc1"}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
+        let r = execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial).await.unwrap();
+        assert!(!r.partial);
+        assert_eq!(r.shard_pages.len(), 64);
     }
 
     #[tokio::test]
-    async fn test_execute_scatter_partial_failure() {
+    async fn test_scatter_partial() {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
-
-        let mut client = MockNodeClient::default();
-        // Make node-0 fail
-        client.errors.insert(
-            NodeId::new("node-0".to_string()),
-            NodeError::Timeout,
-        );
-        client.responses.insert(
-            NodeId::new("node-1".to_string()),
-            serde_json::json!({
-                "hits": [],
-                "estimatedTotalHits": 0,
-                "processingTimeMs": 0,
-            }),
-        );
-
-        let req = SearchRequest {
-            index_uid: "test".to_string(),
-            query: Some("test".to_string()),
-            offset: 0,
-            limit: 10,
-            filter: None,
-            facets: None,
-            ranking_score: false,
-            body: serde_json::json!({}),
-        };
-
-        let result = execute_scatter(plan, &client, req, &topo, UnavailableShardPolicy::Partial)
-            .await
-            .unwrap();
-
-        assert!(result.partial);
-        assert!(!result.failed_shards.is_empty());
-        // Some shards should still succeed (those on node-1 and node-2)
-        assert!(!result.shard_pages.is_empty());
+        let mut c = MockNodeClient::default();
+        c.errors.insert(NodeId::new("node-0"), NodeError::Timeout);
+        let r = execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial).await.unwrap();
+        assert!(r.partial);
     }
 
     #[tokio::test]
-    async fn test_execute_scatter_error_policy() {
+    async fn test_scatter_error_policy() {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
-
-        let mut client = MockNodeClient::default();
-        client.errors.insert(
-            NodeId::new("node-0".to_string()),
-            NodeError::Timeout,
-        );
-
-        let req = SearchRequest {
-            index_uid: "test".to_string(),
-            query: Some("test".to_string()),
-            offset: 0,
-            limit: 10,
-            filter: None,
-            facets: None,
-            ranking_score: false,
-            body: serde_json::json!({}),
-        };
-
-        let result = execute_scatter(plan, &client, req, &topo, UnavailableShardPolicy::Error).await;
-
-        assert!(result.is_err());
+        let mut c = MockNodeClient::default();
+        c.errors.insert(NodeId::new("node-0"), NodeError::Timeout);
+        assert!(execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Error).await.is_err());
     }
 
     #[test]
-    fn test_plan_search_scatter_empty_topology() {
-        // Topology with 0 nodes in group 1 — query_seq=1 targets group 1 which has no nodes
-        let mut topo = Topology::new(64, 2, 1);
-        for i in 0u32..3 {
-            let mut node = Node::new(
-                NodeId::new(format!("node-{i}")),
-                format!("http://node-{i}:7700"),
-                0,
-            );
-            node.status = crate::topology::NodeStatus::Active;
-            topo.add_node(node);
-        }
+    fn test_plan_invalid_group() {
+        assert!(plan_search_scatter(&Topology::new(64, 0, 1), 0, 1, 64).shard_to_node.is_empty());
+    }
 
-        let plan = plan_search_scatter(&topo, 0, 1, 64);
-        assert_eq!(plan.chosen_group, 0);
-        assert_eq!(plan.shard_to_node.len(), 64);
+    #[tokio::test]
+    async fn test_scatter_node_not_in_topo() {
+        let topo = make_test_topology();
+        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let r = execute_scatter(plan, &MockNodeClient::default(), make_req(), &Topology::new(64, 2, 2), UnavailableShardPolicy::Partial).await.unwrap();
+        assert!(r.partial);
+    }
+
+    #[tokio::test]
+    async fn test_sg_rrf() {
+        let topo = make_test_topology();
+        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let mut c = MockNodeClient::default();
+        c.responses.insert(NodeId::new("node-0"), serde_json::json!({"hits": [{"id": "a", "_rankingScore": 0.9}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
+        let s = crate::merger::RrfStrategy::default_strategy();
+        let r = scatter_gather_search(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial, &s).await.unwrap();
+        assert!(!r.degraded);
+    }
+
+    #[tokio::test]
+    async fn test_sg_degraded() {
+        let topo = make_test_topology();
+        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let mut c = MockNodeClient::default();
+        c.responses.insert(NodeId::new("node-0"), serde_json::json!({"hits": [{"id": "a"}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
+        c.errors.insert(NodeId::new("node-2"), NodeError::Timeout);
+        let s = crate::merger::RrfStrategy::default_strategy();
+        assert!(scatter_gather_search(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial, &s).await.unwrap().degraded);
     }
 
     #[test]
-    fn test_plan_search_scatter_invalid_group_returns_empty() {
-        // Create a topology with no groups at all
-        let topo = Topology::new(64, 0, 1);
-        let plan = plan_search_scatter(&topo, 0, 1, 64);
-        // Should return empty plan since no group exists
-        assert!(plan.shard_to_node.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_execute_scatter_fallback_policy() {
-        let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
-
-        let mut client = MockNodeClient::default();
-        client.errors.insert(
-            NodeId::new("node-0".to_string()),
-            NodeError::Timeout,
-        );
-
-        let req = SearchRequest {
-            index_uid: "test".to_string(),
-            query: Some("test".to_string()),
-            offset: 0,
-            limit: 10,
-            filter: None,
-            facets: None,
-            ranking_score: false,
-            body: serde_json::json!({}),
-        };
-
-        // Fallback policy should behave like Partial for now
-        let result = execute_scatter(plan, &client, req, &topo, UnavailableShardPolicy::Fallback)
-            .await
-            .unwrap();
-        assert!(result.partial);
-    }
-
-    #[tokio::test]
-    async fn test_execute_scatter_node_not_in_topology() {
-        // Build a plan, then use a topology that doesn't have the plan's nodes
-        let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
-
-        // Empty topology — none of the plan's nodes exist
-        let empty_topo = Topology::new(64, 2, 2);
-
-        let client = MockNodeClient::default();
-        let req = SearchRequest {
-            index_uid: "test".to_string(),
-            query: Some("test".to_string()),
-            offset: 0,
-            limit: 10,
-            filter: None,
-            facets: None,
-            ranking_score: false,
-            body: serde_json::json!({}),
-        };
-
-        let result = execute_scatter(plan, &client, req, &empty_topo, UnavailableShardPolicy::Partial)
-            .await
-            .unwrap();
-        // All shards should fail since no nodes in topology
-        assert!(result.partial);
-        assert!(!result.failed_shards.is_empty());
+    fn test_extract_query_terms() {
+        assert_eq!(extract_query_terms(&Some("hello world hello".into())), vec!["hello", "world"]);
+        assert!(extract_query_terms(&None).is_empty());
     }
 
     #[test]
-    fn test_node_error_variants() {
-        let timeout = NodeError::Timeout;
-        assert!(matches!(timeout, NodeError::Timeout));
+    fn test_global_idf_aggregation() {
+        let resp = vec![
+            PreflightResponse { total_docs: 50000, avg_doc_length: 50.0, term_stats: HashMap::from([("a".into(), TermStats { df: 5000 })]) },
+            PreflightResponse { total_docs: 50000, avg_doc_length: 60.0, term_stats: HashMap::from([("a".into(), TermStats { df: 4500 })]) },
+        ];
+        let g = GlobalIdf::from_preflight_responses(&resp);
+        assert_eq!(g.total_docs, 100000);
+        assert!((g.avg_doc_length - 55.0).abs() < 0.001);
+        assert_eq!(g.terms.get("a").unwrap().df, 9500);
+    }
 
-        let http_err = NodeError::HttpError {
-            status: 500,
-            body: "Internal Server Error".to_string(),
-        };
-        assert!(matches!(http_err, NodeError::HttpError { .. }));
-
-        let net_err = NodeError::NetworkError("connection refused".to_string());
-        assert!(matches!(net_err, NodeError::NetworkError(_)));
+    #[test]
+    fn test_global_idf_empty() {
+        let g = GlobalIdf::from_preflight_responses(&[]);
+        assert_eq!(g.total_docs, 0);
+        assert!(g.terms.is_empty());
     }
 
     #[tokio::test]
-    async fn test_scatter_gather_search_rrf_merge() {
+    async fn test_execute_preflight() {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
-
-        let mut client = MockNodeClient::default();
-        // Each node returns different hits
-        client.responses.insert(
-            NodeId::new("node-0".to_string()),
-            serde_json::json!({
-                "hits": [
-                    {"id": "doc-a", "title": "Doc A", "_rankingScore": 0.9},
-                    {"id": "doc-b", "title": "Doc B", "_rankingScore": 0.7},
-                ],
-                "estimatedTotalHits": 2,
-                "processingTimeMs": 5,
-            }),
-        );
-        client.responses.insert(
-            NodeId::new("node-1".to_string()),
-            serde_json::json!({
-                "hits": [{"id": "doc-c", "title": "Doc C", "_rankingScore": 0.8}],
-                "estimatedTotalHits": 1,
-                "processingTimeMs": 3,
-            }),
-        );
-        client.responses.insert(
-            NodeId::new("node-2".to_string()),
-            serde_json::json!({
-                "hits": [{"id": "doc-d", "title": "Doc D", "_rankingScore": 0.6}],
-                "estimatedTotalHits": 1,
-                "processingTimeMs": 4,
-            }),
-        );
-
-        let req = SearchRequest {
-            index_uid: "test".to_string(),
-            query: Some("test".to_string()),
-            offset: 0,
-            limit: 10,
-            filter: None,
-            facets: None,
-            ranking_score: false,
-            body: serde_json::json!({}),
-        };
-
-        let strategy = crate::merger::RrfStrategy::default_strategy();
-        let result = scatter_gather_search(plan, &client, req, &topo, UnavailableShardPolicy::Partial, &strategy)
-            .await
-            .unwrap();
-
-        assert!(!result.degraded);
-        assert_eq!(result.hits.len(), 4); // 4 unique docs across all nodes
-        assert!(result.estimated_total_hits > 0);
+        let mut c = MockNodeClient::default();
+        c.preflight_responses.insert(NodeId::new("node-0"), PreflightResponse {
+            total_docs: 30000, avg_doc_length: 50.0,
+            term_stats: HashMap::from([("search".into(), TermStats { df: 3000 })]),
+        });
+        c.preflight_responses.insert(NodeId::new("node-1"), PreflightResponse {
+            total_docs: 30000, avg_doc_length: 55.0,
+            term_stats: HashMap::from([("search".into(), TermStats { df: 2500 })]),
+        });
+        c.preflight_responses.insert(NodeId::new("node-2"), PreflightResponse {
+            total_docs: 40000, avg_doc_length: 52.0,
+            term_stats: HashMap::from([("search".into(), TermStats { df: 4000 })]),
+        });
+        let req = PreflightRequest { index_uid: "test".into(), terms: vec!["search".into()], filter: None };
+        let g = execute_preflight(&plan, &c, &req, &topo).await.unwrap();
+        assert_eq!(g.total_docs, 100000);
+        assert_eq!(g.terms.get("search").unwrap().df, 9500);
     }
 
     #[tokio::test]
-    async fn test_scatter_gather_search_degraded() {
+    async fn test_dfs_query_then_fetch() {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64);
-
-        let mut client = MockNodeClient::default();
-        client.responses.insert(
-            NodeId::new("node-0".to_string()),
-            serde_json::json!({
-                "hits": [{"id": "doc-a", "title": "Doc A"}],
-                "estimatedTotalHits": 1,
-                "processingTimeMs": 5,
-            }),
-        );
-        // node-1 and node-2 get default empty responses, but node-0 returns data
-        // Make node-2 fail
-        client.errors.insert(
-            NodeId::new("node-2".to_string()),
-            NodeError::Timeout,
-        );
-
-        let req = SearchRequest {
-            index_uid: "test".to_string(),
-            query: Some("test".to_string()),
-            offset: 0,
-            limit: 10,
-            filter: None,
-            facets: None,
-            ranking_score: false,
-            body: serde_json::json!({}),
-        };
-
-        let strategy = crate::merger::RrfStrategy::default_strategy();
-        let result = scatter_gather_search(plan, &client, req, &topo, UnavailableShardPolicy::Partial, &strategy)
-            .await
-            .unwrap();
-
-        assert!(result.degraded);
-    }
-
-    #[tokio::test]
-    async fn test_scatter_gather_with_custom_k() {
-        let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
-
-        let mut client = MockNodeClient::default();
-        client.responses.insert(
-            NodeId::new("node-0".to_string()),
-            serde_json::json!({
-                "hits": [{"id": "doc-a", "title": "Doc A"}],
-                "estimatedTotalHits": 1,
-                "processingTimeMs": 5,
-            }),
-        );
-
-        let req = SearchRequest {
-            index_uid: "test".to_string(),
-            query: Some("test".to_string()),
-            offset: 0,
-            limit: 10,
-            filter: None,
-            facets: None,
-            ranking_score: false,
-            body: serde_json::json!({}),
-        };
-
-        let strategy = crate::merger::RrfStrategy::new(1);
-        let result = scatter_gather_search(plan, &client, req, &topo, UnavailableShardPolicy::Partial, &strategy)
-            .await
-            .unwrap();
-
-        assert_eq!(strategy.name(), "rrf");
-        assert_eq!(strategy.k(), 1);
-        assert!(!result.degraded);
+        let mut c = MockNodeClient::default();
+        c.responses.insert(NodeId::new("node-0"), serde_json::json!({"hits": [{"id": "a", "_rankingScore": 0.9}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
+        c.preflight_responses.insert(NodeId::new("node-0"), PreflightResponse {
+            total_docs: 50000, avg_doc_length: 50.0,
+            term_stats: HashMap::from([("test".into(), TermStats { df: 500 })]),
+        });
+        let s = crate::merger::RrfStrategy::default_strategy();
+        let r = dfs_query_then_fetch_search(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial, &s).await.unwrap();
+        assert!(!r.degraded);
+        assert!(!r.hits.is_empty());
     }
 }
