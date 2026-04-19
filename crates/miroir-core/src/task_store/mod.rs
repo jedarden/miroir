@@ -32,6 +32,14 @@ pub trait TaskStore: Send + Sync {
     /// List tasks with optional status filter and pagination.
     fn list_tasks(&self, filter: &TaskFilter) -> Result<Vec<TaskRow>>;
 
+    /// Prune terminal tasks older than `cutoff_ms` (created_at < cutoff_ms
+    /// AND status IN (succeeded, failed, canceled)). Returns number deleted.
+    /// Limited to `batch_size` rows per call.
+    fn prune_tasks(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize>;
+
+    /// Count total rows in the tasks table (for the miroir_task_registry_size gauge).
+    fn task_count(&self) -> Result<u64>;
+
     // --- Table 2: node_settings_version ---
 
     /// Upsert a settings version for (index_uid, node_id).
@@ -123,6 +131,89 @@ pub trait TaskStore: Send + Sync {
 
     /// Get current lease holder for a scope.
     fn get_leader_lease(&self, scope: &str) -> Result<Option<LeaderLeaseRow>>;
+
+    // --- Table 8: canaries ---
+
+    /// Create or update a canary.
+    fn upsert_canary(&self, canary: &NewCanary) -> Result<()>;
+
+    /// Get a canary by id.
+    fn get_canary(&self, id: &str) -> Result<Option<CanaryRow>>;
+
+    /// List all canaries.
+    fn list_canaries(&self) -> Result<Vec<CanaryRow>>;
+
+    /// Delete a canary.
+    fn delete_canary(&self, id: &str) -> Result<bool>;
+
+    // --- Table 9: canary_runs ---
+
+    /// Insert a canary run (auto-prunes to run_history_per_canary).
+    fn insert_canary_run(&self, run: &NewCanaryRun, run_history_limit: usize) -> Result<()>;
+
+    /// Get runs for a canary, most recent first.
+    fn get_canary_runs(&self, canary_id: &str, limit: usize) -> Result<Vec<CanaryRunRow>>;
+
+    // --- Table 10: cdc_cursors ---
+
+    /// Upsert a CDC cursor for (sink_name, index_uid).
+    fn upsert_cdc_cursor(&self, cursor: &NewCdcCursor) -> Result<()>;
+
+    /// Get a CDC cursor by (sink_name, index_uid).
+    fn get_cdc_cursor(&self, sink_name: &str, index_uid: &str) -> Result<Option<CdcCursorRow>>;
+
+    /// List all CDC cursors for a sink.
+    fn list_cdc_cursors(&self, sink_name: &str) -> Result<Vec<CdcCursorRow>>;
+
+    // --- Table 11: tenant_map ---
+
+    /// Insert a tenant mapping.
+    fn insert_tenant_mapping(&self, mapping: &NewTenantMapping) -> Result<()>;
+
+    /// Get tenant mapping by API key hash.
+    fn get_tenant_mapping(&self, api_key_hash: &[u8]) -> Result<Option<TenantMapRow>>;
+
+    /// Delete a tenant mapping.
+    fn delete_tenant_mapping(&self, api_key_hash: &[u8]) -> Result<bool>;
+
+    // --- Table 12: rollover_policies ---
+
+    /// Create or update a rollover policy.
+    fn upsert_rollover_policy(&self, policy: &NewRolloverPolicy) -> Result<()>;
+
+    /// Get a rollover policy by name.
+    fn get_rollover_policy(&self, name: &str) -> Result<Option<RolloverPolicyRow>>;
+
+    /// List all rollover policies.
+    fn list_rollover_policies(&self) -> Result<Vec<RolloverPolicyRow>>;
+
+    /// Delete a rollover policy.
+    fn delete_rollover_policy(&self, name: &str) -> Result<bool>;
+
+    // --- Table 13: search_ui_config ---
+
+    /// Set search UI config for an index.
+    fn upsert_search_ui_config(&self, config: &NewSearchUiConfig) -> Result<()>;
+
+    /// Get search UI config for an index.
+    fn get_search_ui_config(&self, index_uid: &str) -> Result<Option<SearchUiConfigRow>>;
+
+    /// Delete search UI config for an index.
+    fn delete_search_ui_config(&self, index_uid: &str) -> Result<bool>;
+
+    // --- Table 14: admin_sessions ---
+
+    /// Create an admin session.
+    fn insert_admin_session(&self, session: &NewAdminSession) -> Result<()>;
+
+    /// Get an admin session by id.
+    fn get_admin_session(&self, session_id: &str) -> Result<Option<AdminSessionRow>>;
+
+    /// Revoke a session (logout).
+    fn revoke_admin_session(&self, session_id: &str) -> Result<bool>;
+
+    /// Delete expired and revoked sessions (lazy eviction + pruner).
+    fn delete_expired_admin_sessions(&self, now_ms: i64) -> Result<usize>;
 }
 
 // --- Row types ---
@@ -243,4 +334,153 @@ pub struct TaskFilter {
     pub status: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+}
+
+// --- Tables 8-14 row types (feature-flagged) ---
+
+/// Canary definition row (table 8).
+#[derive(Debug, Clone)]
+pub struct CanaryRow {
+    pub id: String,
+    pub name: String,
+    pub index_uid: String,
+    pub interval_s: i64,
+    pub query_json: String,
+    pub assertions_json: String,
+    pub enabled: bool,
+    pub created_at: i64,
+}
+
+/// New or updated canary (table 8).
+#[derive(Debug, Clone)]
+pub struct NewCanary {
+    pub id: String,
+    pub name: String,
+    pub index_uid: String,
+    pub interval_s: i64,
+    pub query_json: String,
+    pub assertions_json: String,
+    pub enabled: bool,
+    pub created_at: i64,
+}
+
+/// Canary run row (table 9).
+#[derive(Debug, Clone)]
+pub struct CanaryRunRow {
+    pub canary_id: String,
+    pub ran_at: i64,
+    pub status: String,
+    pub latency_ms: i64,
+    pub failed_assertions_json: Option<String>,
+}
+
+/// New canary run to insert (table 9).
+#[derive(Debug, Clone)]
+pub struct NewCanaryRun {
+    pub canary_id: String,
+    pub ran_at: i64,
+    pub status: String,
+    pub latency_ms: i64,
+    pub failed_assertions_json: Option<String>,
+}
+
+/// CDC cursor row (table 10).
+#[derive(Debug, Clone)]
+pub struct CdcCursorRow {
+    pub sink_name: String,
+    pub index_uid: String,
+    pub last_event_seq: i64,
+    pub updated_at: i64,
+}
+
+/// New or updated CDC cursor (table 10).
+#[derive(Debug, Clone)]
+pub struct NewCdcCursor {
+    pub sink_name: String,
+    pub index_uid: String,
+    pub last_event_seq: i64,
+    pub updated_at: i64,
+}
+
+/// Tenant map row (table 11).
+#[derive(Debug, Clone)]
+pub struct TenantMapRow {
+    pub api_key_hash: Vec<u8>,
+    pub tenant_id: String,
+    pub group_id: Option<i64>,
+}
+
+/// New tenant mapping (table 11).
+#[derive(Debug, Clone)]
+pub struct NewTenantMapping {
+    pub api_key_hash: Vec<u8>,
+    pub tenant_id: String,
+    pub group_id: Option<i64>,
+}
+
+/// Rollover policy row (table 12).
+#[derive(Debug, Clone)]
+pub struct RolloverPolicyRow {
+    pub name: String,
+    pub write_alias: String,
+    pub read_alias: String,
+    pub pattern: String,
+    pub triggers_json: String,
+    pub retention_json: String,
+    pub template_json: String,
+    pub enabled: bool,
+}
+
+/// New or updated rollover policy (table 12).
+#[derive(Debug, Clone)]
+pub struct NewRolloverPolicy {
+    pub name: String,
+    pub write_alias: String,
+    pub read_alias: String,
+    pub pattern: String,
+    pub triggers_json: String,
+    pub retention_json: String,
+    pub template_json: String,
+    pub enabled: bool,
+}
+
+/// Search UI config row (table 13).
+#[derive(Debug, Clone)]
+pub struct SearchUiConfigRow {
+    pub index_uid: String,
+    pub config_json: String,
+    pub updated_at: i64,
+}
+
+/// New or updated search UI config (table 13).
+#[derive(Debug, Clone)]
+pub struct NewSearchUiConfig {
+    pub index_uid: String,
+    pub config_json: String,
+    pub updated_at: i64,
+}
+
+/// Admin session row (table 14).
+#[derive(Debug, Clone)]
+pub struct AdminSessionRow {
+    pub session_id: String,
+    pub csrf_token: String,
+    pub admin_key_hash: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub revoked: bool,
+    pub user_agent: Option<String>,
+    pub source_ip: Option<String>,
+}
+
+/// New admin session (table 14).
+#[derive(Debug, Clone)]
+pub struct NewAdminSession {
+    pub session_id: String,
+    pub csrf_token: String,
+    pub admin_key_hash: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub user_agent: Option<String>,
+    pub source_ip: Option<String>,
 }

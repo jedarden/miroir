@@ -9,6 +9,7 @@ Range: [-1, 1], where 1 = perfect agreement, 0 = independent, -1 = perfect disag
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import List, Dict, Tuple
 
@@ -163,14 +164,29 @@ def compare_query_sets(
     below_090 = sum(1 for t in tau_values if t < 0.90)
     below_080 = sum(1 for t in tau_values if t < 0.80)
 
+    # 95% confidence intervals (normal approximation, n >= 10000)
+    variance = sum((t - avg_tau) ** 2 for t in tau_values) / (len(tau_values) - 1)
+    stddev = math.sqrt(variance)
+    stderr = stddev / math.sqrt(len(tau_values))
+    z = 1.96
+    ci_low = avg_tau - z * stderr
+    ci_high = avg_tau + z * stderr
+
     # Per-type statistics
     type_stats = {}
     for qtype, taus in tau_by_type.items():
+        tn = len(taus)
+        tmean = sum(taus) / tn if taus else 0
+        tvar = sum((t - tmean) ** 2 for t in taus) / (tn - 1) if tn > 1 else 0
+        tsd = math.sqrt(tvar)
+        tse = tsd / math.sqrt(tn) if tn > 0 else 0
         type_stats[qtype] = {
-            "count": len(taus),
-            "avg_tau": sum(taus) / len(taus) if taus else 0,
+            "count": tn,
+            "avg_tau": tmean,
             "min_tau": min(taus) if taus else 0,
             "max_tau": max(taus) if taus else 0,
+            "ci_95": [tmean - z * tse, tmean + z * tse] if tn > 1 else None,
+            "stddev": tsd,
         }
 
     return {
@@ -178,6 +194,9 @@ def compare_query_sets(
         "avg_tau": avg_tau,
         "min_tau": min_tau,
         "max_tau": max_tau,
+        "ci_95": [ci_low, ci_high],
+        "stddev": stddev,
+        "stderr": stderr,
         "below_095_count": below_095,
         "below_090_count": below_090,
         "below_080_count": below_080,
@@ -211,17 +230,19 @@ def main():
     print(f"Comparison Summary (top-{args.top_k})")
     print(f"=" * 50)
     print(f"Total queries: {result['total_queries']}")
-    print(f"Avg Kendall tau: {result['avg_tau']:.4f}")
+    ci = result['ci_95']
+    print(f"Avg Kendall tau: {result['avg_tau']:.4f} (95% CI: [{ci[0]:.4f}, {ci[1]:.4f}])")
     print(f"Min tau: {result['min_tau']:.4f}")
     print(f"Max tau: {result['max_tau']:.4f}")
     print(f"Queries below 0.95: {result['below_095_count']} ({100*result['below_095_count']/result['total_queries']:.1f}%)")
     print(f"Queries below 0.90: {result['below_090_count']} ({100*result['below_090_count']/result['total_queries']:.1f}%)")
     print(f"Queries below 0.80: {result['below_080_count']} ({100*result['below_080_count']/result['total_queries']:.1f}%)")
-    print(f"Pass criteria (avg >= 0.95): {'✓ PASS' if result['pass_criteria'] else '✗ FAIL'}")
+    print(f"Pass criteria (avg >= 0.95): {'PASS' if result['pass_criteria'] else 'FAIL'}")
 
     print(f"\nPer-query type:")
     for qtype, stats in result["type_stats"].items():
-        print(f"  {qtype}: avg={stats['avg_tau']:.4f}, min={stats['min_tau']:.4f}, max={stats['max_tau']:.4f} (n={stats['count']})")
+        ci_str = f", 95% CI: [{stats['ci_95'][0]:.4f}, {stats['ci_95'][1]:.4f}]" if stats.get('ci_95') else ""
+        print(f"  {qtype}: avg={stats['avg_tau']:.4f}{ci_str}, min={stats['min_tau']:.4f}, max={stats['max_tau']:.4f} (n={stats['count']})")
 
     if args.verbose:
         print(f"\nPer-query details:")

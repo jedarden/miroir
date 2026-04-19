@@ -1,10 +1,16 @@
+use crate::schema_migrations::{build_registry, MigrationRegistry};
 use crate::task_store::*;
 use crate::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i64 = 1;
+/// Get the migration registry for this binary.
+fn registry() -> &'static MigrationRegistry {
+    use std::sync::OnceLock;
+    static REGISTRY: OnceLock<MigrationRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| build_registry())
+}
 
 /// DDL for schema_versions + tables 1–7.
 const MIGRATION_V1: &str = r#"
@@ -67,6 +73,73 @@ CREATE TABLE IF NOT EXISTS leader_lease (
 );
 "#;
 
+/// DDL for tables 8–14 (feature-flagged).
+const MIGRATION_V2: &str = r#"
+CREATE TABLE IF NOT EXISTS canaries (
+    id               TEXT PRIMARY KEY,
+    name             TEXT NOT NULL,
+    index_uid        TEXT NOT NULL,
+    interval_s       INTEGER NOT NULL,
+    query_json       TEXT NOT NULL,
+    assertions_json  TEXT NOT NULL,
+    enabled          INTEGER NOT NULL,
+    created_at       INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS canary_runs (
+    canary_id              TEXT NOT NULL,
+    ran_at                 INTEGER NOT NULL,
+    status                 TEXT NOT NULL,
+    latency_ms             INTEGER NOT NULL,
+    failed_assertions_json TEXT,
+    PRIMARY KEY (canary_id, ran_at)
+);
+
+CREATE TABLE IF NOT EXISTS cdc_cursors (
+    sink_name       TEXT NOT NULL,
+    index_uid       TEXT NOT NULL,
+    last_event_seq  INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    PRIMARY KEY (sink_name, index_uid)
+);
+
+CREATE TABLE IF NOT EXISTS tenant_map (
+    api_key_hash  BLOB PRIMARY KEY,
+    tenant_id     TEXT NOT NULL,
+    group_id      INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS rollover_policies (
+    name            TEXT PRIMARY KEY,
+    write_alias     TEXT NOT NULL,
+    read_alias      TEXT NOT NULL,
+    pattern         TEXT NOT NULL,
+    triggers_json   TEXT NOT NULL,
+    retention_json  TEXT NOT NULL,
+    template_json   TEXT NOT NULL,
+    enabled         INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS search_ui_config (
+    index_uid    TEXT PRIMARY KEY,
+    config_json  TEXT NOT NULL,
+    updated_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admin_sessions (
+    session_id      TEXT PRIMARY KEY,
+    csrf_token      TEXT NOT NULL,
+    admin_key_hash  TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    expires_at      INTEGER NOT NULL,
+    revoked         INTEGER NOT NULL DEFAULT 0,
+    user_agent      TEXT,
+    source_ip       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS admin_sessions_expires ON admin_sessions(expires_at);
+"#;
+
 pub struct SqliteTaskStore {
     conn: Mutex<Connection>,
 }
@@ -113,11 +186,20 @@ impl SqliteTaskStore {
             .optional()?
             .flatten();
 
-        if current.unwrap_or(0) < SCHEMA_VERSION {
+        // Apply migrations in order
+        if current.unwrap_or(0) < 1 {
             conn.execute_batch(MIGRATION_V1)?;
             conn.execute(
-                "INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?1, ?2)",
-                params![SCHEMA_VERSION, now_ms()],
+                "INSERT INTO schema_versions (version, applied_at) VALUES (?1, ?2)",
+                params![1, now_ms()],
+            )?;
+        }
+
+        if current.unwrap_or(0) < 2 {
+            conn.execute_batch(MIGRATION_V2)?;
+            conn.execute(
+                "INSERT INTO schema_versions (version, applied_at) VALUES (?1, ?2)",
+                params![2, now_ms()],
             )?;
         }
 
@@ -270,6 +352,27 @@ impl TaskStore for SqliteTaskStore {
             result.push(row?);
         }
         Ok(result)
+    }
+
+    fn prune_tasks(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "DELETE FROM tasks
+             WHERE rowid IN (
+                 SELECT rowid FROM tasks
+                 WHERE created_at < ?1
+                   AND status IN ('succeeded', 'failed', 'canceled')
+                 LIMIT ?2
+             )",
+            params![cutoff_ms, batch_size],
+        )?;
+        Ok(rows)
+    }
+
+    fn task_count(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
+        Ok(count as u64)
     }
 
     // --- Table 2: node_settings_version ---
@@ -647,6 +750,438 @@ impl TaskStore for SqliteTaskStore {
                 },
             )
             .optional()?)
+    }
+
+    // --- Table 8: canaries ---
+
+    fn upsert_canary(&self, canary: &NewCanary) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO canaries (id, name, index_uid, interval_s, query_json, assertions_json, enabled, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+                name = ?2,
+                index_uid = ?3,
+                interval_s = ?4,
+                query_json = ?5,
+                assertions_json = ?6,
+                enabled = ?7",
+            params![
+                canary.id,
+                canary.name,
+                canary.index_uid,
+                canary.interval_s,
+                canary.query_json,
+                canary.assertions_json,
+                canary.enabled as i64,
+                canary.created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn get_canary(&self, id: &str) -> Result<Option<CanaryRow>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT id, name, index_uid, interval_s, query_json, assertions_json, enabled, created_at
+                 FROM canaries WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(CanaryRow {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        index_uid: row.get(2)?,
+                        interval_s: row.get(3)?,
+                        query_json: row.get(4)?,
+                        assertions_json: row.get(5)?,
+                        enabled: row.get::<_, i64>(6)? != 0,
+                        created_at: row.get(7)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    fn list_canaries(&self) -> Result<Vec<CanaryRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, index_uid, interval_s, query_json, assertions_json, enabled, created_at
+             FROM canaries",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(CanaryRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                index_uid: row.get(2)?,
+                interval_s: row.get(3)?,
+                query_json: row.get(4)?,
+                assertions_json: row.get(5)?,
+                enabled: row.get::<_, i64>(6)? != 0,
+                created_at: row.get(7)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    fn delete_canary(&self, id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute("DELETE FROM canaries WHERE id = ?1", params![id])?;
+        Ok(rows > 0)
+    }
+
+    // --- Table 9: canary_runs ---
+
+    fn insert_canary_run(&self, run: &NewCanaryRun, run_history_limit: usize) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+
+        // Insert the new run
+        tx.execute(
+            "INSERT INTO canary_runs (canary_id, ran_at, status, latency_ms, failed_assertions_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                run.canary_id,
+                run.ran_at,
+                run.status,
+                run.latency_ms,
+                run.failed_assertions_json,
+            ],
+        )?;
+
+        // Auto-prune: delete older runs beyond the limit
+        // This keeps only the most recent N runs per canary
+        // We use OFFSET (limit - 1) to get the Nth most recent, then delete everything older
+        if run_history_limit > 0 {
+            tx.execute(
+                "DELETE FROM canary_runs
+                 WHERE canary_id = ?1
+                 AND ran_at < (
+                     SELECT ran_at FROM canary_runs
+                     WHERE canary_id = ?1
+                     ORDER BY ran_at DESC
+                     LIMIT 1
+                     OFFSET ?2
+                 )",
+                params![run.canary_id, (run_history_limit as i64).saturating_sub(1)],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn get_canary_runs(&self, canary_id: &str, limit: usize) -> Result<Vec<CanaryRunRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT canary_id, ran_at, status, latency_ms, failed_assertions_json
+             FROM canary_runs
+             WHERE canary_id = ?1
+             ORDER BY ran_at DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![canary_id, limit as i64], |row| {
+            Ok(CanaryRunRow {
+                canary_id: row.get(0)?,
+                ran_at: row.get(1)?,
+                status: row.get(2)?,
+                latency_ms: row.get(3)?,
+                failed_assertions_json: row.get(4)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    // --- Table 10: cdc_cursors ---
+
+    fn upsert_cdc_cursor(&self, cursor: &NewCdcCursor) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO cdc_cursors (sink_name, index_uid, last_event_seq, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(sink_name, index_uid) DO UPDATE SET
+                last_event_seq = ?3,
+                updated_at = ?4",
+            params![
+                cursor.sink_name,
+                cursor.index_uid,
+                cursor.last_event_seq,
+                cursor.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn get_cdc_cursor(&self, sink_name: &str, index_uid: &str) -> Result<Option<CdcCursorRow>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT sink_name, index_uid, last_event_seq, updated_at
+                 FROM cdc_cursors WHERE sink_name = ?1 AND index_uid = ?2",
+                params![sink_name, index_uid],
+                |row| {
+                    Ok(CdcCursorRow {
+                        sink_name: row.get(0)?,
+                        index_uid: row.get(1)?,
+                        last_event_seq: row.get(2)?,
+                        updated_at: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    fn list_cdc_cursors(&self, sink_name: &str) -> Result<Vec<CdcCursorRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT sink_name, index_uid, last_event_seq, updated_at
+             FROM cdc_cursors WHERE sink_name = ?1",
+        )?;
+        let rows = stmt.query_map(params![sink_name], |row| {
+            Ok(CdcCursorRow {
+                sink_name: row.get(0)?,
+                index_uid: row.get(1)?,
+                last_event_seq: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    // --- Table 11: tenant_map ---
+
+    fn insert_tenant_mapping(&self, mapping: &NewTenantMapping) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO tenant_map (api_key_hash, tenant_id, group_id)
+             VALUES (?1, ?2, ?3)",
+            params![
+                mapping.api_key_hash,
+                mapping.tenant_id,
+                mapping.group_id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn get_tenant_mapping(&self, api_key_hash: &[u8]) -> Result<Option<TenantMapRow>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT api_key_hash, tenant_id, group_id
+                 FROM tenant_map WHERE api_key_hash = ?1",
+                params![api_key_hash],
+                |row| {
+                    Ok(TenantMapRow {
+                        api_key_hash: row.get(0)?,
+                        tenant_id: row.get(1)?,
+                        group_id: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    fn delete_tenant_mapping(&self, api_key_hash: &[u8]) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute("DELETE FROM tenant_map WHERE api_key_hash = ?1", params![api_key_hash])?;
+        Ok(rows > 0)
+    }
+
+    // --- Table 12: rollover_policies ---
+
+    fn upsert_rollover_policy(&self, policy: &NewRolloverPolicy) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO rollover_policies (name, write_alias, read_alias, pattern, triggers_json, retention_json, template_json, enabled)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(name) DO UPDATE SET
+                write_alias = ?2,
+                read_alias = ?3,
+                pattern = ?4,
+                triggers_json = ?5,
+                retention_json = ?6,
+                template_json = ?7,
+                enabled = ?8",
+            params![
+                policy.name,
+                policy.write_alias,
+                policy.read_alias,
+                policy.pattern,
+                policy.triggers_json,
+                policy.retention_json,
+                policy.template_json,
+                policy.enabled as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn get_rollover_policy(&self, name: &str) -> Result<Option<RolloverPolicyRow>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT name, write_alias, read_alias, pattern, triggers_json, retention_json, template_json, enabled
+                 FROM rollover_policies WHERE name = ?1",
+                params![name],
+                |row| {
+                    Ok(RolloverPolicyRow {
+                        name: row.get(0)?,
+                        write_alias: row.get(1)?,
+                        read_alias: row.get(2)?,
+                        pattern: row.get(3)?,
+                        triggers_json: row.get(4)?,
+                        retention_json: row.get(5)?,
+                        template_json: row.get(6)?,
+                        enabled: row.get::<_, i64>(7)? != 0,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    fn list_rollover_policies(&self) -> Result<Vec<RolloverPolicyRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT name, write_alias, read_alias, pattern, triggers_json, retention_json, template_json, enabled
+             FROM rollover_policies",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(RolloverPolicyRow {
+                name: row.get(0)?,
+                write_alias: row.get(1)?,
+                read_alias: row.get(2)?,
+                pattern: row.get(3)?,
+                triggers_json: row.get(4)?,
+                retention_json: row.get(5)?,
+                template_json: row.get(6)?,
+                enabled: row.get::<_, i64>(7)? != 0,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    fn delete_rollover_policy(&self, name: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute("DELETE FROM rollover_policies WHERE name = ?1", params![name])?;
+        Ok(rows > 0)
+    }
+
+    // --- Table 13: search_ui_config ---
+
+    fn upsert_search_ui_config(&self, config: &NewSearchUiConfig) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO search_ui_config (index_uid, config_json, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(index_uid) DO UPDATE SET
+                config_json = ?2,
+                updated_at = ?3",
+            params![config.index_uid, config.config_json, config.updated_at],
+        )?;
+        Ok(())
+    }
+
+    fn get_search_ui_config(&self, index_uid: &str) -> Result<Option<SearchUiConfigRow>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT index_uid, config_json, updated_at
+                 FROM search_ui_config WHERE index_uid = ?1",
+                params![index_uid],
+                |row| {
+                    Ok(SearchUiConfigRow {
+                        index_uid: row.get(0)?,
+                        config_json: row.get(1)?,
+                        updated_at: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    fn delete_search_ui_config(&self, index_uid: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute("DELETE FROM search_ui_config WHERE index_uid = ?1", params![index_uid])?;
+        Ok(rows > 0)
+    }
+
+    // --- Table 14: admin_sessions ---
+
+    fn insert_admin_session(&self, session: &NewAdminSession) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO admin_sessions (session_id, csrf_token, admin_key_hash, created_at, expires_at, revoked, user_agent, source_ip)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7)",
+            params![
+                session.session_id,
+                session.csrf_token,
+                session.admin_key_hash,
+                session.created_at,
+                session.expires_at,
+                session.user_agent,
+                session.source_ip,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn get_admin_session(&self, session_id: &str) -> Result<Option<AdminSessionRow>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT session_id, csrf_token, admin_key_hash, created_at, expires_at, revoked, user_agent, source_ip
+                 FROM admin_sessions WHERE session_id = ?1",
+                params![session_id],
+                |row| {
+                    Ok(AdminSessionRow {
+                        session_id: row.get(0)?,
+                        csrf_token: row.get(1)?,
+                        admin_key_hash: row.get(2)?,
+                        created_at: row.get(3)?,
+                        expires_at: row.get(4)?,
+                        revoked: row.get::<_, i64>(5)? != 0,
+                        user_agent: row.get(6)?,
+                        source_ip: row.get(7)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    fn revoke_admin_session(&self, session_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        // Only update if not already revoked (idempotent)
+        let rows = conn.execute(
+            "UPDATE admin_sessions SET revoked = 1 WHERE session_id = ?1 AND revoked = 0",
+            params![session_id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    fn delete_expired_admin_sessions(&self, now_ms: i64) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "DELETE FROM admin_sessions WHERE expires_at < ?1 OR revoked = 1",
+            params![now_ms],
+        )?;
+        Ok(rows)
     }
 }
 
@@ -1096,7 +1631,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(version, 2);
     }
 
     // --- WAL mode ---
@@ -1161,5 +1696,468 @@ mod tests {
         // All 4 tasks should be there
         let all = store.list_tasks(&TaskFilter::default()).unwrap();
         assert_eq!(all.len(), 4);
+    }
+
+    // --- Table 8: canaries ---
+
+    #[test]
+    fn canary_upsert_get_list_delete() {
+        let store = test_store();
+
+        store
+            .upsert_canary(&NewCanary {
+                id: "canary-1".to_string(),
+                name: "prod-search-check".to_string(),
+                index_uid: "products".to_string(),
+                interval_s: 60,
+                query_json: r#"{"q": "laptop"}"#.to_string(),
+                assertions_json: r#"[{"type": "min_hits", "value": 10}]"#.to_string(),
+                enabled: true,
+                created_at: 1000,
+            })
+            .unwrap();
+
+        let canary = store.get_canary("canary-1").unwrap().unwrap();
+        assert_eq!(canary.name, "prod-search-check");
+        assert_eq!(canary.index_uid, "products");
+        assert_eq!(canary.interval_s, 60);
+        assert!(canary.enabled);
+
+        // Update (upsert)
+        store
+            .upsert_canary(&NewCanary {
+                id: "canary-1".to_string(),
+                name: "prod-search-check-v2".to_string(),
+                index_uid: "products".to_string(),
+                interval_s: 120,
+                query_json: r#"{"q": "phone"}"#.to_string(),
+                assertions_json: r#"[{"type": "min_hits", "value": 5}]"#.to_string(),
+                enabled: false,
+                created_at: 1000,
+            })
+            .unwrap();
+
+        let canary = store.get_canary("canary-1").unwrap().unwrap();
+        assert_eq!(canary.name, "prod-search-check-v2");
+        assert_eq!(canary.interval_s, 120);
+        assert!(!canary.enabled);
+
+        // List all
+        store
+            .upsert_canary(&NewCanary {
+                id: "canary-2".to_string(),
+                name: "logs-check".to_string(),
+                index_uid: "logs".to_string(),
+                interval_s: 30,
+                query_json: r#"{"q": "error"}"#.to_string(),
+                assertions_json: r#"[]"#.to_string(),
+                enabled: true,
+                created_at: 2000,
+            })
+            .unwrap();
+
+        let all = store.list_canaries().unwrap();
+        assert_eq!(all.len(), 2);
+
+        // Delete
+        assert!(store.delete_canary("canary-1").unwrap());
+        assert!(store.get_canary("canary-1").unwrap().is_none());
+        assert_eq!(store.list_canaries().unwrap().len(), 1);
+    }
+
+    // --- Table 9: canary_runs ---
+
+    #[test]
+    fn canary_runs_insert_and_auto_prune() {
+        let store = test_store();
+
+        // Insert 5 runs
+        for i in 0..5 {
+            store
+                .insert_canary_run(
+                    &NewCanaryRun {
+                        canary_id: "canary-1".to_string(),
+                        ran_at: i * 1000,
+                        status: if i == 2 { "fail" } else { "pass" }.to_string(),
+                        latency_ms: 100 + i * 10,
+                        failed_assertions_json: if i == 2 {
+                            Some(r#"[{"type": "min_hits", "expected": 10, "actual": 5}]"#.to_string())
+                        } else {
+                            None
+                        },
+                    },
+                    3, // keep only 3 most recent
+                )
+                .unwrap();
+        }
+
+        let runs = store.get_canary_runs("canary-1", 10).unwrap();
+        // Only the 3 most recent should remain (ran_at: 2000, 3000, 4000)
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].ran_at, 4000);
+        assert_eq!(runs[1].ran_at, 3000);
+        assert_eq!(runs[2].ran_at, 2000);
+    }
+
+    #[test]
+    fn canary_runs_empty_for_unknown_canary() {
+        let store = test_store();
+        let runs = store.get_canary_runs("unknown", 10).unwrap();
+        assert!(runs.is_empty());
+    }
+
+    // --- Table 10: cdc_cursors ---
+
+    #[test]
+    fn cdc_cursor_upsert_get_list() {
+        let store = test_store();
+
+        store
+            .upsert_cdc_cursor(&NewCdcCursor {
+                sink_name: "kafka-main".to_string(),
+                index_uid: "products".to_string(),
+                last_event_seq: 100,
+                updated_at: 5000,
+            })
+            .unwrap();
+
+        let cursor = store
+            .get_cdc_cursor("kafka-main", "products")
+            .unwrap()
+            .unwrap();
+        assert_eq!(cursor.last_event_seq, 100);
+        assert_eq!(cursor.updated_at, 5000);
+
+        // Update (upsert)
+        store
+            .upsert_cdc_cursor(&NewCdcCursor {
+                sink_name: "kafka-main".to_string(),
+                index_uid: "products".to_string(),
+                last_event_seq: 250,
+                updated_at: 6000,
+            })
+            .unwrap();
+
+        let cursor = store
+            .get_cdc_cursor("kafka-main", "products")
+            .unwrap()
+            .unwrap();
+        assert_eq!(cursor.last_event_seq, 250);
+
+        // Add another index for the same sink
+        store
+            .upsert_cdc_cursor(&NewCdcCursor {
+                sink_name: "kafka-main".to_string(),
+                index_uid: "logs".to_string(),
+                last_event_seq: 50,
+                updated_at: 5000,
+            })
+            .unwrap();
+
+        let cursors = store.list_cdc_cursors("kafka-main").unwrap();
+        assert_eq!(cursors.len(), 2);
+
+        // Missing (sink, index) pair
+        assert!(store
+            .get_cdc_cursor("kafka-main", "unknown")
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get_cdc_cursor("unknown", "products")
+            .unwrap()
+            .is_none());
+    }
+
+    // --- Table 11: tenant_map ---
+
+    #[test]
+    fn tenant_map_crud() {
+        let store = test_store();
+
+        let key_hash = vec![1u8; 32]; // dummy 32-byte hash
+        store
+            .insert_tenant_mapping(&NewTenantMapping {
+                api_key_hash: key_hash.clone(),
+                tenant_id: "acme-corp".to_string(),
+                group_id: Some(5),
+            })
+            .unwrap();
+
+        let mapping = store.get_tenant_mapping(&key_hash).unwrap().unwrap();
+        assert_eq!(mapping.tenant_id, "acme-corp");
+        assert_eq!(mapping.group_id, Some(5));
+
+        // Insert with NULL group_id
+        let key_hash2 = vec![2u8; 32];
+        store
+            .insert_tenant_mapping(&NewTenantMapping {
+                api_key_hash: key_hash2.clone(),
+                tenant_id: "startup-inc".to_string(),
+                group_id: None,
+            })
+            .unwrap();
+
+        let mapping = store.get_tenant_mapping(&key_hash2).unwrap().unwrap();
+        assert_eq!(mapping.tenant_id, "startup-inc");
+        assert!(mapping.group_id.is_none());
+
+        // Delete
+        assert!(store.delete_tenant_mapping(&key_hash).unwrap());
+        assert!(store.get_tenant_mapping(&key_hash).unwrap().is_none());
+
+        // Missing key
+        assert!(!store.delete_tenant_mapping(&[0u8; 32]).unwrap());
+    }
+
+    // --- Table 12: rollover_policies ---
+
+    #[test]
+    fn rollover_policy_upsert_get_list_delete() {
+        let store = test_store();
+
+        store
+            .upsert_rollover_policy(&NewRolloverPolicy {
+                name: "logs-ilm".to_string(),
+                write_alias: "logs".to_string(),
+                read_alias: "logs-search".to_string(),
+                pattern: "logs-{YYYY-MM-DD}".to_string(),
+                triggers_json: r#"{"max_age": "7d", "max_size_gb": 50}"#.to_string(),
+                retention_json: r#"{"keep_indexes": 30}"#.to_string(),
+                template_json: r#"{"primary_key": "id"}"#.to_string(),
+                enabled: true,
+            })
+            .unwrap();
+
+        let policy = store.get_rollover_policy("logs-ilm").unwrap().unwrap();
+        assert_eq!(policy.name, "logs-ilm");
+        assert_eq!(policy.write_alias, "logs");
+        assert_eq!(policy.pattern, "logs-{YYYY-MM-DD}");
+        assert!(policy.enabled);
+
+        // Update (upsert)
+        store
+            .upsert_rollover_policy(&NewRolloverPolicy {
+                name: "logs-ilm".to_string(),
+                write_alias: "logs".to_string(),
+                read_alias: "logs-search".to_string(),
+                pattern: "logs-{YYYY-MM-DD}".to_string(),
+                triggers_json: r#"{"max_age": "14d", "max_size_gb": 100}"#.to_string(),
+                retention_json: r#"{"keep_indexes": 60}"#.to_string(),
+                template_json: r#"{"primary_key": "id"}"#.to_string(),
+                enabled: false,
+            })
+            .unwrap();
+
+        let policy = store.get_rollover_policy("logs-ilm").unwrap().unwrap();
+        assert!(!policy.enabled);
+
+        // List all
+        store
+            .upsert_rollover_policy(&NewRolloverPolicy {
+                name: "metrics-ilm".to_string(),
+                write_alias: "metrics".to_string(),
+                read_alias: "metrics-search".to_string(),
+                pattern: "metrics-{YYYY-MM-DD}".to_string(),
+                triggers_json: r#"{"max_age": "1d"}"#.to_string(),
+                retention_json: r#"{"keep_indexes": 7}"#.to_string(),
+                template_json: r#"{"primary_key": "name"}"#.to_string(),
+                enabled: true,
+            })
+            .unwrap();
+
+        let all = store.list_rollover_policies().unwrap();
+        assert_eq!(all.len(), 2);
+
+        // Delete
+        assert!(store.delete_rollover_policy("logs-ilm").unwrap());
+        assert!(store.get_rollover_policy("logs-ilm").unwrap().is_none());
+        assert_eq!(store.list_rollover_policies().unwrap().len(), 1);
+    }
+
+    // --- Table 13: search_ui_config ---
+
+    #[test]
+    fn search_ui_config_upsert_get_delete() {
+        let store = test_store();
+
+        store
+            .upsert_search_ui_config(&NewSearchUiConfig {
+                index_uid: "products".to_string(),
+                config_json: r#"{"title": "Product Search", "facets": ["category", "price"]}"#
+                    .to_string(),
+                updated_at: 10000,
+            })
+            .unwrap();
+
+        let config = store.get_search_ui_config("products").unwrap().unwrap();
+        assert_eq!(config.index_uid, "products");
+        assert!(config.config_json.contains("Product Search"));
+
+        // Update (upsert)
+        store
+            .upsert_search_ui_config(&NewSearchUiConfig {
+                index_uid: "products".to_string(),
+                config_json: r#"{"title": "Products (Updated)", "facets": ["brand"]}"#.to_string(),
+                updated_at: 20000,
+            })
+            .unwrap();
+
+        let config = store.get_search_ui_config("products").unwrap().unwrap();
+        assert!(config.config_json.contains("Updated"));
+        assert_eq!(config.updated_at, 20000);
+
+        // Delete
+        assert!(store.delete_search_ui_config("products").unwrap());
+        assert!(store.get_search_ui_config("products").unwrap().is_none());
+
+        // Missing index
+        assert!(!store.delete_search_ui_config("unknown").unwrap());
+    }
+
+    // --- Table 14: admin_sessions ---
+
+    #[test]
+    fn admin_session_insert_get_revoke_expire() {
+        let store = test_store();
+
+        store
+            .insert_admin_session(&NewAdminSession {
+                session_id: "sess-admin-1".to_string(),
+                csrf_token: "csrf-token-abc".to_string(),
+                admin_key_hash: "hash-of-key".to_string(),
+                created_at: 1000,
+                expires_at: 10000,
+                user_agent: Some("Mozilla/5.0".to_string()),
+                source_ip: Some("10.0.0.1".to_string()),
+            })
+            .unwrap();
+
+        let session = store.get_admin_session("sess-admin-1").unwrap().unwrap();
+        assert_eq!(session.session_id, "sess-admin-1");
+        assert_eq!(session.csrf_token, "csrf-token-abc");
+        assert!(!session.revoked);
+        assert_eq!(session.user_agent.as_deref(), Some("Mozilla/5.0"));
+
+        // Revoke (logout)
+        assert!(store.revoke_admin_session("sess-admin-1").unwrap());
+        let session = store.get_admin_session("sess-admin-1").unwrap().unwrap();
+        assert!(session.revoked);
+
+        // Double-revoke is idempotent (returns false since already revoked)
+        assert!(!store.revoke_admin_session("sess-admin-1").unwrap());
+
+        // Delete expired (also deletes revoked)
+        let deleted = store.delete_expired_admin_sessions(20000).unwrap();
+        assert_eq!(deleted, 1);
+        assert!(store.get_admin_session("sess-admin-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn admin_sessions_delete_expired_filters_correctly() {
+        let store = test_store();
+
+        // Expired session
+        store
+            .insert_admin_session(&NewAdminSession {
+                session_id: "sess-expired".to_string(),
+                csrf_token: "csrf-1".to_string(),
+                admin_key_hash: "hash-1".to_string(),
+                created_at: 1000,
+                expires_at: 5000, // already expired
+                user_agent: None,
+                source_ip: None,
+            })
+            .unwrap();
+
+        // Valid session
+        store
+            .insert_admin_session(&NewAdminSession {
+                session_id: "sess-valid".to_string(),
+                csrf_token: "csrf-2".to_string(),
+                admin_key_hash: "hash-2".to_string(),
+                created_at: 1000,
+                expires_at: 99999, // far in future
+                user_agent: None,
+                source_ip: None,
+            })
+            .unwrap();
+
+        // Revoked session (not yet expired)
+        store
+            .insert_admin_session(&NewAdminSession {
+                session_id: "sess-revoked".to_string(),
+                csrf_token: "csrf-3".to_string(),
+                admin_key_hash: "hash-3".to_string(),
+                created_at: 1000,
+                expires_at: 99999,
+                user_agent: None,
+                source_ip: None,
+            })
+            .unwrap();
+        store.revoke_admin_session("sess-revoked").unwrap();
+
+        let deleted = store.delete_expired_admin_sessions(10000).unwrap();
+        // expired + revoked = 2, valid remains
+        assert_eq!(deleted, 2);
+        assert!(store.get_admin_session("sess-valid").unwrap().is_some());
+        assert!(store.get_admin_session("sess-expired").unwrap().is_none());
+        assert!(store.get_admin_session("sess-revoked").unwrap().is_none());
+    }
+
+    // --- Migration V2 applies correctly ---
+
+    #[test]
+    fn migration_v2_tables_created() {
+        let store = test_store();
+
+        // Verify all tables 8-14 exist
+        let conn = store.conn.lock().unwrap();
+
+        // Check each table exists by querying sqlite_master
+        let tables = [
+            "canaries",
+            "canary_runs",
+            "cdc_cursors",
+            "tenant_map",
+            "rollover_policies",
+            "search_ui_config",
+            "admin_sessions",
+        ];
+
+        for table in tables {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    params![table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "Table {} should exist", table);
+        }
+
+        // Verify admin_sessions_expires index exists
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='admin_sessions_expires'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 1);
+    }
+
+    #[test]
+    fn schema_version_v2() {
+        let store = test_store();
+
+        let conn = store.conn.lock().unwrap();
+        let version: i64 = conn
+            .query_row(
+                "SELECT MAX(version) FROM schema_versions",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, 2);
     }
 }

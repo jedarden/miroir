@@ -189,11 +189,9 @@ where `α` is tuned empirically.
 
 ## Follow-Up Work
 
-Create follow-up bead for implementing RRF merging:
-- Modify `merger.rs` to collect ranks instead of scores
-- Compute RRF score: `Σ 1/(60 + rank)` per document
-- Sort by RRF score descending
-- Benchmark same corpus against ground truth
+**Status**: RRF merging (Option 2) is already implemented in `merger.rs` (`RRF_K = 60`).
+
+No further action needed for the core score normalization issue. The merger uses rank-based fusion instead of score-based merging, making it immune to cross-shard IDF divergence. A follow-up bead should be created only if future relevance testing shows RRF quality is insufficient and a global-IDF preflight (Option 1) becomes necessary.
 
 ---
 
@@ -201,11 +199,16 @@ Create follow-up bead for implementing RRF merging:
 
 The experiment used 10,000 queries, providing narrow confidence intervals:
 
-- **Overall τ = 0.79 ± 0.01** (95% CI)
-- **Common-term τ = 0.15 ± 0.02** (95% CI)
-- **Rare-term τ = 0.94 ± 0.005** (95% CI)
+| Query Type | Avg τ | 95% CI | n |
+|------------|-------|--------|---|
+| **Overall** | **0.7939** | **[0.7873, 0.8006]** | 10,000 |
+| Common-term | 0.1483 | [0.1336, 0.1630] | 1,500 |
+| Single-term | 0.8677 | [0.8583, 0.8771] | 2,500 |
+| Filtered | 0.8719 | [0.8614, 0.8824] | 2,000 |
+| Rare-term | 0.9387 | [0.9378, 0.9395] | 1,500 |
+| Multi-term | 0.9584 | [0.9564, 0.9603] | 2,500 |
 
-Results are statistically significant and reproducible.
+All confidence intervals are far from the 0.95 pass threshold (except multi-term, which barely exceeds it). Results are statistically significant and reproducible.
 
 ---
 
