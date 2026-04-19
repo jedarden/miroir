@@ -3,6 +3,7 @@
 //! Provides routing, merging, and topology logic for the Miroir distributed search proxy.
 
 pub mod anti_entropy;
+pub mod api_error;
 pub mod config;
 pub mod error;
 pub mod merger;
@@ -20,4 +21,5 @@ pub mod topology;
 pub mod raft_proto;
 
 // Public re-exports
+pub use api_error::{ErrorType, MeilisearchError, MiroirCode};
 pub use error::{MiroirError, Result};
