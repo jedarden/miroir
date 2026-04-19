@@ -1,6 +1,6 @@
 {
-  "corpus_dir": "corpus",
-  "query_file": "queries/queries.jsonl",
+  "corpus_dir": "tests/benches/score-comparability/corpus",
+  "query_file": "tests/benches/score-comparability/queries/queries.jsonl",
   "shard_count": 10,
   "limit": 100,
   "total_queries": 10000,
