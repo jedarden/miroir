@@ -10,7 +10,7 @@
 //!   the rotation overlap window. Validation accepts either secret.
 
 use axum::{
-    extract::{Request, State},
+    extract::{FromRef, Request, State},
     http::{HeaderMap, Method},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -18,8 +18,9 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use dashmap::DashMap;
 use hmac::{Hmac, Mac};
-use miroir_core::{MeilisearchError, MiroirCode};
+use miroir_core::{task_store::TaskStore, MeilisearchError, MiroirCode};
 use prometheus::Counter;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::sync::Arc;
@@ -33,6 +34,13 @@ type HmacSha256 = Hmac<Sha256>;
 /// Handlers extract this to look up the session in the task store.
 #[derive(Debug, Clone)]
 pub struct AdminSessionId(pub String);
+
+/// State for CSRF middleware, combining AuthState with task store access.
+#[derive(Clone)]
+pub struct CsrfState {
+    pub auth: AuthState,
+    pub redis_store: Option<miroir_core::task_store::RedisTaskStore>,
+}
 
 // ---------------------------------------------------------------------------
 // JWT claims (plan §13.21)
@@ -238,6 +246,177 @@ pub enum JwtValidationError {
     Expired,
     /// `SEARCH_UI_JWT_SECRET_PREVIOUS` is set to the empty string (leak response).
     PreviousSecretEmpty,
+}
+
+// ---------------------------------------------------------------------------
+// CSRF token generation (plan §9)
+// ---------------------------------------------------------------------------
+
+/// Generate a cryptographically random CSRF token.
+/// Returns a URL-safe base64-encoded 32-byte token.
+pub fn generate_csrf_token() -> String {
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(&bytes)
+}
+
+/// Extract the CSRF token from the `X-CSRF-Token` header.
+pub fn extract_csrf_token(headers: &HeaderMap) -> Option<String> {
+    headers.get("X-CSRF-Token")?.to_str().ok().map(String::from)
+}
+
+/// Constant-time comparison of CSRF tokens.
+pub fn constant_time_csrf_compare(token: &str, expected: &str) -> bool {
+    constant_time_compare(token.as_bytes(), expected.as_bytes())
+}
+
+/// Validate a CSRF token against the expected session token.
+/// Returns Ok(()) if the token matches, or a CsrfMismatch error.
+pub fn validate_csrf_token(provided: &str, expected: &str) -> Result<(), MiroirCode> {
+    if constant_time_csrf_compare(provided, expected) {
+        Ok(())
+    } else {
+        Err(MiroirCode::CsrfMismatch)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Origin validation (plan §9)
+// ---------------------------------------------------------------------------
+
+/// Result of origin validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OriginVerdict {
+    /// Origin is allowed.
+    Allowed,
+    /// Origin is not in the allowed list.
+    Forbidden,
+    /// No Origin/Referer header present (for same-origin requests).
+    Missing,
+}
+
+/// Validate the Origin header against the allowed origins list.
+/// Handles special "same-origin" value by comparing against the Host header.
+pub fn validate_origin(
+    headers: &HeaderMap,
+    allowed_origins: &[String],
+    is_same_origin_by_default: bool,
+) -> OriginVerdict {
+    // Try Origin header first (preferred for POST/DELETE/PUT)
+    let origin = headers.get("origin").and_then(|h| h.to_str().ok());
+
+    // Fall back to Referer header (for navigational requests)
+    let referer = origin.or_else(|| headers.get("referer").and_then(|h| h.to_str().ok()));
+
+    let provided_origin = match referer {
+        Some(o) => o,
+        None => {
+            // No Origin or Referer header - for same-origin requests, this is acceptable
+            return if is_same_origin_by_default {
+                OriginVerdict::Missing
+            } else {
+                OriginVerdict::Forbidden
+            };
+        }
+    };
+
+    // Strip path from Referer to get origin
+    let provided_origin = if let Some(ref_hdr) = headers.get("referer") {
+        if let Ok(ref_val) = ref_hdr.to_str() {
+            // Find the first '/' after "https://" (skip the first 8 chars: "https://")
+            if let Some(idx) = ref_val.chars().enumerate().skip(8).find(|(_, c)| *c == '/').map(|(i, _)| i) {
+                &ref_val[..idx]
+            } else {
+                ref_val
+            }
+        } else {
+            provided_origin
+        }
+    } else {
+        provided_origin
+    };
+
+    // Check against allowed origins
+    for allowed in allowed_origins {
+        // Special "same-origin" value - compare against Host header
+        if allowed == "same-origin" {
+            if let Some(host) = headers.get("host").and_then(|h| h.to_str().ok()) {
+                // Construct origin from scheme (https) and host
+                let same_origin = format!("https://{}", host);
+                if provided_origin == same_origin || provided_origin == host {
+                    return OriginVerdict::Allowed;
+                }
+            }
+        } else if allowed == "*" {
+            // Wildcard allows any origin
+            return OriginVerdict::Allowed;
+        } else if provided_origin == allowed {
+            return OriginVerdict::Allowed;
+        }
+    }
+
+    OriginVerdict::Forbidden
+}
+
+// ---------------------------------------------------------------------------
+// CSP header builder (plan §9)
+// ---------------------------------------------------------------------------
+
+/// Build a CSP header value by merging base template with overrides.
+/// Overrides are merged additively - they never replace the base template.
+pub fn build_csp_header(
+    base_template: &str,
+    overrides: &miroir_core::config::CspOverridesConfig,
+) -> String {
+    let mut directives: Vec<(String, Vec<String>)> = base_template
+        .split(';')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|directive| {
+            let parts: Vec<&str> = directive.splitn(2, ' ').collect();
+            if parts.len() == 2 {
+                (parts[0].to_lowercase(), vec![parts[1].to_string()])
+            } else {
+                (parts[0].to_lowercase(), vec![])
+            }
+        })
+        .collect();
+
+    // Helper to merge overrides into a directive
+    let merge_into = |directives: &mut Vec<(String, Vec<String>)>,
+                      name: &str,
+                      values: &[String]| {
+        if values.is_empty() {
+            return;
+        }
+        let name_lower = name.to_lowercase();
+        if let Some(entry) = directives.iter_mut().find(|(n, _)| n == &name_lower) {
+            // Append to existing directive
+            entry.1.extend(values.iter().cloned());
+            entry.1.dedup(); // Remove duplicates
+        } else {
+            // Add new directive
+            directives.push((name_lower, values.to_vec()));
+        }
+    };
+
+    // Merge each override category
+    merge_into(&mut directives, "script-src", &overrides.script_src);
+    merge_into(&mut directives, "img-src", &overrides.img_src);
+    merge_into(&mut directives, "connect-src", &overrides.connect_src);
+
+    // Rebuild CSP string
+    directives
+        .into_iter()
+        .map(|(name, values)| {
+            if values.is_empty() {
+                name
+            } else {
+                format!("{} {}", name, values.join(" "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 // ---------------------------------------------------------------------------
@@ -541,6 +720,145 @@ pub async fn auth_middleware(
         )
         .into_response(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// CSRF validation middleware (plan §9)
+// ---------------------------------------------------------------------------
+
+/// CSRF middleware that validates `X-CSRF-Token` on state-changing requests.
+///
+/// Bypasses CSRF check when:
+/// - Request is authenticated via Bearer token (not admin session cookie)
+/// - X-Admin-Key header is present
+/// - Request method is safe (GET, HEAD, OPTIONS)
+/// - Path is dispatch-exempt
+///
+/// For admin session cookie auth, requires `X-CSRF-Token` header to match
+/// the token stored in the session.
+pub async fn csrf_middleware(
+    State(state): State<CsrfState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+
+    // Skip CSRF for safe methods
+    if matches!(method, Method::GET | Method::HEAD | Method::OPTIONS) {
+        return next.run(req).await;
+    }
+
+    // Skip CSRF for non-admin paths
+    if !is_admin_path(&path) {
+        return next.run(req).await;
+    }
+
+    // Skip CSRF for dispatch-exempt endpoints
+    if is_dispatch_exempt(&method, &path) {
+        return next.run(req).await;
+    }
+
+    // Skip CSRF if X-Admin-Key is present (bypasses CSRF)
+    if check_x_admin_key(req.headers(), state.auth.admin_key.as_bytes()) {
+        return next.run(req).await;
+    }
+
+    // Check if authenticated via admin session cookie
+    let has_session_cookie = extract_admin_session_cookie(req.headers()).is_some();
+    let has_bearer_token = extract_bearer(req.headers()).is_some();
+
+    // CSRF only applies to session-cookie auth, not bearer tokens
+    if !has_session_cookie || has_bearer_token {
+        return next.run(req).await;
+    }
+
+    // Extract CSRF token from header
+    let csrf_token = match extract_csrf_token(req.headers()) {
+        Some(token) => token,
+        None => {
+            return MeilisearchError::new(
+                MiroirCode::MissingCsrf,
+                "CSRF token is required for state-changing requests.",
+            )
+            .into_response();
+        }
+    };
+
+    // Get session ID from extensions (set by auth_middleware)
+    let session_id = match req.extensions().get::<AdminSessionId>() {
+        Some(id) => id.0.clone(),
+        None => {
+            // Session cookie was present but auth_middleware didn't set AdminSessionId
+            // This means the session was invalid/expired/revoked
+            return MeilisearchError::new(
+                MiroirCode::InvalidAuth,
+                "Admin session is invalid or expired.",
+            )
+            .into_response();
+        }
+    };
+
+    // Validate CSRF token against session
+    let Some(redis_store) = state.redis_store.as_ref() else {
+        return MeilisearchError::new(
+            MiroirCode::InvalidAuth,
+            "Admin sessions require Redis task store.",
+        )
+        .into_response();
+    };
+
+    let session = match redis_store.get_admin_session(&session_id) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return MeilisearchError::new(
+                MiroirCode::InvalidAuth,
+                "Admin session not found.",
+            )
+            .into_response();
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, session_prefix = &session_id[..session_id.len().min(8)], "failed to get admin session for CSRF validation");
+            return MeilisearchError::new(
+                MiroirCode::InvalidAuth,
+                "Failed to validate session.",
+            )
+            .into_response();
+        }
+    };
+
+    // Check if revoked
+    if session.revoked {
+        return MeilisearchError::new(
+            MiroirCode::InvalidAuth,
+            "Admin session has been revoked.",
+        )
+        .into_response();
+    }
+
+    // Check expiration
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    if session.expires_at < now {
+        return MeilisearchError::new(
+            MiroirCode::InvalidAuth,
+            "Admin session has expired.",
+        )
+        .into_response();
+    }
+
+    // Constant-time compare CSRF tokens
+    if !constant_time_csrf_compare(&csrf_token, &session.csrf_token) {
+        return MeilisearchError::new(
+            MiroirCode::CsrfMismatch,
+            "CSRF token does not match the session token.",
+        )
+        .into_response();
+    }
+
+    next.run(req).await
 }
 
 // ---------------------------------------------------------------------------

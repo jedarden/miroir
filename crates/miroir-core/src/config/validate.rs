@@ -141,6 +141,52 @@ pub fn validate(cfg: &MiroirConfig) -> Result<(), ConfigError> {
         ));
     }
 
+    // CSP overrides must not contain wildcards (plan §9)
+    // Wildcards are only allowed in the base template, not in overrides.
+    // Overrides are additive and must be specific sources.
+    for value in &cfg.admin_ui.csp_overrides.script_src {
+        if value == "*" {
+            return Err(ConfigError::Validation(
+                "admin_ui.csp_overrides.script_src cannot contain wildcard '*'".into(),
+            ));
+        }
+    }
+    for value in &cfg.admin_ui.csp_overrides.img_src {
+        if value == "*" {
+            return Err(ConfigError::Validation(
+                "admin_ui.csp_overrides.img_src cannot contain wildcard '*'".into(),
+            ));
+        }
+    }
+    for value in &cfg.admin_ui.csp_overrides.connect_src {
+        if value == "*" {
+            return Err(ConfigError::Validation(
+                "admin_ui.csp_overrides.connect_src cannot contain wildcard '*'".into(),
+            ));
+        }
+    }
+    for value in &cfg.search_ui.csp_overrides.script_src {
+        if value == "*" {
+            return Err(ConfigError::Validation(
+                "search_ui.csp_overrides.script_src cannot contain wildcard '*'".into(),
+            ));
+        }
+    }
+    for value in &cfg.search_ui.csp_overrides.img_src {
+        if value == "*" {
+            return Err(ConfigError::Validation(
+                "search_ui.csp_overrides.img_src cannot contain wildcard '*'".into(),
+            ));
+        }
+    }
+    for value in &cfg.search_ui.csp_overrides.connect_src {
+        if value == "*" {
+            return Err(ConfigError::Validation(
+                "search_ui.csp_overrides.connect_src cannot contain wildcard '*'".into(),
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -267,5 +313,23 @@ mod tests {
         cfg.replication_factor = 0;
         let err = validate(&cfg).unwrap_err();
         assert!(err.to_string().contains("replication_factor"));
+    }
+
+    #[test]
+    fn rejects_csp_overrides_wildcard_admin_ui() {
+        let mut cfg = dev_config();
+        cfg.admin_ui.csp_overrides.script_src = vec!["*".to_string()];
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("csp_overrides"));
+        assert!(err.to_string().contains("wildcard"));
+    }
+
+    #[test]
+    fn rejects_csp_overrides_wildcard_search_ui() {
+        let mut cfg = dev_config();
+        cfg.search_ui.csp_overrides.connect_src = vec!["*".to_string()];
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("csp_overrides"));
+        assert!(err.to_string().contains("wildcard"));
     }
 }

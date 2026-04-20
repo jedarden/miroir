@@ -1886,20 +1886,7 @@ impl RedisTaskStore {
 
             // Check if limit exceeded
             if count >= limit {
-                // Enter backoff mode after 5 consecutive failures
-                let failed_count: Option<u64> = conn.hget(&backoff_key, "failed_count").await
-                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
-
-                let failed = failed_count.unwrap_or(0) + 1;
-                let wait_seconds = 600u64 * (1u64 << (failed.saturating_sub(5).min(10))); // 10m, 20m, 40m, ...
-
-                let mut pipe = pipe();
-                pipe.hset(&backoff_key, "failed_count", failed as i64);
-                pipe.hset(&backoff_key, "next_allowed_at", now_ms() + (wait_seconds as i64 * 1000));
-                pipe.expire(&backoff_key, (wait_seconds as i64 + 60) as i64);
-                pool.pipeline_query::<()>(&mut pipe).await?;
-
-                return Ok((false, Some(wait_seconds)));
+                return Ok((false, None));
             }
 
             // Increment counter
@@ -1909,6 +1896,61 @@ impl RedisTaskStore {
             pool.pipeline_query::<()>(&mut pipe).await?;
 
             Ok((true, None))
+        })
+    }
+
+    /// Record a failed admin login attempt and return backoff if triggered.
+    /// Returns Some(wait_seconds) if backoff was triggered, None otherwise.
+    pub fn record_failure_admin_login(
+        &self,
+        ip: &str,
+        failed_threshold: u32,
+        backoff_start_minutes: u64,
+        backoff_max_hours: u64,
+    ) -> Result<Option<u64>> {
+        let pool = self.pool.clone();
+        let key_prefix = self.key_prefix.clone();
+        let ip = ip.to_string();
+        let backoff_key = format!("{}:ratelimit:adminlogin:backoff:{}", key_prefix, ip);
+
+        self.block_on(async move {
+            let mut conn = pool.manager.lock().await;
+
+            // Check if already in backoff
+            let backoff_fields: HashMap<String, Value> = conn.hgetall(&backoff_key).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            let current_failed: u64 = if backoff_fields.is_empty() {
+                0
+            } else {
+                get_field_i64(&backoff_fields, "failed_count")? as u64
+            };
+
+            let new_failed = current_failed + 1;
+
+            // Check if we should enter backoff mode
+            if new_failed >= failed_threshold as u64 {
+                let backoff_exponent = (new_failed.saturating_sub(failed_threshold as u64) as u32).min(7);
+                let backoff_minutes = backoff_start_minutes * (1u64 << backoff_exponent);
+                let backoff_seconds = (backoff_minutes * 60).min(backoff_max_hours * 3600);
+
+                let now = now_ms();
+                let next_allowed_at = now + (backoff_seconds as i64 * 1000);
+
+                let mut pipe = pipe();
+                pipe.hset(&backoff_key, "failed_count", new_failed as i64);
+                pipe.hset(&backoff_key, "next_allowed_at", next_allowed_at);
+                pipe.expire(&backoff_key, (backoff_seconds as i64 + 60) as i64);
+                pool.pipeline_query::<()>(&mut pipe).await?;
+
+                return Ok(Some(backoff_seconds));
+            }
+
+            // Just update the failed count
+            let _: () = conn.hset(&backoff_key, "failed_count", new_failed as i64).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            Ok(None)
         })
     }
 
@@ -1948,7 +1990,9 @@ impl RedisTaskStore {
             } else {
                 Ok(Some(SearchUiScopedKey {
                     index_uid: index_uid.clone(),
+                    primary_key: get_field_string(&fields, "primary_key")?,
                     primary_uid: get_field_string(&fields, "primary_uid")?,
+                    previous_key: opt_field(&fields, "previous_key"),
                     previous_uid: opt_field(&fields, "previous_uid"),
                     rotated_at: get_field_i64(&fields, "rotated_at")?,
                     generation: get_field_i64(&fields, "generation")?,
@@ -1967,11 +2011,17 @@ impl RedisTaskStore {
         self.block_on(async move {
             let mut pipe = pipe();
             pipe.hset(&redis_key, "index_uid", &key_value.index_uid);
+            pipe.hset(&redis_key, "primary_key", &key_value.primary_key);
             pipe.hset(&redis_key, "primary_uid", &key_value.primary_uid);
             pipe.hset(&redis_key, "rotated_at", key_value.rotated_at);
             pipe.hset(&redis_key, "generation", key_value.generation);
-            if let Some(ref prev) = key_value.previous_uid {
-                pipe.hset(&redis_key, "previous_uid", prev);
+            match key_value.previous_key {
+                Some(ref v) => { pipe.hset(&redis_key, "previous_key", v); }
+                None => { pipe.hdel(&redis_key, "previous_key"); }
+            }
+            match key_value.previous_uid {
+                Some(ref v) => { pipe.hset(&redis_key, "previous_uid", v); }
+                None => { pipe.hdel(&redis_key, "previous_uid"); }
             }
             pool.pipeline_query::<()>(&mut pipe).await?;
             Ok(())
@@ -2034,6 +2084,97 @@ impl RedisTaskStore {
             }
 
             Ok((unobserved.is_empty(), unobserved))
+        })
+    }
+
+    /// Clear the previous_uid field from a scoped key hash (after revocation).
+    pub fn clear_scoped_key_previous(&self, index_uid: &str) -> Result<()> {
+        let pool = self.pool.clone();
+        let key_prefix = self.key_prefix.clone();
+        let index_uid = index_uid.to_string();
+        let redis_key = format!("{}:search_ui_scoped_key:{}", key_prefix, index_uid);
+
+        self.block_on(async move {
+            let mut pipe = pipe();
+            pipe.hdel(&redis_key, "previous_uid");
+            pipe.hdel(&redis_key, "previous_key");
+            pool.pipeline_query::<()>(&mut pipe).await?;
+            Ok(())
+        })
+    }
+
+    /// Register this pod as alive. Uses a Sorted Set with timestamp scores
+    /// so we can query for recently-active pods.
+    pub fn register_pod_presence(&self, pod_id: &str) -> Result<()> {
+        let pool = self.pool.clone();
+        let key_prefix = self.key_prefix.clone();
+        let pod_id = pod_id.to_string();
+        let key = format!("{}:live_pods", key_prefix);
+        let now = now_ms();
+
+        self.block_on(async move {
+            let mut pipe = pipe();
+            pipe.zadd(&key, &pod_id, now);
+            // Expire the whole set after 5 minutes to prevent unbounded growth.
+            // Active pods continuously refresh, so this just cleans up after total shutdown.
+            pipe.expire(&key, 300);
+            pool.pipeline_query::<()>(&mut pipe).await?;
+            Ok(())
+        })
+    }
+
+    /// Get the list of pods that have registered presence within the last 120 seconds.
+    pub fn get_live_pods(&self) -> Result<Vec<String>> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+        let key = format!("{}:live_pods", key_prefix);
+        let cutoff = now_ms() - 120_000; // 120 seconds ago
+
+        self.block_on(async move {
+            let mut conn = manager.lock().await;
+            let pods: Vec<String> = conn.zrangebyscore(&key, cutoff, "+inf")
+                .await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+            Ok(pods)
+        })
+    }
+
+    /// List all index UIDs that have scoped keys in Redis.
+    pub fn list_scoped_key_indexes(&self) -> Result<Vec<String>> {
+        let pool = self.pool.clone();
+        let key_prefix = self.key_prefix.clone();
+
+        self.block_on(async move {
+            let pattern = format!("{}:search_ui_scoped_key:*", key_prefix);
+            let mut conn = pool.manager.lock().await;
+
+            let mut indexes = Vec::new();
+            let mut cursor: u64 = 0;
+            loop {
+                let (new_cursor, keys): (u64, Vec<String>) = ::redis::cmd("SCAN")
+                    .arg(cursor)
+                    .arg("MATCH")
+                    .arg(&pattern)
+                    .arg("COUNT")
+                    .arg(100)
+                    .query_async(&mut *conn)
+                    .await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+                for key in keys {
+                    // Extract index_uid from the key: "miroir:search_ui_scoped_key:<index>"
+                    if let Some(idx) = key.rsplit(':').next() {
+                        indexes.push(idx.to_string());
+                    }
+                }
+
+                cursor = new_cursor;
+                if cursor == 0 {
+                    break;
+                }
+            }
+
+            Ok(indexes)
         })
     }
 
@@ -2112,11 +2253,17 @@ impl RedisTaskStore {
 
 // --- Extra types for Redis-specific functionality ---
 
-/// Scoped key for search UI access (plan §4 footnote).
+/// Scoped key for search UI access (plan §13.21).
 #[derive(Debug, Clone)]
 pub struct SearchUiScopedKey {
     pub index_uid: String,
+    /// The Meilisearch API key used as Bearer token for search requests.
+    pub primary_key: String,
+    /// The Meilisearch key UID for management (DELETE /keys/{uid}).
     pub primary_uid: String,
+    /// The previous API key (fallback during rotation overlap window).
+    pub previous_key: Option<String>,
+    /// The previous key UID (for revocation).
     pub previous_uid: Option<String>,
     pub rotated_at: i64,
     pub generation: i64,
@@ -3236,7 +3383,9 @@ mod tests {
         // Verify SearchUiScopedKey can be constructed and has expected fields
         let key = SearchUiScopedKey {
             index_uid: "test-index".to_string(),
+            primary_key: "pk-abc".to_string(),
             primary_uid: "primary-123".to_string(),
+            previous_key: Some("ppk-def".to_string()),
             previous_uid: Some("previous-456".to_string()),
             rotated_at: 1234567890,
             generation: 5,

@@ -160,6 +160,27 @@ tracing:
   endpoint: {{ .Values.tracing.endpoint | default "http://tempo.monitoring.svc:4317" }}
   service_name: {{ .Values.tracing.serviceName | default "miroir" }}
   sample_rate: {{ .Values.tracing.sampleRate | default 0.1 }}
+search_ui:
+  enabled: {{ .Values.search_ui.enabled | default true }}
+  scoped_key_max_age_days: {{ .Values.search_ui.scoped_key_max_age_days | default 60 }}
+  scoped_key_rotate_before_expiry_days: {{ .Values.search_ui.scoped_key_rotate_before_expiry_days | default 30 }}
+  scoped_key_rotation_drain_s: {{ .Values.search_ui.scoped_key_rotation_drain_s | default 120 }}
+admin_ui:
+  enabled: {{ .Values.admin_ui.enabled | default true }}
+  path: {{ .Values.admin_ui.path | default "/_miroir/admin" }}
+  auth: {{ .Values.admin_ui.auth | default "key" }}
+  session_ttl_s: {{ .Values.admin_ui.session_ttl_s | default 3600 }}
+  read_only_mode: {{ .Values.admin_ui.read_only_mode | default false }}
+  allowed_origins: {{ .Values.admin_ui.allowed_origins | default list "same-origin" | toJson }}
+  cors_allowed_origins: {{ .Values.admin_ui.cors_allowed_origins | default list | toJson }}
+  rate_limit:
+    per_ip: {{ .Values.admin_ui.rate_limit.per_ip | default "10/minute" }}
+    backend: {{ .Values.admin_ui.rate_limit.backend | default "redis" }}
+    redis_key_prefix: {{ .Values.admin_ui.rate_limit.redis_key_prefix | default "miroir:ratelimit:adminlogin:" }}
+    redis_ttl_s: {{ .Values.admin_ui.rate_limit.redis_ttl_s | default 60 }}
+    failed_attempt_threshold: {{ .Values.admin_ui.rate_limit.failed_attempt_threshold | default 5 }}
+    backoff_start_minutes: {{ .Values.admin_ui.rate_limit.backoff_start_minutes | default 10 }}
+    backoff_max_hours: {{ .Values.admin_ui.rate_limit.backoff_max_hours | default 24 }}
 {{- if .Values.miroir.cdc }}
 cdc:
   enabled: {{ .Values.miroir.cdc.enabled | default true }}

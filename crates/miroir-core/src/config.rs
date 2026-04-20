@@ -6,6 +6,7 @@ mod load;
 mod validate;
 
 pub use error::ConfigError;
+pub use advanced::{SearchUiConfig, CspOverridesConfig};
 
 use serde::{Deserialize, Serialize};
 

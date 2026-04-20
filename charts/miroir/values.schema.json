@@ -228,6 +228,7 @@
         "enabled": { "type": "boolean" },
         "scoped_key_max_age_days": { "type": "integer", "minimum": 2 },
         "scoped_key_rotate_before_expiry_days": { "type": "integer", "minimum": 1 },
+        "scoped_key_rotation_drain_s": { "type": "integer", "minimum": 10 },
         "rate_limit": {
           "type": "object",
           "properties": {
@@ -240,10 +241,14 @@
       "type": "object",
       "properties": {
         "enabled": { "type": "boolean" },
-        "login_rate_limit": {
+        "rate_limit": {
           "type": "object",
           "properties": {
-            "backend": { "type": "string", "enum": ["local", "redis"] }
+            "per_ip": { "type": "string" },
+            "backend": { "type": "string", "enum": ["local", "redis"] },
+            "failed_attempt_threshold": { "type": "integer", "minimum": 1 },
+            "backoff_start_minutes": { "type": "integer", "minimum": 1 },
+            "backoff_max_hours": { "type": "integer", "minimum": 1 }
           }
         }
       }
@@ -352,7 +357,7 @@
       }
     },
     {
-      "description": "Rule 4: admin_ui.login_rate_limit.backend must be redis when miroir.replicas > 1 (local is per-pod, not shared)",
+      "description": "Rule 4: admin_ui.rate_limit.backend must be redis when miroir.replicas > 1 (local is per-pod, not shared)",
       "if": {
         "properties": {
           "miroir": {
@@ -368,7 +373,7 @@
         "properties": {
           "admin_ui": {
             "properties": {
-              "login_rate_limit": {
+              "rate_limit": {
                 "properties": {
                   "backend": {
                     "enum": ["redis"]

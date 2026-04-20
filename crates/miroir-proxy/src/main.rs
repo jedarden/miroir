@@ -88,7 +88,7 @@ impl UnifiedState {
             admin_key: admin_key.clone(),
             jwt_primary,
             jwt_previous,
-            seal_key,
+            seal_key: seal_key.clone(),
             revoked_sessions: std::sync::Arc::new(dashmap::DashMap::new()),
             admin_session_revoked_total: metrics.admin_session_revoked_total(),
         };
@@ -98,6 +98,7 @@ impl UnifiedState {
             metrics.clone(),
             redis_store.clone(),
             pod_id.clone(),
+            seal_key.clone(),
         );
 
         Self { auth, metrics, admin, pod_id, redis_store }
@@ -116,6 +117,8 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             task_registry: state.admin.task_registry.clone(),
             redis_store: state.redis_store.clone(),
             pod_id: state.pod_id.clone(),
+            seal_key: state.auth.seal_key.clone(),
+            local_rate_limiter: admin_endpoints::LocalAdminRateLimiter::new(),
         }
     }
 }
@@ -126,6 +129,16 @@ impl FromRef<UnifiedState> for TelemetryState {
         TelemetryState {
             metrics: state.metrics.clone(),
             pod_id: state.pod_id.clone(),
+        }
+    }
+}
+
+// Implement FromRef so that CsrfState can be extracted from UnifiedState
+impl FromRef<UnifiedState> for auth::CsrfState {
+    fn from_ref(state: &UnifiedState) -> Self {
+        auth::CsrfState {
+            auth: state.auth.clone(),
+            redis_store: state.redis_store.clone(),
         }
     }
 }
@@ -239,6 +252,13 @@ async fn main() -> anyhow::Result<()> {
         .layer(axum::middleware::from_fn_with_state(
             state.auth.clone(),
             auth::auth_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            auth::CsrfState {
+                auth: state.auth.clone(),
+                redis_store: state.redis_store.clone(),
+            },
+            auth::csrf_middleware,
         ))
         .layer(axum::middleware::from_fn_with_state(
             TelemetryState {

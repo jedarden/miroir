@@ -4,10 +4,10 @@
 
 use axum::{
     extract::FromRef,
-    routing::get,
+    routing::{get, post},
     Router,
 };
-use super::admin_endpoints;
+use super::{admin_endpoints, session};
 
 /// Create the admin router with all /_miroir/* endpoints.
 ///
@@ -20,8 +20,22 @@ where
     admin_endpoints::AppState: FromRef<S>,
 {
     Router::new()
+        // Admin session endpoints (plan §9, §13.19)
+        .route("/admin/login", post(session::admin_login::<S>))
+        .route("/admin/session", get(session::admin_session::<S>))
+        .route("/admin/logout", post(session::admin_logout::<S>))
+        // Search UI session endpoint (plan §9, §13.21)
+        .route(
+            "/ui/search/{index}/session",
+            get(session::search_ui_session::<S>),
+        )
+        // Admin API endpoints
         .route("/topology", get(admin_endpoints::get_topology::<S>))
         .route("/shards", get(admin_endpoints::get_shards::<S>))
         .route("/ready", get(admin_endpoints::get_ready::<S>))
         .route("/metrics", get(admin_endpoints::get_metrics::<S>))
+        .route(
+            "/ui/search/{index}/rotate-scoped-key",
+            post(admin_endpoints::rotate_scoped_key_handler),
+        )
 }
