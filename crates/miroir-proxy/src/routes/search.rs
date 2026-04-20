@@ -91,6 +91,18 @@ async fn search_handler(
     let start = Instant::now();
     let client_requested_score = body.ranking_score.unwrap_or(false);
 
+    // Refresh scoped-key beacon so the rotation leader knows this pod is serving
+    // requests for this index at the current generation (plan §13.21).
+    if let Some(ref redis) = state.redis_store {
+        if let Ok(Some(sk)) = redis.get_search_ui_scoped_key(&index) {
+            let _ = redis.observe_search_ui_scoped_key(
+                &state.pod_id,
+                &index,
+                sk.generation,
+            );
+        }
+    }
+
     // Use live topology from shared state (updated by health checker)
     let topo = state.topology.read().await;
     let policy = match state.config.scatter.unavailable_shard_policy.as_str() {
@@ -199,14 +211,17 @@ async fn search_handler(
         .unwrap();
 
     // Structured log entry (plan §10 shape)
-    // Note: request_id and pod_id are inherited from the middleware span
-    tracing::info!(
+    // request_id and pod_id are included from the middleware span via
+    // .with_current_span(true) on the JSON subscriber layer.
+    // Logged at DEBUG to keep INFO volume at ≤1 per request (the middleware
+    // already emits one INFO line for every response).
+    tracing::debug!(
         target: "miroir.search",
         index = %index,
         node_count = node_count,
         estimated_hits = result.estimated_total_hits,
         degraded = result.degraded,
-        duration_ms = start.elapsed().as_millis(),
+        duration_ms = start.elapsed().as_millis() as u64,
         "search completed"
     );
 

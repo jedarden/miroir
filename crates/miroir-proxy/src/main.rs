@@ -19,6 +19,7 @@ mod client;
 mod middleware;
 mod otel;
 mod routes;
+mod scoped_key_rotation;
 
 use admin_session::SealKey;
 use auth::AuthState;
@@ -26,6 +27,7 @@ use middleware::{Metrics, metrics_router, TelemetryState};
 use routes::{
     admin, admin_endpoints, health, indexes, keys, search, settings, tasks, version,
 };
+use scoped_key_rotation::ScopedKeyRotationState;
 
 /// Unified application state containing all shared state.
 #[derive(Clone)]
@@ -34,6 +36,7 @@ struct UnifiedState {
     metrics: Metrics,
     admin: admin_endpoints::AppState,
     pod_id: String,
+    redis_store: Option<miroir_core::task_store::RedisTaskStore>,
 }
 
 impl UnifiedState {
@@ -62,6 +65,24 @@ impl UnifiedState {
         // so the metric is accurate from the first scrape.
         metrics.admin_session_key_generated().set(if seal_key.is_generated() { 1.0 } else { 0.0 });
 
+        let pod_id = std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string());
+
+        // Create Redis task store if backend is redis (must happen before AppState
+        // so redis_store and pod_id are available to admin endpoints).
+        let redis_store = if config.task_store.backend == "redis" && !config.task_store.url.is_empty() {
+            let url = config.task_store.url.clone();
+            Some(
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(
+                        miroir_core::task_store::RedisTaskStore::open(&url)
+                    )
+                })
+                .expect("Failed to connect to Redis for scoped key rotation"),
+            )
+        } else {
+            None
+        };
+
         let auth = AuthState {
             master_key,
             admin_key: admin_key.clone(),
@@ -72,18 +93,30 @@ impl UnifiedState {
             admin_session_revoked_total: metrics.admin_session_revoked_total(),
         };
 
-        let admin = admin_endpoints::AppState::new(config.clone(), metrics.clone());
+        let admin = admin_endpoints::AppState::with_redis(
+            config.clone(),
+            metrics.clone(),
+            redis_store.clone(),
+            pod_id.clone(),
+        );
 
-        let pod_id = std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string());
-
-        Self { auth, metrics, admin, pod_id }
+        Self { auth, metrics, admin, pod_id, redis_store }
     }
 }
 
 // Implement FromRef so that admin_endpoints::AppState can be extracted from UnifiedState
 impl FromRef<UnifiedState> for admin_endpoints::AppState {
     fn from_ref(state: &UnifiedState) -> Self {
-        state.admin.clone()
+        Self {
+            config: state.admin.config.clone(),
+            topology: state.admin.topology.clone(),
+            ready: state.admin.ready.clone(),
+            metrics: state.admin.metrics.clone(),
+            version_state: state.admin.version_state.clone(),
+            task_registry: state.admin.task_registry.clone(),
+            redis_store: state.redis_store.clone(),
+            pod_id: state.pod_id.clone(),
+        }
     }
 }
 
@@ -118,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
         let json_layer = tracing_subscriber::fmt::layer()
             .json()
             .with_target(true)
-            .with_current_span(false)
+            .with_current_span(true)
             .with_span_list(false);
         // Apply OTel layer to registry first, then add filter and json layer
         registry()
@@ -130,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
         let json_layer = tracing_subscriber::fmt::layer()
             .json()
             .with_target(true)
-            .with_current_span(false)
+            .with_current_span(true)
             .with_span_list(false);
         registry()
             .with(filter)
@@ -174,6 +207,18 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         run_health_checker(health_checker_state).await;
     });
+
+    // Start scoped key rotation background task (requires Redis)
+    if let Some(ref redis) = state.redis_store {
+        let rotation_state = ScopedKeyRotationState {
+            config: state.admin.config.clone(),
+            redis: redis.clone(),
+            pod_id: state.pod_id.clone(),
+        };
+        tokio::spawn(async move {
+            scoped_key_rotation::run_scoped_key_rotator(rotation_state).await;
+        });
+    }
 
     // Build the main app router with UnifiedState
     let app = Router::new()

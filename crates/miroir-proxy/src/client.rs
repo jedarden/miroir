@@ -333,7 +333,7 @@ impl NodeClient for HttpClient {
                 .json(&search_body)
                 .send()
                 .await
-                .map_err(|e| NodeError::NetworkError(format!("DF search failed for '{}': {}", term, e)))?;
+                .map_err(|e| NodeError::NetworkError(format!("DF search failed: {}", e)))?;
 
             if search_resp.status().is_success() {
                 let body: Value = search_resp
