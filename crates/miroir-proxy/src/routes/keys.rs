@@ -247,7 +247,14 @@ async fn delete_key_handler(
     }
 
     if !errors.is_empty() {
-        tracing::warn!(key = %key, errors = errors.len(), "key deletion partially failed");
+        // Hash the key identifier for correlation without logging the raw value (plan §10: no PII).
+        let key_hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut h);
+            format!("{:016x}", h.finish())
+        };
+        tracing::warn!(key_hash = %key_hash, errors = errors.len(), "key deletion partially failed");
     }
 
     Ok(Json(first_response.unwrap_or(serde_json::json!({"status": "deleted"}))))
