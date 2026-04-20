@@ -1,0 +1,12 @@
+This task is explicitly **deferred to v1.x+** and should remain open as a placeholder. The description states:
+
+- "Not planned for v0.x. Added when K8s ARM node support is required."
+- "Keep this bead open as a placeholder; promote to in-progress when a concrete use case emerges."
+- Acceptance criteria: "Not to be closed until arm64 is a live deliverable"
+
+Per the instructions: "If you cannot complete the task: Do NOT close the bead. The bead will be automatically released for retry."
+
+**Action:** Leaving bead `miroir-zc2.6` open. This will be revisited when:
+- ARM nodes are added to the Miroir fleet
+- A concrete use case emerges (e.g., Hetzner Ampere, AWS Graviton, GCP Tau T2A)
+- v1.x planning prioritizes multi-arch support

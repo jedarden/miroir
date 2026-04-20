@@ -1,0 +1,19 @@
+```json
+{
+  "splittable": true,
+  "children": [
+    {
+      "title": "Implement Admin UI CSRF token double-submission",
+      "body": "## What\n\nGenerate CSRF tokens at login, store alongside session cookie value, return to JS in login response body, and validate on all state-changing requests (POST/PUT/PATCH/DELETE).\n\n## Details\n\n- Token generated at login time; stored server-side bound to session cookie value\n- Transmitted to JS via response body at `POST /_miroir/admin/login`\n- JS stores in memory (not localStorage — XSS risk)\n- Sent on every state-changing request as `X-CSRF-Token` header\n- Server-side: validate against session's bound token\n- Token rotated on each new login\n- Bearer tokens and `X-Admin-Key` bypass CSRF checks (non-simple headers force CORS preflight)\n\n## Why\n\nAdmin UI uses cookie authentication which is automatically sent by browsers. Without CSRF tokens, malicious sites can trick users into making state-changing requests.\n\n## Acceptance\n\n- [ ] Cookie-auth POST without `X-CSRF-Token` → 403 `missing_csrf`\n- [ ] Cookie-auth POST with wrong token → 403 `csrf_mismatch`\n- [ ] Bearer-auth POST without `X-CSRF-Token` → 200 (bearer bypasses CSRF)\n- [ ] Token returned in login response body\n- [ ] Token rotated on new login"
+    },
+    {
+      "title": "Implement Origin checks on session endpoints",
+      "body": "## What\n\nEnforce `admin_ui.allowed_origins` (default `same-origin`) on Admin UI session endpoint + cookie-auth mutations. Enforce `search_ui.allowed_origins` (default `\"*\"` in `public` mode, empty otherwise) on Search UI session endpoint. Mismatched `Origin` → 403 before any auth check.\n\n## Details\n\n- Check happens BEFORE credential validation (fail fast)\n- Admin UI session endpoint: enforce `admin_ui.allowed_origins`\n- Search UI session endpoint: enforce `search_ui.allowed_origins`\n- Default for Admin UI: `same-origin` (only the admin UI's own origin)\n- Default for Search UI: `\"*\"` in public mode, empty list otherwise\n- Empty list = deny all origins (session endpoint disabled)\n- Separate from `cors_allowed_origins` — different RFC semantics\n\n## Why\n\nSession endpoints are the only browser-facing state-changing endpoints. Origin checks prevent CSRF even without tokens (defense in depth).\n\n## Acceptance\n\n- [ ] Admin UI session endpoint with Origin not in allowed_origins → 403 before credential check\n- [ ] Search UI session endpoint with Origin not in allowed_origins → 403 before credential check\n- [ ] Admin UI default `same-origin` blocks cross-origin requests\n- [ ] Search UI in public mode defaults to `\"*\"` (allows any origin)"
+    },
+    {
+      "title": "Implement Search UI CSP with csp_overrides merging",
+      "body": "## What\n\nImplement base CSP template for Search UI: `default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'`. Add `csp_overrides.*` config that merges into corresponding directives at render time (additive only, never permissive replacement).\n\n## Details\n\n- Base CSP template: `default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'`\n- `csp_overrides` config allows adding sources to specific directives\n- Merging is additive: values are appended to base template, never replace it\n- Config validation rejects wildcard (`*`) in csp_overrides\n- Base template is stricter than Admin UI (which has `frame-ancestors 'none'`)\n\n## Why\n\nContent Security Policy prevents XSS by restricting where resources can be loaded from. Overrides allow customization without accidentally making the policy permissive.\n\n## Acceptance\n\n- [ ] `csp_overrides.script_src: ['https://cdn.example.com']` merges into `script-src 'self' https://cdn.example.com`\n- [ ] Wildcard (`*`) in csp_overrides rejected by config validation\n- [ ] Base CSP template rendered on Search UI\n- [ ] csp_overrides values are additive, not replacing"
+    }
+  ]
+}
+```
