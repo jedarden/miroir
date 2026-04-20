@@ -264,7 +264,7 @@ where
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to poll node {} for task {}: {:?}", node_id_str, id, e);
+                    tracing::warn!(node = %node_id_str, task = %id, error = ?e, "failed to poll node for task");
                     // Don't mark as failed on network error - may be transient
                     all_succeeded = false;
                 }

@@ -198,8 +198,8 @@ async fn rollback_key_update(
                 Ok((_status, _text)) if _status >= 200 && _status < 300 => {
                     tracing::info!(node = %address, "key rollback succeeded");
                 }
-                Ok((status, text)) => {
-                    tracing::error!(node = %address, status, "key rollback failed: {}", text);
+                Ok((status, _text)) => {
+                    tracing::error!(node = %address, status, "key rollback failed");
                 }
                 Err(e) => {
                     tracing::error!(node = %address, error = %e, "key rollback failed");
@@ -270,7 +270,7 @@ async fn list_keys_handler(
     let client = MeilisearchClient::new(config.node_master_key.clone());
     let address = config.nodes.first().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let (status, text) = client.get_raw(&address.address, "/keys").await.map_err(|e| {
-        tracing::error!("list keys failed: {}", e);
+        tracing::error!(error = %e, "list keys failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     if status >= 200 && status < 300 {
@@ -292,7 +292,7 @@ async fn get_key_handler(
     let address = config.nodes.first().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let path = format!("/keys/{}", key);
     let (status, text) = client.get_raw(&address.address, &path).await.map_err(|e| {
-        tracing::error!("get key failed: {}", e);
+        tracing::error!(error = %e, "get key failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     if status >= 200 && status < 300 {

@@ -161,7 +161,7 @@ async fn search_handler(
     )
     .await
     .map_err(|e| {
-        tracing::error!("Search failed: {}", e);
+        tracing::error!(error = %e, "search failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 

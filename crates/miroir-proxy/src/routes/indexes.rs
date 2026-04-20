@@ -356,16 +356,18 @@ async fn create_index_handler(
             Ok((_status, _text)) if _status >= 200 && _status < 300 => {
                 patch_ok.push(address.clone());
             }
-            Ok((status, text)) => {
+            Ok((status, _text)) => {
                 tracing::warn!(
-                    "failed to set _miroir_shard filterable on {}: HTTP {} — {}",
-                    address, status, text
+                    node = %address,
+                    status,
+                    "failed to set _miroir_shard filterable"
                 );
             }
             Err(e) => {
                 tracing::warn!(
-                    "failed to set _miroir_shard filterable on {}: {}",
-                    address, e
+                    node = %address,
+                    error = %e,
+                    "failed to set _miroir_shard filterable"
                 );
             }
         }
@@ -408,7 +410,7 @@ async fn list_indexes_handler(
     let client = MeilisearchClient::new(config.node_master_key.clone());
     let address = config.nodes.first().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let (status, text) = client.get_raw(&address.address, "/indexes").await.map_err(|e| {
-        tracing::error!("list indexes failed: {}", e);
+        tracing::error!(error = %e, "list indexes failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     if status >= 200 && status < 300 {
@@ -431,7 +433,7 @@ async fn get_index_handler(
     let address = config.nodes.first().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let path = format!("/indexes/{}", index);
     let (status, text) = client.get_raw(&address.address, &path).await.map_err(|e| {
-        tracing::error!("get index failed: {}", e);
+        tracing::error!(error = %e, "get index failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     if status >= 200 && status < 300 {
@@ -525,12 +527,11 @@ async fn rollback_index_update(
                 Ok((_status, _text)) if _status >= 200 && _status < 300 => {
                     tracing::info!(node = %address, "index update rollback succeeded");
                 }
-                Ok((status, text)) => {
+                Ok((status, _text)) => {
                     tracing::error!(
                         node = %address,
                         status,
-                        "index update rollback failed: {}",
-                        text
+                        "index update rollback failed"
                     );
                 }
                 Err(e) => {
@@ -622,7 +623,7 @@ async fn get_index_stats_handler(
                 }
             }
             Err(e) => {
-                tracing::warn!("stats fan-out failed for {}: {}", address, e);
+                tracing::warn!(node = %address, error = %e, "stats fan-out failed");
             }
         }
     }
@@ -826,12 +827,11 @@ async fn rollback_settings(
                 Ok((_status, _text)) if _status >= 200 && _status < 300 => {
                     tracing::info!(node = %address, "settings rollback succeeded");
                 }
-                Ok((status, text)) => {
+                Ok((status, _text)) => {
                     tracing::error!(
                         node = %address,
                         status,
-                        "settings rollback failed: {}",
-                        text
+                        "settings rollback failed"
                     );
                 }
                 Err(e) => {
@@ -854,7 +854,7 @@ async fn get_settings_handler(
     let address = config.nodes.first().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let path = format!("/indexes/{}/settings", index);
     let (status, text) = client.get_raw(&address.address, &path).await.map_err(|e| {
-        tracing::error!("get settings failed: {}", e);
+        tracing::error!(error = %e, "get settings failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     if status >= 200 && status < 300 {
@@ -872,7 +872,7 @@ async fn get_settings_subpath_handler(
     let address = config.nodes.first().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let path = format!("/indexes/{}/settings/{}", index, subpath);
     let (status, text) = client.get_raw(&address.address, &path).await.map_err(|e| {
-        tracing::error!("get settings subpath failed: {}", e);
+        tracing::error!(error = %e, "get settings subpath failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     if status >= 200 && status < 300 {
@@ -908,7 +908,7 @@ async fn preflight_handler(
                 .ok_or_else(|| "Failed to parse numberOfDocuments".into())
         })
         .map_err(|e| {
-            tracing::error!("Failed to get index stats: {}", e);
+            tracing::error!(error = %e, "failed to get index stats");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 

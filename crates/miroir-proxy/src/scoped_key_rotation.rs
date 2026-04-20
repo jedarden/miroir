@@ -271,8 +271,8 @@ async fn mint_scoped_key(
                     created_uid = resp.get("uid").and_then(|v| v.as_str()).map(String::from);
                 }
             }
-            Ok((status, text)) => {
-                errors.push(format!("{}: HTTP {} — {}", node.id, status, text));
+            Ok((status, _text)) => {
+                errors.push(format!("{}: HTTP {}", node.id, status));
             }
             Err(e) => {
                 errors.push(format!("{}: {}", node.id, e));
@@ -298,10 +298,10 @@ async fn revoke_previous_key(
     for node in &config.nodes {
         match client.delete_raw(&node.address, &path).await {
             Ok((_status, _text)) if _status >= 200 && _status < 300 => {}
-            Ok((status, text)) => {
+            Ok((status, _text)) => {
                 // 404 is fine — key was already revoked or never existed
                 if status != 404 {
-                    errors.push(format!("{}: HTTP {} — {}", node.id, status, text));
+                    errors.push(format!("{}: HTTP {}", node.id, status));
                 }
             }
             Err(e) => {
