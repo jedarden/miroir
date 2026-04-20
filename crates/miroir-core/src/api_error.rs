@@ -36,12 +36,14 @@ pub enum MiroirCode {
     JwtInvalid,
     JwtScopeDenied,
     InvalidAuth,
+    MissingCsrf,
+    CsrfMismatch,
 }
 
 impl MiroirCode {
     /// All variants, used for iteration in tests.
     #[cfg(test)]
-    const ALL: [MiroirCode; 10] = [
+    const ALL: [MiroirCode; 12] = [
         MiroirCode::PrimaryKeyRequired,
         MiroirCode::NoQuorum,
         MiroirCode::ShardUnavailable,
@@ -52,6 +54,8 @@ impl MiroirCode {
         MiroirCode::JwtInvalid,
         MiroirCode::JwtScopeDenied,
         MiroirCode::InvalidAuth,
+        MiroirCode::MissingCsrf,
+        MiroirCode::CsrfMismatch,
     ];
 
     /// Returns the error code string (e.g., `"miroir_no_quorum"`).
@@ -67,6 +71,8 @@ impl MiroirCode {
             Self::JwtInvalid => "miroir_jwt_invalid",
             Self::JwtScopeDenied => "miroir_jwt_scope_denied",
             Self::InvalidAuth => "miroir_invalid_auth",
+            Self::MissingCsrf => "miroir_missing_csrf",
+            Self::CsrfMismatch => "miroir_csrf_mismatch",
         }
     }
 
@@ -78,7 +84,7 @@ impl MiroirCode {
             | Self::IdempotencyKeyReused
             | Self::MultiAliasNotWritable => ErrorType::InvalidRequest,
 
-            Self::JwtInvalid | Self::JwtScopeDenied | Self::InvalidAuth => ErrorType::Auth,
+            Self::JwtInvalid | Self::JwtScopeDenied | Self::InvalidAuth | Self::MissingCsrf | Self::CsrfMismatch => ErrorType::Auth,
 
             Self::NoQuorum | Self::ShardUnavailable | Self::SettingsVersionStale => {
                 ErrorType::System
@@ -90,8 +96,8 @@ impl MiroirCode {
     pub fn http_status(&self) -> u16 {
         match self {
             Self::PrimaryKeyRequired | Self::ReservedField => 400,
-            Self::JwtInvalid | Self::InvalidAuth => 401,
-            Self::JwtScopeDenied => 403,
+            Self::JwtInvalid | Self::InvalidAuth | Self::MissingCsrf => 401,
+            Self::JwtScopeDenied | Self::CsrfMismatch => 403,
             Self::IdempotencyKeyReused | Self::MultiAliasNotWritable => 409,
             Self::NoQuorum | Self::ShardUnavailable | Self::SettingsVersionStale => 503,
         }
@@ -118,6 +124,8 @@ impl MiroirCode {
             "miroir_jwt_invalid" => Some(Self::JwtInvalid),
             "miroir_jwt_scope_denied" => Some(Self::JwtScopeDenied),
             "miroir_invalid_auth" => Some(Self::InvalidAuth),
+            "miroir_missing_csrf" => Some(Self::MissingCsrf),
+            "miroir_csrf_mismatch" => Some(Self::CsrfMismatch),
             _ => None,
         }
     }
@@ -354,6 +362,34 @@ mod tests {
         assert_eq!(err.http_status(), 401);
     }
 
+    #[test]
+    fn miroir_missing_csrf_shape() {
+        let err = MeilisearchError::new(
+            MiroirCode::MissingCsrf,
+            "CSRF token is required for state-changing requests.",
+        );
+        let json: serde_json::Value = serde_json::to_value(&err).unwrap();
+
+        assert_eq!(json["code"], "miroir_missing_csrf");
+        assert_eq!(json["type"], "auth");
+        assert!(json["link"].as_str().unwrap().contains("miroir_missing_csrf"));
+        assert_eq!(err.http_status(), 401);
+    }
+
+    #[test]
+    fn miroir_csrf_mismatch_shape() {
+        let err = MeilisearchError::new(
+            MiroirCode::CsrfMismatch,
+            "CSRF token does not match the session token.",
+        );
+        let json: serde_json::Value = serde_json::to_value(&err).unwrap();
+
+        assert_eq!(json["code"], "miroir_csrf_mismatch");
+        assert_eq!(json["type"], "auth");
+        assert!(json["link"].as_str().unwrap().contains("miroir_csrf_mismatch"));
+        assert_eq!(err.http_status(), 403);
+    }
+
     // -- Meilisearch-native error forwarding --------------------------------------
 
     #[test]
@@ -420,7 +456,9 @@ mod tests {
             (MiroirCode::ReservedField, 400),
             (MiroirCode::JwtInvalid, 401),
             (MiroirCode::InvalidAuth, 401),
+            (MiroirCode::MissingCsrf, 401),
             (MiroirCode::JwtScopeDenied, 403),
+            (MiroirCode::CsrfMismatch, 403),
             (MiroirCode::IdempotencyKeyReused, 409),
             (MiroirCode::MultiAliasNotWritable, 409),
             (MiroirCode::NoQuorum, 503),

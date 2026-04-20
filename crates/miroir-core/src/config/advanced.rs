@@ -591,6 +591,33 @@ impl Default for CanaryRunnerConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct AdminUiRateLimitConfig {
+    pub per_ip: String,
+    /// `redis` or `local`.
+    pub backend: String,
+    pub redis_key_prefix: String,
+    pub redis_ttl_s: u64,
+    pub failed_attempt_threshold: u32,
+    pub backoff_start_minutes: u64,
+    pub backoff_max_hours: u64,
+}
+
+impl Default for AdminUiRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            per_ip: "10/minute".into(),
+            backend: "redis".into(),
+            redis_key_prefix: "miroir:ratelimit:adminlogin:".into(),
+            redis_ttl_s: 60,
+            failed_attempt_threshold: 5,
+            backoff_start_minutes: 10,
+            backoff_max_hours: 24,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AdminUiConfig {
     pub enabled: bool,
     pub path: String,
@@ -600,9 +627,11 @@ pub struct AdminUiConfig {
     pub read_only_mode: bool,
     pub allowed_origins: Vec<String>,
     pub cors_allowed_origins: Vec<String>,
+    pub csp: String,
     pub csp_overrides: CspOverridesConfig,
     pub theme: AdminUiThemeConfig,
     pub features: AdminUiFeaturesConfig,
+    pub rate_limit: AdminUiRateLimitConfig,
 }
 
 impl Default for AdminUiConfig {
@@ -615,9 +644,11 @@ impl Default for AdminUiConfig {
             read_only_mode: false,
             allowed_origins: vec!["same-origin".into()],
             cors_allowed_origins: Vec::new(),
+            csp: "default-src 'self'; script-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'".into(),
             csp_overrides: CspOverridesConfig::default(),
             theme: AdminUiThemeConfig::default(),
             features: AdminUiFeaturesConfig::default(),
+            rate_limit: AdminUiRateLimitConfig::default(),
         }
     }
 }

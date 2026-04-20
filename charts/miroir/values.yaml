@@ -39,6 +39,30 @@ miroir:
       pvc_storage_class: ""
       memory_bytes: 67108864
 
+search_ui:
+  enabled: true
+  scoped_key_max_age_days: 60        # Maximum lifetime of a scoped Meilisearch key (days)
+  scoped_key_rotate_before_expiry_days: 30  # Rotate this many days before max_age (must be < max_age)
+  scoped_key_rotation_drain_s: 120   # Seconds to wait for all pods to observe new key before revoking old
+
+admin_ui:
+  enabled: true
+  path: "/_miroir/admin"
+  auth: key  # key | oauth (future) | none (dev only)
+  session_ttl_s: 3600  # 1 hour
+  read_only_mode: false
+  allowed_origins:
+    - "same-origin"
+  cors_allowed_origins: []
+  rate_limit:
+    per_ip: "10/minute"  # Rate limit per source IP
+    backend: redis  # redis | local (schema enforces redis when replicas > 1)
+    redis_key_prefix: "miroir:ratelimit:adminlogin:"
+    redis_ttl_s: 60
+    failed_attempt_threshold: 5  # Consecutive failures before exponential backoff
+    backoff_start_minutes: 10  # Initial backoff after threshold
+    backoff_max_hours: 24  # Maximum backoff cap
+
 taskStore:
   backend: sqlite  # sqlite | redis
   path: /data/miroir-tasks.db

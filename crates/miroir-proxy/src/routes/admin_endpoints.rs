@@ -1,8 +1,8 @@
 //! Admin API endpoints for topology, readiness, shards, and metrics.
 
 use axum::{
-    extract::{FromRef, State},
-    http::StatusCode,
+    extract::{FromRef, Path, State},
+    http::{HeaderMap, StatusCode},
     Json,
     response::{IntoResponse, Response},
 };
@@ -10,15 +10,43 @@ use miroir_core::{
     config::MiroirConfig,
     router,
     task_registry::InMemoryTaskRegistry,
+    task_store::RedisTaskStore,
     topology::{Node, NodeId, Topology},
 };
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, error, warn};
 use reqwest::Client;
+
+use crate::{
+    admin_session::{seal_session, COOKIE_NAME, SealKey},
+    scoped_key_rotation::{self, ScopedKeyRotationState, RotateScopedKeyRequest, RotateScopedKeyResponse},
+};
+
+/// Hash a PII value (IP address) for safe log correlation.
+fn hash_for_log(value: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Request body for POST /_miroir/admin/login.
+#[derive(Debug, Deserialize)]
+pub struct AdminLoginRequest {
+    pub admin_key: String,
+}
+
+/// Response body for POST /_miroir/admin/login.
+#[derive(Debug, Serialize)]
+pub struct AdminLoginResponse {
+    pub success: bool,
+    pub message: Option<String>,
+}
 
 /// Version state with cache for fetching Meilisearch version.
 #[derive(Clone)]
@@ -84,6 +112,128 @@ impl VersionState {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Local Rate Limiter (for single-pod deployments)
+// ---------------------------------------------------------------------------
+
+/// In-memory rate limiter for admin login (local backend only).
+/// Thread-safe using Arc<Mutex<...>>.
+#[derive(Debug, Clone)]
+pub struct LocalAdminRateLimiter {
+    inner: Arc<std::sync::Mutex<LocalAdminRateLimiterInner>>,
+}
+
+#[derive(Debug, Default)]
+struct LocalAdminRateLimiterInner {
+    /// Map of IP -> (request_timestamps_ms, failed_count, backoff_until_ms)
+    state: HashMap<String, LocalRateLimitState>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct LocalRateLimitState {
+    /// Timestamps of recent requests (for sliding window)
+    request_timestamps_ms: Vec<i64>,
+    /// Consecutive failed login attempts
+    failed_count: u32,
+    /// Unix timestamp (ms) when backoff expires
+    backoff_until_ms: Option<i64>,
+}
+
+impl LocalAdminRateLimiter {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(std::sync::Mutex::new(LocalAdminRateLimiterInner::default())),
+        }
+    }
+
+    /// Check rate limit and exponential backoff.
+    /// Returns (allowed, wait_seconds).
+    pub fn check(
+        &self,
+        ip: &str,
+        limit: u64,
+        window_ms: u64,
+        failed_threshold: u32,
+        backoff_start_minutes: u64,
+        backoff_max_hours: u64,
+    ) -> (bool, Option<u64>) {
+        let mut inner = self.inner.lock().unwrap();
+        let now = now_ms();
+        let state = inner.state.entry(ip.to_string()).or_default();
+
+        // Check if we're in backoff mode
+        if let Some(backoff_until) = state.backoff_until_ms {
+            if backoff_until > now {
+                let wait_seconds = ((backoff_until - now) / 1000) as u64;
+                return (false, Some(wait_seconds));
+            }
+            // Backoff expired, clear it
+            state.backoff_until_ms = None;
+        }
+
+        // Clean old timestamps outside the window
+        state.request_timestamps_ms.retain(|&ts| now - ts < window_ms as i64);
+
+        // Check if limit exceeded
+        if state.request_timestamps_ms.len() >= limit as usize {
+            // Enter backoff mode after threshold consecutive failures
+            let failed = state.failed_count + 1;
+            state.failed_count = failed;
+
+            if failed >= failed_threshold {
+                let backoff_minutes = backoff_start_minutes * (1u64 << ((failed - failed_threshold) as u64).min(7)); // Cap at 2^7 = 128x
+                let backoff_seconds = (backoff_minutes * 60).min(backoff_max_hours * 3600);
+                state.backoff_until_ms = Some(now + (backoff_seconds as i64 * 1000));
+                return (false, Some(backoff_seconds));
+            }
+
+            return (false, None);
+        }
+
+        // Record this request
+        state.request_timestamps_ms.push(now);
+        (true, None)
+    }
+
+    /// Reset rate limit and backoff state on successful login.
+    pub fn reset(&self, ip: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.state.remove(ip);
+    }
+
+    /// Record a failed login attempt (for backoff calculation).
+    pub fn record_failure(&self, ip: &str, failed_threshold: u32, backoff_start_minutes: u64, backoff_max_hours: u64) -> Option<u64> {
+        let mut inner = self.inner.lock().unwrap();
+        let now = now_ms();
+        let state = inner.state.entry(ip.to_string()).or_default();
+
+        state.failed_count += 1;
+
+        if state.failed_count >= failed_threshold {
+            let backoff_minutes = backoff_start_minutes * (1u64 << ((state.failed_count - failed_threshold) as u64).min(7));
+            let backoff_seconds = (backoff_minutes * 60).min(backoff_max_hours * 3600);
+            state.backoff_until_ms = Some(now + (backoff_seconds as i64 * 1000));
+            return Some(backoff_seconds);
+        }
+
+        None
+    }
+}
+
+impl Default for LocalAdminRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Get current time in milliseconds since Unix epoch.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
 /// Shared application state for admin endpoints.
 #[derive(Clone)]
 pub struct AppState {
@@ -93,12 +243,27 @@ pub struct AppState {
     pub metrics: super::super::middleware::Metrics,
     pub version_state: VersionState,
     pub task_registry: Arc<InMemoryTaskRegistry>,
+    pub redis_store: Option<RedisTaskStore>,
+    pub pod_id: String,
+    pub seal_key: SealKey,
+    pub local_rate_limiter: LocalAdminRateLimiter,
 }
 
 impl AppState {
     pub fn new(
         config: MiroirConfig,
         metrics: super::super::middleware::Metrics,
+        seal_key: SealKey,
+    ) -> Self {
+        Self::with_redis(config, metrics, None, "unknown".into(), seal_key)
+    }
+
+    pub fn with_redis(
+        config: MiroirConfig,
+        metrics: super::super::middleware::Metrics,
+        redis_store: Option<RedisTaskStore>,
+        pod_id: String,
+        seal_key: SealKey,
     ) -> Self {
         // Build initial topology from config
         let mut topology = Topology::new(
@@ -129,6 +294,10 @@ impl AppState {
             metrics,
             version_state,
             task_registry: Arc::new(InMemoryTaskRegistry::new()),
+            redis_store,
+            pod_id,
+            seal_key,
+            local_rate_limiter: LocalAdminRateLimiter::new(),
         }
     }
 
@@ -290,6 +459,303 @@ where
             tracing::error!(error = %e, "failed to encode metrics");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
+    }
+}
+
+/// POST /_miroir/ui/search/{index}/rotate-scoped-key — manual rotation trigger.
+///
+/// Admin-gated endpoint that initiates a scoped key rotation for the given index.
+/// Set `force: true` in the request body to bypass the timing gate.
+pub async fn rotate_scoped_key_handler<S>(
+    State(state): State<S>,
+    Path(index): Path<String>,
+    Json(body): Json<RotateScopedKeyRequest>,
+) -> Result<Json<RotateScopedKeyResponse>, (StatusCode, String)>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let redis = app_state.redis_store.clone().ok_or_else(|| {
+        (
+            StatusCode::PRECONDITION_FAILED,
+            "scoped key rotation requires Redis task store".into(),
+        )
+    })?;
+
+    if !app_state.config.search_ui.enabled {
+        return Err((
+            StatusCode::PRECONDITION_FAILED,
+            "search_ui is not enabled".into(),
+        ));
+    }
+
+    let rotation_state = ScopedKeyRotationState {
+        config: app_state.config.clone(),
+        redis,
+        pod_id: app_state.pod_id.clone(),
+    };
+
+    info!(
+        index = %index,
+        force = body.force,
+        pod_id = %app_state.pod_id,
+        "manual scoped key rotation triggered"
+    );
+
+    match scoped_key_rotation::check_and_rotate(&rotation_state, &index, body.force).await {
+        Ok(response) => Ok(Json(response)),
+        Err(e) => {
+            error!(index = %index, error = %e, "manual scoped key rotation failed");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e))
+        }
+    }
+}
+
+/// Parse a rate limit string like "10/minute" into (limit, window_seconds).
+fn parse_rate_limit(s: &str) -> Result<(u64, u64), String> {
+    let parts: Vec<&str> = s.split('/').collect();
+    if parts.len() != 2 {
+        return Err(format!("invalid rate limit format: '{}', expected 'N/UNIT'", s));
+    }
+    let limit: u64 = parts[0].parse()
+        .map_err(|_| format!("invalid limit number: '{}'", parts[0]))?;
+    let window_seconds = match parts[1] {
+        "second" | "s" => 1,
+        "minute" | "m" => 60,
+        "hour" | "h" => 3600,
+        "day" | "d" => 86400,
+        unit => return Err(format!("invalid time unit: '{}', expected second/minute/hour/day", unit)),
+    };
+    Ok((limit, window_seconds))
+}
+
+/// Generate a random session ID.
+fn generate_session_id() -> String {
+    let mut bytes = [0u8; 24];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    hex::encode(&bytes)
+}
+
+/// POST /_miroir/admin/login — admin login with rate limiting and exponential backoff.
+///
+/// Request body:
+/// ```json
+/// { "admin_key": "..." }
+/// ```
+///
+/// On success, sets a `miroir_admin_session` cookie and returns:
+/// ```json
+/// { "success": true }
+/// ```
+///
+/// Rate limiting (per source IP):
+/// - 10 requests per minute (configurable via `admin_ui.rate_limit.per_ip`)
+/// - After 5 consecutive failed attempts, exponential backoff applies:
+///   - 10m, 20m, 40m, ... up to 24h cap
+///
+/// Successful login resets both the rate limit counter and backoff state.
+pub async fn admin_login<S>(
+    State(state): State<S>,
+    headers: HeaderMap,
+    Json(body): Json<AdminLoginRequest>,
+) -> Response
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let state = AppState::from_ref(&state);
+
+    // Extract source IP from X-Forwarded-For or X-Real-IP (trust proxy)
+    let source_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()))
+        .unwrap_or("unknown")
+        .trim()
+        .to_string();
+
+    // Parse rate limit config
+    let (limit, window_seconds) = match parse_rate_limit(&state.config.admin_ui.rate_limit.per_ip) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            error!(error = %e, "invalid admin_ui.rate_limit.per_ip config");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminLoginResponse {
+                    success: false,
+                    message: Some("Rate limit configuration error".into()),
+                }),
+            ).into_response();
+        }
+    };
+
+    // Check rate limit and backoff
+    let backend = state.config.admin_ui.rate_limit.backend.as_str();
+    if backend == "redis" {
+        if let Some(ref redis) = state.redis_store {
+            match redis.check_rate_limit_admin_login(&source_ip, limit, window_seconds) {
+                Ok((allowed, wait_seconds)) => {
+                    if !allowed {
+                        if let Some(ws) = wait_seconds {
+                            warn!(
+                                source_ip_hash = hash_for_log(&source_ip),
+                                wait_seconds = ws,
+                                "admin login rate limited (backoff)"
+                            );
+                            return (
+                                StatusCode::TOO_MANY_REQUESTS,
+                                Json(AdminLoginResponse {
+                                    success: false,
+                                    message: Some(format!(
+                                        "Too many failed login attempts. Try again in {} seconds.",
+                                        ws
+                                    )),
+                                }),
+                            ).into_response();
+                        } else {
+                            return (
+                                StatusCode::TOO_MANY_REQUESTS,
+                                Json(AdminLoginResponse {
+                                    success: false,
+                                    message: Some("Too many login attempts. Please try again later.".into()),
+                                }),
+                            ).into_response();
+                        }
+                    }
+                    // Allowed, proceed
+                }
+                Err(e) => {
+                    error!(error = %e, "failed to check admin login rate limit");
+                    // Continue anyway on error (fail-open)
+                }
+            }
+        }
+    } else if backend == "local" {
+        // Local backend rate limiting
+        let (allowed, wait_seconds) = state.local_rate_limiter.check(
+            &source_ip,
+            limit,
+            window_seconds * 1000,
+            state.config.admin_ui.rate_limit.failed_attempt_threshold,
+            state.config.admin_ui.rate_limit.backoff_start_minutes,
+            state.config.admin_ui.rate_limit.backoff_max_hours * 60,
+        );
+        if !allowed {
+            warn!(
+                source_ip_hash = hash_for_log(&source_ip),
+                wait_seconds = ?wait_seconds,
+                "admin login rate limited (local backend)"
+            );
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(AdminLoginResponse {
+                    success: false,
+                    message: if let Some(ws) = wait_seconds {
+                        Some(format!(
+                            "Too many failed login attempts. Try again in {} seconds.",
+                            ws
+                        ))
+                    } else {
+                        Some("Too many login attempts. Please try again later.".into())
+                    },
+                }),
+            ).into_response();
+        }
+    }
+
+    // Verify admin_key (constant-time comparison to prevent timing side-channels)
+    use subtle::ConstantTimeEq as _;
+    if body.admin_key.as_bytes().ct_eq(state.config.admin.api_key.as_bytes()).into() {
+        // Successful login - reset rate limit counters
+        if backend == "redis" {
+            if let Some(ref redis) = state.redis_store {
+                if let Err(e) = redis.reset_rate_limit_admin_login(&source_ip) {
+                    warn!(error = %e, "failed to reset admin login rate limit");
+                }
+            }
+        } else if backend == "local" {
+            state.local_rate_limiter.reset(&source_ip);
+        }
+
+        // Generate session ID and seal it
+        let session_id = generate_session_id();
+        let sealed = match seal_session(&session_id, &state.seal_key) {
+            Ok(sealed) => sealed,
+            Err(e) => {
+                error!(error = %e, "failed to seal admin session");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(AdminLoginResponse {
+                        success: false,
+                        message: Some("Failed to create session".into()),
+                    }),
+                ).into_response();
+            }
+        };
+
+        info!(
+            source_ip_hash = hash_for_log(&source_ip),
+            session_prefix = &session_id[..8],
+            "admin login successful"
+        );
+
+        // Set cookie and return success
+        (
+            StatusCode::OK,
+            [
+                ("Set-Cookie", format!("{}={}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}",
+                    COOKIE_NAME, sealed, state.config.admin_ui.session_ttl_s)),
+            ],
+            Json(AdminLoginResponse {
+                success: true,
+                message: None,
+            }),
+        ).into_response()
+    } else {
+        // Wrong admin_key - record failure for backoff tracking
+        warn!(
+            source_ip_hash = hash_for_log(&source_ip),
+            "admin login failed: invalid admin_key"
+        );
+
+        if backend == "redis" {
+            if let Some(ref redis) = state.redis_store {
+                let backoff_start_minutes = state.config.admin_ui.rate_limit.backoff_start_minutes;
+                let backoff_max_hours = state.config.admin_ui.rate_limit.backoff_max_hours;
+                let failed_threshold = state.config.admin_ui.rate_limit.failed_attempt_threshold;
+
+                if let Err(e) = redis.record_failure_admin_login(
+                    &source_ip,
+                    failed_threshold,
+                    backoff_start_minutes,
+                    backoff_max_hours,
+                ) {
+                    warn!(error = %e, "failed to record admin login failure");
+                }
+            }
+        } else if backend == "local" {
+            let backoff_start_minutes = state.config.admin_ui.rate_limit.backoff_start_minutes;
+            let backoff_max_hours = state.config.admin_ui.rate_limit.backoff_max_hours;
+            let failed_threshold = state.config.admin_ui.rate_limit.failed_attempt_threshold;
+
+            state.local_rate_limiter.record_failure(
+                &source_ip,
+                failed_threshold,
+                backoff_start_minutes,
+                backoff_max_hours * 60,
+            );
+        }
+
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(AdminLoginResponse {
+                success: false,
+                message: Some("Invalid admin key".into()),
+            }),
+        ).into_response()
     }
 }
 
