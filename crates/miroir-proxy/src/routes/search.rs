@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::{debug, warn};
 
 use crate::routes::admin_endpoints::AppState;
 
@@ -58,7 +59,7 @@ where
 }
 
 /// Search request body.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct SearchRequestBody {
     q: Option<String>,
     offset: Option<usize>,
@@ -69,6 +70,19 @@ struct SearchRequestBody {
     ranking_score: Option<bool>,
     #[serde(flatten)]
     rest: Value,
+}
+
+impl std::fmt::Debug for SearchRequestBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SearchRequestBody")
+            .field("q", &"[redacted]")
+            .field("offset", &self.offset)
+            .field("limit", &self.limit)
+            .field("filter", &"[redacted]")
+            .field("facets", &self.facets)
+            .field("ranking_score", &self.ranking_score)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Search handler with DFS global-IDF preflight (OP#4).
@@ -91,17 +105,29 @@ async fn search_handler(
     let start = Instant::now();
     let client_requested_score = body.ranking_score.unwrap_or(false);
 
-    // Refresh scoped-key beacon so the rotation leader knows this pod is serving
-    // requests for this index at the current generation (plan §13.21).
-    if let Some(ref redis) = state.redis_store {
+    // Get the scoped key for this index (plan §13.21).
+    // If a scoped key exists, use primary_key (or previous_key during rotation overlap).
+    // If no scoped key exists yet, fall back to node_master_key for initial setup.
+    let search_key = if let Some(ref redis) = state.redis_store {
         if let Ok(Some(sk)) = redis.get_search_ui_scoped_key(&index) {
+            // Refresh scoped-key beacon so the rotation leader knows this pod is serving
+            // requests for this index at the current generation (plan §13.21).
             let _ = redis.observe_search_ui_scoped_key(
                 &state.pod_id,
                 &index,
                 sk.generation,
             );
+
+            // Use primary_key; previous_key is the overlap fallback (both are valid in Meilisearch)
+            sk.primary_key
+        } else {
+            // No scoped key yet — fall back to node_master_key for initial setup
+            state.config.node_master_key.clone()
         }
-    }
+    } else {
+        // No Redis store — fall back to node_master_key (single-pod dev mode)
+        state.config.node_master_key.clone()
+    };
 
     // Use live topology from shared state (updated by health checker)
     let topo = state.topology.read().await;
@@ -140,9 +166,9 @@ async fn search_handler(
         global_idf: None,
     };
 
-    // Create node client
+    // Create node client with the scoped key (or node_master_key as fallback)
     let http_client = Arc::new(crate::client::HttpClient::new(
-        state.config.node_master_key.clone(),
+        search_key,
         state.config.scatter.node_timeout_ms,
     ));
     let client = ProxyNodeClient::new(http_client);
