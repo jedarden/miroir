@@ -829,14 +829,15 @@ pub async fn telemetry_middleware(
         .unwrap_or_else(generate_request_id);
     req.headers_mut().set_request_id(&request_id);
 
-    // Create span for structured logging with pod_id included
+    // Create span for structured logging with pod_id included.
+    // Note: raw path is intentionally omitted to avoid logging index names
+    // (which may contain customer identifiers). Use path_template instead.
     let span = info_span!(
         "request",
         request_id = %request_id,
         pod_id = %pod_id,
         method = %method,
         path_template = %path_template,
-        path = %req.uri().path(),
     );
 
     let _guard = span.enter();

@@ -9,7 +9,7 @@ use miroir_core::topology::NodeId;
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// HTTP client implementation for node communication.
 pub struct HttpClient {
@@ -63,21 +63,28 @@ impl HttpClient {
 impl NodeClient for HttpClient {
     async fn search_node(
         &self,
-        _node: &NodeId,
+        node: &NodeId,
         address: &str,
         request: &SearchRequest,
     ) -> std::result::Result<Value, NodeError> {
+        let start = Instant::now();
         let url = self.search_url(address, &request.index_uid);
 
-        // Build the request body using to_node_body() which injects
-        // showRankingScore: true and sets limit to offset + limit
         let mut body = request.to_node_body();
 
-        // Inject global IDF into the request if present
         if let Some(global_idf) = &request.global_idf {
             body["_miroir_global_idf"] = serde_json::to_value(global_idf)
                 .map_err(|e| NodeError::NetworkError(format!("Failed to serialize global_idf: {}", e)))?;
         }
+
+        tracing::debug!(
+            target: "miroir.node",
+            node_id = %node,
+            address = %address,
+            index = %request.index_uid,
+            operation = "search",
+            "node call started"
+        );
 
         let response = self
             .client
@@ -86,7 +93,18 @@ impl NodeClient for HttpClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("Request failed: {}", e)))?;
+            .map_err(|e| {
+                tracing::warn!(
+                    target: "miroir.node",
+                    node_id = %node,
+                    address = %address,
+                    operation = "search",
+                    duration_ms = start.elapsed().as_millis() as u64,
+                    error = %e,
+                    "node call failed"
+                );
+                NodeError::NetworkError(format!("Request failed: {}", e))
+            })?;
 
         let status = response.status();
         let body_text = response
@@ -94,12 +112,33 @@ impl NodeClient for HttpClient {
             .await
             .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {}", e)))?;
 
+        let duration_ms = start.elapsed().as_millis() as u64;
+
         if !status.is_success() {
+            tracing::debug!(
+                target: "miroir.node",
+                node_id = %node,
+                address = %address,
+                operation = "search",
+                duration_ms,
+                status = status.as_u16(),
+                "node call error response"
+            );
             return Err(NodeError::HttpError {
                 status: status.as_u16(),
                 body: body_text,
             });
         }
+
+        tracing::debug!(
+            target: "miroir.node",
+            node_id = %node,
+            address = %address,
+            index = %request.index_uid,
+            operation = "search",
+            duration_ms,
+            "node call completed"
+        );
 
         serde_json::from_str(&body_text).map_err(|e| {
             NodeError::NetworkError(format!("Failed to parse JSON response: {}", e))
@@ -108,11 +147,21 @@ impl NodeClient for HttpClient {
 
     async fn write_documents(
         &self,
-        _node: &NodeId,
+        node: &NodeId,
         address: &str,
         request: &WriteRequest,
     ) -> std::result::Result<WriteResponse, NodeError> {
+        let start = Instant::now();
         let url = self.documents_url(address, &request.index_uid);
+
+        tracing::debug!(
+            target: "miroir.node",
+            node_id = %node,
+            address = %address,
+            index = %request.index_uid,
+            operation = "write_documents",
+            "node call started"
+        );
 
         let mut query_params = Vec::new();
         if let Some(pk) = &request.primary_key {
@@ -162,6 +211,17 @@ impl NodeClient for HttpClient {
             NodeError::NetworkError(format!("Failed to parse JSON response: {}", e))
         })?;
 
+        let duration_ms = start.elapsed().as_millis() as u64;
+        tracing::debug!(
+            target: "miroir.node",
+            node_id = %node,
+            address = %address,
+            operation = "write_documents",
+            duration_ms,
+            status = status.as_u16(),
+            "node call completed"
+        );
+
         Ok(WriteResponse {
             success: true,
             task_uid: json.get("taskUid").and_then(|v| v.as_u64()),
@@ -173,11 +233,21 @@ impl NodeClient for HttpClient {
 
     async fn delete_documents(
         &self,
-        _node: &NodeId,
+        node: &NodeId,
         address: &str,
         request: &DeleteByIdsRequest,
     ) -> std::result::Result<DeleteResponse, NodeError> {
+        let start = Instant::now();
         let url = self.documents_url(address, &request.index_uid);
+
+        tracing::debug!(
+            target: "miroir.node",
+            node_id = %node,
+            address = %address,
+            index = %request.index_uid,
+            operation = "delete_documents",
+            "node call started"
+        );
 
         let response = self
             .client
@@ -193,6 +263,17 @@ impl NodeClient for HttpClient {
             .text()
             .await
             .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {}", e)))?;
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        tracing::debug!(
+            target: "miroir.node",
+            node_id = %node,
+            address = %address,
+            operation = "delete_documents",
+            duration_ms,
+            status = status.as_u16(),
+            "node call completed"
+        );
 
         if !status.is_success() {
             // Try to parse as Meilisearch error
@@ -227,14 +308,24 @@ impl NodeClient for HttpClient {
 
     async fn delete_documents_by_filter(
         &self,
-        _node: &NodeId,
+        node: &NodeId,
         address: &str,
         request: &DeleteByFilterRequest,
     ) -> std::result::Result<DeleteResponse, NodeError> {
+        let start = Instant::now();
         let url = format!(
             "{}/indexes/{}/documents/delete",
             address.trim_end_matches('/'),
             request.index_uid
+        );
+
+        tracing::debug!(
+            target: "miroir.node",
+            node_id = %node,
+            address = %address,
+            index = %request.index_uid,
+            operation = "delete_by_filter",
+            "node call started"
         );
 
         let response = self
@@ -251,6 +342,17 @@ impl NodeClient for HttpClient {
             .text()
             .await
             .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {}", e)))?;
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        tracing::debug!(
+            target: "miroir.node",
+            node_id = %node,
+            address = %address,
+            operation = "delete_by_filter",
+            duration_ms,
+            status = status.as_u16(),
+            "node call completed"
+        );
 
         if !status.is_success() {
             // Try to parse as Meilisearch error
@@ -285,11 +387,22 @@ impl NodeClient for HttpClient {
 
     async fn preflight_node(
         &self,
-        _node: &NodeId,
+        node: &NodeId,
         address: &str,
         request: &PreflightRequest,
     ) -> std::result::Result<PreflightResponse, NodeError> {
+        let start = Instant::now();
         let base = address.trim_end_matches('/');
+
+        tracing::debug!(
+            target: "miroir.node",
+            node_id = %node,
+            address = %address,
+            index = %request.index_uid,
+            operation = "preflight",
+            term_count = request.terms.len(),
+            "node call started"
+        );
 
         // 1. Get total docs from Meilisearch stats endpoint
         let stats_url = format!("{}/indexes/{}/stats", base, request.index_uid);
@@ -352,6 +465,17 @@ impl NodeClient for HttpClient {
         //    use a default. The BM25 score is mainly sensitive to IDF, not avgdl.)
         let avg_doc_length = 500.0;
 
+        let duration_ms = start.elapsed().as_millis() as u64;
+        tracing::debug!(
+            target: "miroir.node",
+            node_id = %node,
+            address = %address,
+            operation = "preflight",
+            duration_ms,
+            total_docs,
+            "node call completed"
+        );
+
         Ok(PreflightResponse {
             total_docs,
             avg_doc_length,
@@ -361,7 +485,7 @@ impl NodeClient for HttpClient {
 
     fn get_task_status(
         &self,
-        _node: &NodeId,
+        node: &NodeId,
         address: &str,
         request: &TaskStatusRequest,
     ) -> impl std::future::Future<Output = std::result::Result<TaskStatusResponse, NodeError>> + Send {

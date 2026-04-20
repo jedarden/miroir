@@ -36,9 +36,17 @@ fn hash_for_log(value: &str) -> String {
 }
 
 /// Request body for POST /_miroir/admin/login.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct AdminLoginRequest {
     pub admin_key: String,
+}
+
+impl std::fmt::Debug for AdminLoginRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminLoginRequest")
+            .field("admin_key", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Response body for POST /_miroir/admin/login.
