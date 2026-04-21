@@ -3736,4 +3736,17 @@ These are documented constraints, not blockers. Initial release ships with known
 
 5. **Dump import distribution** — Importing a Meilisearch dump via Miroir historically broadcast all documents to all nodes, transiently placing 100% of documents on every node. **Status:** Addressed by streaming routed dump import (§13.9); documents are routed to owning nodes on the fly, never broadcast. Broadcast mode retained as a fallback for dump variants Miroir cannot fully reconstruct via the public API.
 
-6. **arm64 support** — Not planned for v0.x. Added when K8s ARM node support is required.
+6. **arm64 support** — Deferred. Not planned for v0.x. Added when K8s ARM node support is required.
+
+   **Current state:** Everything is amd64-only — `rust-toolchain.toml` targets `x86_64-unknown-linux-musl`, Dockerfile builds only that target, CI binaries are named `*-linux-amd64`, and there is no multi-arch Docker manifest. The fleet is entirely amd64 (iad-ci, ardenone cluster nodes).
+
+   **When prioritized, the changes are:**
+
+   - **CI cross-compilation:** The Argo Workflow `cargo-build` step needs a matrix over targets — install `aarch64-linux-gnu` cross-compiler, add `rustup target add aarch64-unknown-linux-musl`, build both `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` for `miroir-proxy` and `miroir-ctl`.
+   - **Docker multi-arch:** Kaniko build needs `--customPlatform=linux/amd64,linux/arm64` (or equivalent) for manifest list support. Image tag `ghcr.io/jedarden/miroir:<version>` should span both architectures.
+   - **Binary naming:** Add `miroir-proxy-linux-arm64` and `miroir-ctl-linux-arm64` to GitHub releases.
+   - **Helm chart:** No changes — the chart is arch-agnostic at the k8s layer; node selectors choose the right manifest entry automatically.
+   - **`rust-toolchain.toml`:** Add `aarch64-unknown-linux-musl` to the targets array.
+   - **Phase 9 testing:** Add arm64 test runs once the CI pipeline supports cross-compilation.
+
+   **Trigger for prioritization:** A concrete use case emerges — e.g., deploying to Hetzner Ampere, AWS Graviton, GCP Tau T2A, or Rackspace Spot ARM nodes.
