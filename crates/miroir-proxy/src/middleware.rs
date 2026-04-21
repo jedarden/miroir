@@ -17,8 +17,75 @@ use prometheus::{
 };
 use tracing::info_span;
 use uuid::Uuid;
+use hex;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+
+/// Request ID wrapper type for storing in axum Request extensions.
+///
+/// This is a newtype wrapper around the 8-character hex request ID,
+/// allowing handlers to extract it via `Request.extensions().get::<RequestId>()`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RequestId(pub String);
+
+impl RequestId {
+    /// Create a new RequestId from a UUIDv7.
+    ///
+    /// Hashes the full UUIDv7 to produce an 8-character hex ID that is unique
+    /// even for consecutive calls within the same millisecond.
+    pub fn new() -> Self {
+        let uuid = Uuid::now_v7();
+        let bytes = uuid.as_bytes();
+        // Hash the full UUID to ensure uniqueness even within the same millisecond
+        let mut hasher = DefaultHasher::new();
+        hasher.write(bytes);
+        let hash = hasher.finish();
+        // Take first 8 hex chars of 64-bit hash (32 bits is sufficient entropy)
+        Self(format!("{:08x}", hash as u32))
+    }
+
+    /// Get the inner request ID string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Parse a RequestId from a string.
+    pub fn parse(s: String) -> Option<Self> {
+        if s.len() == 8 && s.chars().all(|c| c.is_ascii_hexdigit()) {
+            Some(Self(s))
+        } else {
+            None
+        }
+    }
+}
+
+pub async fn request_id_middleware(
+    req: Request,
+    next: Next,
+) -> Response {
+    // Check for existing request ID in headers
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| RequestId::parse(s.to_string()))
+        .unwrap_or_else(RequestId::new);
+
+    // Store in request extensions for handler access
+    let mut req = req;
+    req.extensions_mut().insert(request_id.clone());
+
+    // Process the request
+    let mut response = next.run(req).await;
+
+    // Add X-Request-Id header to response (override if exists)
+    if let Ok(val) = HeaderValue::from_str(request_id.as_str()) {
+        response.headers_mut().insert("x-request-id", val);
+    }
+
+    response
+}
+
 
 /// Telemetry state combining metrics and pod_id for middleware.
 #[derive(Clone)]
@@ -1559,5 +1626,182 @@ mod tests {
 
         headers.set_request_id("test-id-123");
         assert_eq!(headers.get_request_id(), Some("test-id-123".to_string()));
+    }
+
+    // ---------------------------------------------------------------------------
+    // RequestId type tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_request_id_format() {
+        let id = RequestId::new();
+        // RequestId should be exactly 8 hex characters
+        assert_eq!(id.as_str().len(), 8);
+        assert!(id.as_str().chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_request_id_parse_valid() {
+        // Valid 8-char hex string
+        let valid = "abcd1234";
+        let parsed = RequestId::parse(valid.to_string());
+        assert!(parsed.is_some());
+        assert_eq!(parsed.unwrap().as_str(), valid);
+    }
+
+    #[test]
+    fn test_request_id_parse_invalid_wrong_length() {
+        // Wrong length (too short)
+        assert!(RequestId::parse("abc123".to_string()).is_none());
+        // Wrong length (too long)
+        assert!(RequestId::parse("abcd12345678".to_string()).is_none());
+    }
+
+    #[test]
+    fn test_request_id_parse_invalid_non_hex() {
+        // Contains non-hex characters
+        assert!(RequestId::parse("abcd1234!".to_string()).is_none());
+        assert!(RequestId::parse("ghijklmn".to_string()).is_none());
+    }
+
+    #[test]
+    fn test_request_id_uniqueness() {
+        // Generate two consecutive IDs - they should be different
+        // due to UUIDv7's timestamp component
+        let id1 = RequestId::new();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let id2 = RequestId::new();
+
+        assert_ne!(id1, id2);
+        assert_ne!(id1.as_str(), id2.as_str());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Integration tests for request_id_middleware
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_request_id_middleware_adds_header() {
+        use axum::{routing::get, Router};
+        use http_body_util::Full;
+        use tower::ServiceExt;
+
+        // Build a simple router with the request ID middleware
+        let app = Router::new()
+            .route("/test", get(|| async { "OK" }))
+            .layer(axum::middleware::from_fn(request_id_middleware));
+
+        // Create a test request
+        let request = Request::builder()
+            .uri("/test")
+            .body(Full::default())
+            .unwrap();
+
+        // Send the request
+        let response = app.oneshot(request).await.unwrap();
+
+        // Verify X-Request-Id header is present
+        let header = response
+            .headers()
+            .get("x-request-id")
+            .expect("X-Request-Id header should be present");
+        let header_value = header.to_str().unwrap();
+
+        // Verify it's 8 hex characters
+        assert_eq!(
+            header_value.len(),
+            8,
+            "X-Request-Id should be 8 characters"
+        );
+        assert!(
+            header_value.chars().all(|c| c.is_ascii_hexdigit()),
+            "X-Request-Id should be hexadecimal"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_request_id_middleware_unique_per_request() {
+        use axum::{routing::get, Router};
+        use http_body_util::Full;
+        use tower::ServiceExt;
+
+        // Build a simple router with the request ID middleware
+        let app = Router::new()
+            .route("/test", get(|| async { "OK" }))
+            .layer(axum::middleware::from_fn(request_id_middleware));
+
+        // Create two identical requests
+        let request1 = Request::builder()
+            .uri("/test")
+            .body(Full::default())
+            .unwrap();
+
+        let request2 = Request::builder()
+            .uri("/test")
+            .body(Full::default())
+            .unwrap();
+
+        // Send both requests
+        let response1 = app.clone().oneshot(request1).await.unwrap();
+        let response2 = app.oneshot(request2).await.unwrap();
+
+        // Extract headers
+        let id1 = response1
+            .headers()
+            .get("x-request-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let id2 = response2
+            .headers()
+            .get("x-request-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+
+        // Verify IDs are different (UUIDv7 timestamp ensures this)
+        assert_ne!(
+            id1, id2,
+            "Two consecutive requests should have different request IDs"
+        );
+
+        // Both should still be valid 8-char hex
+        assert_eq!(id1.len(), 8);
+        assert_eq!(id2.len(), 8);
+    }
+
+    #[tokio::test]
+    async fn test_request_id_middleware_preserves_existing_header() {
+        use axum::{routing::get, Router};
+        use http_body_util::Full;
+        use tower::ServiceExt;
+
+        // Build a simple router with the request ID middleware
+        let app = Router::new()
+            .route("/test", get(|| async { "OK" }))
+            .layer(axum::middleware::from_fn(request_id_middleware));
+
+        // Create a request with a pre-existing X-Request-Id header
+        let existing_id = "deadbeef";
+        let request = Request::builder()
+            .uri("/test")
+            .header("x-request-id", existing_id)
+            .body(Full::default())
+            .unwrap();
+
+        // Send the request
+        let response = app.oneshot(request).await.unwrap();
+
+        // Verify the header is preserved
+        let header = response
+            .headers()
+            .get("x-request-id")
+            .expect("X-Request-Id header should be present");
+        let header_value = header.to_str().unwrap();
+
+        assert_eq!(
+            header_value, existing_id,
+            "Existing X-Request-Id should be preserved"
+        );
     }
 }
