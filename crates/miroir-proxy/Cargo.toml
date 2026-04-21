@@ -35,6 +35,7 @@ chacha20poly1305 = "0.10"
 rand = "0.8"
 dashmap = "6"
 hex = "0.4"
+tower = "0.5"
 miroir-core = { path = "../miroir-core", features = ["axum", "redis-store"] }
 
 # OpenTelemetry (optional - use feature flag to enable)

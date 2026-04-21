@@ -244,6 +244,9 @@ async fn main() -> anyhow::Result<()> {
         .nest("/search", search::router::<UnifiedState>())
         .nest("/settings", settings::router::<UnifiedState>())
         .nest("/tasks", tasks::router::<UnifiedState>())
+        .layer(axum::middleware::from_fn(
+            middleware::request_id_middleware,
+        ))
         .layer(axum::extract::DefaultBodyLimit::max(
             config.server.max_body_bytes as usize,
         ))
