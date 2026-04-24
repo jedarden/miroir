@@ -40,12 +40,12 @@ spec:
               {{ "{{ $labels.replica_group }}" }} has been unhealthy for 5 minutes.
 
         - alert: MiroirHighSearchLatency
-          expr: histogram_quantile(0.95, sum(rate(miroir_search_duration_seconds_bucket[5m])) by (le)) > 2
+          expr: histogram_quantile(0.95, sum(rate(miroir_request_duration_seconds_bucket{path_template="/indexes/{uid}/search"}[5m])) by (le)) > 2.0
           for: 5m
           labels:
             severity: warning
           annotations:
-            summary: "Miroir search latency is high"
+            summary: "Miroir p95 search latency exceeds 2s"
             description: >-
               p95 search latency is {{ "{{ $value | humanizeDuration }}" }},
               exceeding the 2s threshold.
@@ -73,26 +73,27 @@ spec:
               This usually indicates a stuck migration.
 
         - alert: MiroirSettingsDivergence
-          expr: count(count by (setting) (miroir_node_setting_value)) by (setting) > 1
-          for: 15m
+          expr: increase(miroir_settings_hash_mismatch_total[10m]) > 0 and miroir_settings_drift_repair_total == 0
+          for: 10m
           labels:
             severity: warning
           annotations:
             summary: "Miroir settings divergence detected"
             description: >-
-              Setting {{ "{{ $labels.setting }}" }} has divergent values across nodes.
-              Self-healing (§13.5) should auto-repair; alert fires when it hasn't.
+              Settings divergence was observed but the auto-repair counter did not
+              advance, suggesting repair is disabled or failing.
+              Cross-reference §13.5 two-phase settings broadcast.
 
         - alert: MiroirAntientropyMismatch
-          expr: increase(miroir_antientropy_mismatch_total[6h]) >= 3
-          for: 0m
+          expr: increase(miroir_antientropy_mismatches_found_total[18h]) > 0
+          for: 18h
           labels:
             severity: warning
           annotations:
             summary: "Miroir anti-entropy found persistent mismatches"
             description: >-
-              Anti-entropy repair has detected mismatches on
-              {{ "{{ $value }}" }} consecutive passes (≈18h default schedule).
+              Anti-entropy reconciler found replica divergence persisting across
+              3 consecutive passes at default every-6h schedule (≈18h).
               Self-healing (§13.8) failed to close the gap.
 
     - name: miroir.resource_pressure
@@ -130,7 +131,7 @@ spec:
               exceeding the 100 threshold for 10 minutes.
 
         - alert: MiroirPeerDiscoveryGap
-          expr: count(miroir_peer_known) by (namespace, job) != count(miroir_node_healthy == 1) by (namespace, job)
+          expr: miroir_peer_pod_count < kube_deployment_status_replicas_ready{deployment="{{ include "miroir.fullname" . }}-miroir"}
           for: 2m
           labels:
             severity: warning
