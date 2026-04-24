@@ -2731,7 +2731,7 @@ mod tests {
             }
 
             // Fourth attempt: rate limited
-            let (allowed, wait) = store
+            let (allowed, _) = store
                 .check_rate_limit_admin_login(ip, limit, window_seconds)
                 .expect("Check should succeed");
             assert!(!allowed);
@@ -2781,7 +2781,7 @@ mod tests {
             assert_eq!(count, 2);
             assert!(!trimmed);
 
-            let (count, trimmed) = store
+            let (count, _trimmed) = store
                 .cdc_overflow_append(sink, event, max_bytes)
                 .expect("Append should succeed");
             assert!(count >= 3);
@@ -3664,6 +3664,8 @@ mod tests {
             let tasks = store
                 .list_tasks(&TaskFilter {
                     status: Some("running".to_string()),
+                    index_uid: None,
+                    task_type: None,
                     limit: Some(10),
                     offset: None,
                 })
