@@ -67,6 +67,15 @@ impl NodeClient for HttpClient {
         address: &str,
         request: &SearchRequest,
     ) -> std::result::Result<Value, NodeError> {
+        let span = tracing::info_span!(
+            "node_call",
+            node_id = %node,
+            address = %address,
+            operation = "search",
+            index = %request.index_uid,
+        );
+        let _guard = span.enter();
+
         let start = Instant::now();
         let url = self.search_url(address, &request.index_uid);
 
@@ -76,15 +85,6 @@ impl NodeClient for HttpClient {
             body["_miroir_global_idf"] = serde_json::to_value(global_idf)
                 .map_err(|e| NodeError::NetworkError(format!("Failed to serialize global_idf: {}", e)))?;
         }
-
-        tracing::debug!(
-            target: "miroir.node",
-            node_id = %node,
-            address = %address,
-            index = %request.index_uid,
-            operation = "search",
-            "node call started"
-        );
 
         let response = self
             .client
@@ -96,9 +96,6 @@ impl NodeClient for HttpClient {
             .map_err(|e| {
                 tracing::warn!(
                     target: "miroir.node",
-                    node_id = %node,
-                    address = %address,
-                    operation = "search",
                     duration_ms = start.elapsed().as_millis() as u64,
                     error = %e,
                     "node call failed"
@@ -117,9 +114,6 @@ impl NodeClient for HttpClient {
         if !status.is_success() {
             tracing::debug!(
                 target: "miroir.node",
-                node_id = %node,
-                address = %address,
-                operation = "search",
                 duration_ms,
                 status = status.as_u16(),
                 "node call error response"
@@ -132,10 +126,6 @@ impl NodeClient for HttpClient {
 
         tracing::debug!(
             target: "miroir.node",
-            node_id = %node,
-            address = %address,
-            index = %request.index_uid,
-            operation = "search",
             duration_ms,
             "node call completed"
         );

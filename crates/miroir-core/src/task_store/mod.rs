@@ -230,6 +230,11 @@ pub struct NewTask {
     pub status: String,
     pub node_tasks: HashMap<String, u64>,
     pub error: Option<String>,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub index_uid: Option<String>,
+    pub task_type: Option<String>,
+    pub node_errors: HashMap<String, String>,
 }
 
 /// Task row from the DB (table 1).
@@ -240,6 +245,11 @@ pub struct TaskRow {
     pub status: String,
     pub node_tasks: HashMap<String, u64>,
     pub error: Option<String>,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub index_uid: Option<String>,
+    pub task_type: Option<String>,
+    pub node_errors: HashMap<String, String>,
 }
 
 /// Node settings version row (table 2).
@@ -336,6 +346,8 @@ pub struct LeaderLeaseRow {
 #[derive(Debug, Clone, Default)]
 pub struct TaskFilter {
     pub status: Option<String>,
+    pub index_uid: Option<String>,
+    pub task_type: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
 }

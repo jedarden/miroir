@@ -3,6 +3,7 @@
 use crate::error::{MiroirError, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
+use std::time::Instant;
 
 /// Unique identifier for a node.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +143,14 @@ pub struct Node {
 
     /// Replica group assignment (0-based).
     pub replica_group: u32,
+
+    /// Instant of the last successful health check.
+    #[serde(skip)]
+    pub last_seen: Option<Instant>,
+
+    /// Error message from the last failed health check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 
 impl Node {
@@ -152,6 +161,8 @@ impl Node {
             address,
             status: NodeStatus::Joining,
             replica_group,
+            last_seen: None,
+            last_error: None,
         }
     }
 
@@ -680,6 +691,8 @@ nodes:
                 address: "http://test:7700".into(),
                 replica_group: 0,
                 status,
+                last_seen: None,
+                last_error: None,
             };
             let result = node.is_write_eligible_for(shard_affected);
             assert_eq!(
@@ -811,6 +824,8 @@ nodes:
                 address: "http://test:7700".into(),
                 replica_group: 0,
                 status,
+                last_seen: None,
+                last_error: None,
             };
             assert_eq!(node.is_healthy(), expected, "{:?} is_healthy", status);
         }

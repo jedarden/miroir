@@ -9,8 +9,8 @@ use axum::{
 use miroir_core::{
     config::MiroirConfig,
     router,
-    task_registry::InMemoryTaskRegistry,
-    task_store::RedisTaskStore,
+    task_registry::TaskRegistryImpl,
+    task_store::{RedisTaskStore, TaskStore},
     topology::{Node, NodeId, Topology},
 };
 use rand::RngCore;
@@ -250,7 +250,7 @@ pub struct AppState {
     pub ready: Arc<RwLock<bool>>,
     pub metrics: super::super::middleware::Metrics,
     pub version_state: VersionState,
-    pub task_registry: Arc<InMemoryTaskRegistry>,
+    pub task_registry: Arc<TaskRegistryImpl>,
     pub redis_store: Option<RedisTaskStore>,
     pub pod_id: String,
     pub seal_key: SealKey,
@@ -295,13 +295,27 @@ impl AppState {
             config.nodes.iter().map(|n| n.address.clone()).collect(),
         );
 
+        // Select task registry backend based on config
+        let task_registry = match config.task_store.backend.as_str() {
+            "redis" if redis_store.is_some() => {
+                let store = redis_store.as_ref().unwrap().clone();
+                store.migrate().expect("Redis migration failed");
+                TaskRegistryImpl::Redis(Arc::new(store))
+            }
+            "sqlite" if !config.task_store.path.is_empty() => {
+                TaskRegistryImpl::sqlite(&config.task_store.path)
+                    .expect("Failed to open SQLite task store")
+            }
+            _ => TaskRegistryImpl::in_memory(),
+        };
+
         Self {
             config: Arc::new(config),
             topology: Arc::new(RwLock::new(topology)),
             ready: Arc::new(RwLock::new(false)),
             metrics,
             version_state,
-            task_registry: Arc::new(InMemoryTaskRegistry::new()),
+            task_registry: Arc::new(task_registry),
             redis_store,
             pod_id,
             seal_key,

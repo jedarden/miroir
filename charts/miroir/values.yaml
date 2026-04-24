@@ -2,6 +2,27 @@
 # These defaults boot a working single-pod install for evaluation and CI.
 # For production, override to: replicas=2+, replicationFactor=2, replicaGroups=2,
 # taskStore.backend=redis, redis.enabled=true, hpa.enabled=true
+#
+# SECRET INVENTORY (plan §9):
+# ┌──────────────────────────┬───────────────────────────────┬─────────────────────┐
+# │ Secret                   │ Managed by                    │ Rotation            │
+# ├──────────────────────────┼───────────────────────────────┼─────────────────────┤
+# │ masterKey                │ Helm / ESO                    │ Manual key change   │
+# │ nodeMasterKey            │ Helm / ESO                    │ Zero-downtime (§9)  │
+# │ MEILI_MASTER_KEY         │ Helm / ESO                    │ Pod restart only    │
+# │ adminApiKey              │ Helm / ESO                    │ Manual + restart    │
+# │ adminSessionSealKey      │ Helm / ESO                    │ Manual + restart    │
+# │ searchUiJwtSecret        │ Helm / ESO                    │ Zero-downtime (§9)  │
+# │ searchUiJwtSecretPrev    │ Helm / ESO                    │ Overlap window      │
+# │ searchUiSharedKey        │ Helm / ESO                    │ Manual + restart    │
+# │ redis_password           │ Helm / ESO                    │ Manual + restart    │
+# │ ghcr_credentials         │ Argo Workflows (CI only)      │ Manual              │
+# │ github_token             │ Argo Workflows (CI only)      │ Manual              │
+# └──────────────────────────┴───────────────────────────────┴─────────────────────┘
+# ghcr_credentials and github_token are NOT in this chart — they belong to the
+# Argo Workflows service account in the iad-ci cluster (see CLAUDE.md CI/CD section).
+# MEILI_MASTER_KEY is set at Meilisearch process start and cannot be rotated
+# without a pod restart (documented in the Meilisearch docs).
 
 miroir:
   image:
@@ -13,7 +34,12 @@ miroir:
   replicationFactor: 1  # dev default: override to 2 in production
   replicaGroups: 1  # dev default: override to 2 in production
   masterKey: ""  # auto-generated if empty; ignored when existingSecret is set
+  nodeMasterKey: ""  # auto-generated if empty; admin-scoped key for Meilisearch nodes (plan §9 Model B)
   adminApiKey: ""  # auto-generated if empty; ignored when existingSecret is set
+  adminSessionSealKey: ""  # 64-byte base64 key for sealing admin session cookies; auto-generated if empty (plan §9)
+  searchUiJwtSecret: ""  # HMAC secret for search UI JWTs; auto-generated when search_ui.enabled=true (plan §9)
+  searchUiJwtSecretPrevious: ""  # Previous JWT secret during rotation overlap window (plan §9)
+  searchUiSharedKey: ""  # Shared key for X-Search-UI-Key header when search_ui.auth.mode=shared_key (plan §9)
   logLevel: info  # RUST_LOG: trace, debug, info, warn, error
   existingSecret: ""  # name of K8s Secret with masterKey, nodeMasterKey, adminApiKey
   podAnnotations: {}
@@ -136,7 +162,7 @@ meilisearch:
     size: 10Gi
     storageClass: ""  # uses default storage class
   env: []
-  masterKey: ""  # defaults to auto-generated
+  masterKey: ""  # defaults to auto-generated; NOT zero-downtime rotatable (fixed at process start)
 
 # Redis deployment (only when taskStore.backend=redis)
 redis:
@@ -190,3 +216,17 @@ tracing:
   endpoint: "http://tempo.monitoring.svc:4317"  # OTLP gRPC endpoint
   serviceName: "miroir"  # service name for trace identification
   sampleRate: 0.1  # head-based sampling: 0.1 = ~10% of requests traced
+
+# External Secrets Operator integration (plan §6 + §9)
+# When enabled, ESO pulls secrets from OpenBao via ClusterSecretStore.
+# Set miroir.existingSecret to "<release>-secret" to use the ESO-managed Secret.
+eso:
+  enabled: false  # disabled by default; enable for production with OpenBao
+  refreshInterval: "15m"  # how often ESO re-syncs from the backend
+  secretStoreRef:
+    name: "openbao-backend"  # ClusterSecretStore name in the cluster
+    kind: "ClusterSecretStore"
+  secretPath: "kv/search/miroir"  # OpenBao KV v2 path
+  includePreviousJwt: false  # set true during JWT rotation overlap window
+  includeSharedKey: false  # set true when search_ui.auth.mode=shared_key
+  includeRedisPassword: false  # set true when redis.auth.enabled=true

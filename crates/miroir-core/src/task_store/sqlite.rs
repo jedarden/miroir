@@ -82,12 +82,20 @@ impl SqliteTaskStore {
         let node_tasks_json: String = row.get(3)?;
         let node_tasks: HashMap<String, u64> = serde_json::from_str(&node_tasks_json)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let node_errors_json: String = row.get(9)?;
+        let node_errors: HashMap<String, String> = serde_json::from_str(&node_errors_json)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         Ok(TaskRow {
             miroir_id: row.get(0)?,
             created_at: row.get(1)?,
             status: row.get(2)?,
             node_tasks,
             error: row.get(4)?,
+            started_at: row.get(5)?,
+            finished_at: row.get(6)?,
+            index_uid: row.get(7)?,
+            task_type: row.get(8)?,
+            node_errors,
         })
     }
 
@@ -127,15 +135,21 @@ impl TaskStore for SqliteTaskStore {
     fn insert_task(&self, task: &NewTask) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let node_tasks_json = serde_json::to_string(&task.node_tasks)?;
+        let node_errors_json = serde_json::to_string(&task.node_errors)?;
         conn.execute(
-            "INSERT INTO tasks (miroir_id, created_at, status, node_tasks, error)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO tasks (miroir_id, created_at, status, node_tasks, error, started_at, finished_at, index_uid, task_type, node_errors)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 task.miroir_id,
                 task.created_at,
                 task.status,
                 node_tasks_json,
                 task.error,
+                task.started_at,
+                task.finished_at,
+                task.index_uid,
+                task.task_type,
+                node_errors_json,
             ],
         )?;
         Ok(())
@@ -145,7 +159,7 @@ impl TaskStore for SqliteTaskStore {
         let conn = self.conn.lock().unwrap();
         Ok(conn
             .query_row(
-                "SELECT miroir_id, created_at, status, node_tasks, error
+                "SELECT miroir_id, created_at, status, node_tasks, error, started_at, finished_at, index_uid, task_type, node_errors
                  FROM tasks WHERE miroir_id = ?1",
                 params![miroir_id],
                 Self::task_row_from_row,
@@ -198,10 +212,30 @@ impl TaskStore for SqliteTaskStore {
 
     fn list_tasks(&self, filter: &TaskFilter) -> Result<Vec<TaskRow>> {
         let conn = self.conn.lock().unwrap();
-        let mut sql = "SELECT miroir_id, created_at, status, node_tasks, error FROM tasks"
+        let mut sql = "SELECT miroir_id, created_at, status, node_tasks, error, started_at, finished_at, index_uid, task_type, node_errors FROM tasks"
             .to_string();
-        if filter.status.is_some() {
-            sql.push_str(" WHERE status = ?1");
+        let mut conditions = Vec::new();
+        let mut param_idx = 1;
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(ref status) = filter.status {
+            conditions.push(format!("status = ?{param_idx}"));
+            param_values.push(Box::new(status.clone()));
+            param_idx += 1;
+        }
+        if let Some(ref index_uid) = filter.index_uid {
+            conditions.push(format!("index_uid = ?{param_idx}"));
+            param_values.push(Box::new(index_uid.clone()));
+            param_idx += 1;
+        }
+        if let Some(ref task_type) = filter.task_type {
+            conditions.push(format!("task_type = ?{param_idx}"));
+            param_values.push(Box::new(task_type.clone()));
+            param_idx += 1;
+        }
+        if !conditions.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conditions.join(" AND "));
         }
         sql.push_str(" ORDER BY created_at DESC");
         if let Some(limit) = filter.limit {
@@ -211,12 +245,9 @@ impl TaskStore for SqliteTaskStore {
             sql.push_str(&format!(" OFFSET {offset}"));
         }
 
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
         let mut stmt = conn.prepare(&sql)?;
-        let rows = if let Some(ref status) = filter.status {
-            stmt.query_map(params![status], Self::task_row_from_row)?
-        } else {
-            stmt.query_map([], Self::task_row_from_row)?
-        };
+        let rows = stmt.query_map(params_refs.as_slice(), Self::task_row_from_row)?;
         let mut result = Vec::new();
         for row in rows {
             result.push(row?);
@@ -1093,6 +1124,11 @@ mod tests {
             status: "enqueued".to_string(),
             node_tasks: node_tasks.clone(),
             error: None,
+            started_at: None,
+            finished_at: None,
+            index_uid: None,
+            task_type: None,
+            node_errors: HashMap::new(),
         };
         store.insert_task(&new_task).unwrap();
 
@@ -1137,6 +1173,11 @@ mod tests {
                     status: if i < 3 { "enqueued" } else { "succeeded" }.to_string(),
                     node_tasks: nt,
                     error: None,
+                    started_at: None,
+                    finished_at: None,
+                    index_uid: None,
+                    task_type: None,
+                    node_errors: HashMap::new(),
                 })
                 .unwrap();
         }
@@ -1483,6 +1524,11 @@ mod tests {
                 status: "enqueued".to_string(),
                 node_tasks: HashMap::new(),
                 error: None,
+                started_at: None,
+                finished_at: None,
+                index_uid: None,
+                task_type: None,
+                node_errors: HashMap::new(),
             })
             .unwrap();
 
@@ -1595,6 +1641,11 @@ mod tests {
                     status: "enqueued".to_string(),
                     node_tasks: nt,
                     error: None,
+                    started_at: None,
+                    finished_at: None,
+                    index_uid: None,
+                    task_type: None,
+                    node_errors: HashMap::new(),
                 })
                 .unwrap();
             }));
@@ -2046,6 +2097,11 @@ mod tests {
                     .to_string(),
                     node_tasks: HashMap::new(),
                     error: None,
+                    started_at: None,
+                    finished_at: None,
+                    index_uid: None,
+                    task_type: None,
+                    node_errors: HashMap::new(),
                 })
                 .unwrap();
         }
@@ -2058,5 +2114,422 @@ mod tests {
         assert!(store.get_task("task-4").unwrap().is_some());
         // Verify task-8 (enqueued) still exists regardless of age
         assert!(store.get_task("task-8").unwrap().is_some());
+    }
+
+    // --- Property tests (proptest) ---
+
+    mod proptest_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn test_store() -> SqliteTaskStore {
+            let store = SqliteTaskStore::open_in_memory().unwrap();
+            store.migrate().unwrap();
+            store
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(50))]
+
+            /// Property: (insert, get) round-trip preserves all fields.
+            #[test]
+            fn task_insert_get_roundtrip(
+                miroir_id in "[a-z0-9-]{1,32}",
+                created_at in 0i64..1_000_000,
+                status in "(enqueued|processing|succeeded|failed|canceled)",
+                error in proptest::option::of("[a-zA-Z0-9 ]{0,64}"),
+                n_nodes in 0usize..5usize,
+            ) {
+                let store = test_store();
+                let mut node_tasks = HashMap::new();
+                for i in 0..n_nodes {
+                    node_tasks.insert(format!("node-{i}"), i as u64);
+                }
+
+                let new_task = NewTask {
+                    miroir_id: miroir_id.clone(),
+                    created_at,
+                    status: status.clone(),
+                    node_tasks: node_tasks.clone(),
+                    error: error.clone(),
+                    started_at: None,
+                    finished_at: None,
+                    index_uid: None,
+                    task_type: None,
+                    node_errors: HashMap::new(),
+                };
+                store.insert_task(&new_task).unwrap();
+
+                let got = store.get_task(&miroir_id).unwrap().unwrap();
+                prop_assert_eq!(got.miroir_id, miroir_id);
+                prop_assert_eq!(got.created_at, created_at);
+                prop_assert_eq!(got.status, status);
+                prop_assert_eq!(got.node_tasks, node_tasks);
+                prop_assert_eq!(got.error, error);
+            }
+
+            /// Property: (upsert, get) for node_settings_version round-trips.
+            #[test]
+            fn node_settings_version_upsert_roundtrip(
+                index_uid in "[a-z0-9]{1,16}",
+                node_id in "[a-z0-9]{1,16}",
+                version in 1i64..10000,
+                updated_at in 0i64..1_000_000,
+            ) {
+                let store = test_store();
+                store.upsert_node_settings_version(&index_uid, &node_id, version, updated_at).unwrap();
+                let got = store.get_node_settings_version(&index_uid, &node_id).unwrap().unwrap();
+                prop_assert_eq!(got.index_uid, index_uid);
+                prop_assert_eq!(got.node_id, node_id);
+                prop_assert_eq!(got.version, version);
+                prop_assert_eq!(got.updated_at, updated_at);
+            }
+
+            /// Property: alias (create, get) round-trip for single aliases.
+            #[test]
+            fn alias_single_roundtrip(
+                name in "[a-z0-9-]{1,32}",
+                current_uid in proptest::option::of("uid-[a-z0-9]{1,16}"),
+                version in 1i64..100,
+            ) {
+                let store = test_store();
+                let alias = NewAlias {
+                    name: name.clone(),
+                    kind: "single".to_string(),
+                    current_uid: current_uid.clone(),
+                    target_uids: None,
+                    version,
+                    created_at: 1000,
+                    history: vec![],
+                };
+                store.create_alias(&alias).unwrap();
+
+                let got = store.get_alias(&name).unwrap().unwrap();
+                prop_assert_eq!(got.name, name);
+                prop_assert_eq!(got.kind, "single");
+                prop_assert_eq!(got.current_uid, current_uid);
+                prop_assert_eq!(got.version, version);
+            }
+
+            /// Property: (insert, list) — inserted tasks appear in list.
+            #[test]
+            fn task_insert_list_visible(
+                ids in proptest::collection::vec("[a-z0-9-]{1,16}", 1..10),
+            ) {
+                let store = test_store();
+                let unique_ids: std::collections::HashSet<String> = ids.into_iter().collect();
+                for (i, id) in unique_ids.iter().enumerate() {
+                    let mut nt = HashMap::new();
+                    nt.insert("node-0".to_string(), i as u64);
+                    store.insert_task(&NewTask {
+                        miroir_id: id.clone(),
+                        created_at: i as i64 * 1000,
+                        status: "enqueued".to_string(),
+                        node_tasks: nt,
+                        error: None,
+                        started_at: None,
+                        finished_at: None,
+                        index_uid: None,
+                        task_type: None,
+                        node_errors: HashMap::new(),
+                    }).unwrap();
+                }
+
+                let all = store.list_tasks(&TaskFilter::default()).unwrap();
+                prop_assert_eq!(all.len(), unique_ids.len());
+                let got_ids: std::collections::HashSet<String> =
+                    all.iter().map(|t| t.miroir_id.clone()).collect();
+                prop_assert_eq!(got_ids, unique_ids);
+            }
+
+            /// Property: idempotency (insert, get) round-trip.
+            #[test]
+            fn idempotency_roundtrip(
+                key in "[a-z0-9-]{1,32}",
+                task_id in "[a-z0-9-]{1,32}",
+                expires_at in 5000i64..1_000_000,
+            ) {
+                let store = test_store();
+                let sha = vec![0xABu8; 32];
+                store.insert_idempotency_entry(&IdempotencyEntry {
+                    key: key.clone(),
+                    body_sha256: sha.clone(),
+                    miroir_task_id: task_id.clone(),
+                    expires_at,
+                }).unwrap();
+
+                let got = store.get_idempotency_entry(&key).unwrap().unwrap();
+                prop_assert_eq!(got.key, key);
+                prop_assert_eq!(got.body_sha256, sha);
+                prop_assert_eq!(got.miroir_task_id, task_id);
+                prop_assert_eq!(got.expires_at, expires_at);
+            }
+
+            /// Property: canary (upsert, list) — all unique canaries visible.
+            #[test]
+            fn canary_upsert_list_roundtrip(
+                ids in proptest::collection::vec("[a-z0-9-]{1,16}", 1..8),
+            ) {
+                let store = test_store();
+                let unique_ids: std::collections::HashSet<String> = ids.into_iter().collect();
+                for (i, id) in unique_ids.iter().enumerate() {
+                    store.upsert_canary(&NewCanary {
+                        id: id.clone(),
+                        name: format!("canary-{i}"),
+                        index_uid: "logs".to_string(),
+                        interval_s: 60 + i as i64,
+                        query_json: r#"{"q":"test"}"#.to_string(),
+                        assertions_json: "[]".to_string(),
+                        enabled: i % 2 == 0,
+                        created_at: i as i64 * 1000,
+                    }).unwrap();
+                }
+
+                let all = store.list_canaries().unwrap();
+                prop_assert_eq!(all.len(), unique_ids.len());
+            }
+
+            /// Property: rollover_policy (upsert, list) round-trip.
+            #[test]
+            fn rollover_policy_upsert_list_roundtrip(
+                names in proptest::collection::vec("[a-z0-9-]{1,16}", 1..6),
+            ) {
+                let store = test_store();
+                let unique_names: std::collections::HashSet<String> = names.into_iter().collect();
+                for (i, name) in unique_names.iter().enumerate() {
+                    store.upsert_rollover_policy(&NewRolloverPolicy {
+                        name: name.clone(),
+                        write_alias: format!("{name}-w"),
+                        read_alias: format!("{name}-r"),
+                        pattern: "logs-*".to_string(),
+                        triggers_json: "{}".to_string(),
+                        retention_json: "{}".to_string(),
+                        template_json: "{}".to_string(),
+                        enabled: true,
+                    }).unwrap();
+                }
+
+                let all = store.list_rollover_policies().unwrap();
+                prop_assert_eq!(all.len(), unique_names.len());
+            }
+        }
+    }
+
+    // --- Restart resilience test ---
+
+    #[test]
+    fn task_survives_store_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resilience.db");
+
+        // Phase 1: open, migrate, insert a task
+        {
+            let store = SqliteTaskStore::open(&path).unwrap();
+            store.migrate().unwrap();
+            let mut nt = HashMap::new();
+            nt.insert("node-0".to_string(), 42u64);
+            store
+                .insert_task(&NewTask {
+                    miroir_id: "survivor-task".to_string(),
+                    created_at: 1000,
+                    status: "enqueued".to_string(),
+                    node_tasks: nt,
+                    error: None,
+                    started_at: None,
+                    finished_at: None,
+                    index_uid: None,
+                    task_type: None,
+                    node_errors: HashMap::new(),
+                })
+                .unwrap();
+            // Drop store — simulates pod shutdown
+        }
+
+        // Phase 2: reopen the same database file
+        {
+            let store = SqliteTaskStore::open(&path).unwrap();
+            store.migrate().unwrap();
+
+            // Task survives the close/reopen cycle
+            let task = store.get_task("survivor-task").unwrap().unwrap();
+            assert_eq!(task.miroir_id, "survivor-task");
+            assert_eq!(task.status, "enqueued");
+            assert_eq!(task.node_tasks.get("node-0"), Some(&42u64));
+
+            // Can continue updating the task
+            assert!(store.update_task_status("survivor-task", "processing").unwrap());
+            assert!(store.set_task_error("survivor-task", "recovered").unwrap());
+
+            let updated = store.get_task("survivor-task").unwrap().unwrap();
+            assert_eq!(updated.status, "processing");
+            assert_eq!(updated.error.as_deref(), Some("recovered"));
+        }
+
+        // Phase 3: reopen again and verify the update stuck
+        {
+            let store = SqliteTaskStore::open(&path).unwrap();
+            store.migrate().unwrap();
+
+            let task = store.get_task("survivor-task").unwrap().unwrap();
+            assert_eq!(task.status, "processing");
+            assert_eq!(task.error.as_deref(), Some("recovered"));
+        }
+    }
+
+    #[test]
+    fn all_tables_survive_store_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("full-resilience.db");
+
+        // Phase 1: populate all 14 tables
+        {
+            let store = SqliteTaskStore::open(&path).unwrap();
+            store.migrate().unwrap();
+
+            // Table 1: tasks
+            store.insert_task(&NewTask {
+                miroir_id: "task-r".to_string(),
+                created_at: 1000,
+                status: "enqueued".to_string(),
+                node_tasks: HashMap::new(),
+                error: None,
+                started_at: None,
+                finished_at: None,
+                index_uid: None,
+                task_type: None,
+                node_errors: HashMap::new(),
+            }).unwrap();
+
+            // Table 2: node_settings_version
+            store.upsert_node_settings_version("idx-r", "node-r", 5, 1000).unwrap();
+
+            // Table 3: aliases
+            store.create_alias(&NewAlias {
+                name: "alias-r".to_string(),
+                kind: "single".to_string(),
+                current_uid: Some("uid-v1".to_string()),
+                target_uids: None,
+                version: 1,
+                created_at: 1000,
+                history: vec![],
+            }).unwrap();
+
+            // Table 4: sessions
+            store.upsert_session(&SessionRow {
+                session_id: "sess-r".to_string(),
+                last_write_mtask_id: None,
+                last_write_at: None,
+                pinned_group: None,
+                min_settings_version: 1,
+                ttl: 100000,
+            }).unwrap();
+
+            // Table 5: idempotency_cache
+            store.insert_idempotency_entry(&IdempotencyEntry {
+                key: "idemp-r".to_string(),
+                body_sha256: vec![0; 32],
+                miroir_task_id: "task-r".to_string(),
+                expires_at: 100000,
+            }).unwrap();
+
+            // Table 6: jobs
+            store.insert_job(&NewJob {
+                id: "job-r".to_string(),
+                type_: "test".to_string(),
+                params: "{}".to_string(),
+                state: "queued".to_string(),
+                progress: "{}".to_string(),
+            }).unwrap();
+
+            // Table 7: leader_lease
+            store.try_acquire_leader_lease("scope-r", "pod-r", 100000, 0).unwrap();
+
+            // Table 8: canaries
+            store.upsert_canary(&NewCanary {
+                id: "canary-r".to_string(),
+                name: "test-canary".to_string(),
+                index_uid: "idx-r".to_string(),
+                interval_s: 60,
+                query_json: "{}".to_string(),
+                assertions_json: "[]".to_string(),
+                enabled: true,
+                created_at: 1000,
+            }).unwrap();
+
+            // Table 9: canary_runs
+            store.insert_canary_run(&NewCanaryRun {
+                canary_id: "canary-r".to_string(),
+                ran_at: 1000,
+                status: "pass".to_string(),
+                latency_ms: 50,
+                failed_assertions_json: None,
+            }, 100).unwrap();
+
+            // Table 10: cdc_cursors
+            store.upsert_cdc_cursor(&NewCdcCursor {
+                sink_name: "sink-r".to_string(),
+                index_uid: "idx-r".to_string(),
+                last_event_seq: 42,
+                updated_at: 1000,
+            }).unwrap();
+
+            // Table 11: tenant_map
+            store.insert_tenant_mapping(&NewTenantMapping {
+                api_key_hash: vec![1u8; 32],
+                tenant_id: "tenant-r".to_string(),
+                group_id: Some(2),
+            }).unwrap();
+
+            // Table 12: rollover_policies
+            store.upsert_rollover_policy(&NewRolloverPolicy {
+                name: "policy-r".to_string(),
+                write_alias: "w-r".to_string(),
+                read_alias: "r-r".to_string(),
+                pattern: "p-r".to_string(),
+                triggers_json: "{}".to_string(),
+                retention_json: "{}".to_string(),
+                template_json: "{}".to_string(),
+                enabled: true,
+            }).unwrap();
+
+            // Table 13: search_ui_config
+            store.upsert_search_ui_config(&NewSearchUiConfig {
+                index_uid: "idx-r".to_string(),
+                config_json: "{}".to_string(),
+                updated_at: 1000,
+            }).unwrap();
+
+            // Table 14: admin_sessions
+            store.insert_admin_session(&NewAdminSession {
+                session_id: "admin-r".to_string(),
+                csrf_token: "csrf-r".to_string(),
+                admin_key_hash: "hash-r".to_string(),
+                created_at: 1000,
+                expires_at: 100000,
+                user_agent: None,
+                source_ip: None,
+            }).unwrap();
+        }
+
+        // Phase 2: reopen and verify all 14 tables
+        {
+            let store = SqliteTaskStore::open(&path).unwrap();
+            store.migrate().unwrap();
+
+            assert!(store.get_task("task-r").unwrap().is_some());
+            assert!(store.get_node_settings_version("idx-r", "node-r").unwrap().is_some());
+            assert!(store.get_alias("alias-r").unwrap().is_some());
+            assert!(store.get_session("sess-r").unwrap().is_some());
+            assert!(store.get_idempotency_entry("idemp-r").unwrap().is_some());
+            assert!(store.get_job("job-r").unwrap().is_some());
+            assert!(store.get_leader_lease("scope-r").unwrap().is_some());
+            assert!(store.get_canary("canary-r").unwrap().is_some());
+            assert_eq!(store.get_canary_runs("canary-r", 10).unwrap().len(), 1);
+            assert!(store.get_cdc_cursor("sink-r", "idx-r").unwrap().is_some());
+            assert!(store.get_tenant_mapping(&vec![1u8; 32]).unwrap().is_some());
+            assert!(store.get_rollover_policy("policy-r").unwrap().is_some());
+            assert!(store.get_search_ui_config("idx-r").unwrap().is_some());
+            assert!(store.get_admin_session("admin-r").unwrap().is_some());
+        }
     }
 }
