@@ -210,6 +210,7 @@ impl TaskStore for SqliteTaskStore {
         Ok(rows > 0)
     }
 
+    #[allow(unused_assignments)]
     fn list_tasks(&self, filter: &TaskFilter) -> Result<Vec<TaskRow>> {
         let conn = self.conn.lock().unwrap();
         let mut sql = "SELECT miroir_id, created_at, status, node_tasks, error, started_at, finished_at, index_uid, task_type, node_errors FROM tasks"
@@ -2296,7 +2297,7 @@ mod tests {
             ) {
                 let store = test_store();
                 let unique_names: std::collections::HashSet<String> = names.into_iter().collect();
-                for (i, name) in unique_names.iter().enumerate() {
+                for (_i, name) in unique_names.iter().enumerate() {
                     store.upsert_rollover_policy(&NewRolloverPolicy {
                         name: name.clone(),
                         write_alias: format!("{name}-w"),

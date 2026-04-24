@@ -988,7 +988,7 @@ mod tests {
         let mut node_tasks = HashMap::new();
         node_tasks.insert("node-0".to_string(), 1);
 
-        let (task1, task2) = rt.block_on(async {
+        let (task1, _task2) = rt.block_on(async {
             let t1 = registry.register_async(node_tasks.clone()).await.unwrap();
             let t2 = registry.register_async(node_tasks).await.unwrap();
             (t1, t2)
