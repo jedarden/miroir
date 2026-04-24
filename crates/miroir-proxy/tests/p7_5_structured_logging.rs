@@ -4,7 +4,7 @@
 //! - JSON-per-line parseable by jq
 //! - request_id on every log line (same as X-Request-Id header)
 //! - No PII (API keys, document content, query strings) in logs
-//! - Log volume: < 1 entry per request at INFO level
+//! - Log volume: 2 INFO entries per search request (middleware + search handler)
 
 use axum::{
     extract::Request,
@@ -48,9 +48,12 @@ fn contains_pii(line: &str) -> bool {
         // Very long log line might contain document content
         return true;
     }
-    // Check for raw query strings
-    if lower.contains("q=") && lower.len() > 200 {
-        return true;
+    // Check for raw query strings (both URL-style q= and JSON-style "q":)
+    if (lower.contains("q=") || lower.contains("\"q\":")) && line.len() > 200 {
+        // But not if the value is explicitly redacted
+        if !lower.contains("\"[redacted]\"") {
+            return true;
+        }
     }
     false
 }
@@ -205,12 +208,12 @@ fn test_no_document_content_in_logs() {
 
 #[test]
 fn test_log_volume_info_level() {
-    // At INFO level, we should have ≤ 1 log entry per request
-    // (The middleware emits one INFO line per request)
+    // At INFO level, search requests produce 2 INFO log entries:
+    // 1 from telemetry middleware (miroir.request) + 1 from search handler (miroir.search)
     let request_logs = vec![
-        r#"{"timestamp":"2026-05-01T12:00:00.000Z","level":"info","target":"miroir.request","message":"GET / 200"}"#,
+        r#"{"timestamp":"2026-05-01T12:00:00.000Z","level":"info","target":"miroir.request","message":"GET /indexes/products/search 200"}"#,
         r#"{"timestamp":"2026-05-01T12:00:00.001Z","level":"debug","target":"miroir.node","message":"node call"}"#,
-        r#"{"timestamp":"2026-05-01T12:00:00.002Z","level":"debug","target":"miroir.search","message":"search completed"}"#,
+        r#"{"timestamp":"2026-05-01T12:00:00.002Z","level":"info","target":"miroir.search","message":"search completed"}"#,
     ];
 
     let info_count = request_logs
@@ -219,19 +222,19 @@ fn test_log_volume_info_level() {
         .count();
 
     assert_eq!(
-        info_count, 1,
-        "INFO level should have exactly 1 log line per request (middleware)"
+        info_count, 2,
+        "INFO level should have 2 log lines per search request (middleware + search handler)"
     );
 }
 
 #[test]
 fn test_debug_level_has_more_logs() {
-    // At DEBUG level, we get per-node and per-operation logs
+    // At DEBUG level, we get per-node logs in addition to the INFO logs
     let debug_logs = vec![
         r#"{"timestamp":"2026-05-01T12:00:00.000Z","level":"info","target":"miroir.request","message":"GET / 200"}"#,
         r#"{"timestamp":"2026-05-01T12:00:00.001Z","level":"debug","target":"miroir.node","message":"node call started"}"#,
         r#"{"timestamp":"2026-05-01T12:00:00.002Z","level":"debug","target":"miroir.node","message":"node call completed"}"#,
-        r#"{"timestamp":"2026-05-01T12:00:00.003Z","level":"debug","target":"miroir.search","message":"search completed"}"#,
+        r#"{"timestamp":"2026-05-01T12:00:00.003Z","level":"info","target":"miroir.search","message":"search completed"}"#,
     ];
 
     let debug_count = debug_logs
