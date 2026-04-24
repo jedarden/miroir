@@ -239,15 +239,13 @@ async fn search_handler(
     // Structured log entry (plan §10 shape)
     // request_id and pod_id are included from the middleware span via
     // .with_current_span(true) on the JSON subscriber layer.
-    // Logged at DEBUG to keep INFO volume at ≤1 per request (the middleware
-    // already emits one INFO line for every response).
-    tracing::debug!(
+    tracing::info!(
         target: "miroir.search",
         index = %index,
+        duration_ms = start.elapsed().as_millis() as u64,
         node_count = node_count,
         estimated_hits = result.estimated_total_hits,
         degraded = result.degraded,
-        duration_ms = start.elapsed().as_millis() as u64,
         "search completed"
     );
 
