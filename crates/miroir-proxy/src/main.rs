@@ -163,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(otel_layer) = otel::init_otel_layer(&config) {
         let json_layer = tracing_subscriber::fmt::layer()
             .json()
+            .flatten_event(true)
             .with_target(true)
             .with_current_span(true)
             .with_span_list(false);
@@ -175,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         let json_layer = tracing_subscriber::fmt::layer()
             .json()
+            .flatten_event(true)
             .with_target(true)
             .with_current_span(true)
             .with_span_list(false);

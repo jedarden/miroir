@@ -291,15 +291,9 @@ fn test_log_levels_correct() {
 
 #[test]
 fn test_search_request_debug_redaction() {
-    // This test verifies that the Debug impl for SearchRequestBody
-    // redacts the query string to prevent PII leaks in logs
-    //
-    // The actual struct is in routes/search.rs and has:
-    //   field("q", &"[redacted]")
-    //   field("filter", &"[redacted]")
-    //
-    // We verify the behavior through the integration test that
-    // actually makes search requests and checks logs.
+    // Verified by unit test in routes/search.rs (SearchRequestBody is private).
+    // That test confirms the Debug impl redacts `q` and `filter` fields.
+    // This placeholder keeps the integration test file's acceptance criteria visible.
 }
 
 // ---------------------------------------------------------------------------
