@@ -262,3 +262,35 @@ pub fn strip_internal_fields(hit: &mut Value, client_requested_score: bool) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_search_request_debug_redaction() {
+        let body = SearchRequestBody {
+            q: Some("sensitive user query about private data".to_string()),
+            offset: Some(0),
+            limit: Some(20),
+            filter: Some(serde_json::json!({"email": "user@example.com"})),
+            facets: Some(vec!["category".to_string()]),
+            ranking_score: Some(false),
+            rest: serde_json::json!({}),
+        };
+        let debug_output = format!("{:?}", body);
+
+        assert!(
+            !debug_output.contains("sensitive"),
+            "Debug output should not contain raw query text"
+        );
+        assert!(
+            !debug_output.contains("user@example.com"),
+            "Debug output should not contain filter values"
+        );
+        assert!(
+            debug_output.contains("[redacted]"),
+            "Debug output should show [redacted] for sensitive fields"
+        );
+    }
+}
