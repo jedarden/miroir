@@ -18,7 +18,6 @@ use ::redis::{
 };
 use futures_util::StreamExt;
 use ::redis::AsyncIter;
-use tokio::runtime::Runtime;
 
 
 /// Redis connection pool wrapper.
@@ -26,8 +25,6 @@ use tokio::runtime::Runtime;
 pub struct RedisPool {
     /// Connection manager for async operations (shared across clones)
     manager: Arc<Mutex<ConnectionManager>>,
-    /// Dedicated runtime for blocking bridge (lazily created outside async context)
-    runtime: Arc<Option<Runtime>>,
 }
 
 impl RedisPool {
@@ -39,12 +36,8 @@ impl RedisPool {
             .await
             .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
-        // Defer runtime creation — building a runtime inside an existing tokio
-        // context panics.  The runtime is created lazily in `block_on` when we
-        // detect we are NOT inside a tokio runtime.
         Ok(Self {
             manager: Arc::new(Mutex::new(conn)),
-            runtime: Arc::new(None),
         })
     }
 
@@ -101,6 +94,11 @@ impl RedisTaskStore {
         })
     }
 
+    /// Return the key prefix used by this store.
+    pub fn key_prefix(&self) -> &str {
+        &self.key_prefix
+    }
+
     /// Generate a fully-qualified Redis key.
     fn key(&self, parts: &[&str]) -> String {
         format!("{}:{}", self.key_prefix, parts.join(":"))
@@ -131,6 +129,13 @@ impl RedisTaskStore {
         let node_tasks: HashMap<String, u64> = serde_json::from_str(&node_tasks_json)
             .map_err(|e| MiroirError::TaskStore(format!("invalid node_tasks JSON: {e}")))?;
         let error = opt_field(fields, "error");
+        let started_at = opt_field_i64(fields, "started_at");
+        let finished_at = opt_field_i64(fields, "finished_at");
+        let index_uid = opt_field(fields, "index_uid");
+        let task_type = opt_field(fields, "task_type");
+        let node_errors_json = opt_field(fields, "node_errors").unwrap_or_else(|| "{}".to_string());
+        let node_errors: HashMap<String, String> = serde_json::from_str(&node_errors_json)
+            .map_err(|e| MiroirError::TaskStore(format!("invalid node_errors JSON: {e}")))?;
 
         Ok(TaskRow {
             miroir_id,
@@ -138,6 +143,11 @@ impl RedisTaskStore {
             status,
             node_tasks,
             error,
+            started_at,
+            finished_at,
+            index_uid,
+            task_type,
+            node_errors,
         })
     }
 
@@ -230,7 +240,8 @@ impl TaskStore for RedisTaskStore {
             let current: Option<i64> = conn.get(&version_key).await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
-            let binary_version = 2i64; // Current max migration version
+            let binary_version = crate::schema_migrations::build_registry()
+                .max_version();
 
             // Validate that store version is not ahead of binary
             if let Some(v) = current {
@@ -264,6 +275,7 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let node_tasks_json = serde_json::to_string(&task.node_tasks)?;
+            let node_errors_json = serde_json::to_string(&task.node_errors)?;
 
             let mut pipe = pipe();
             pipe.hset_multiple(
@@ -273,10 +285,23 @@ impl TaskStore for RedisTaskStore {
                     ("created_at", created_at_str.as_str()),
                     ("status", task.status.as_str()),
                     ("node_tasks", node_tasks_json.as_str()),
+                    ("node_errors", node_errors_json.as_str()),
                 ],
             );
             if let Some(ref error) = task.error {
                 pipe.hset(&key, "error", error);
+            }
+            if let Some(started_at) = task.started_at {
+                pipe.hset(&key, "started_at", started_at);
+            }
+            if let Some(finished_at) = task.finished_at {
+                pipe.hset(&key, "finished_at", finished_at);
+            }
+            if let Some(ref index_uid) = task.index_uid {
+                pipe.hset(&key, "index_uid", index_uid);
+            }
+            if let Some(ref task_type) = task.task_type {
+                pipe.hset(&key, "task_type", task_type);
             }
             pipe.sadd(&index_key, &task.miroir_id);
             pool.pipeline_query::<()>(&mut pipe).await?;
@@ -371,6 +396,8 @@ impl TaskStore for RedisTaskStore {
         let manager = self.pool.manager.clone();
         let index_key = self.key(&["tasks", "_index"]);
         let status_filter = filter.status.clone();
+        let index_uid_filter = filter.index_uid.clone();
+        let task_type_filter = filter.task_type.clone();
         let limit = filter.limit;
         let offset = filter.offset;
         let key_prefix = self.key_prefix.clone();
@@ -392,9 +419,19 @@ impl TaskStore for RedisTaskStore {
 
                 let task = Self::task_from_hash(miroir_id, &fields)?;
 
-                // Apply status filter
+                // Apply filters
                 if let Some(ref status) = status_filter {
                     if &task.status != status {
+                        continue;
+                    }
+                }
+                if let Some(ref index_uid) = index_uid_filter {
+                    if task.index_uid.as_ref() != Some(index_uid) {
+                        continue;
+                    }
+                }
+                if let Some(ref task_type) = task_type_filter {
+                    if task.task_type.as_ref() != Some(task_type) {
                         continue;
                     }
                 }
@@ -839,6 +876,7 @@ impl TaskStore for RedisTaskStore {
         let job = job.clone();
         let key = format!("{}:jobs:{}", key_prefix, job.id);
         let queued_key = format!("{}:jobs:_queued", key_prefix);
+        let index_key = format!("{}:jobs:_index", key_prefix);
 
         self.block_on(async move {
             let mut pipe = pipe();
@@ -852,6 +890,7 @@ impl TaskStore for RedisTaskStore {
                     ("progress", job.progress.as_str()),
                 ],
             );
+            pipe.sadd(&index_key, &job.id);
             if job.state == "queued" {
                 pipe.sadd(&queued_key, &job.id);
             }
@@ -974,66 +1013,28 @@ impl TaskStore for RedisTaskStore {
             let mut result = Vec::new();
             let mut conn = manager.lock().await;
 
-            if state == "queued" {
-                // Use the _queued index for efficient listing
-                let queued_key = format!("{}:jobs:_queued", key_prefix);
-                let ids: Vec<String> = conn.smembers(&queued_key).await
+            // Use the _index set for O(cardinality) iteration (no SCAN).
+            let index_key = format!("{}:jobs:_index", key_prefix);
+            let ids: Vec<String> = conn.smembers(&index_key).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            for id in ids {
+                let key = format!("{}:jobs:{}", key_prefix, id);
+                let fields: HashMap<String, Value> = conn.hgetall(&key).await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
-                for id in ids {
-                    let key = format!("{}:jobs:{}", key_prefix, id);
-                    let fields: HashMap<String, Value> = conn.hgetall(&key).await
-                        .map_err(|e| MiroirError::Redis(e.to_string()))?;
-
-                    if !fields.is_empty() {
-                        result.push(JobRow {
-                            id,
-                            type_: get_field_string(&fields, "type")?,
-                            params: get_field_string(&fields, "params")?,
-                            state: "queued".to_string(),
-                            claimed_by: None,
-                            claim_expires_at: None,
-                            progress: get_field_string(&fields, "progress")?,
-                        });
-                    }
-                }
-            } else {
-                // For non-queued states, we need to iterate through job keys
-                // Use SCAN and filter by state
-                let job_prefix = format!("{}:jobs:", key_prefix);
-
-                // Use scan to get keys, collect them first to avoid borrow issues
-                let iter: AsyncIter<'_, String> = conn.scan().await
-                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
-
-                let mut keys = Vec::new();
-                use std::pin::Pin;
-                let mut key_stream = Pin::new(Box::new(iter));
-                while let Some(key) = key_stream.next().await {
-                    if key.starts_with(&job_prefix) && !key.contains(":_queued") {
-                        keys.push(key);
-                    }
-                }
-                drop(key_stream);
-
-                // Now process each key
-                for key in keys {
-                    let fields: HashMap<String, Value> = conn.hgetall(&key).await
-                        .map_err(|e| MiroirError::Redis(e.to_string()))?;
-
-                    if !fields.is_empty() {
-                        if let Ok(job_state) = get_field_string(&fields, "state") {
-                            if job_state == state {
-                                result.push(JobRow {
-                                    id: get_field_string(&fields, "id")?,
-                                    type_: get_field_string(&fields, "type")?,
-                                    params: get_field_string(&fields, "params")?,
-                                    state: job_state,
-                                    claimed_by: opt_field(&fields, "claimed_by"),
-                                    claim_expires_at: opt_field_i64(&fields, "claim_expires_at"),
-                                    progress: get_field_string(&fields, "progress")?,
-                                });
-                            }
+                if !fields.is_empty() {
+                    if let Ok(job_state) = get_field_string(&fields, "state") {
+                        if job_state == state {
+                            result.push(JobRow {
+                                id,
+                                type_: get_field_string(&fields, "type")?,
+                                params: get_field_string(&fields, "params")?,
+                                state: job_state,
+                                claimed_by: opt_field(&fields, "claimed_by"),
+                                claim_expires_at: opt_field_i64(&fields, "claim_expires_at"),
+                                progress: get_field_string(&fields, "progress")?,
+                            });
                         }
                     }
                 }
@@ -1347,6 +1348,8 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let cursor = cursor.clone();
         let key = format!("{}:cdc_cursor:{}:{}", key_prefix, cursor.sink_name, cursor.index_uid);
+        let index_key = format!("{}:cdc_cursor:_index:{}", key_prefix, cursor.sink_name);
+        let index_value = format!("{}:{}", cursor.sink_name, cursor.index_uid);
 
         let last_event_seq_str = cursor.last_event_seq.to_string();
         let updated_at_str = cursor.updated_at.to_string();
@@ -1357,6 +1360,7 @@ impl TaskStore for RedisTaskStore {
             pipe.hset(&key, "index_uid", &cursor.index_uid);
             pipe.hset(&key, "last_event_seq", &last_event_seq_str);
             pipe.hset(&key, "updated_at", &updated_at_str);
+            pipe.sadd(&index_key, &index_value);
 
             pool.pipeline_query::<()>(&mut pipe).await?;
 
@@ -1390,32 +1394,27 @@ impl TaskStore for RedisTaskStore {
     }
 
     fn list_cdc_cursors(&self, sink_name: &str) -> Result<Vec<CdcCursorRow>> {
-        let manager = self.pool.manager.clone();
+        let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
         let sink_name = sink_name.to_string();
-        let cdc_prefix = format!("{}:cdc_cursor:{}:", key_prefix, sink_name);
+        let index_key = format!("{}:cdc_cursor:_index:{}", key_prefix, sink_name);
 
         self.block_on(async move {
-            let mut result = Vec::new();
-            let mut conn = manager.lock().await;
-
-            // Use SCAN to iterate through all keys and filter
-            let iter: AsyncIter<'_, String> = conn.scan().await
+            // Use the _index set for O(cardinality) iteration (no SCAN).
+            let members: Vec<String> = pool.manager.lock().await
+                .smembers(&index_key).await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
-            // Collect matching keys first to avoid borrow issues
-            let mut keys = Vec::new();
-            use std::pin::Pin;
-            let mut key_stream = Pin::new(Box::new(iter));
-            while let Some(key) = key_stream.next().await {
-                if key.starts_with(&cdc_prefix) {
-                    keys.push(key);
-                }
-            }
-            drop(key_stream);
-
-            // Now process each key
-            for key in keys {
+            let mut result = Vec::new();
+            let mut conn = pool.manager.lock().await;
+            for member in members {
+                // member format: "sink_name:index_uid"
+                let parts: Vec<&str> = member.splitn(2, ':').collect();
+                let idx = match parts.get(1) {
+                    Some(idx) => idx.to_string(),
+                    None => continue,
+                };
+                let key = format!("{}:cdc_cursor:{}:{}", key_prefix, sink_name, idx);
                 let fields: HashMap<String, Value> = conn.hgetall(&key).await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
@@ -2415,6 +2414,11 @@ mod tests {
                 status: "queued".to_string(),
                 node_tasks,
                 error: None,
+                started_at: None,
+                finished_at: None,
+                index_uid: None,
+                task_type: None,
+                node_errors: HashMap::new(),
             };
             store.insert_task(&task).expect("Insert should succeed");
 
@@ -2557,6 +2561,11 @@ mod tests {
                     status: if i % 3 == 0 { "succeeded" } else { "queued" }.to_string(),
                     node_tasks,
                     error: if i % 10 == 0 { Some("test error".to_string()) } else { None },
+                    started_at: None,
+                    finished_at: None,
+                    index_uid: None,
+                    task_type: None,
+                    node_errors: HashMap::new(),
                 };
                 store.insert_task(&task).expect("Insert should succeed");
             }
@@ -3626,6 +3635,11 @@ mod tests {
                     status: "queued".to_string(),
                     node_tasks: node_tasks.clone(),
                     error: None,
+                    started_at: None,
+                    finished_at: None,
+                    index_uid: None,
+                    task_type: None,
+                    node_errors: HashMap::new(),
                 })
                 .expect("insert_task should work");
 

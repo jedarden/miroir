@@ -197,6 +197,15 @@ pub struct Metrics {
     search_ui_click_through_total: Option<CounterVec>,
     search_ui_p95_ms: Option<GaugeVec>,
 
+    // ── §14.9 Resource-pressure metrics (always present) ──
+    memory_pressure: Gauge,
+    cpu_throttled_seconds_total: Counter,
+    request_queue_depth: Gauge,
+    background_queue_depth: GaugeVec,
+    peer_pod_count: Gauge,
+    leader: Gauge,
+    owned_shards_count: Gauge,
+
     // ── Admin session sealing metrics (always present) ──
     admin_session_key_generated: Gauge,
     admin_session_revoked_total: Counter,
@@ -264,6 +273,13 @@ impl Clone for Metrics {
             search_ui_zero_hits_total: self.search_ui_zero_hits_total.clone(),
             search_ui_click_through_total: self.search_ui_click_through_total.clone(),
             search_ui_p95_ms: self.search_ui_p95_ms.clone(),
+            memory_pressure: self.memory_pressure.clone(),
+            cpu_throttled_seconds_total: self.cpu_throttled_seconds_total.clone(),
+            request_queue_depth: self.request_queue_depth.clone(),
+            background_queue_depth: self.background_queue_depth.clone(),
+            peer_pod_count: self.peer_pod_count.clone(),
+            leader: self.leader.clone(),
+            owned_shards_count: self.owned_shards_count.clone(),
             admin_session_key_generated: self.admin_session_key_generated.clone(),
             admin_session_revoked_total: self.admin_session_revoked_total.clone(),
         }
@@ -706,6 +722,37 @@ impl Metrics {
             (None, None, None, None, None)
         };
 
+        // ── §14.9 Resource-pressure metrics (always present) ──
+        let memory_pressure = Gauge::with_opts(
+            Opts::new("miroir_memory_pressure", "Memory pressure level (0=none, 1=low, 2=moderate/high)")
+        ).expect("create memory_pressure");
+        let cpu_throttled_seconds_total = Counter::with_opts(
+            Opts::new("miroir_cpu_throttled_seconds_total", "Total seconds of CPU throttling")
+        ).expect("create cpu_throttled_seconds_total");
+        let request_queue_depth = Gauge::with_opts(
+            Opts::new("miroir_request_queue_depth", "Number of requests queued waiting for processing")
+        ).expect("create request_queue_depth");
+        let background_queue_depth = GaugeVec::new(
+            Opts::new("miroir_background_queue_depth", "Number of background jobs queued by type"),
+            &["job_type"],
+        ).expect("create background_queue_depth");
+        let peer_pod_count = Gauge::with_opts(
+            Opts::new("miroir_peer_pod_count", "Number of peer miroir pods discovered")
+        ).expect("create peer_pod_count");
+        let leader = Gauge::with_opts(
+            Opts::new("miroir_leader", "Whether this pod holds the leader lease (1=yes, 0=no)")
+        ).expect("create leader");
+        let owned_shards_count = Gauge::with_opts(
+            Opts::new("miroir_owned_shards_count", "Number of shards owned by this pod")
+        ).expect("create owned_shards_count");
+        reg!(memory_pressure);
+        reg!(cpu_throttled_seconds_total);
+        reg!(request_queue_depth);
+        reg!(background_queue_depth);
+        reg!(peer_pod_count);
+        reg!(leader);
+        reg!(owned_shards_count);
+
         // ── Admin session sealing metrics (always present) ──
         let admin_session_key_generated = Gauge::with_opts(
             Opts::new("miroir_admin_session_key_generated",
@@ -778,6 +825,13 @@ impl Metrics {
             search_ui_zero_hits_total,
             search_ui_click_through_total,
             search_ui_p95_ms,
+            memory_pressure,
+            cpu_throttled_seconds_total,
+            request_queue_depth,
+            background_queue_depth,
+            peer_pod_count,
+            leader,
+            owned_shards_count,
             admin_session_key_generated,
             admin_session_revoked_total,
         }
@@ -1331,6 +1385,36 @@ impl Metrics {
         }
     }
 
+    // ── §14.9 Resource-pressure ──
+
+    pub fn set_memory_pressure(&self, level: u32) {
+        self.memory_pressure.set(level as f64);
+    }
+
+    pub fn inc_cpu_throttled_seconds(&self, secs: f64) {
+        self.cpu_throttled_seconds_total.inc_by(secs);
+    }
+
+    pub fn set_request_queue_depth(&self, depth: u64) {
+        self.request_queue_depth.set(depth as f64);
+    }
+
+    pub fn set_background_queue_depth(&self, job_type: &str, depth: u64) {
+        self.background_queue_depth.with_label_values(&[job_type]).set(depth as f64);
+    }
+
+    pub fn set_peer_pod_count(&self, count: u64) {
+        self.peer_pod_count.set(count as f64);
+    }
+
+    pub fn set_leader(&self, is_leader: bool) {
+        self.leader.set(if is_leader { 1.0 } else { 0.0 });
+    }
+
+    pub fn set_owned_shards_count(&self, count: u64) {
+        self.owned_shards_count.set(count as f64);
+    }
+
     pub fn registry(&self) -> &Registry {
         &self.registry
     }
@@ -1417,6 +1501,16 @@ mod tests {
         metrics.inc_search_ui_zero_hits("idx1");
         metrics.inc_search_ui_click_through("idx1");
         metrics.set_search_ui_p95_ms("idx1", 150.0);
+
+        // §14.9 Resource-pressure metrics
+        metrics.set_memory_pressure(0);
+        metrics.inc_cpu_throttled_seconds(1.5);
+        metrics.set_request_queue_depth(42);
+        metrics.set_background_queue_depth("rebalance", 5);
+        metrics.set_background_queue_depth("replication", 3);
+        metrics.set_peer_pod_count(3);
+        metrics.set_leader(true);
+        metrics.set_owned_shards_count(12);
 
         let encoded = metrics.encode_metrics();
         assert!(encoded.is_ok());

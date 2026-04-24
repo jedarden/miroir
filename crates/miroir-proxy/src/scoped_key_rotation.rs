@@ -63,35 +63,34 @@ pub async fn run_scoped_key_rotator(state: ScopedKeyRotationState) {
             warn!(pod_id = %state.pod_id, error = %e, "failed to register pod presence");
         }
 
-        // Try to acquire the rotation leader lease
-        let lease_scope = "search_ui_key_rotation";
-        let lease_now = now_ms();
-        let lease_ttl_ms = (state.config.leader_election.lease_ttl_s as i64) * 1000;
-        let expires_at = lease_now + lease_ttl_ms;
-
-        match state.redis.try_acquire_leader_lease(lease_scope, &state.pod_id, expires_at, lease_now) {
-            Ok(true) => {}
-            Ok(false) => continue, // Another pod holds the lease
-            Err(e) => {
-                warn!(error = %e, "failed to acquire rotation leader lease");
-                continue;
-            }
-        }
-
-        // We are the leader — check each index for rotation need
+        // Check each index for rotation need with a per-index leader lease
         let indexes = discover_scoped_indexes(&state).await;
-        for index_uid in indexes {
-            if let Err(e) = check_and_rotate(&state, &index_uid, false).await {
+        for index_uid in &indexes {
+            let lease_scope = format!("search_ui_key_rotation:{}", index_uid);
+            let lease_now = now_ms();
+            let lease_ttl_ms = (state.config.leader_election.lease_ttl_s as i64) * 1000;
+            let expires_at = lease_now + lease_ttl_ms;
+
+            match state.redis.try_acquire_leader_lease(&lease_scope, &state.pod_id, expires_at, lease_now) {
+                Ok(true) => {}
+                Ok(false) => continue, // Another pod holds the lease for this index
+                Err(e) => {
+                    warn!(index = %index_uid, error = %e, "failed to acquire rotation leader lease");
+                    continue;
+                }
+            }
+
+            if let Err(e) = check_and_rotate(&state, index_uid, false).await {
                 error!(index = %index_uid, error = %e, "scoped key rotation failed");
             }
-        }
 
-        // Renew the lease
-        let _ = state.redis.renew_leader_lease(
-            lease_scope,
-            &state.pod_id,
-            now_ms() + lease_ttl_ms,
-        );
+            // Renew the lease for this index
+            let _ = state.redis.renew_leader_lease(
+                &lease_scope,
+                &state.pod_id,
+                now_ms() + lease_ttl_ms,
+            );
+        }
     }
 }
 
@@ -244,7 +243,7 @@ fn should_rotate(current: &Option<SearchUiScopedKey>, config: &MiroirConfig) -> 
 }
 
 /// Mint a new scoped Meilisearch key via POST /keys on all nodes.
-async fn mint_scoped_key(
+pub async fn mint_scoped_key(
     client: &MeilisearchClient,
     config: &MiroirConfig,
     index_uid: &str,
@@ -287,7 +286,7 @@ async fn mint_scoped_key(
 }
 
 /// Revoke a previous scoped key from all Meilisearch nodes.
-async fn revoke_previous_key(
+pub async fn revoke_previous_key(
     client: &MeilisearchClient,
     config: &MiroirConfig,
     previous_uid: &str,

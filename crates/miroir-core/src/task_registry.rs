@@ -1,11 +1,12 @@
-//! In-memory task registry: manages Miroir task namespace.
+//! Task registry: manages Miroir task namespace.
 //!
-//! Phase 2 implementation: in-memory only (Phase 3 adds persistence).
+//! Phase 3: persistent backends (SQLite, Redis) alongside in-memory fallback.
 
 use crate::Result;
 use crate::task::{MiroirTask, NodeTask, NodeTaskStatus, TaskStatus, TaskFilter};
 use crate::error::MiroirError;
 use crate::scatter::NodeClient;
+use crate::task_store::TaskStore;
 use crate::topology::{Topology, NodeId};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -586,11 +587,366 @@ impl crate::task::TaskRegistry for InMemoryTaskRegistry {
     }
 }
 
+// ---------------------------------------------------------------------------
+// TaskRegistryImpl — runtime-selected backend (Phase 3)
+// ---------------------------------------------------------------------------
+
+/// Task status as lowercase string for store serialization.
+fn status_to_str(s: TaskStatus) -> &'static str {
+    match s {
+        TaskStatus::Enqueued => "enqueued",
+        TaskStatus::Processing => "processing",
+        TaskStatus::Succeeded => "succeeded",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Canceled => "canceled",
+    }
+}
+
+/// Parse task status from store string.
+fn str_to_status(s: &str) -> TaskStatus {
+    match s {
+        "succeeded" => TaskStatus::Succeeded,
+        "failed" => TaskStatus::Failed,
+        "processing" => TaskStatus::Processing,
+        "canceled" => TaskStatus::Canceled,
+        _ => TaskStatus::Enqueued,
+    }
+}
+
+/// Convert a store `TaskRow` to a `MiroirTask`.
+///
+/// Per-node status is not persisted; all nodes are set to `Enqueued`.
+/// The GET /tasks/{id} endpoint polls nodes to reconstruct per-node status.
+fn row_to_task(row: crate::task_store::TaskRow) -> MiroirTask {
+    let node_tasks: HashMap<String, NodeTask> = row
+        .node_tasks
+        .into_iter()
+        .map(|(node_id, task_uid)| {
+            (
+                node_id,
+                NodeTask {
+                    task_uid,
+                    status: NodeTaskStatus::Enqueued,
+                },
+            )
+        })
+        .collect();
+
+    MiroirTask {
+        miroir_id: row.miroir_id,
+        created_at: row.created_at as u64,
+        started_at: row.started_at.map(|t| t as u64),
+        finished_at: row.finished_at.map(|t| t as u64),
+        status: str_to_status(&row.status),
+        index_uid: row.index_uid,
+        task_type: row.task_type,
+        node_tasks,
+        error: row.error,
+        node_errors: row.node_errors,
+    }
+}
+
+/// Convert a route `TaskFilter` to a store `TaskFilter`.
+fn filter_to_store(f: &TaskFilter) -> crate::task_store::TaskFilter {
+    crate::task_store::TaskFilter {
+        status: f.status.map(|s| status_to_str(s).to_string()),
+        index_uid: f.index_uid.clone(),
+        task_type: f.task_type.clone(),
+        limit: f.limit,
+        offset: f.offset,
+    }
+}
+
+/// Runtime-selected task registry backend.
+///
+/// - `InMemory`: Phase 2 behaviour, tasks lost on restart (default for sqlite without path).
+/// - `Sqlite`: persisted via `SqliteTaskStore`, survives restarts.
+/// - `Redis`: persisted via `RedisTaskStore`, required for multi-replica HPA.
+#[derive(Clone)]
+pub enum TaskRegistryImpl {
+    InMemory(InMemoryTaskRegistry),
+    Sqlite(Arc<crate::task_store::SqliteTaskStore>),
+    #[cfg(feature = "redis-store")]
+    Redis(Arc<crate::task_store::RedisTaskStore>),
+}
+
+impl TaskRegistryImpl {
+    /// Open a SQLite-backed registry at the given path.
+    pub fn sqlite(path: &str) -> Result<Self> {
+        let store = crate::task_store::SqliteTaskStore::open(std::path::Path::new(path))?;
+        store.migrate()?;
+        Ok(Self::Sqlite(Arc::new(store)))
+    }
+
+    /// Open a Redis-backed registry at the given URL.
+    #[cfg(feature = "redis-store")]
+    pub fn redis(url: &str) -> Result<Self> {
+        let store = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(crate::task_store::RedisTaskStore::open(url))
+        })?;
+        store.migrate()?;
+        Ok(Self::Redis(Arc::new(store)))
+    }
+
+    /// In-memory fallback (no persistence).
+    pub fn in_memory() -> Self {
+        Self::InMemory(InMemoryTaskRegistry::new())
+    }
+
+    /// Return a reference to the underlying `SqliteTaskStore`, if this is the Sqlite variant.
+    pub fn as_sqlite(&self) -> Option<&Arc<crate::task_store::SqliteTaskStore>> {
+        match self {
+            TaskRegistryImpl::Sqlite(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Return a reference to the underlying `RedisTaskStore`, if this is the Redis variant.
+    #[cfg(feature = "redis-store")]
+    pub fn as_redis(&self) -> Option<&Arc<crate::task_store::RedisTaskStore>> {
+        match self {
+            TaskRegistryImpl::Redis(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// Register a new task with metadata (sync, compatible with `TaskRegistry` trait).
+    pub fn register_with_metadata(
+        &self,
+        node_tasks: HashMap<String, u64>,
+        index_uid: Option<String>,
+        task_type: Option<String>,
+    ) -> Result<MiroirTask> {
+        match self {
+            TaskRegistryImpl::InMemory(r) => {
+                crate::task::TaskRegistry::register_with_metadata(
+                    r, node_tasks, index_uid, task_type,
+                )
+            }
+            TaskRegistryImpl::Sqlite(store) => {
+                let miroir_id = format!("mtask-{}", Uuid::new_v4());
+                let created_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| MiroirError::Task(format!("clock error: {}", e)))?
+                    .as_millis() as i64;
+
+                let new_task = crate::task_store::NewTask {
+                    miroir_id: miroir_id.clone(),
+                    created_at,
+                    status: "enqueued".to_string(),
+                    node_tasks,
+                    error: None,
+                    started_at: None,
+                    finished_at: None,
+                    index_uid,
+                    task_type,
+                    node_errors: HashMap::new(),
+                };
+
+                store.insert_task(&new_task)?;
+
+                Ok(MiroirTask {
+                    miroir_id: new_task.miroir_id,
+                    created_at: new_task.created_at as u64,
+                    started_at: None,
+                    finished_at: None,
+                    status: TaskStatus::Enqueued,
+                    index_uid: new_task.index_uid,
+                    task_type: new_task.task_type,
+                    node_tasks: new_task
+                        .node_tasks
+                        .into_iter()
+                        .map(|(nid, uid)| (nid, NodeTask { task_uid: uid, status: NodeTaskStatus::Enqueued }))
+                        .collect(),
+                    error: None,
+                    node_errors: HashMap::new(),
+                })
+            }
+            #[cfg(feature = "redis-store")]
+            TaskRegistryImpl::Redis(store) => {
+                let miroir_id = format!("mtask-{}", Uuid::new_v4());
+                let created_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| MiroirError::Task(format!("clock error: {}", e)))?
+                    .as_millis() as i64;
+
+                let new_task = crate::task_store::NewTask {
+                    miroir_id: miroir_id.clone(),
+                    created_at,
+                    status: "enqueued".to_string(),
+                    node_tasks,
+                    error: None,
+                    started_at: None,
+                    finished_at: None,
+                    index_uid,
+                    task_type,
+                    node_errors: HashMap::new(),
+                };
+
+                store.insert_task(&new_task)?;
+
+                Ok(MiroirTask {
+                    miroir_id: new_task.miroir_id,
+                    created_at: new_task.created_at as u64,
+                    started_at: None,
+                    finished_at: None,
+                    status: TaskStatus::Enqueued,
+                    index_uid: new_task.index_uid,
+                    task_type: new_task.task_type,
+                    node_tasks: new_task
+                        .node_tasks
+                        .into_iter()
+                        .map(|(nid, uid)| (nid, NodeTask { task_uid: uid, status: NodeTaskStatus::Enqueued }))
+                        .collect(),
+                    error: None,
+                    node_errors: HashMap::new(),
+                })
+            }
+        }
+    }
+
+    /// Get a task by Miroir ID.
+    pub fn get(&self, miroir_id: &str) -> Result<Option<MiroirTask>> {
+        match self {
+            TaskRegistryImpl::InMemory(r) => crate::task::TaskRegistry::get(r, miroir_id),
+            TaskRegistryImpl::Sqlite(store) => {
+                Ok(store.get_task(miroir_id)?.map(row_to_task))
+            }
+            #[cfg(feature = "redis-store")]
+            TaskRegistryImpl::Redis(store) => {
+                Ok(store.get_task(miroir_id)?.map(row_to_task))
+            }
+        }
+    }
+
+    /// Update the overall task status.
+    pub fn update_status(&self, miroir_id: &str, status: TaskStatus) -> Result<()> {
+        match self {
+            TaskRegistryImpl::InMemory(r) => {
+                crate::task::TaskRegistry::update_status(r, miroir_id, status)
+            }
+            TaskRegistryImpl::Sqlite(store) => {
+                store.update_task_status(miroir_id, status_to_str(status))?;
+                Ok(())
+            }
+            #[cfg(feature = "redis-store")]
+            TaskRegistryImpl::Redis(store) => {
+                store.update_task_status(miroir_id, status_to_str(status))?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Update a node task's status.
+    ///
+    /// For persistent backends this is a no-op for per-node status since it is
+    /// reconstructed from polling on each GET /tasks/{id}. The store only persists
+    /// the overall task status and node task UIDs.
+    pub fn update_node_task(
+        &self,
+        miroir_id: &str,
+        node_id: &str,
+        node_status: NodeTaskStatus,
+    ) -> Result<()> {
+        match self {
+            TaskRegistryImpl::InMemory(r) => {
+                crate::task::TaskRegistry::update_node_task(r, miroir_id, node_id, node_status)
+            }
+            // Per-node status is reconstructed from polling on each GET; not persisted.
+            TaskRegistryImpl::Sqlite(_) | _ => Ok(()),
+        }
+    }
+
+    /// List tasks with optional filtering.
+    pub fn list(&self, filter: TaskFilter) -> Result<Vec<MiroirTask>> {
+        match self {
+            TaskRegistryImpl::InMemory(r) => crate::task::TaskRegistry::list(r, filter),
+            TaskRegistryImpl::Sqlite(store) => {
+                let store_filter = filter_to_store(&filter);
+                let rows = store.list_tasks(&store_filter)?;
+                Ok(rows.into_iter().map(row_to_task).collect())
+            }
+            #[cfg(feature = "redis-store")]
+            TaskRegistryImpl::Redis(store) => {
+                let store_filter = filter_to_store(&filter);
+                let rows = store.list_tasks(&store_filter)?;
+                Ok(rows.into_iter().map(row_to_task).collect())
+            }
+        }
+    }
+
+    /// Count total tasks.
+    pub fn count(&self) -> usize {
+        match self {
+            TaskRegistryImpl::InMemory(r) => crate::task::TaskRegistry::count(r),
+            TaskRegistryImpl::Sqlite(store) => {
+                store.task_count().unwrap_or(0) as usize
+            }
+            #[cfg(feature = "redis-store")]
+            TaskRegistryImpl::Redis(store) => {
+                store.task_count().unwrap_or(0) as usize
+            }
+        }
+    }
+
+    /// Set error on a task.
+    pub fn set_error(&self, miroir_id: &str, error: &str) -> Result<()> {
+        match self {
+            TaskRegistryImpl::InMemory(_) => Ok(()),
+            TaskRegistryImpl::Sqlite(store) => {
+                store.set_task_error(miroir_id, error)?;
+                Ok(())
+            }
+            #[cfg(feature = "redis-store")]
+            TaskRegistryImpl::Redis(store) => {
+                store.set_task_error(miroir_id, error)?;
+                Ok(())
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::task::TaskRegistry for TaskRegistryImpl {
+    fn register_with_metadata(
+        &self,
+        node_tasks: HashMap<String, u64>,
+        index_uid: Option<String>,
+        task_type: Option<String>,
+    ) -> Result<MiroirTask> {
+        TaskRegistryImpl::register_with_metadata(self, node_tasks, index_uid, task_type)
+    }
+
+    fn get(&self, miroir_id: &str) -> Result<Option<MiroirTask>> {
+        TaskRegistryImpl::get(self, miroir_id)
+    }
+
+    fn update_status(&self, miroir_id: &str, status: TaskStatus) -> Result<()> {
+        TaskRegistryImpl::update_status(self, miroir_id, status)
+    }
+
+    fn update_node_task(
+        &self,
+        miroir_id: &str,
+        node_id: &str,
+        node_status: NodeTaskStatus,
+    ) -> Result<()> {
+        TaskRegistryImpl::update_node_task(self, miroir_id, node_id, node_status)
+    }
+
+    fn list(&self, filter: TaskFilter) -> Result<Vec<MiroirTask>> {
+        TaskRegistryImpl::list(self, filter)
+    }
+
+    fn count(&self) -> usize {
+        TaskRegistryImpl::count(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::TaskRegistry;
-
     #[test]
     fn test_in_memory_register_creates_task() {
         let rt = tokio::runtime::Runtime::new().unwrap();

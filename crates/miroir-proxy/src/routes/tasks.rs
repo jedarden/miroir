@@ -158,8 +158,7 @@ where
     // Get total count (without limit/offset)
     let total = state
         .task_registry
-        .count()
-        .await;
+        .count();
 
     // Convert to Meilisearch-compatible response
     let results = tasks.into_iter().map(task_to_response).collect();
@@ -281,6 +280,27 @@ where
         } else {
             TaskStatus::Enqueued
         };
+
+        // Record terminal task status in Prometheus (§10 task metrics)
+        if matches!(new_status, TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled) {
+            let status_str = match new_status {
+                TaskStatus::Succeeded => "succeeded",
+                TaskStatus::Failed => "failed",
+                TaskStatus::Canceled => "canceled",
+                _ => unreachable!(),
+            };
+            state.metrics.inc_tasks_total(status_str);
+
+            // Observe task processing age (time from creation to terminal state)
+            let age_ms = {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                now_ms.saturating_sub(task.created_at)
+            };
+            state.metrics.observe_task_processing_age(age_ms as f64 / 1000.0);
+        }
 
         // Update the task status in the registry
         let _ = state.task_registry.update_status(&id, new_status);
@@ -450,7 +470,7 @@ fn format_millis_timestamp(millis: u64) -> String {
 mod tests {
     use super::*;
     use miroir_core::task::{NodeTask, NodeTaskStatus, TaskFilter};
-    use miroir_core::task_registry::InMemoryTaskRegistry;
+    use miroir_core::task_registry::TaskRegistryImpl;
     use std::collections::HashMap;
 
     #[test]
@@ -551,28 +571,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_in_memory_task_registry() {
-        let registry = InMemoryTaskRegistry::new();
+    async fn test_task_registry_impl() {
+        let registry = TaskRegistryImpl::in_memory();
         let mut node_tasks = HashMap::new();
         node_tasks.insert("node-0".to_string(), 1);
         node_tasks.insert("node-1".to_string(), 2);
 
         let task = registry
-            .register_async(node_tasks)
-            .await
+            .register_with_metadata(node_tasks, None, None)
             .unwrap();
 
         assert!(task.miroir_id.starts_with("mtask-"));
         assert_eq!(task.status, TaskStatus::Enqueued);
 
         // Get the task
-        let retrieved = registry.get_async(&task.miroir_id).await;
+        let retrieved = registry.get(&task.miroir_id).unwrap();
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().miroir_id, task.miroir_id);
 
         // List tasks
         let filter = TaskFilter::default();
-        let tasks = registry.list_async(&filter).await.unwrap();
+        let tasks = registry.list(filter).unwrap();
         assert_eq!(tasks.len(), 1);
     }
 }

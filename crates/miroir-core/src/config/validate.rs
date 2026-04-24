@@ -187,6 +187,31 @@ pub fn validate(cfg: &MiroirConfig) -> Result<(), ConfigError> {
         }
     }
 
+    // CORS allowed_origins must not contain wildcards for admin UI (plan §9).
+    // Admin UI is a sensitive endpoint — wildcard CORS origins would allow
+    // any site to make authenticated requests via user cookies.
+    for value in &cfg.admin_ui.cors_allowed_origins {
+        if value == "*" {
+            return Err(ConfigError::Validation(
+                "admin_ui.cors_allowed_origins cannot contain wildcard '*' \
+                 (use specific origins or leave empty for same-origin)".into(),
+            ));
+        }
+    }
+
+    // Admin UI allowed_origins must not contain wildcard when admin UI is enabled (plan §9).
+    // Use "same-origin" (the default) or list specific origins.
+    if cfg.admin_ui.enabled {
+        for value in &cfg.admin_ui.allowed_origins {
+            if value == "*" {
+                return Err(ConfigError::Validation(
+                    "admin_ui.allowed_origins cannot contain wildcard '*' when admin_ui is enabled \
+                     (use 'same-origin' or specific origins)".into(),
+                ));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -331,5 +356,35 @@ mod tests {
         let err = validate(&cfg).unwrap_err();
         assert!(err.to_string().contains("csp_overrides"));
         assert!(err.to_string().contains("wildcard"));
+    }
+
+    #[test]
+    fn rejects_admin_ui_cors_wildcard() {
+        let mut cfg = dev_config();
+        cfg.admin_ui.cors_allowed_origins = vec!["*".to_string()];
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("cors_allowed_origins"));
+        assert!(err.to_string().contains("wildcard"));
+    }
+
+    #[test]
+    fn rejects_admin_ui_allowed_origins_wildcard() {
+        let mut cfg = dev_config();
+        cfg.admin_ui.enabled = true;
+        cfg.admin_ui.allowed_origins = vec!["*".to_string()];
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("allowed_origins"));
+        assert!(err.to_string().contains("wildcard"));
+    }
+
+    #[test]
+    fn allows_specific_cors_origins() {
+        let mut cfg = dev_config();
+        cfg.admin_ui.cors_allowed_origins = vec![
+            "https://admin.example.com".to_string(),
+            "https://ops.example.com".to_string(),
+        ];
+        cfg.admin_ui.allowed_origins = vec!["same-origin".to_string()];
+        assert!(validate(&cfg).is_ok());
     }
 }

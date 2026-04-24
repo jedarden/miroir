@@ -19,13 +19,17 @@ use tracing::{debug, warn};
 use crate::routes::admin_endpoints::AppState;
 
 /// Node client implementation using the HTTP client.
+///
+/// Wraps each node call with Prometheus metrics recording for
+/// `miroir_node_request_duration_seconds` and `miroir_node_errors_total`.
 pub struct ProxyNodeClient {
     client: Arc<crate::client::HttpClient>,
+    metrics: crate::middleware::Metrics,
 }
 
 impl ProxyNodeClient {
-    pub fn new(client: Arc<crate::client::HttpClient>) -> Self {
-        Self { client }
+    pub fn new(client: Arc<crate::client::HttpClient>, metrics: crate::middleware::Metrics) -> Self {
+        Self { client, metrics }
     }
 }
 
@@ -37,7 +41,14 @@ impl NodeClient for ProxyNodeClient {
         address: &str,
         request: &SearchRequest,
     ) -> std::result::Result<Value, miroir_core::scatter::NodeError> {
-        self.client.search_node(node, address, request).await
+        let start = Instant::now();
+        let result = self.client.search_node(node, address, request).await;
+        let elapsed = start.elapsed().as_secs_f64();
+        self.metrics.record_node_request_duration(node.as_str(), "search", elapsed);
+        if let Err(ref e) = result {
+            self.metrics.inc_node_errors(node.as_str(), error_label(e));
+        }
+        result
     }
 
     async fn preflight_node(
@@ -46,7 +57,22 @@ impl NodeClient for ProxyNodeClient {
         address: &str,
         request: &miroir_core::scatter::PreflightRequest,
     ) -> std::result::Result<miroir_core::scatter::PreflightResponse, miroir_core::scatter::NodeError> {
-        self.client.preflight_node(node, address, request).await
+        let start = Instant::now();
+        let result = self.client.preflight_node(node, address, request).await;
+        let elapsed = start.elapsed().as_secs_f64();
+        self.metrics.record_node_request_duration(node.as_str(), "preflight", elapsed);
+        if let Err(ref e) = result {
+            self.metrics.inc_node_errors(node.as_str(), error_label(e));
+        }
+        result
+    }
+}
+
+fn error_label(e: &miroir_core::scatter::NodeError) -> &'static str {
+    match e {
+        miroir_core::scatter::NodeError::NetworkError(_) => "network",
+        miroir_core::scatter::NodeError::HttpError { .. } => "http",
+        miroir_core::scatter::NodeError::Timeout => "timeout",
     }
 }
 
@@ -171,7 +197,7 @@ async fn search_handler(
         search_key,
         state.config.scatter.node_timeout_ms,
     ));
-    let client = ProxyNodeClient::new(http_client);
+    let client = ProxyNodeClient::new(http_client, state.metrics.clone());
 
     // Use score-based merge strategy (OP#4: requires global IDF)
     let strategy = ScoreMergeStrategy::new();

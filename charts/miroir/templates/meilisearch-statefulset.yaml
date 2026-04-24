@@ -51,8 +51,8 @@ spec:
             - name: MEILI_MASTER_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "miroir.secretName" . }}
-                  key: nodeMasterKey
+                  name: {{ include "miroir.fullname" . }}-meili-secret
+                  key: masterKey
             - name: MEILI_ENV
               value: "production"
             {{- with .Values.meilisearch.env }}

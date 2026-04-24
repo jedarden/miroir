@@ -215,6 +215,11 @@ mod tests {
                 status: status.to_string(),
                 node_tasks: HashMap::new(),
                 error: None,
+                started_at: None,
+                finished_at: None,
+                index_uid: None,
+                task_type: None,
+                node_errors: HashMap::new(),
             })
             .unwrap();
     }
