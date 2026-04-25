@@ -932,6 +932,10 @@ fn extract_path_template(request: &Request) -> String {
 }
 
 /// Main middleware that combines request ID injection, structured logging, and Prometheus metrics.
+///
+/// IMPORTANT: This middleware must be applied AFTER request_id_middleware in the layer stack
+/// (i.e., its layer() call must come BEFORE request_id_middleware's layer() call).
+/// This ensures the request_id header is already set when this middleware runs.
 pub async fn telemetry_middleware(
     State(telemetry): State<TelemetryState>,
     mut req: Request,
@@ -943,11 +947,12 @@ pub async fn telemetry_middleware(
     let metrics = telemetry.metrics.clone();
     let pod_id = telemetry.pod_id.clone();
 
-    // Generate or extract request ID
+    // Extract request ID from header (set by request_id_middleware)
+    // The header must already exist because request_id_middleware runs first.
     let request_id = req
         .headers()
         .get_request_id()
-        .unwrap_or_else(generate_request_id);
+        .expect("request_id header must be set by request_id_middleware");
     req.headers_mut().set_request_id(&request_id);
 
     // Create span for structured logging with pod_id included.

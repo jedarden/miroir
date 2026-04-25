@@ -19,7 +19,7 @@ fn parse_log_line(line: &str) -> Option<serde_json::Value> {
     serde_json::from_str(line).ok()
 }
 
-/// Helper: check if a string is a valid 8-char hex request ID
+/// Helper: check if a string is a valid 8-char hex request ID (from RequestId::new)
 fn is_valid_request_id(s: &str) -> bool {
     s.len() == 8 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
@@ -96,7 +96,7 @@ fn test_request_id_format_in_logs() {
         "level": "info",
         "target": "miroir.request",
         "message": "search completed",
-        "request_id": "a1b2c3d4e5f67890",
+        "request_id": "a1b2c3d4",
         "pod_id": "test-pod",
         "duration_ms": 42
     }"#;
@@ -104,8 +104,8 @@ fn test_request_id_format_in_logs() {
     let parsed = parse_log_line(sample_log).unwrap();
     let request_id = parsed["request_id"].as_str().unwrap();
 
-    // Request IDs should be 16 hex chars (from generate_request_id)
-    assert_eq!(request_id.len(), 16);
+    // Request IDs should be 8 hex chars (from RequestId::new())
+    assert_eq!(request_id.len(), 8);
     assert!(request_id.chars().all(|c| c.is_ascii_hexdigit()));
 }
 
@@ -116,13 +116,13 @@ fn test_request_id_format_in_logs() {
 #[test]
 fn test_request_id_extraction_from_logs() {
     let logs = vec![
-        r#"{"timestamp":"2026-05-01T12:00:00.000Z","level":"info","target":"miroir.request","request_id":"abc123def4567890","pod_id":"pod-1","message":"GET /search 200"}"#,
-        r#"{"timestamp":"2026-05-01T12:00:00.001Z","level":"debug","target":"miroir.node","request_id":"abc123def4567890","pod_id":"pod-1","node_id":"node-1","message":"node call started"}"#,
-        r#"{"timestamp":"2026-05-01T12:00:00.010Z","level":"info","target":"miroir.search","request_id":"abc123def4567890","pod_id":"pod-1","index":"products","message":"search completed"}"#,
+        r#"{"timestamp":"2026-05-01T12:00:00.000Z","level":"info","target":"miroir.request","request_id":"abc12345","pod_id":"pod-1","message":"GET /search 200"}"#,
+        r#"{"timestamp":"2026-05-01T12:00:00.001Z","level":"debug","target":"miroir.node","request_id":"abc12345","pod_id":"pod-1","node_id":"node-1","message":"node call started"}"#,
+        r#"{"timestamp":"2026-05-01T12:00:00.010Z","level":"info","target":"miroir.search","request_id":"abc12345","pod_id":"pod-1","index":"products","message":"search completed"}"#,
     ];
 
-    // Extract all logs with request_id = "abc123def4567890"
-    let target_id = "abc123def4567890";
+    // Extract all logs with request_id = "abc12345"
+    let target_id = "abc12345";
     let matching_logs: Vec<_> = logs
         .iter()
         .filter(|line| line.contains(&format!("\"request_id\":\"{}\"", target_id)))

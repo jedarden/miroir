@@ -271,24 +271,32 @@ async fn main() -> anyhow::Result<()> {
         .nest("/search", search::router::<UnifiedState>())
         .nest("/settings", settings::router::<UnifiedState>())
         .nest("/tasks", tasks::router::<UnifiedState>())
-        .layer(axum::middleware::from_fn(
-            middleware::request_id_middleware,
-        ))
-        .layer(axum::extract::DefaultBodyLimit::max(
-            config.server.max_body_bytes as usize,
-        ))
-        .layer(axum::Extension(state.admin.config.clone()))
-        .layer(axum::Extension(std::sync::Arc::new(state.admin.clone())))
-        .layer(axum::middleware::from_fn_with_state(
-            state.auth.clone(),
-            auth::auth_middleware,
-        ))
+        // IMPORTANT: Layer order matters! Last layer() call = outermost = runs first.
+        // The middleware stack (from outermost to innermost):
+        // 1. csrf_middleware - runs first
+        // 2. auth_middleware
+        // 3. Extension layers
+        // 4. request_id_middleware - sets X-Request-Id header
+        // 5. telemetry_middleware - reads X-Request-Id, creates tracing span with request_id field
+        //    The span's request_id field propagates to all child log events via with_current_span(true)
         .layer(axum::middleware::from_fn_with_state(
             auth::CsrfState {
                 auth: state.auth.clone(),
                 redis_store: state.redis_store.clone(),
             },
             auth::csrf_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.auth.clone(),
+            auth::auth_middleware,
+        ))
+        .layer(axum::Extension(std::sync::Arc::new(state.admin.clone())))
+        .layer(axum::Extension(state.admin.config.clone()))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            config.server.max_body_bytes as usize,
+        ))
+        .layer(axum::middleware::from_fn(
+            middleware::request_id_middleware,
         ))
         .layer(axum::middleware::from_fn_with_state(
             TelemetryState {

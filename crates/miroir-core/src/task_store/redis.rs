@@ -3067,6 +3067,47 @@ mod tests {
             assert_eq!(deleted, 0);
         }
 
+        #[tokio::test]
+        async fn test_redis_sessions_expire() {
+            let (store, _url) = setup_redis_store().await;
+            store.migrate().expect("Migration should succeed");
+
+            // Create a session with a short TTL (1 second)
+            let session = SessionRow {
+                session_id: "sess-expire".to_string(),
+                last_write_mtask_id: Some("task-1".to_string()),
+                last_write_at: Some(now_ms()),
+                pinned_group: Some(1),
+                min_settings_version: 1,
+                ttl: now_ms() + 1000, // expires in 1 second
+            };
+            store.upsert_session(&session).expect("Upsert should succeed");
+
+            // Verify session exists immediately
+            let got = store
+                .get_session("sess-expire")
+                .expect("Get should succeed")
+                .expect("Session should exist immediately after creation");
+            assert_eq!(got.session_id, "sess-expire");
+
+            // Verify EXPIRE is set on the key (TTL should be > 0)
+            let key = "miroir:session:sess-expire";
+            let mut conn = store.pool.manager.lock().await;
+            let ttl: i64 = conn.ttl(key).await.expect("TTL should work");
+            assert!(ttl > 0, "Session key should have EXPIRE set, got TTL={}", ttl);
+            assert!(ttl <= 2, "TTL should be approximately 1 second, got {}", ttl);
+            drop(conn);
+
+            // Wait for expiration (2 seconds to be safe, allowing for Redis timing granularity)
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+            // Verify session is gone after expiration
+            let got = store
+                .get_session("sess-expire")
+                .expect("Get should succeed");
+            assert!(got.is_none(), "Session should be expired and gone after TTL");
+        }
+
         // --- Table 5: idempotency tests ---
 
         #[tokio::test]

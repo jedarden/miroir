@@ -570,7 +570,7 @@ mod tests {
         assert!(ts.contains("Z"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_task_registry_impl() {
         let registry = TaskRegistryImpl::in_memory();
         let mut node_tasks = HashMap::new();
