@@ -1,8 +1,7 @@
 //! Search route handler with DFS (Distributed Frequency Search) support.
 
 use axum::extract::{Extension, Path};
-use tracing::instrument;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use miroir_core::config::UnavailableShardPolicy;
@@ -14,9 +13,17 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, warn};
+use tracing::{debug, info_span, instrument, warn};
 
-use crate::routes::admin_endpoints::AppState;
+use crate::routes::admin_endpoints::{AppState, parse_rate_limit};
+
+/// Hash a value for logging (obfuscates sensitive data like IPs).
+fn hash_for_log(value: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
 
 /// Node client implementation using the HTTP client.
 ///
@@ -126,10 +133,65 @@ impl std::fmt::Debug for SearchRequestBody {
 async fn search_handler(
     Path(index): Path<String>,
     Extension(state): Extension<Arc<AppState>>,
+    headers: HeaderMap,
     Json(body): Json<SearchRequestBody>,
 ) -> Result<Response, StatusCode> {
     let start = Instant::now();
     let client_requested_score = body.ranking_score.unwrap_or(false);
+
+    // Extract source IP from X-Forwarded-For or X-Real-IP (trust proxy)
+    let source_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()))
+        .unwrap_or("unknown")
+        .trim()
+        .to_string();
+
+    // Check rate limit for search UI (plan §4)
+    let (limit, window_seconds) = match parse_rate_limit(&state.config.search_ui.rate_limit.per_ip) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            warn!(error = %e, "invalid search_ui.rate_limit.per_ip config, using default");
+            (60, 60) // Default: 60 requests per minute
+        }
+    };
+
+    let backend = state.config.search_ui.rate_limit.backend.as_str();
+    if backend == "redis" {
+        if let Some(ref redis) = state.redis_store {
+            match redis.check_rate_limit_search_ui(&source_ip, limit, window_seconds) {
+                Ok((allowed, _wait_seconds)) => {
+                    if !allowed {
+                        warn!(
+                            source_ip_hash = hash_for_log(&source_ip),
+                            "search UI rate limited (redis)"
+                        );
+                        return Err(StatusCode::TOO_MANY_REQUESTS);
+                    }
+                    // Allowed, proceed
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to check search UI rate limit");
+                    // Continue anyway on error (fail-open)
+                }
+            }
+        }
+    } else if backend == "local" {
+        let (allowed, _wait_seconds) = state.local_search_ui_rate_limiter.check(
+            &source_ip,
+            limit,
+            window_seconds * 1000,
+        );
+        if !allowed {
+            warn!(
+                source_ip_hash = hash_for_log(&source_ip),
+                "search UI rate limited (local backend)"
+            );
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+    }
 
     // Get the scoped key for this index (plan §13.21).
     // If a scoped key exists, use primary_key (or previous_key during rotation overlap).

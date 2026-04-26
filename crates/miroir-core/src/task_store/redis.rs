@@ -1970,6 +1970,46 @@ impl RedisTaskStore {
         })
     }
 
+    // --- search_ui rate limit ---
+
+    /// Check search UI rate limit for a given IP.
+    /// Returns (allowed, wait_seconds).
+    /// Uses a simple INCR + EXPIRE pattern for sliding window.
+    pub fn check_rate_limit_search_ui(
+        &self,
+        ip: &str,
+        limit: u64,
+        window_seconds: u64,
+    ) -> Result<(bool, Option<u64>)> {
+        let pool = self.pool.clone();
+        let key_prefix = self.key_prefix.clone();
+        let ip = ip.to_string();
+        let key = format!("{}:ratelimit:searchui:{}", key_prefix, ip);
+
+        self.block_on(async move {
+            let mut conn = pool.manager.lock().await;
+
+            // Check current count
+            let current: Option<u64> = conn.get(&key).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            let count = current.unwrap_or(0);
+
+            // Check if limit exceeded
+            if count >= limit {
+                return Ok((false, None));
+            }
+
+            // Increment counter and set expiry
+            let mut pipe = pipe();
+            pipe.incr(&key, 1);
+            pipe.expire(&key, window_seconds as i64);
+            pool.pipeline_query::<()>(&mut pipe).await?;
+
+            Ok((true, None))
+        })
+    }
+
     // --- search_ui_scoped_key ---
 
     /// Get the current scoped key for an index.
