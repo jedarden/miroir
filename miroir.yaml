@@ -1,20 +1,14 @@
+# Test config for observability verification
 shards: 64
 replication_factor: 1
 replica_groups: 1
-master_key: "test-master-key"
-node_master_key: "test-node-master-key"
-admin:
-  api_key: "test-admin-key"
-nodes:
-  - id: "meili-0"
-    address: "http://localhost:8100"
-    replica_group: 0
-health:
-  interval_ms: 1000
-  timeout_ms: 500
-cdc:
-  buffer:
-    overflow: "drop"
+task_store:
+  backend: sqlite
+  path: /tmp/miroir-tasks-test.db
+server:
+  bind: "127.0.0.1"
+  port: 7700
 search_ui:
-  rate_limit:
-    backend: "local"
+  enabled: false
+admin_ui:
+  enabled: false
