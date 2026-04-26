@@ -234,6 +234,58 @@ impl Default for LocalAdminRateLimiter {
     }
 }
 
+/// In-memory rate limiter for search UI (local backend only).
+/// Thread-safe using Arc<Mutex<...>>.
+#[derive(Debug, Clone)]
+pub struct LocalSearchUiRateLimiter {
+    inner: Arc<std::sync::Mutex<LocalSearchUiRateLimiterInner>>,
+}
+
+#[derive(Debug, Default)]
+struct LocalSearchUiRateLimiterInner {
+    /// Map of IP -> request_timestamps_ms
+    state: HashMap<String, Vec<i64>>,
+}
+
+impl LocalSearchUiRateLimiter {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(std::sync::Mutex::new(LocalSearchUiRateLimiterInner::default())),
+        }
+    }
+
+    /// Check rate limit for search UI.
+    /// Returns (allowed, wait_seconds).
+    pub fn check(
+        &self,
+        ip: &str,
+        limit: u64,
+        window_ms: u64,
+    ) -> (bool, Option<u64>) {
+        let mut inner = self.inner.lock().unwrap();
+        let now = now_ms();
+        let timestamps = inner.state.entry(ip.to_string()).or_default();
+
+        // Clean old timestamps outside the window
+        timestamps.retain(|&ts| now - ts < window_ms as i64);
+
+        // Check if limit exceeded
+        if timestamps.len() >= limit as usize {
+            return (false, None);
+        }
+
+        // Record this request
+        timestamps.push(now);
+        (true, None)
+    }
+}
+
+impl Default for LocalSearchUiRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Get current time in milliseconds since Unix epoch.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -255,6 +307,7 @@ pub struct AppState {
     pub pod_id: String,
     pub seal_key: SealKey,
     pub local_rate_limiter: LocalAdminRateLimiter,
+    pub local_search_ui_rate_limiter: LocalSearchUiRateLimiter,
 }
 
 impl AppState {
@@ -320,6 +373,7 @@ impl AppState {
             pod_id,
             seal_key,
             local_rate_limiter: LocalAdminRateLimiter::new(),
+            local_search_ui_rate_limiter: LocalSearchUiRateLimiter::new(),
         }
     }
 
@@ -536,7 +590,7 @@ where
 }
 
 /// Parse a rate limit string like "10/minute" into (limit, window_seconds).
-fn parse_rate_limit(s: &str) -> Result<(u64, u64), String> {
+pub fn parse_rate_limit(s: &str) -> Result<(u64, u64), String> {
     let parts: Vec<&str> = s.split('/').collect();
     if parts.len() != 2 {
         return Err(format!("invalid rate limit format: '{}', expected 'N/UNIT'", s));

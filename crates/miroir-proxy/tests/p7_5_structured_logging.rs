@@ -6,6 +6,7 @@
 //! - No PII (API keys, document content, query strings) in logs
 //! - Log volume: 2 INFO entries per search request (middleware + search handler)
 
+use std::sync::{Arc, Mutex};
 use axum::{
     extract::Request,
     body::Body,
@@ -494,4 +495,142 @@ async fn test_request_id_invalid_header_is_replaced() {
         is_valid_request_id(response_id),
         "Replaced ID should be 8 hex chars"
     );
+}
+
+// ---------------------------------------------------------------------------
+// P7.5.c Trace correlation: request_id appears in all log lines
+// ---------------------------------------------------------------------------
+
+// Custom writer to capture log output for testing
+struct CaptureWriter {
+    logs: Arc<Mutex<Vec<String>>>,
+}
+
+impl std::io::Write for CaptureWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Ok(s) = std::str::from_utf8(buf) {
+            self.logs.lock().unwrap().push(s.to_string());
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn test_request_id_appears_in_all_log_lines_within_request() {
+    // Acceptance criterion: Every log line inside a request must carry request_id=<id>
+    // This is achieved via tracing::Span with request_id recorded on span enter
+    // and tracing_subscriber::fmt().with_current_span(true)
+    use axum::{routing::get, Extension};
+    use axum::middleware;
+    use miroir_proxy::middleware::{request_id_middleware, telemetry_middleware, TelemetryState, RequestId, Metrics};
+    use miroir_core::config::MiroirConfig;
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+    use tracing::info;
+    use std::sync::{Arc, Mutex};
+
+    // Capture logs into a vector
+    let captured_logs = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    // Create a custom layer that captures log events
+    let capture_layer = tracing_subscriber::fmt::layer()
+        .json()
+        .with_target(true)
+        .with_current_span(true)  // This is the key: includes span fields on all events
+        .with_span_list(false)
+        .flatten_event(true)
+        .with_writer(std::sync::Mutex::new(CaptureWriter {
+            logs: captured_logs.clone(),
+        }));
+
+    // Initialize the subscriber with our capture layer
+    tracing_subscriber::registry()
+        .with(capture_layer)
+        .init();
+
+    // Build telemetry state
+    let config = MiroirConfig::default();
+    let metrics = Metrics::new(&config);
+    let telemetry = TelemetryState {
+        metrics: metrics.clone(),
+        pod_id: "test-pod".to_string(),
+    };
+
+    // Build app with full middleware stack
+    // IMPORTANT: Layer order matters! Last layer() call = outermost = runs first.
+    // request_id_middleware must run BEFORE telemetry_middleware.
+    // To achieve this, request_id_middleware layer() call comes LAST (so it's outermost).
+    let app = axum::Router::new()
+        .route("/test", get(|Extension(_id): Extension<RequestId>| async move {
+            // These log events should all inherit the request_id from the parent span
+            info!(message = "handler started", step = "1");
+            info!(message = "processing request", step = "2");
+            info!(message = "handler completed", step = "3");
+            "ok"
+        }))
+        .layer(axum::middleware::from_fn_with_state(
+            telemetry.clone(),
+            telemetry_middleware,
+        ))
+        .layer(axum::middleware::from_fn(request_id_middleware));
+
+    // Make a request
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/test")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Extract the request_id from the response header
+    let request_id = response.headers()
+        .get("x-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap();
+
+    // Verify all captured log lines contain the request_id
+    let logs = captured_logs.lock().unwrap();
+    let log_lines: Vec<&str> = logs.iter()
+        .flat_map(|s| s.lines())
+        .filter(|line| line.contains("message"))  // Only look at actual log lines
+        .collect();
+
+    // We should have at least 3 log lines from the handler
+    assert!(
+        log_lines.len() >= 3,
+        "Expected at least 3 log lines from handler, got: {}",
+        log_lines.len()
+    );
+
+    // Every log line should contain the request_id (either at top level or in span)
+    for line in &log_lines {
+        let json = parse_log_line(line).expect(&format!("Log line should be valid JSON: {}", line));
+
+        // Verify request_id field exists and matches the response header
+        // It can be at the top level OR nested in the span object
+        let log_request_id = json.get("request_id")
+            .or_else(|| json.get("span").and_then(|s| s.get("request_id")))
+            .and_then(|v| v.as_str());
+
+        assert!(
+            log_request_id.is_some(),
+            "Log line missing request_id field: {}",
+            line
+        );
+
+        assert_eq!(
+            log_request_id.unwrap(), request_id,
+            "Log line request_id should match response header: {}",
+            line
+        );
+    }
 }

@@ -119,6 +119,7 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             pod_id: state.pod_id.clone(),
             seal_key: state.auth.seal_key.clone(),
             local_rate_limiter: admin_endpoints::LocalAdminRateLimiter::new(),
+            local_search_ui_rate_limiter: admin_endpoints::LocalSearchUiRateLimiter::new(),
         }
     }
 }
@@ -279,31 +280,33 @@ async fn main() -> anyhow::Result<()> {
         // 4. request_id_middleware - sets X-Request-Id header
         // 5. telemetry_middleware - reads X-Request-Id, creates tracing span with request_id field
         //    The span's request_id field propagates to all child log events via with_current_span(true)
-        .layer(axum::middleware::from_fn_with_state(
-            auth::CsrfState {
-                auth: state.auth.clone(),
-                redis_store: state.redis_store.clone(),
-            },
-            auth::csrf_middleware,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            state.auth.clone(),
-            auth::auth_middleware,
-        ))
-        .layer(axum::Extension(std::sync::Arc::new(state.admin.clone())))
-        .layer(axum::Extension(state.admin.config.clone()))
-        .layer(axum::extract::DefaultBodyLimit::max(
-            config.server.max_body_bytes as usize,
-        ))
-        .layer(axum::middleware::from_fn(
-            middleware::request_id_middleware,
-        ))
+        //
+        // To achieve this order, we add layers in REVERSE (last call = outermost):
         .layer(axum::middleware::from_fn_with_state(
             TelemetryState {
                 metrics: state.metrics.clone(),
                 pod_id: state.pod_id.clone(),
             },
             middleware::telemetry_middleware,
+        ))
+        .layer(axum::middleware::from_fn(
+            middleware::request_id_middleware,
+        ))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            config.server.max_body_bytes as usize,
+        ))
+        .layer(axum::Extension(state.admin.config.clone()))
+        .layer(axum::Extension(std::sync::Arc::new(state.admin.clone())))
+        .layer(axum::middleware::from_fn_with_state(
+            state.auth.clone(),
+            auth::auth_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            auth::CsrfState {
+                auth: state.auth.clone(),
+                redis_store: state.redis_store.clone(),
+            },
+            auth::csrf_middleware,
         ))
         .with_state(state.clone());
 
