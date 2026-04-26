@@ -60,7 +60,7 @@ impl RequestId {
 }
 
 pub async fn request_id_middleware(
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Response {
     // Check for existing request ID in headers
@@ -72,8 +72,12 @@ pub async fn request_id_middleware(
         .unwrap_or_else(RequestId::new);
 
     // Store in request extensions for handler access
-    let mut req = req;
     req.extensions_mut().insert(request_id.clone());
+
+    // Set X-Request-Id header on request (for telemetry_middleware to read)
+    if let Ok(val) = HeaderValue::from_str(request_id.as_str()) {
+        req.headers_mut().insert("x-request-id", val);
+    }
 
     // Process the request
     let mut response = next.run(req).await;
@@ -901,20 +905,29 @@ impl RequestIdExt for HeaderMap {
 /// is accurately decremented.
 struct InFlightGuard {
     metrics: Metrics,
+    request_id: String,
 }
 
 impl InFlightGuard {
-    fn new(metrics: Metrics) -> Self {
+    fn new(metrics: Metrics, request_id: String) -> Self {
         metrics.requests_in_flight.inc();
-        tracing::trace!(requests_in_flight = metrics.requests_in_flight.get(), "request started");
-        Self { metrics }
+        tracing::trace!(
+            request_id = %request_id,
+            requests_in_flight = metrics.requests_in_flight.get(),
+            "request started"
+        );
+        Self { metrics, request_id }
     }
 }
 
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
         self.metrics.requests_in_flight.dec();
-        tracing::trace!(requests_in_flight = self.metrics.requests_in_flight.get(), "request completed");
+        tracing::trace!(
+            request_id = %self.request_id,
+            requests_in_flight = self.metrics.requests_in_flight.get(),
+            "request completed"
+        );
     }
 }
 
@@ -969,7 +982,7 @@ pub async fn telemetry_middleware(
     let _guard = span.enter();
 
     // Track in-flight requests
-    let in_flight = InFlightGuard::new(metrics.clone());
+    let in_flight = InFlightGuard::new(metrics.clone(), request_id.clone());
 
     let response = next.run(req).await;
 
