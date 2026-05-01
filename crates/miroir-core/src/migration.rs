@@ -45,6 +45,9 @@ impl fmt::Display for MigrationId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub String);
 
+// Type alias for external use (rebalancer, etc.)
+pub type MigrationNodeId = NodeId;
+
 impl fmt::Display for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)

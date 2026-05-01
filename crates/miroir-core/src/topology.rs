@@ -343,6 +343,45 @@ impl Topology {
         self.nodes.iter().map(|n| (n.id.clone(), n.clone())).collect()
     }
 
+    /// Remove a node from the topology.
+    pub fn remove_node(&mut self, id: &NodeId) -> bool {
+        if let Some(&idx) = self.node_index.get(id) {
+            self.node_index.remove(id);
+            self.nodes.remove(idx);
+            // Rebuild indices
+            self.node_index.clear();
+            for (i, node) in self.nodes.iter().enumerate() {
+                self.node_index.insert(node.id.clone(), i);
+            }
+            self.rebuild_groups();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove all nodes in a replica group and the group itself.
+    pub fn remove_group(&mut self, group_id: u32) -> bool {
+        // Find all nodes in this group
+        let nodes_to_remove: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter(|n| n.replica_group == group_id)
+            .map(|n| n.id.clone())
+            .collect();
+
+        if nodes_to_remove.is_empty() {
+            return false;
+        }
+
+        // Remove all nodes in the group
+        for node_id in nodes_to_remove {
+            self.remove_node(&node_id);
+        }
+
+        true
+    }
+
     fn rebuild_groups(&mut self) {
         let num_groups = self
             .nodes

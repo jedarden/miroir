@@ -8,7 +8,10 @@ use axum::{
 };
 use miroir_core::{
     config::MiroirConfig,
+    migration::{MigrationConfig, MigrationCoordinator},
+    rebalancer::{MigrationExecutor, Rebalancer, RebalancerConfig},
     router,
+    scatter::{DeleteByFilterRequest, FetchDocumentsRequest, FetchDocumentsResponse, WriteRequest},
     task_registry::TaskRegistryImpl,
     task_store::{RedisTaskStore, TaskStore},
     topology::{Node, NodeId, Topology},
@@ -24,6 +27,7 @@ use reqwest::Client;
 
 use crate::{
     admin_session::{seal_session, COOKIE_NAME, SealKey},
+    client::HttpClient,
     scoped_key_rotation::{self, ScopedKeyRotationState, RotateScopedKeyRequest, RotateScopedKeyResponse},
 };
 
@@ -308,6 +312,8 @@ pub struct AppState {
     pub seal_key: SealKey,
     pub local_rate_limiter: LocalAdminRateLimiter,
     pub local_search_ui_rate_limiter: LocalSearchUiRateLimiter,
+    pub rebalancer: Option<Arc<Rebalancer>>,
+    pub migration_coordinator: Option<Arc<RwLock<MigrationCoordinator>>>,
 }
 
 impl AppState {
@@ -362,9 +368,43 @@ impl AppState {
             _ => TaskRegistryImpl::in_memory(),
         };
 
+        let topology_arc = Arc::new(RwLock::new(topology));
+
+        // Initialize rebalancer and migration coordinator
+        let rebalancer_config = RebalancerConfig {
+            max_concurrent_migrations: config.rebalancer.max_concurrent_migrations,
+            migration_timeout_s: config.rebalancer.migration_timeout_s,
+            auto_rebalance_on_recovery: config.rebalancer.auto_rebalance_on_recovery,
+            migration_batch_size: 1000,
+            migration_batch_delay_ms: 100,
+        };
+
+        let migration_config = MigrationConfig {
+            drain_timeout: std::time::Duration::from_secs(30),
+            skip_delta_pass: false,
+            anti_entropy_enabled: config.anti_entropy.enabled,
+        };
+
+        let migration_coordinator = Arc::new(RwLock::new(
+            MigrationCoordinator::new(migration_config.clone())
+        ));
+
+        // Create migration executor for actual HTTP document migration
+        use miroir_core::rebalancer::HttpMigrationExecutor;
+        let migration_executor = Arc::new(HttpMigrationExecutor::new(
+            config.node_master_key.clone(),
+            config.scatter.node_timeout_ms,
+        ));
+
+        let rebalancer = Arc::new(Rebalancer::new(
+            rebalancer_config,
+            topology_arc.clone(),
+            migration_config,
+        ).with_migration_executor(migration_executor));
+
         Self {
             config: Arc::new(config),
-            topology: Arc::new(RwLock::new(topology)),
+            topology: topology_arc,
             ready: Arc::new(RwLock::new(false)),
             metrics,
             version_state,
@@ -374,6 +414,8 @@ impl AppState {
             seal_key,
             local_rate_limiter: LocalAdminRateLimiter::new(),
             local_search_ui_rate_limiter: LocalSearchUiRateLimiter::new(),
+            rebalancer: Some(rebalancer),
+            migration_coordinator: Some(migration_coordinator),
         }
     }
 
@@ -442,6 +484,14 @@ where
     // Count degraded nodes
     let degraded_count = topo.nodes().filter(|n| !n.is_healthy()).count() as u32;
 
+    // Check rebalance status
+    let rebalance_in_progress = if let Some(ref rebalancer) = state.rebalancer {
+        let status = rebalancer.status().await;
+        status.in_progress
+    } else {
+        false
+    };
+
     // Build node info list
     let nodes: Vec<NodeInfo> = topo
         .nodes()
@@ -463,7 +513,7 @@ where
         replication_factor: topo.rf() as u32,
         nodes,
         degraded_node_count: degraded_count,
-        rebalance_in_progress: false, // TODO: track rebalance state
+        rebalance_in_progress,
         fully_covered,
     };
 
@@ -832,6 +882,270 @@ where
                 message: Some("Invalid admin key".into()),
             }),
         ).into_response()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rebalancer Admin API Endpoints (plan §4)
+// ---------------------------------------------------------------------------
+
+/// POST /_miroir/nodes — Add a node to a replica group.
+///
+/// Request body:
+/// ```json
+/// {
+///   "id": "node-new",
+///   "address": "http://node-new:7700",
+///   "replica_group": 0
+/// }
+/// ```
+pub async fn add_node<S>(
+    State(state): State<S>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let rebalancer = app_state.rebalancer.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Rebalancer not initialized".into()))?;
+
+    let id = body.get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'id' field".into()))?
+        .to_string();
+
+    let address = body.get("address")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'address' field".into()))?
+        .to_string();
+
+    let replica_group = body.get("replica_group")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'replica_group' field".into()))?
+        as u32;
+
+    use miroir_core::rebalancer::AddNodeRequest;
+    let request = AddNodeRequest { id: id.clone(), address, replica_group };
+
+    match rebalancer.add_node(request).await {
+        Ok(result) => {
+            info!(node_id = %id, replica_group, "Node addition started");
+            Ok(Json(serde_json::json!({
+                "operation_id": result.id,
+                "message": result.message,
+                "migrations_count": result.migrations_count,
+            })))
+        }
+        Err(e) => {
+            error!(error = %e, node_id = %id, "Node addition failed");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        }
+    }
+}
+
+/// DELETE /_miroir/nodes/{id} — Remove a node from the cluster.
+pub async fn remove_node<S>(
+    State(state): State<S>,
+    Path(node_id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let rebalancer = app_state.rebalancer.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Rebalancer not initialized".into()))?;
+
+    let force = body.get("force")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    use miroir_core::rebalancer::RemoveNodeRequest;
+    let request = RemoveNodeRequest { node_id: node_id.clone(), force };
+
+    match rebalancer.remove_node(request).await {
+        Ok(result) => {
+            info!(node_id = %node_id, "Node removal completed");
+            Ok(Json(serde_json::json!({
+                "operation_id": result.id,
+                "message": result.message,
+            })))
+        }
+        Err(e) => {
+            error!(error = %e, node_id = %node_id, "Node removal failed");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        }
+    }
+}
+
+/// POST /_miroir/nodes/{id}/drain — Drain a node (prepare for removal).
+pub async fn drain_node<S>(
+    State(state): State<S>,
+    Path(node_id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let rebalancer = app_state.rebalancer.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Rebalancer not initialized".into()))?;
+
+    use miroir_core::rebalancer::DrainNodeRequest;
+    let request = DrainNodeRequest { node_id: node_id.clone() };
+
+    match rebalancer.drain_node(request).await {
+        Ok(result) => {
+            info!(node_id = %node_id, migrations = result.migrations_count, "Node drain started");
+            Ok(Json(serde_json::json!({
+                "operation_id": result.id,
+                "message": result.message,
+                "migrations_count": result.migrations_count,
+            })))
+        }
+        Err(e) => {
+            error!(error = %e, node_id = %node_id, "Node drain failed");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        }
+    }
+}
+
+/// GET /_miroir/rebalance/status — Get current rebalance status.
+pub async fn get_rebalance_status<S>(
+    State(state): State<S>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let rebalancer = app_state.rebalancer.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Rebalancer not initialized".into()))?;
+
+    let status = rebalancer.status().await;
+    let metrics = rebalancer.metrics.read().await;
+
+    Ok(Json(serde_json::json!({
+        "in_progress": status.in_progress,
+        "operations": status.operations,
+        "migrations": status.migrations,
+        "metrics": {
+            "documents_migrated_total": metrics.documents_migrated_total,
+            "active_migrations": metrics.active_migrations,
+            "current_duration_secs": metrics.current_duration_secs(),
+        },
+    })))
+}
+
+/// POST /_miroir/replica_groups — Add a replica group.
+///
+/// Request body:
+/// ```json
+/// {
+///   "group_id": 2,
+///   "nodes": [
+///     {"id": "node-6", "address": "http://node-6:7700"},
+///     {"id": "node-7", "address": "http://node-7:7700"}
+///   ]
+/// }
+/// ```
+pub async fn add_replica_group<S>(
+    State(state): State<S>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let rebalancer = app_state.rebalancer.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Rebalancer not initialized".into()))?;
+
+    let group_id = body.get("group_id")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'group_id' field".into()))?
+        as u32;
+
+    let nodes_array = body.get("nodes")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'nodes' field".into()))?;
+
+    let mut nodes = Vec::new();
+    for node_obj in nodes_array {
+        let id = node_obj.get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing node 'id'".into()))?
+            .to_string();
+
+        let address = node_obj.get("address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing node 'address'".into()))?
+            .to_string();
+
+        use miroir_core::rebalancer::GroupNodeSpec;
+        nodes.push(GroupNodeSpec { id, address });
+    }
+
+    use miroir_core::rebalancer::AddReplicaGroupRequest;
+    let request = AddReplicaGroupRequest { group_id, nodes };
+
+    match rebalancer.add_replica_group(request).await {
+        Ok(result) => {
+            info!(group_id, "Replica group addition completed");
+            Ok(Json(serde_json::json!({
+                "operation_id": result.id,
+                "message": result.message,
+            })))
+        }
+        Err(e) => {
+            error!(error = %e, group_id, "Replica group addition failed");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        }
+    }
+}
+
+/// DELETE /_miroir/replica_groups/{id} — Remove a replica group.
+pub async fn remove_replica_group<S>(
+    State(state): State<S>,
+    Path(group_id): Path<u32>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let rebalancer = app_state.rebalancer.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Rebalancer not initialized".into()))?;
+
+    let force = body.get("force")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    use miroir_core::rebalancer::RemoveReplicaGroupRequest;
+    let request = RemoveReplicaGroupRequest { group_id, force };
+
+    match rebalancer.remove_replica_group(request).await {
+        Ok(result) => {
+            info!(group_id, "Replica group removal completed");
+            Ok(Json(serde_json::json!({
+                "operation_id": result.id,
+                "message": result.message,
+            })))
+        }
+        Err(e) => {
+            error!(error = %e, group_id, "Replica group removal failed");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        }
     }
 }
 
