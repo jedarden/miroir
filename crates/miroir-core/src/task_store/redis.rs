@@ -17,7 +17,6 @@ use ::redis::{
     SetOptions, Value,
 };
 use futures_util::StreamExt;
-use ::redis::AsyncIter;
 
 
 /// Redis connection pool wrapper.
@@ -102,11 +101,6 @@ impl RedisTaskStore {
     /// Generate a fully-qualified Redis key.
     fn key(&self, parts: &[&str]) -> String {
         format!("{}:{}", self.key_prefix, parts.join(":"))
-    }
-
-    /// Helper to generate key from owned values (for use in async blocks).
-    fn key_owned(prefix: &str, parts: &[String]) -> String {
-        format!("{}:{}", prefix, parts.join(":"))
     }
 
     /// Helper: run an async future using the dedicated runtime.
@@ -3794,6 +3788,213 @@ mod tests {
                 .expect("get_job should work")
                 .expect("job should exist");
             assert_eq!(job.state, "queued");
+        }
+
+        // --- Property tests (proptest) ---
+
+        mod proptest_tests {
+            use super::*;
+            use proptest::prelude::*;
+
+            proptest! {
+                #![proptest_config(ProptestConfig::with_cases(50))]
+
+                /// Property: (insert, get) round-trip preserves all fields.
+                #[tokio::test]
+                async fn redis_task_insert_get_roundtrip(
+                    miroir_id in "[a-z0-9-]{1,32}",
+                    created_at in 0i64..1_000_000,
+                    status in "(enqueued|processing|succeeded|failed|canceled)",
+                    error in proptest::option::of("[a-zA-Z0-9 ]{0,64}"),
+                    n_nodes in 0usize..5usize,
+                ) {
+                    let (store, _url) = setup_redis_store().await;
+                    store.migrate().expect("Migration should succeed");
+
+                    let mut node_tasks = HashMap::new();
+                    for i in 0..n_nodes {
+                        node_tasks.insert(format!("node-{i}"), i as u64);
+                    }
+
+                    let new_task = NewTask {
+                        miroir_id: miroir_id.clone(),
+                        created_at,
+                        status: status.clone(),
+                        node_tasks: node_tasks.clone(),
+                        error: error.clone(),
+                        started_at: None,
+                        finished_at: None,
+                        index_uid: None,
+                        task_type: None,
+                        node_errors: HashMap::new(),
+                    };
+                    store.insert_task(&new_task).expect("Insert should succeed");
+
+                    let got = store.get_task(&miroir_id).expect("Get should succeed").expect("Task should exist");
+                    prop_assert_eq!(got.miroir_id, miroir_id);
+                    prop_assert_eq!(got.created_at, created_at);
+                    prop_assert_eq!(got.status, status);
+                    prop_assert_eq!(got.node_tasks, node_tasks);
+                    prop_assert_eq!(got.error, error);
+                }
+
+                /// Property: (upsert, get) for node_settings_version round-trips.
+                #[tokio::test]
+                async fn redis_node_settings_version_upsert_roundtrip(
+                    index_uid in "[a-z0-9]{1,16}",
+                    node_id in "[a-z0-9]{1,16}",
+                    version in 1i64..10000,
+                    updated_at in 0i64..1_000_000,
+                ) {
+                    let (store, _url) = setup_redis_store().await;
+                    store.migrate().expect("Migration should succeed");
+
+                    store.upsert_node_settings_version(&index_uid, &node_id, version, updated_at).expect("Upsert should succeed");
+                    let got = store.get_node_settings_version(&index_uid, &node_id).expect("Get should succeed").expect("Row should exist");
+                    prop_assert_eq!(got.index_uid, index_uid);
+                    prop_assert_eq!(got.node_id, node_id);
+                    prop_assert_eq!(got.version, version);
+                    prop_assert_eq!(got.updated_at, updated_at);
+                }
+
+                /// Property: alias (create, get) round-trip for single aliases.
+                #[tokio::test]
+                async fn redis_alias_single_roundtrip(
+                    name in "[a-z0-9-]{1,32}",
+                    current_uid in proptest::option::of("uid-[a-z0-9]{1,16}"),
+                    version in 1i64..100,
+                ) {
+                    let (store, _url) = setup_redis_store().await;
+                    store.migrate().expect("Migration should succeed");
+
+                    let alias = NewAlias {
+                        name: name.clone(),
+                        kind: "single".to_string(),
+                        current_uid: current_uid.clone(),
+                        target_uids: None,
+                        version,
+                        created_at: 1000,
+                        history: vec![],
+                    };
+                    store.create_alias(&alias).expect("Create should succeed");
+
+                    let got = store.get_alias(&name).expect("Get should succeed").expect("Alias should exist");
+                    prop_assert_eq!(got.name, name);
+                    prop_assert_eq!(got.kind, "single");
+                    prop_assert_eq!(got.current_uid, current_uid);
+                    prop_assert_eq!(got.version, version);
+                }
+
+                /// Property: (insert, list) — inserted tasks appear in list.
+                #[tokio::test]
+                async fn redis_task_insert_list_visible(
+                    ids in proptest::collection::vec("[a-z0-9-]{1,16}", 1..10),
+                ) {
+                    let (store, _url) = setup_redis_store().await;
+                    store.migrate().expect("Migration should succeed");
+
+                    let unique_ids: std::collections::HashSet<String> = ids.into_iter().collect();
+                    for (i, id) in unique_ids.iter().enumerate() {
+                        let mut nt = HashMap::new();
+                        nt.insert("node-0".to_string(), i as u64);
+                        store.insert_task(&NewTask {
+                            miroir_id: id.clone(),
+                            created_at: i as i64 * 1000,
+                            status: "enqueued".to_string(),
+                            node_tasks: nt,
+                            error: None,
+                            started_at: None,
+                            finished_at: None,
+                            index_uid: None,
+                            task_type: None,
+                            node_errors: HashMap::new(),
+                        }).expect("Insert should succeed");
+                    }
+
+                    let all = store.list_tasks(&TaskFilter::default()).expect("List should succeed");
+                    prop_assert_eq!(all.len(), unique_ids.len());
+                    let got_ids: std::collections::HashSet<String> =
+                        all.iter().map(|t| t.miroir_id.clone()).collect();
+                    prop_assert_eq!(got_ids, unique_ids);
+                }
+
+                /// Property: idempotency (insert, get) round-trip.
+                #[tokio::test]
+                async fn redis_idempotency_roundtrip(
+                    key in "[a-z0-9-]{1,32}",
+                    task_id in "[a-z0-9-]{1,32}",
+                    expires_at in 5000i64..1_000_000,
+                ) {
+                    let (store, _url) = setup_redis_store().await;
+                    store.migrate().expect("Migration should succeed");
+
+                    let sha = vec![0xABu8; 32];
+                    store.insert_idempotency_entry(&IdempotencyEntry {
+                        key: key.clone(),
+                        body_sha256: sha.clone(),
+                        miroir_task_id: task_id.clone(),
+                        expires_at,
+                    }).expect("Insert should succeed");
+
+                    let got = store.get_idempotency_entry(&key).expect("Get should succeed").expect("Entry should exist");
+                    prop_assert_eq!(got.key, key);
+                    prop_assert_eq!(got.body_sha256, sha);
+                    prop_assert_eq!(got.miroir_task_id, task_id);
+                    prop_assert_eq!(got.expires_at, expires_at);
+                }
+
+                /// Property: canary (upsert, list) — all unique canaries visible.
+                #[tokio::test]
+                async fn redis_canary_upsert_list_roundtrip(
+                    ids in proptest::collection::vec("[a-z0-9-]{1,16}", 1..8),
+                ) {
+                    let (store, _url) = setup_redis_store().await;
+                    store.migrate().expect("Migration should succeed");
+
+                    let unique_ids: std::collections::HashSet<String> = ids.into_iter().collect();
+                    for (i, id) in unique_ids.iter().enumerate() {
+                        store.upsert_canary(&NewCanary {
+                            id: id.clone(),
+                            name: format!("canary-{i}"),
+                            index_uid: "logs".to_string(),
+                            interval_s: 60 + i as i64,
+                            query_json: r#"{"q":"test"}"#.to_string(),
+                            assertions_json: "[]".to_string(),
+                            enabled: i % 2 == 0,
+                            created_at: i as i64 * 1000,
+                        }).expect("Upsert should succeed");
+                    }
+
+                    let all = store.list_canaries().expect("List should succeed");
+                    prop_assert_eq!(all.len(), unique_ids.len());
+                }
+
+                /// Property: rollover_policy (upsert, list) round-trip.
+                #[tokio::test]
+                async fn redis_rollover_policy_upsert_list_roundtrip(
+                    names in proptest::collection::vec("[a-z0-9-]{1,16}", 1..6),
+                ) {
+                    let (store, _url) = setup_redis_store().await;
+                    store.migrate().expect("Migration should succeed");
+
+                    let unique_names: std::collections::HashSet<String> = names.into_iter().collect();
+                    for name in unique_names.iter() {
+                        store.upsert_rollover_policy(&NewRolloverPolicy {
+                            name: name.clone(),
+                            write_alias: format!("{name}-w"),
+                            read_alias: format!("{name}-r"),
+                            pattern: "logs-*".to_string(),
+                            triggers_json: "{}".to_string(),
+                            retention_json: "{}".to_string(),
+                            template_json: "{}".to_string(),
+                            enabled: true,
+                        }).expect("Upsert should succeed");
+                    }
+
+                    let all = store.list_rollover_policies().expect("List should succeed");
+                    prop_assert_eq!(all.len(), unique_names.len());
+                }
+            }
         }
     }
 
