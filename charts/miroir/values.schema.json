@@ -376,13 +376,16 @@
               "rate_limit": {
                 "properties": {
                   "backend": {
-                    "enum": ["redis"]
+                    "const": "redis"
                   }
-                }
+                },
+                "required": ["backend"]
               }
-            }
+            },
+            "required": ["rate_limit"]
           }
-        }
+        },
+        "required": ["admin_ui"]
       }
     },
     {
