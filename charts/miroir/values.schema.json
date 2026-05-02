@@ -256,6 +256,31 @@
   },
   "allOf": [
     {
+      "description": "Rule 0: taskStore.backend: redis requires miroir.replicas > 1 (HA mode requires multiple replicas)",
+      "if": {
+        "properties": {
+          "taskStore": {
+            "properties": {
+              "backend": { "const": "redis" }
+            },
+            "required": ["backend"]
+          }
+        },
+        "required": ["taskStore"]
+      },
+      "then": {
+        "properties": {
+          "miroir": {
+            "properties": {
+              "replicas": { "type": "integer", "exclusiveMinimum": 1 }
+            },
+            "required": ["replicas"]
+          }
+        },
+        "required": ["miroir"]
+      }
+    },
+    {
       "description": "Rule 1: miroir.replicas > 1 requires taskStore.backend: redis",
       "if": {
         "properties": {
