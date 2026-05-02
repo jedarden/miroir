@@ -120,6 +120,8 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             seal_key: state.auth.seal_key.clone(),
             local_rate_limiter: admin_endpoints::LocalAdminRateLimiter::new(),
             local_search_ui_rate_limiter: admin_endpoints::LocalSearchUiRateLimiter::new(),
+            rebalancer: state.admin.rebalancer.clone(),
+            migration_coordinator: state.admin.migration_coordinator.clone(),
         }
     }
 }
