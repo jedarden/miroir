@@ -26,6 +26,7 @@ rand = "0.8"
 reqwest = { version = "0.12", features = ["json"], default-features = false }
 urlencoding = "2"
 sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
 # Axum integration (optional — enable via `axum` feature)
 axum = { version = "0.7", optional = true }
 

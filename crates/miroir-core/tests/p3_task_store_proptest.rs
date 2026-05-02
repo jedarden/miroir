@@ -6,8 +6,8 @@
 use miroir_core::task_store::*;
 use miroir_core::Result;
 use proptest::prelude::*;
+use sha2::Digest;
 use std::collections::HashMap;
-use tempfile::NamedTempFile;
 
 /// Helper to create an in-memory SQLite store for testing
 fn create_test_store() -> Result<miroir_core::task_store::SqliteTaskStore> {
@@ -114,7 +114,7 @@ proptest! {
     #[test]
     fn prop_list_tasks_filter_by_status(
         tasks in prop::collection::vec(
-            (("[a-z0-9-]{10,20}", "enqueued|processing|succeeded|failed|canceled")),
+            ("[a-z0-9-]{10,20}", "enqueued|processing|succeeded|failed|canceled"),
             1..20
         )
     ) {
@@ -128,9 +128,9 @@ proptest! {
         }
 
         // Filter by each status type
-        for status in &["enqueued", "processing", "succeeded", "failed", "canceled"] {
+        for status_filter in &["enqueued", "processing", "succeeded", "failed", "canceled"] {
             let filter = TaskFilter {
-                status: Some(status.to_string()),
+                status: Some(status_filter.to_string()),
                 index_uid: None,
                 task_type: None,
                 limit: None,
@@ -141,7 +141,7 @@ proptest! {
 
             // All returned tasks should have the requested status
             for task in &retrieved {
-                prop_assert_eq!(&task.status, *status);
+                prop_assert_eq!(&task.status, *status_filter);
             }
         }
     }
@@ -274,7 +274,7 @@ proptest! {
         prop_assert_eq!(retrieved.current_uid.as_ref().unwrap(), &uid2);
         prop_assert_eq!(retrieved.version, 2);
         prop_assert_eq!(retrieved.history.len(), 1);
-        prop_assert_eq!(retrieved.history[0].uid, uid1);
+        prop_assert_eq!(&retrieved.history[0].uid, &uid1);
     }
 }
 
@@ -611,8 +611,8 @@ proptest! {
         prop_assert_eq!(retrieved.name, name);
         prop_assert_eq!(retrieved.write_alias, write_alias);
         prop_assert_eq!(retrieved.read_alias, read_alias);
-        prop_assert_eq!(retrieval.pattern, pattern);
-        prop_assert_eq!(retrieval.enabled, true);
+        prop_assert_eq!(retrieved.pattern, pattern);
+        prop_assert_eq!(retrieved.enabled, true);
     }
 
     /// Property: upsert_search_ui_config followed by get_search_ui_config returns same data
@@ -634,7 +634,7 @@ proptest! {
         let retrieved = store.get_search_ui_config(&index_uid).unwrap().unwrap();
 
         prop_assert_eq!(retrieved.index_uid, index_uid);
-        prop_assert_eq!(retrieval.config_json, config_json);
+        prop_assert_eq!(retrieved.config_json, config_json);
     }
 
     /// Property: insert_admin_session followed by get_admin_session returns same data
@@ -661,7 +661,7 @@ proptest! {
 
         prop_assert_eq!(retrieved.session_id, session_id);
         prop_assert_eq!(retrieved.csrf_token, csrf_token);
-        prop_assert_eq!(retrieval.revoked, false);
+        prop_assert_eq!(retrieved.revoked, false);
         prop_assert_eq!(retrieved.user_agent, session.user_agent);
         prop_assert_eq!(retrieved.source_ip, session.source_ip);
     }
@@ -690,6 +690,6 @@ proptest! {
 
         let retrieved = store.get_admin_session(&session_id).unwrap().unwrap();
 
-        prop_assert_eq!(retrieval.revoked, true);
+        prop_assert_eq!(retrieved.revoked, true);
     }
 }

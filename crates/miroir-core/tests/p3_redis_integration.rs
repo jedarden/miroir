@@ -8,27 +8,25 @@
 //! "Redis-backend integration test (testcontainers or similar)
 //! exercising leases, idempotency dedup, and alias history."
 
+#![cfg(feature = "redis-store")]
+
 use miroir_core::task_store::*;
+use sha2::Digest;
 use std::collections::HashMap;
-use testcontainers::{
-    clients::{Cli, Docker},
-    ContainerGeneric,
-};
+use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
-use tokio::runtime::Runtime;
 
 /// Helper to create a Redis container and connect to it
-async fn create_redis_store() -> (miroir_core::task_store::RedisTaskStore, ContainerGeneric<Redis>) {
-    let docker = Cli::default();
-    let redis_container = docker.run(Redis::default());
+async fn create_redis_store() -> (miroir_core::task_store::RedisTaskStore, testcontainers::ContainerAsync<Redis>) {
+    let redis_container = Redis::default().start().await.unwrap();
 
-    let port = redis_container.get_host_port_ipv4(6379);
+    let port = redis_container.get_host_port_ipv4(6379).await.unwrap();
     let url = format!("redis://localhost:{}", port);
 
     let store = miroir_core::task_store::RedisTaskStore::open(&url)
         .await
         .expect("Failed to connect to Redis");
-    store.migrate().await.expect("Failed to migrate Redis store");
+    store.migrate().expect("Failed to migrate Redis store");
 
     (store, redis_container)
 }
@@ -66,13 +64,11 @@ async fn test_redis_task_roundtrip() {
     // Insert
     store
         .insert_task(&task)
-        .await
         .expect("Failed to insert task");
 
     // Get
     let retrieved = store
         .get_task("mtask-redis-001")
-        .await
         .expect("Failed to get task");
 
     assert!(retrieved.is_some());
@@ -89,10 +85,10 @@ async fn test_redis_task_count() {
     // Insert multiple tasks
     for i in 0..10 {
         let task = new_test_task(&format!("mtask-count-{}", i));
-        store.insert_task(&task).await.unwrap();
+        store.insert_task(&task).unwrap();
     }
 
-    let count = store.task_count().await.unwrap();
+    let count = store.task_count().unwrap();
     assert_eq!(count, 10);
 }
 
@@ -103,15 +99,15 @@ async fn test_redis_list_tasks() {
     // Insert tasks with different statuses
     let mut task1 = new_test_task("mtask-list-1");
     task1.status = "succeeded".to_string();
-    store.insert_task(&task1).await.unwrap();
+    store.insert_task(&task1).unwrap();
 
     let mut task2 = new_test_task("mtask-list-2");
     task2.status = "processing".to_string();
-    store.insert_task(&task2).await.unwrap();
+    store.insert_task(&task2).unwrap();
 
     let mut task3 = new_test_task("mtask-list-3");
     task3.status = "succeeded".to_string();
-    store.insert_task(&task3).await.unwrap();
+    store.insert_task(&task3).unwrap();
 
     // List all tasks
     let filter = TaskFilter {
@@ -122,7 +118,7 @@ async fn test_redis_list_tasks() {
         offset: None,
     };
 
-    let tasks = store.list_tasks(&filter).await.unwrap();
+    let tasks = store.list_tasks(&filter).unwrap();
     assert_eq!(tasks.len(), 3);
 
     // List with status filter
@@ -134,7 +130,7 @@ async fn test_redis_list_tasks() {
         offset: None,
     };
 
-    let succeeded = store.list_tasks(&filter).await.unwrap();
+    let succeeded = store.list_tasks(&filter).unwrap();
     assert_eq!(succeeded.len(), 2);
     for task in &succeeded {
         assert_eq!(task.status, "succeeded");
@@ -149,30 +145,30 @@ async fn test_redis_task_pruning() {
     let mut task1 = new_test_task("mtask-old-1");
     task1.created_at = 1714400000000; // 1 day ago
     task1.status = "succeeded".to_string();
-    store.insert_task(&task1).await.unwrap();
+    store.insert_task(&task1).unwrap();
 
     let mut task2 = new_test_task("mtask-old-2");
     task2.created_at = 1714400000000;
     task2.status = "failed".to_string();
-    store.insert_task(&task2).await.unwrap();
+    store.insert_task(&task2).unwrap();
 
     // Recent task
     let mut task3 = new_test_task("mtask-recent");
     task3.created_at = 1714500000000;
     task3.status = "succeeded".to_string();
-    store.insert_task(&task3).await.unwrap();
+    store.insert_task(&task3).unwrap();
 
     // Prune old tasks
     let cutoff = 1714500000000 - 3600000; // 1 hour ago
-    let pruned = store.prune_tasks(cutoff, 100).await.unwrap();
+    let pruned = store.prune_tasks(cutoff, 100).unwrap();
     assert_eq!(pruned, 2);
 
     // Verify old tasks are gone
-    assert!(store.get_task("mtask-old-1").await.unwrap().is_none());
-    assert!(store.get_task("mtask-old-2").await.unwrap().is_none());
+    assert!(store.get_task("mtask-old-1").unwrap().is_none());
+    assert!(store.get_task("mtask-old-2").unwrap().is_none());
 
     // Recent task should still exist
-    assert!(store.get_task("mtask-recent").await.unwrap().is_some());
+    assert!(store.get_task("mtask-recent").unwrap().is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -191,13 +187,12 @@ async fn test_redis_leader_lease_acquire() {
     // Acquire lease
     let acquired = store
         .try_acquire_leader_lease(scope, holder, expires_at, now_ms)
-        .await
         .unwrap();
 
     assert!(acquired);
 
     // Verify lease was acquired
-    let lease = store.get_leader_lease(scope).await.unwrap().unwrap();
+    let lease = store.get_leader_lease(scope).unwrap().unwrap();
     assert_eq!(lease.holder, holder);
     assert_eq!(lease.scope, scope);
 }
@@ -215,13 +210,11 @@ async fn test_redis_leader_lease_renew() {
     // Acquire lease
     store
         .try_acquire_leader_lease(scope, holder, expires_at1, now_ms)
-        .await
         .unwrap();
 
     // Renew lease
     let renewed = store
         .renew_leader_lease(scope, holder, expires_at2)
-        .await
         .unwrap();
 
     assert!(renewed);
@@ -240,13 +233,11 @@ async fn test_redis_leader_lease_steal_expired() {
     // Pod-1 acquires lease
     store
         .try_acquire_leader_lease(scope, holder1, expires_at1, now_ms)
-        .await
         .unwrap();
 
     // Pod-2 tries to acquire while lease is still valid
     let acquired = store
         .try_acquire_leader_lease(scope, holder2, expires_at1 + 10000, now_ms)
-        .await
         .unwrap();
 
     assert!(!acquired, "Should not steal active lease");
@@ -255,13 +246,12 @@ async fn test_redis_leader_lease_steal_expired() {
     let future_now_ms = expires_at1 + 1000;
     let acquired = store
         .try_acquire_leader_lease(scope, holder2, expires_at1 + 20000, future_now_ms)
-        .await
         .unwrap();
 
     assert!(acquired, "Should steal expired lease");
 
     // Verify holder changed
-    let lease = store.get_leader_lease(scope).await.unwrap().unwrap();
+    let lease = store.get_leader_lease(scope).unwrap().unwrap();
     assert_eq!(lease.holder, holder2);
 }
 
@@ -278,13 +268,11 @@ async fn test_redis_leader_lease_holders_only_renew() {
     // Pod-1 acquires lease
     store
         .try_acquire_leader_lease(scope, holder1, expires_at, now_ms)
-        .await
         .unwrap();
 
     // Pod-2 tries to renew (should fail)
     let renewed = store
         .renew_leader_lease(scope, holder2, expires_at + 10000)
-        .await
         .unwrap();
 
     assert!(!renewed, "Non-holder should not renew lease");
@@ -292,7 +280,6 @@ async fn test_redis_leader_lease_holders_only_renew() {
     // Pod-1 renews (should succeed)
     let renewed = store
         .renew_leader_lease(scope, holder1, expires_at + 10000)
-        .await
         .unwrap();
 
     assert!(renewed, "Holder should renew lease");
@@ -321,18 +308,17 @@ async fn test_redis_idempotency_dedup() {
     // First insert should succeed
     store
         .insert_idempotency_entry(&entry)
-        .await
         .expect("First insert should succeed");
 
     // Second insert with same key should fail (unique constraint)
-    let result = store.insert_idempotency_entry(&entry).await;
+    let result = store.insert_idempotency_entry(&entry);
     assert!(
         result.is_err(),
         "Duplicate insert should fail with constraint error"
     );
 
     // Verify we can retrieve the entry
-    let retrieved = store.get_idempotency_entry(key).await.unwrap().unwrap();
+    let retrieved = store.get_idempotency_entry(key).unwrap().unwrap();
     assert_eq!(retrieved.miroir_task_id, miroir_task_id);
 }
 
@@ -357,14 +343,14 @@ async fn test_redis_idempotency_different_keys() {
         expires_at: 1714500100000,
     };
 
-    store.insert_idempotency_entry(&entry1).await.unwrap();
-    store.insert_idempotency_entry(&entry2).await.unwrap();
+    store.insert_idempotency_entry(&entry1).unwrap();
+    store.insert_idempotency_entry(&entry2).unwrap();
 
     // Verify both exist
-    let retrieved1 = store.get_idempotency_entry("key-1").await.unwrap().unwrap();
+    let retrieved1 = store.get_idempotency_entry("key-1").unwrap().unwrap();
     assert_eq!(retrieved1.miroir_task_id, "mtask-1");
 
-    let retrieved2 = store.get_idempotency_entry("key-2").await.unwrap().unwrap();
+    let retrieved2 = store.get_idempotency_entry("key-2").unwrap().unwrap();
     assert_eq!(retrieved2.miroir_task_id, "mtask-2");
 }
 
@@ -386,22 +372,20 @@ async fn test_redis_alias_flip_records_history() {
         history: vec![],
     };
 
-    store.create_alias(&alias).await.unwrap();
+    store.create_alias(&alias).unwrap();
 
     // Flip to index-2
     store
         .flip_alias("flip-alias-redis", "index-2", 10)
-        .await
         .unwrap();
 
     // Flip to index-3
     store
         .flip_alias("flip-alias-redis", "index-3", 10)
-        .await
         .unwrap();
 
     // Verify history
-    let retrieved = store.get_alias("flip-alias-redis").await.unwrap().unwrap();
+    let retrieved = store.get_alias("flip-alias-redis").unwrap().unwrap();
 
     assert_eq!(retrieved.current_uid.unwrap(), "index-3");
     assert_eq!(retrieved.version, 3);
@@ -424,18 +408,17 @@ async fn test_redis_alias_history_retention() {
         history: vec![],
     };
 
-    store.create_alias(&alias).await.unwrap();
+    store.create_alias(&alias).unwrap();
 
     // Flip 15 times (more than retention limit of 10)
     for i in 1..=15 {
         store
             .flip_alias("retention-alias", &format!("index-{}", i), 10)
-            .await
             .unwrap();
     }
 
     // Verify history is bounded
-    let retrieved = store.get_alias("retention-alias").await.unwrap().unwrap();
+    let retrieved = store.get_alias("retention-alias").unwrap().unwrap();
     assert_eq!(retrieved.history.len(), 10, "History should be bounded");
 }
 
@@ -453,9 +436,9 @@ async fn test_redis_multi_target_alias() {
         history: vec![],
     };
 
-    store.create_alias(&alias).await.unwrap();
+    store.create_alias(&alias).unwrap();
 
-    let retrieved = store.get_alias("multi-alias").await.unwrap().unwrap();
+    let retrieved = store.get_alias("multi-alias").unwrap().unwrap();
 
     assert_eq!(retrieved.kind, "multi");
     assert!(retrieved.current_uid.is_none());
@@ -481,12 +464,11 @@ async fn test_redis_job_claim_cas() {
         progress: "{}".to_string(),
     };
 
-    store.insert_job(&job).await.unwrap();
+    store.insert_job(&job).unwrap();
 
     // First claim should succeed
     let claimed = store
         .claim_job("job-claim-1", "pod-1", 1714500100000)
-        .await
         .unwrap();
 
     assert!(claimed);
@@ -494,7 +476,6 @@ async fn test_redis_job_claim_cas() {
     // Second claim should fail (already claimed)
     let claimed2 = store
         .claim_job("job-claim-1", "pod-2", 1714500200000)
-        .await
         .unwrap();
 
     assert!(!claimed2, "Should not claim already-claimed job");
@@ -512,18 +493,16 @@ async fn test_redis_job_claim_renew() {
         progress: "{}".to_string(),
     };
 
-    store.insert_job(&job).await.unwrap();
+    store.insert_job(&job).unwrap();
 
     // Claim job
     store
         .claim_job("job-renew", "pod-1", 1714500100000)
-        .await
         .unwrap();
 
     // Renew claim
     let renewed = store
         .renew_job_claim("job-renew", 1714500200000)
-        .await
         .unwrap();
 
     assert!(renewed);
@@ -542,7 +521,7 @@ async fn test_redis_list_jobs_by_state() {
             state: "queued".to_string(),
             progress: "{}".to_string(),
         };
-        store.insert_job(&job).await.unwrap();
+        store.insert_job(&job).unwrap();
     }
 
     for i in 0..3 {
@@ -553,15 +532,15 @@ async fn test_redis_list_jobs_by_state() {
             state: "in_progress".to_string(),
             progress: "{}".to_string(),
         };
-        store.insert_job(&job).await.unwrap();
+        store.insert_job(&job).unwrap();
     }
 
     // List queued jobs
-    let queued = store.list_jobs_by_state("queued").await.unwrap();
+    let queued = store.list_jobs_by_state("queued").unwrap();
     assert_eq!(queued.len(), 5);
 
     // List in_progress jobs
-    let in_progress = store.list_jobs_by_state("in_progress").await.unwrap();
+    let in_progress = store.list_jobs_by_state("in_progress").unwrap();
     assert_eq!(in_progress.len(), 3);
 }
 
@@ -582,7 +561,7 @@ async fn test_redis_session_upsert() {
         ttl: 1714500100000,
     };
 
-    store.upsert_session(&session1).await.unwrap();
+    store.upsert_session(&session1).unwrap();
 
     // Update with new values
     let session2 = SessionRow {
@@ -594,10 +573,10 @@ async fn test_redis_session_upsert() {
         ttl: 1714500200000,
     };
 
-    store.upsert_session(&session2).await.unwrap();
+    store.upsert_session(&session2).unwrap();
 
     // Verify updated values
-    let retrieved = store.get_session("session-upsert").await.unwrap().unwrap();
+    let retrieved = store.get_session("session-upsert").unwrap().unwrap();
     assert_eq!(retrieved.last_write_mtask_id.unwrap(), "mtask-2");
     assert_eq!(retrieved.pinned_group.unwrap(), 1);
     assert_eq!(retrieved.min_settings_version, 2);
@@ -622,11 +601,11 @@ async fn test_redis_canary_run_auto_prune() {
             latency_ms: 100,
             failed_assertions_json: None,
         };
-        store.insert_canary_run(&run, 10).await.unwrap();
+        store.insert_canary_run(&run, 10).unwrap();
     }
 
     // Verify only 10 runs remain
-    let runs = store.get_canary_runs(canary_id, 100).await.unwrap();
+    let runs = store.get_canary_runs(canary_id, 100).unwrap();
     assert_eq!(runs.len(), 10, "Should prune to history limit");
 
     // Verify they're in descending order
@@ -656,15 +635,14 @@ async fn test_redis_admin_session_revoke() {
         source_ip: Some("10.0.0.1".to_string()),
     };
 
-    store.insert_admin_session(&session).await.unwrap();
+    store.insert_admin_session(&session).unwrap();
 
     // Revoke session
-    store.revoke_admin_session("admin-revoke-test").await.unwrap();
+    store.revoke_admin_session("admin-revoke-test").unwrap();
 
     // Verify revoked flag
     let retrieved = store
         .get_admin_session("admin-revoke-test")
-        .await
         .unwrap()
         .unwrap();
 
@@ -686,7 +664,7 @@ async fn test_redis_admin_session_delete_expired() {
         source_ip: None,
     };
 
-    store.insert_admin_session(&expired_session).await.unwrap();
+    store.insert_admin_session(&expired_session).unwrap();
 
     // Insert valid session
     let valid_session = NewAdminSession {
@@ -699,13 +677,12 @@ async fn test_redis_admin_session_delete_expired() {
         source_ip: None,
     };
 
-    store.insert_admin_session(&valid_session).await.unwrap();
+    store.insert_admin_session(&valid_session).unwrap();
 
     // Redis handles expiration automatically via EXPIRE
     // delete_expired_admin_sessions is a no-op for Redis
     let deleted = store
         .delete_expired_admin_sessions(1714500000000)
-        .await
         .unwrap();
 
     assert_eq!(deleted, 0, "Redis handles expiration automatically");
@@ -713,7 +690,6 @@ async fn test_redis_admin_session_delete_expired() {
     // Verify expired session is gone (TTL expired)
     let retrieved = store
         .get_admin_session("expired-session")
-        .await
         .unwrap();
 
     // Note: In real Redis, the key would have been auto-deleted by EXPIRE
@@ -741,11 +717,10 @@ async fn test_redis_tenant_mapping() {
         group_id: Some(0),
     };
 
-    store.insert_tenant_mapping(&mapping).await.unwrap();
+    store.insert_tenant_mapping(&mapping).unwrap();
 
     let retrieved = store
         .get_tenant_mapping(&api_key_hash)
-        .await
         .unwrap()
         .unwrap();
 
@@ -755,13 +730,11 @@ async fn test_redis_tenant_mapping() {
     // Delete mapping
     store
         .delete_tenant_mapping(&api_key_hash)
-        .await
         .unwrap();
 
     // Verify gone
     let retrieved = store
         .get_tenant_mapping(&api_key_hash)
-        .await
         .unwrap();
 
     assert!(retrieved.is_none());
@@ -782,12 +755,11 @@ async fn test_redis_cdc_cursor() {
         updated_at: 1714500000000,
     };
 
-    store.upsert_cdc_cursor(&cursor).await.unwrap();
+    store.upsert_cdc_cursor(&cursor).unwrap();
 
     // Get cursor
     let retrieved = store
         .get_cdc_cursor("kafka-sink", "test-index")
-        .await
         .unwrap()
         .unwrap();
 
@@ -801,18 +773,17 @@ async fn test_redis_cdc_cursor() {
         updated_at: 1714500001000,
     };
 
-    store.upsert_cdc_cursor(&cursor2).await.unwrap();
+    store.upsert_cdc_cursor(&cursor2).unwrap();
 
     let retrieved = store
         .get_cdc_cursor("kafka-sink", "test-index")
-        .await
         .unwrap()
         .unwrap();
 
     assert_eq!(retrieved.last_event_seq, 67890);
 
     // List cursors for sink
-    let cursors = store.list_cdc_cursors("kafka-sink").await.unwrap();
+    let cursors = store.list_cdc_cursors("kafka-sink").unwrap();
     assert_eq!(cursors.len(), 1);
 }
 
@@ -835,11 +806,10 @@ async fn test_redis_rollover_policy() {
         enabled: true,
     };
 
-    store.upsert_rollover_policy(&policy).await.unwrap();
+    store.upsert_rollover_policy(&policy).unwrap();
 
     let retrieved = store
         .get_rollover_policy("daily-logs")
-        .await
         .unwrap()
         .unwrap();
 
@@ -847,7 +817,7 @@ async fn test_redis_rollover_policy() {
     assert_eq!(retrieved.enabled, true);
 
     // List policies
-    let policies = store.list_rollover_policies().await.unwrap();
+    let policies = store.list_rollover_policies().unwrap();
     assert_eq!(policies.len(), 1);
 }
 
@@ -865,11 +835,10 @@ async fn test_redis_search_ui_config() {
         updated_at: 1714500000000,
     };
 
-    store.upsert_search_ui_config(&config).await.unwrap();
+    store.upsert_search_ui_config(&config).unwrap();
 
     let retrieved = store
         .get_search_ui_config("test-index")
-        .await
         .unwrap()
         .unwrap();
 
@@ -878,12 +847,10 @@ async fn test_redis_search_ui_config() {
     // Delete config
     store
         .delete_search_ui_config("test-index")
-        .await
         .unwrap();
 
     let retrieved = store
         .get_search_ui_config("test-index")
-        .await
         .unwrap();
 
     assert!(retrieved.is_none());
@@ -900,12 +867,10 @@ async fn test_redis_node_settings_version() {
     // Insert initial version
     store
         .upsert_node_settings_version("test-index", "node-0", 1, 1714500000000)
-        .await
         .unwrap();
 
     let retrieved = store
         .get_node_settings_version("test-index", "node-0")
-        .await
         .unwrap()
         .unwrap();
 
@@ -914,12 +879,10 @@ async fn test_redis_node_settings_version() {
     // Update version
     store
         .upsert_node_settings_version("test-index", "node-0", 2, 1714500001000)
-        .await
         .unwrap();
 
     let retrieved = store
         .get_node_settings_version("test-index", "node-0")
-        .await
         .unwrap()
         .unwrap();
 
