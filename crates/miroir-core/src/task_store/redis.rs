@@ -53,24 +53,25 @@ impl RedisPool {
 
 
     /// Block on an async future using a dedicated runtime.
-    /// Always spawns a fresh thread with its own single-threaded runtime to
-    /// avoid "cannot start a runtime from within a runtime" panics.
+    /// Spawns a dedicated thread with its own single-threaded runtime to avoid
+    /// "cannot start a runtime from within a runtime" panics when called from
+    /// within an existing tokio runtime (e.g., in tests).
     fn block_on<F>(&self, future: F) -> F::Output
     where
         F: std::future::Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("Failed to create runtime in thread");
-                rt.block_on(future)
-            })
-            .join()
-            .unwrap_or_else(|_| panic!("block_on thread panicked"))
+        // Spawn a dedicated thread to run the async future
+        // This avoids conflicts with any existing tokio runtime
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create runtime in thread");
+            rt.block_on(future)
         })
+        .join()
+        .unwrap_or_else(|_| panic!("block_on thread panicked"))
     }
 }
 
@@ -108,6 +109,15 @@ impl RedisTaskStore {
     where
         F: std::future::Future + Send + 'static,
         F::Output: Send + 'static,
+    {
+        self.pool.block_on(future)
+    }
+
+    /// Helper: run an async future and return a Result, for use in methods that return Result.
+    fn block_on_result<F, T>(&self, future: F) -> Result<T>
+    where
+        F: std::future::Future<Output = Result<T>> + Send + 'static,
+        T: Send + 'static,
     {
         self.pool.block_on(future)
     }
