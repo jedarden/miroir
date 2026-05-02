@@ -854,7 +854,9 @@ impl TaskRegistryImpl {
                 crate::task::TaskRegistry::update_node_task(r, miroir_id, node_id, node_status)
             }
             // Per-node status is reconstructed from polling on each GET; not persisted.
-            TaskRegistryImpl::Sqlite(_) | _ => Ok(()),
+            #[cfg(feature = "redis-store")]
+            TaskRegistryImpl::Redis(_) => Ok(()),
+            TaskRegistryImpl::Sqlite(_) => Ok(()),
         }
     }
 

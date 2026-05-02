@@ -58,4 +58,32 @@ pub enum MiroirError {
     /// Migration error.
     #[error("migration error: {0}")]
     Migration(String),
+
+    /// Not found error.
+    #[error("{0} not found")]
+    NotFound(String),
+
+    /// Invalid state error.
+    #[error("invalid state: {0}")]
+    InvalidState(String),
+
+    /// Idempotency key already used with different body.
+    #[error("idempotency key reused with different body")]
+    IdempotencyKeyReused,
+
+    /// Too many pending queries.
+    #[error("too many pending queries")]
+    TooManyPendingQueries,
+
+    /// Multi-target alias is not writable.
+    #[error("multi-target alias is not writable")]
+    MultiAliasNotWritable,
+
+    /// Settings divergence detected.
+    #[error("settings divergence detected across nodes")]
+    SettingsDivergence,
+
+    /// Settings version stale.
+    #[error("settings version stale")]
+    SettingsVersionStale,
 }

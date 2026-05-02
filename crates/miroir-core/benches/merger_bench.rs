@@ -67,6 +67,7 @@ fn bench_merge_1000_hits_3_shards(c: &mut Criterion) {
         limit: TARGET_HITS,
         client_requested_score: false,
         facets: None,
+        failed_shards: Vec::new(),
     };
 
     c.bench_function("merge_1000_hits_3_shards", |b| {
@@ -102,6 +103,7 @@ fn bench_varying_hit_count(c: &mut Criterion) {
             limit: *hit_count,
             client_requested_score: false,
             facets: None,
+            failed_shards: Vec::new(),
         };
 
         group.bench_with_input(BenchmarkId::from_parameter(hit_count), hit_count, |b, _| {
@@ -140,6 +142,7 @@ fn bench_varying_shard_count(c: &mut Criterion) {
             limit: total_hits,
             client_requested_score: false,
             facets: None,
+            failed_shards: Vec::new(),
         };
 
         group.bench_with_input(BenchmarkId::from_parameter(shard_count), shard_count, |b, _| {
@@ -186,6 +189,7 @@ fn bench_pagination(c: &mut Criterion) {
             limit,
             client_requested_score: false,
             facets: None,
+            failed_shards: Vec::new(),
         };
 
         group.bench_function(name, |b| {
@@ -238,6 +242,7 @@ fn bench_with_facets(c: &mut Criterion) {
         limit: TARGET_HITS,
         client_requested_score: false,
         facets: Some(vec!["category".to_string(), "brand".to_string()]),
+        failed_shards: Vec::new(),
     };
 
     c.bench_function("merge_with_facets", |b| {
@@ -270,6 +275,7 @@ fn bench_with_score_preservation(c: &mut Criterion) {
         limit: TARGET_HITS,
         client_requested_score: true,
         facets: None,
+        failed_shards: Vec::new(),
     };
 
     c.bench_function("merge_with_score", |b| {
@@ -315,6 +321,7 @@ fn bench_degraded_response(c: &mut Criterion) {
         limit: TARGET_HITS,
         client_requested_score: false,
         facets: None,
+        failed_shards: Vec::new(),
     };
 
     c.bench_function("merge_degraded", |b| {

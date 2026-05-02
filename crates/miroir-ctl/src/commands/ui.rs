@@ -65,7 +65,8 @@ pub struct RotateJwtSecretArgs {
     yes: bool,
 }
 
-pub async fn run(cmd: UiSubcommand) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(cmd: UiSubcommand, _admin_key: &str, _api_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = (_admin_key, _api_url);
     match cmd {
         UiSubcommand::Launch { .. } => {
             Err("This command is not yet implemented. See bead miroir-qon for tracking.".into())

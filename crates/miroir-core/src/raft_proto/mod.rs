@@ -79,9 +79,16 @@ impl RaftTaskRegistry {
 }
 
 impl TaskRegistry for RaftTaskRegistry {
-    fn register(&self, node_tasks: HashMap<String, u64>) -> Result<MiroirTask> {
+    fn register_with_metadata(
+        &self,
+        node_tasks: HashMap<String, u64>,
+        index_uid: Option<String>,
+        task_type: Option<String>,
+    ) -> Result<MiroirTask> {
         let cmd = TaskStoreCommand::InsertTask {
             node_tasks: node_tasks.into_iter().collect(),
+            index_uid,
+            task_type,
         };
         let (_, resp) = self.write_with_consensus(cmd);
         let sm = self.state_machine.lock().unwrap();
@@ -122,6 +129,11 @@ impl TaskRegistry for RaftTaskRegistry {
     fn list(&self, filter: TaskFilter) -> Result<Vec<MiroirTask>> {
         let sm = self.state_machine.lock().unwrap();
         Ok(sm.list_tasks(&filter))
+    }
+
+    fn count(&self) -> usize {
+        let sm = self.state_machine.lock().unwrap();
+        sm.task_count()
     }
 }
 
