@@ -1,4 +1,4 @@
-//! Online resharding: window guard, simulation model, and load estimation.
+//! Online resharding: window guard, simulation model, and six-phase execution.
 //!
 //! Implements the plan §13.1 shadow-index resharding mechanics and §15 OP#3
 //! empirical validation of the 2× transient load caveat.
@@ -6,7 +6,8 @@
 use crate::router::{assign_shard_in_group, shard_for_key};
 use crate::topology::{Group, NodeId};
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Schedule window guard
@@ -646,5 +647,375 @@ mod tests {
     fn cv_empty_and_zero() {
         assert_eq!(cv(&[]), 0.0);
         assert_eq!(cv(&[0, 0, 0]), 0.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Six-phase resharding execution (plan §13.1)
+// ---------------------------------------------------------------------------
+
+/// Resharding phase identifiers (matching plan §13.1 steps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum ReshardPhase {
+    /// No active resharding.
+    Idle = 0,
+    /// Phase 1: Shadow index created.
+    ShadowCreated = 1,
+    /// Phase 2: Dual-hash dual-write active.
+    DualWriteActive = 2,
+    /// Phase 3: Backfill in progress.
+    BackfillInProgress = 3,
+    /// Phase 4: Verification in progress.
+    Verifying = 4,
+    /// Phase 5: Alias swap completed.
+    Swapped = 5,
+    /// Phase 6: Cleanup in progress.
+    CleaningUp = 6,
+    /// Resharding completed successfully.
+    Complete = 7,
+    /// Resharding failed.
+    Failed = 8,
+}
+
+impl ReshardPhase {
+    /// Human-readable phase name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Idle => "Idle",
+            Self::ShadowCreated => "Shadow Created",
+            Self::DualWriteActive => "Dual-Write Active",
+            Self::BackfillInProgress => "Backfill In Progress",
+            Self::Verifying => "Verifying",
+            Self::Swapped => "Swapped",
+            Self::CleaningUp => "Cleaning Up",
+            Self::Complete => "Complete",
+            Self::Failed => "Failed",
+        }
+    }
+
+    /// Parse from u8 (for storage).
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Idle),
+            1 => Some(Self::ShadowCreated),
+            2 => Some(Self::DualWriteActive),
+            3 => Some(Self::BackfillInProgress),
+            4 => Some(Self::Verifying),
+            5 => Some(Self::Swapped),
+            6 => Some(Self::CleaningUp),
+            7 => Some(Self::Complete),
+            8 => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+/// Active resharding operation state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReshardOperation {
+    /// Unique operation ID.
+    pub id: String,
+    /// Index UID being resharded.
+    pub index_uid: String,
+    /// Old shard count.
+    pub old_shards: u32,
+    /// New shard count.
+    pub target_shards: u32,
+    /// Current phase.
+    pub phase: ReshardPhase,
+    /// Phase started at (UNIX ms).
+    pub phase_started_at: u64,
+    /// Operation created at (UNIX ms).
+    pub created_at: u64,
+    /// Documents backfilled so far.
+    pub documents_backfilled: u64,
+    /// Total documents to backfill (estimated at start).
+    pub total_documents: u64,
+    /// Last error message (if any).
+    pub last_error: Option<String>,
+    /// Shadow index UID.
+    pub shadow_index: String,
+    /// Verification results (populated after phase 4).
+    pub verification_results: Option<VerificationResults>,
+    /// Cleanup retention deadline (UNIX ms).
+    pub cleanup_deadline: Option<u64>,
+}
+
+/// Results from phase 4 verification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerificationResults {
+    /// Live index PK set size.
+    pub live_pk_count: u64,
+    /// Shadow index PK set size.
+    pub shadow_pk_count: u64,
+    /// PKs only in live index.
+    pub live_only_pks: Vec<String>,
+    /// PKs only in shadow index.
+    pub shadow_only_pks: Vec<String>,
+    /// PKs with content hash mismatch.
+    pub mismatched_pks: Vec<String>,
+    /// Whether verification passed.
+    pub passed: bool,
+}
+
+impl ReshardOperation {
+    /// Create a new resharding operation.
+    pub fn new(index_uid: String, old_shards: u32, target_shards: u32) -> Self {
+        let id = format!("reshard-{}-{}", index_uid, uuid::Uuid::new_v4());
+        let shadow_index = format!("{}__reshard_{}", index_uid, target_shards);
+        let now = millis_now();
+        Self {
+            id,
+            index_uid,
+            old_shards,
+            target_shards,
+            phase: ReshardPhase::ShadowCreated,
+            phase_started_at: now,
+            created_at: now,
+            documents_backfilled: 0,
+            total_documents: 0,
+            last_error: None,
+            shadow_index,
+            verification_results: None,
+            cleanup_deadline: None,
+        }
+    }
+
+    /// Transition to the next phase.
+    pub fn advance_phase(&mut self, new_phase: ReshardPhase) {
+        self.phase = new_phase;
+        self.phase_started_at = millis_now();
+    }
+
+    /// Record an error and mark as failed.
+    pub fn fail(&mut self, error: String) {
+        self.last_error = Some(error);
+        self.phase = ReshardPhase::Failed;
+    }
+
+    /// Update backfill progress.
+    pub fn update_backfill_progress(&mut self, backfilled: u64, total: u64) {
+        self.documents_backfilled = backfilled;
+        self.total_documents = total;
+    }
+
+    /// Calculate backfill progress ratio (0.0 to 1.0).
+    pub fn backfill_progress(&self) -> f64 {
+        if self.total_documents == 0 {
+            return 0.0;
+        }
+        (self.documents_backfilled as f64) / (self.total_documents as f64)
+    }
+
+    /// Check if the operation is in a terminal state.
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self.phase,
+            ReshardPhase::Complete | ReshardPhase::Failed
+        )
+    }
+
+    /// Get the shadow index name.
+    pub fn shadow_index_name(&self) -> &str {
+        &self.shadow_index
+    }
+}
+
+/// Get current UNIX timestamp in milliseconds.
+fn millis_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// In-memory registry of active resharding operations.
+///
+/// In production, this is persisted to the task store (SQLite/Redis).
+/// This in-memory version is for single-pod development.
+#[derive(Debug, Default)]
+pub struct ReshardRegistry {
+    operations: HashMap<String, ReshardOperation>,
+    /// Index UID -> active operation ID (at most one per index).
+    index_ops: HashMap<String, String>,
+}
+
+impl ReshardRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a new resharding operation.
+    pub fn register(&mut self, op: ReshardOperation) -> Result<(), String> {
+        if let Some(existing_id) = self.index_ops.get(&op.index_uid) {
+            return Err(format!(
+                "Resharding already in progress for index '{}': {}",
+                op.index_uid, existing_id
+            ));
+        }
+        self.index_ops.insert(op.index_uid.clone(), op.id.clone());
+        self.operations.insert(op.id.clone(), op);
+        Ok(())
+    }
+
+    /// Get an operation by ID.
+    pub fn get(&self, id: &str) -> Option<&ReshardOperation> {
+        self.operations.get(id)
+    }
+
+    /// Get mutable reference for updates.
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut ReshardOperation> {
+        self.operations.get_mut(id)
+    }
+
+    /// Get the active operation for an index (if any).
+    pub fn get_for_index(&self, index_uid: &str) -> Option<&ReshardOperation> {
+        self.index_ops
+            .get(index_uid)
+            .and_then(|id| self.operations.get(id))
+    }
+
+    /// Update an operation.
+    pub fn update(&mut self, op: ReshardOperation) -> Result<(), String> {
+        if !self.operations.contains_key(&op.id) {
+            return Err(format!("Operation '{}' not found", op.id));
+        }
+        self.operations.insert(op.id.clone(), op);
+        Ok(())
+    }
+
+    /// Complete an operation and remove from active index tracking.
+    pub fn complete(&mut self, id: &str) -> Result<(), String> {
+        let op = self.operations.get(id).ok_or_else(|| format!("Operation '{}' not found", id))?;
+        if !op.is_terminal() {
+            return Err(format!("Operation '{}' is not in a terminal state", id));
+        }
+        self.index_ops.remove(&op.index_uid);
+        Ok(())
+    }
+
+    /// List all operations.
+    pub fn list(&self) -> Vec<&ReshardOperation> {
+        self.operations.values().collect()
+    }
+
+    /// Clean up completed operations older than the retention period.
+    pub fn prune_completed(&mut self, max_age_ms: u64) {
+        let now = millis_now();
+        let mut to_remove = Vec::new();
+        for (id, op) in &self.operations {
+            if op.is_terminal() && (now.saturating_sub(op.created_at) > max_age_ms) {
+                to_remove.push(id.clone());
+                self.index_ops.remove(&op.index_uid);
+            }
+        }
+        for id in to_remove {
+            self.operations.remove(&id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_reshard_execution {
+    use super::*;
+
+    #[test]
+    fn phase_display_names() {
+        assert_eq!(ReshardPhase::Idle.name(), "Idle");
+        assert_eq!(ReshardPhase::BackfillInProgress.name(), "Backfill In Progress");
+        assert_eq!(ReshardPhase::Failed.name(), "Failed");
+    }
+
+    #[test]
+    fn phase_roundtrip_u8() {
+        for phase in &[
+            ReshardPhase::Idle,
+            ReshardPhase::ShadowCreated,
+            ReshardPhase::DualWriteActive,
+            ReshardPhase::BackfillInProgress,
+            ReshardPhase::Verifying,
+            ReshardPhase::Swapped,
+            ReshardPhase::CleaningUp,
+            ReshardPhase::Complete,
+            ReshardPhase::Failed,
+        ] {
+            let v = *phase as u8;
+            assert_eq!(ReshardPhase::from_u8(v), Some(*phase));
+        }
+        assert_eq!(ReshardPhase::from_u8(255), None);
+    }
+
+    #[test]
+    fn operation_creation() {
+        let op = ReshardOperation::new("products".into(), 64, 128);
+        assert_eq!(op.index_uid, "products");
+        assert_eq!(op.old_shards, 64);
+        assert_eq!(op.target_shards, 128);
+        assert_eq!(op.shadow_index, "products__reshard_128");
+        assert_eq!(op.phase, ReshardPhase::ShadowCreated);
+        assert!(!op.is_terminal());
+    }
+
+    #[test]
+    fn operation_backfill_progress() {
+        let mut op = ReshardOperation::new("test".into(), 16, 32);
+        op.total_documents = 1000;
+        op.documents_backfilled = 500;
+        assert!((op.backfill_progress() - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn operation_terminal_states() {
+        let mut op = ReshardOperation::new("test".into(), 16, 32);
+        assert!(!op.is_terminal());
+        op.phase = ReshardPhase::Complete;
+        assert!(op.is_terminal());
+        op.phase = ReshardPhase::Failed;
+        assert!(op.is_terminal());
+    }
+
+    #[test]
+    fn registry_single_op_per_index() {
+        let mut reg = ReshardRegistry::new();
+        let op1 = ReshardOperation::new("products".into(), 64, 128);
+        reg.register(op1).unwrap();
+        let op2 = ReshardOperation::new("products".into(), 128, 256);
+        assert!(reg.register(op2).is_err());
+    }
+
+    #[test]
+    fn registry_get_for_index() {
+        let mut reg = ReshardRegistry::new();
+        let op = ReshardOperation::new("products".into(), 64, 128);
+        let id = op.id.clone();
+        reg.register(op).unwrap();
+        let retrieved = reg.get_for_index("products").unwrap();
+        assert_eq!(retrieved.id, id);
+    }
+
+    #[test]
+    fn registry_complete_releases_index() {
+        let mut reg = ReshardRegistry::new();
+        let op = ReshardOperation::new("products".into(), 64, 128);
+        let id = op.id.clone();
+        reg.register(op).unwrap();
+        assert!(reg.get_for_index("products").is_some());
+        let op = reg.get_mut(&id).unwrap();
+        op.phase = ReshardPhase::Complete;
+        reg.complete(&id).unwrap();
+        assert!(reg.get_for_index("products").is_none());
+    }
+
+    #[test]
+    fn registry_prune_old_completed() {
+        let mut reg = ReshardRegistry::new();
+        let mut op = ReshardOperation::new("test".into(), 16, 32);
+        op.phase = ReshardPhase::Complete;
+        op.created_at = millis_now().saturating_sub(100_000); // 100s ago
+        let id = op.id.clone();
+        reg.register(op).unwrap();
+        reg.prune_completed(50_000); // prune ops older than 50s
+        assert!(reg.get(&id).is_none());
     }
 }

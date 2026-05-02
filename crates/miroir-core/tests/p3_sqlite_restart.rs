@@ -11,6 +11,7 @@
 
 use miroir_core::task_store::*;
 use miroir_core::Result;
+use sha2::Digest;
 use std::collections::HashMap;
 use tempfile::NamedTempFile;
 
@@ -466,8 +467,8 @@ fn test_schema_version_persisted() {
     // Verify schema version after restart
     {
         // The schema version should be persisted
-        let conn = rusqlite::Connection::open(path).unwrap();
-        let version: Option<i64> = conn
+        let _conn = rusqlite::Connection::open(path).unwrap();
+        let version: Option<i64> = _conn
             .query_row("SELECT MAX(version) FROM schema_versions", [], |row| {
                 row.get(0)
             })

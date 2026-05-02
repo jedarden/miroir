@@ -113,15 +113,6 @@ impl RedisTaskStore {
         self.pool.block_on(future)
     }
 
-    /// Helper: run an async future and return a Result, for use in methods that return Result.
-    fn block_on_result<F, T>(&self, future: F) -> Result<T>
-    where
-        F: std::future::Future<Output = Result<T>> + Send + 'static,
-        T: Send + 'static,
-    {
-        self.pool.block_on(future)
-    }
-
     /// Helper: parse a hash row into a TaskRow.
     fn task_from_hash(
         miroir_id: String,
