@@ -142,6 +142,24 @@ pub struct DeleteByFilterRequest {
 /// Response from a delete operation.
 pub type DeleteResponse = WriteResponse;
 
+/// Request to fetch documents with a filter (used for shard migration).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FetchDocumentsRequest {
+    pub index_uid: String,
+    pub filter: Value,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+/// Response from a fetch documents operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FetchDocumentsResponse {
+    pub results: Vec<Value>,
+    pub limit: u32,
+    pub offset: u32,
+    pub total: u64,
+}
+
 /// Request to get task status from a node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskStatusRequest {
@@ -262,6 +280,21 @@ pub trait NodeClient: Send + Sync {
             message: Some("not implemented".to_string()),
             code: None,
             error_type: None,
+        })
+    }
+
+    /// Fetch documents with a filter from a node (used for shard migration).
+    async fn fetch_documents(
+        &self,
+        _node: &NodeId,
+        _address: &str,
+        _request: &FetchDocumentsRequest,
+    ) -> std::result::Result<FetchDocumentsResponse, NodeError> {
+        Ok(FetchDocumentsResponse {
+            results: Vec::new(),
+            limit: _request.limit,
+            offset: _request.offset,
+            total: 0,
         })
     }
 }
@@ -705,6 +738,18 @@ impl NodeClient for MockNodeClient {
             message: None,
             code: None,
             error_type: None,
+        })
+    }
+
+    async fn fetch_documents(
+        &self, node: &NodeId, _address: &str, request: &FetchDocumentsRequest,
+    ) -> std::result::Result<FetchDocumentsResponse, NodeError> {
+        if let Some(err) = self.errors.get(node) { return Err(err.clone()); }
+        Ok(FetchDocumentsResponse {
+            results: Vec::new(),
+            limit: request.limit,
+            offset: request.offset,
+            total: 0,
         })
     }
 

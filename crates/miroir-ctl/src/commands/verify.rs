@@ -10,6 +10,6 @@ pub enum VerifySubcommand {
     },
 }
 
-pub async fn run(_cmd: VerifySubcommand) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(_cmd: VerifySubcommand, _admin_key: &str, _api_url: &str) -> Result<(), Box<dyn std::error::Error>> {
     Err("This command is not yet implemented. See bead miroir-qon for tracking.".into())
 }

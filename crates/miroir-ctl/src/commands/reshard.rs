@@ -47,7 +47,8 @@ pub enum ReshardSubcommand {
     },
 }
 
-pub async fn run(cmd: ReshardSubcommand) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(cmd: ReshardSubcommand, _admin_key: &str, _api_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = (_admin_key, _api_url);
     match cmd {
         ReshardSubcommand::Start {
             index,

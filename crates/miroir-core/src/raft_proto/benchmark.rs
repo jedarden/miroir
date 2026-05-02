@@ -37,7 +37,11 @@ impl DirectStore {
             MiroirTask {
                 miroir_id: miroir_id.clone(),
                 created_at: now,
+                started_at: None,
+                finished_at: None,
                 status: TaskStatus::Enqueued,
+                index_uid: None,
+                task_type: None,
                 node_tasks: node_tasks
                     .into_iter()
                     .map(|(nid, uid)| {
@@ -51,6 +55,7 @@ impl DirectStore {
                     })
                     .collect(),
                 error: None,
+                node_errors: HashMap::new(),
             },
         );
         miroir_id
@@ -91,6 +96,8 @@ fn bench_state_machine(n: usize) -> BenchResult {
                 ("node-2".to_string(), i as u64 + 1),
                 ("node-3".to_string(), i as u64 + 2),
             ],
+            index_uid: None,
+            task_type: None,
         };
 
         let start = Instant::now();
@@ -171,6 +178,8 @@ fn bench_serialization(n: usize) -> (f64, f64, usize, usize) {
             ("node-2".to_string(), 43u64),
             ("node-3".to_string(), 44u64),
         ],
+        index_uid: None,
+        task_type: None,
     };
 
     let mut json_times = Vec::with_capacity(n);

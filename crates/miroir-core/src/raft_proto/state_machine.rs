@@ -70,7 +70,11 @@ impl TaskStateMachine {
         self.last_applied_log_index += 1;
 
         match cmd {
-            TaskStoreCommand::InsertTask { node_tasks } => {
+            TaskStoreCommand::InsertTask {
+                node_tasks,
+                index_uid,
+                task_type,
+            } => {
                 let miroir_id = uuid::Uuid::new_v4().to_string();
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -80,7 +84,11 @@ impl TaskStateMachine {
                 let task = MiroirTask {
                     miroir_id: miroir_id.clone(),
                     created_at: now,
+                    started_at: None,
+                    finished_at: None,
                     status: TaskStatus::Enqueued,
+                    index_uid,
+                    task_type,
                     node_tasks: node_tasks
                         .into_iter()
                         .map(|(node_id, uid)| {
@@ -94,6 +102,7 @@ impl TaskStateMachine {
                         })
                         .collect(),
                     error: None,
+                    node_errors: HashMap::new(),
                 };
 
                 self.tasks.insert(miroir_id.clone(), task);

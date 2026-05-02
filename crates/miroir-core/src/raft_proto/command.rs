@@ -21,7 +21,11 @@ use serde::{Deserialize, Serialize};
 pub enum TaskStoreCommand {
     // -- tasks table --
     /// Insert a new task with per-node Meilisearch task UIDs.
-    InsertTask { node_tasks: Vec<(String, u64)> },
+    InsertTask {
+        node_tasks: Vec<(String, u64)>,
+        index_uid: Option<String>,
+        task_type: Option<String>,
+    },
 
     /// Update a task's overall status.
     UpdateTaskStatus {
