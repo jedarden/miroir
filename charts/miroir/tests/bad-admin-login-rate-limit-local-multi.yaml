@@ -1,9 +1,9 @@
-# Rule 4 bad: admin_ui.login_rate_limit.backend=local with multiple replicas
+# Rule 4 bad: admin_ui.rate_limit.backend=local with multiple replicas
 # Expected: FAIL — local login rate limits not shared across pods
 miroir:
   replicas: 2
 taskStore:
   backend: redis
 admin_ui:
-  login_rate_limit:
+  rate_limit:
     backend: local
