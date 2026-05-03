@@ -76,6 +76,9 @@ pub trait TaskStore: Send + Sync {
     /// Delete an alias.
     fn delete_alias(&self, name: &str) -> Result<bool>;
 
+    /// List all aliases.
+    fn list_aliases(&self) -> Result<Vec<AliasRow>>;
+
     // --- Table 4: sessions ---
 
     /// Create or replace a session.

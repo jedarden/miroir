@@ -907,6 +907,136 @@ impl TaskRegistryImpl {
             }
         }
     }
+
+    // --- Alias methods (delegated to TaskStore) ---
+
+    /// Get an alias by name.
+    pub fn get_alias(&self, name: &str) -> Result<Option<crate::alias::Alias>> {
+        match self {
+            TaskRegistryImpl::InMemory(_) => Ok(None),
+            TaskRegistryImpl::Sqlite(store) => {
+                Ok(store.get_alias(name)?.map(|row| crate::alias::Alias {
+                    name: row.name,
+                    kind: if row.kind == "single" {
+                        crate::alias::AliasKind::Single
+                    } else {
+                        crate::alias::AliasKind::Multi
+                    },
+                    current_uid: row.current_uid,
+                    target_uids: row.target_uids,
+                    generation: row.version as u64,
+                    created_at: row.created_at as u64,
+                    updated_at: row.created_at as u64, // Use created_at as fallback
+                }))
+            }
+            #[cfg(feature = "redis-store")]
+            TaskRegistryImpl::Redis(store) => {
+                Ok(store.get_alias(name)?.map(|row| crate::alias::Alias {
+                    name: row.name,
+                    kind: if row.kind == "single" {
+                        crate::alias::AliasKind::Single
+                    } else {
+                        crate::alias::AliasKind::Multi
+                    },
+                    current_uid: row.current_uid,
+                    target_uids: row.target_uids,
+                    generation: row.version as u64,
+                    created_at: row.created_at as u64,
+                    updated_at: row.created_at as u64, // Use created_at as fallback
+                }))
+            }
+        }
+    }
+
+    /// Create a new alias.
+    pub fn put_alias(&self, alias: &crate::alias::Alias) -> Result<()> {
+        match self {
+            TaskRegistryImpl::InMemory(_) => Ok(()),
+            TaskRegistryImpl::Sqlite(store) => {
+                let new_alias = crate::task_store::NewAlias {
+                    name: alias.name.clone(),
+                    kind: if matches!(alias.kind, crate::alias::AliasKind::Single) {
+                        "single".to_string()
+                    } else {
+                        "multi".to_string()
+                    },
+                    current_uid: alias.current_uid.clone(),
+                    target_uids: alias.target_uids.clone(),
+                    version: alias.generation as i64,
+                    created_at: alias.created_at as i64,
+                    history: vec![],
+                };
+                store.create_alias(&new_alias)
+            }
+            #[cfg(feature = "redis-store")]
+            TaskRegistryImpl::Redis(store) => {
+                let new_alias = crate::task_store::NewAlias {
+                    name: alias.name.clone(),
+                    kind: if matches!(alias.kind, crate::alias::AliasKind::Single) {
+                        "single".to_string()
+                    } else {
+                        "multi".to_string()
+                    },
+                    current_uid: alias.current_uid.clone(),
+                    target_uids: alias.target_uids.clone(),
+                    version: alias.generation as i64,
+                    created_at: alias.created_at as i64,
+                    history: vec![],
+                };
+                store.create_alias(&new_alias)
+            }
+        }
+    }
+
+    /// Delete an alias.
+    pub fn delete_alias(&self, name: &str) -> Result<bool> {
+        match self {
+            TaskRegistryImpl::InMemory(_) => Ok(false),
+            TaskRegistryImpl::Sqlite(store) => store.delete_alias(name),
+            #[cfg(feature = "redis-store")]
+            TaskRegistryImpl::Redis(store) => store.delete_alias(name),
+        }
+    }
+
+    /// List all aliases.
+    pub fn list_aliases(&self) -> Result<Vec<crate::alias::Alias>> {
+        match self {
+            TaskRegistryImpl::InMemory(_) => Ok(vec![]),
+            TaskRegistryImpl::Sqlite(store) => {
+                let rows = store.list_aliases()?;
+                Ok(rows.into_iter().map(|row| crate::alias::Alias {
+                    name: row.name,
+                    kind: if row.kind == "single" {
+                        crate::alias::AliasKind::Single
+                    } else {
+                        crate::alias::AliasKind::Multi
+                    },
+                    current_uid: row.current_uid,
+                    target_uids: row.target_uids,
+                    generation: row.version as u64,
+                    created_at: row.created_at as u64,
+                    updated_at: row.created_at as u64,
+                }).collect())
+            }
+            #[cfg(feature = "redis-store")]
+            TaskRegistryImpl::Redis(store) => {
+                let rows = store.list_aliases()?;
+                Ok(rows.into_iter().map(|row| crate::alias::Alias {
+                    name: row.name,
+                    kind: if row.kind == "single" {
+                        crate::alias::AliasKind::Single
+                    } else {
+                        crate::alias::AliasKind::Multi
+                    },
+                    current_uid: row.current_uid,
+                    target_uids: row.target_uids,
+                    generation: row.version as u64,
+                    created_at: row.created_at as u64,
+                    updated_at: row.created_at as u64,
+                }).collect())
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]

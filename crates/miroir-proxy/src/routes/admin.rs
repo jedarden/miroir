@@ -4,10 +4,10 @@
 
 use axum::{
     extract::FromRef,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
-use super::{admin_endpoints, session};
+use super::{admin_endpoints, aliases, session};
 
 /// Create the admin router with all /_miroir/* endpoints.
 ///
@@ -18,6 +18,7 @@ pub fn router<S>() -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
     admin_endpoints::AppState: FromRef<S>,
+    aliases::AliasState: FromRef<S>,
 {
     Router::new()
         // Admin session endpoints (plan §9, §13.19)
@@ -38,4 +39,9 @@ where
             "/ui/search/{index}/rotate-scoped-key",
             post(admin_endpoints::rotate_scoped_key_handler),
         )
+        // Alias management (plan §13.7)
+        .route("/aliases", get(aliases::list_aliases::<S>))
+        .route("/aliases/{name}", get(aliases::get_alias::<S>))
+        .route("/aliases/{name}", post(aliases::update_alias::<S>))
+        .route("/aliases/{name}", delete(aliases::delete_alias::<S>))
 }

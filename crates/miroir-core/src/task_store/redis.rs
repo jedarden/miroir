@@ -162,6 +162,33 @@ impl RedisTaskStore {
             created_at: get_field_i64(fields, "created_at")?,
         })
     }
+
+    /// Helper: parse alias hash row.
+    fn alias_row_from_hash(
+        name: String,
+        fields: &HashMap<String, Value>,
+    ) -> Result<AliasRow> {
+        let target_uids_json = opt_field(fields, "target_uids").unwrap_or_else(|| "null".to_string());
+        let target_uids: Option<Vec<String>> = if target_uids_json == "null" {
+            None
+        } else {
+            Some(serde_json::from_str(&target_uids_json)
+                .map_err(|e| MiroirError::TaskStore(format!("invalid target_uids JSON: {e}")))?)
+        };
+        let history_json = get_field_string(fields, "history")?;
+        let history: Vec<AliasHistoryEntry> = serde_json::from_str(&history_json)
+            .map_err(|e| MiroirError::TaskStore(format!("invalid history JSON: {e}")))?;
+
+        Ok(AliasRow {
+            name,
+            kind: get_field_string(fields, "kind")?,
+            current_uid: opt_field(fields, "current_uid"),
+            target_uids,
+            version: get_field_i64(fields, "version")?,
+            created_at: get_field_i64(fields, "created_at")?,
+            history,
+        })
+    }
 }
 
 /// Helper: get a string field from a Redis hash.
@@ -733,6 +760,33 @@ impl TaskStore for RedisTaskStore {
             pool.pipeline_query::<()>(&mut pipe).await?;
 
             Ok(true)
+        })
+    }
+
+    fn list_aliases(&self) -> Result<Vec<AliasRow>> {
+        let pool = self.pool.clone();
+        let key_prefix = self.key_prefix.clone();
+        let index_key = format!("{}:aliases:_index", key_prefix);
+
+        self.block_on(async move {
+            let mut conn = pool.manager.lock().await;
+
+            // Get all alias names from the index set
+            let names: Vec<String> = conn.smembers(&index_key).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            let mut result = Vec::new();
+            for name in names {
+                let key = format!("{}:aliases:{}", key_prefix, name);
+                let fields: HashMap<String, Value> = conn.hgetall(&key).await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+                if !fields.is_empty() {
+                    result.push(Self::alias_row_from_hash(name, &fields)?);
+                }
+            }
+
+            Ok(result)
         })
     }
 
