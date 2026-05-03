@@ -1734,6 +1734,7 @@ dependencies = [
  "proptest",
  "rand 0.8.6",
  "redis",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",

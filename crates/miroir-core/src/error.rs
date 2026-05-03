@@ -67,6 +67,10 @@ pub enum MiroirError {
     #[error("invalid state: {0}")]
     InvalidState(String),
 
+    /// Invalid request error.
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
+
     /// Idempotency key already used with different body.
     #[error("idempotency key reused with different body")]
     IdempotencyKeyReused,
