@@ -372,8 +372,10 @@ impl CanaryRunner {
 
     /// Emit metrics for a canary run
     fn emit_metrics(&self, result: &CanaryRunResult) {
-        // TODO: Wire to prometheus metrics
-        // For now, just log
+        // Call the metrics emitter callback
+        (self.metrics_emitter)(result);
+
+        // Also log for observability
         match result.status {
             CanaryStatus::Passed => {
                 tracing::info!(
