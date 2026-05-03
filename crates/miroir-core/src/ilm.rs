@@ -270,36 +270,14 @@ impl IlmManager {
 
     /// Format index name from pattern with date placeholder.
     fn format_index_name(pattern: &str, timestamp_ms: u64) -> String {
-        // Convert milliseconds to seconds since epoch
+        use chrono::{DateTime, Utc};
+
+        // Convert milliseconds to DateTime
         let timestamp_sec = (timestamp_ms / 1000) as i64;
+        let dt = DateTime::<Utc>::from_timestamp(timestamp_sec, 0)
+            .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
 
-        // Manual calculation of date from Unix timestamp
-        // This is accurate for dates from 1970 to 2100+
-        let days_since_epoch = timestamp_sec / 86400;
-
-        // Algorithm to convert days to year/month/day
-        // Based on: https://howardhinnant.github.io/date_algorithms.html
-        let era_adjust = if days_since_epoch >= 0 {
-            days_since_epoch
-        } else {
-            days_since_epoch - 146096 + 1
-        };
-        let era = era_adjust / 146097;
-        let doe = days_since_epoch - era * 146097;
-        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = doy - (153 * mp + 2) / 5 + 1;
-        let m_adjust = if mp < 10 { 3 } else { -9 };
-        let mut m = mp + m_adjust;
-        let mut y = yoe + era * 400;
-
-        if m <= 2 {
-            y -= 1;
-            m += 12;
-        }
-
-        let date_str = format!("{:04}-{:02}-{:02}", y, m, d);
+        let date_str = dt.format("%Y-%m-%d").to_string();
         pattern.replace("{YYYY-MM-DD}", &date_str)
     }
 }

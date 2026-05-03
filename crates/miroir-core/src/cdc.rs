@@ -385,8 +385,8 @@ mod tests {
         assert!(manager.publish(event).is_ok());
     }
 
-    #[test]
-    fn test_cdc_suppress_internal_writes() {
+    #[tokio::test]
+    async fn test_cdc_suppress_internal_writes() {
         let config = CdcConfig {
             enabled: true,
             emit_internal_writes: false,
