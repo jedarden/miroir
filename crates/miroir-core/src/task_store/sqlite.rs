@@ -382,6 +382,20 @@ impl TaskStore for SqliteTaskStore {
         Ok(rows > 0)
     }
 
+    fn list_aliases(&self) -> Result<Vec<AliasRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT name, kind, current_uid, target_uids, version, created_at, history
+             FROM aliases",
+        )?;
+        let rows = stmt.query_map([], Self::alias_row_from_row)?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
     // --- Table 4: sessions ---
 
     fn upsert_session(&self, session: &SessionRow) -> Result<()> {

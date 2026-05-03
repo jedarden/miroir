@@ -25,7 +25,7 @@ use admin_session::SealKey;
 use auth::AuthState;
 use middleware::{Metrics, metrics_router, TelemetryState};
 use routes::{
-    admin, admin_endpoints, health, indexes, keys, search, settings, tasks, version,
+    admin, admin_endpoints, explain, health, indexes, keys, multi_search, search, settings, tasks, version,
 };
 use scoped_key_rotation::ScopedKeyRotationState;
 
@@ -142,6 +142,37 @@ impl FromRef<UnifiedState> for auth::CsrfState {
         auth::CsrfState {
             auth: state.auth.clone(),
             redis_store: state.redis_store.clone(),
+        }
+    }
+}
+
+// Implement FromRef so that routes::aliases::AliasState can be extracted from UnifiedState
+impl FromRef<UnifiedState> for routes::aliases::AliasState {
+    fn from_ref(state: &UnifiedState) -> Self {
+        Self {
+            config: state.admin.config.clone(),
+            task_registry: state.admin.task_registry.clone(),
+        }
+    }
+}
+
+// Implement FromRef so that routes::explain::ExplainState can be extracted from UnifiedState
+impl FromRef<UnifiedState> for routes::explain::ExplainState {
+    fn from_ref(state: &UnifiedState) -> Self {
+        Self {
+            config: state.admin.config.clone(),
+            topology: state.admin.topology.clone(),
+        }
+    }
+}
+
+// Implement FromRef so that routes::multi_search::MultiSearchState can be extracted from UnifiedState
+impl FromRef<UnifiedState> for routes::multi_search::MultiSearchState {
+    fn from_ref(state: &UnifiedState) -> Self {
+        Self {
+            config: state.admin.config.clone(),
+            topology: state.admin.topology.clone(),
+            node_master_key: state.admin.config.master_key.clone(),
         }
     }
 }
@@ -268,6 +299,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health::get_health))
         .route("/version", get(version::get_version::<UnifiedState>))
         .route("/stats", get(indexes::global_stats_handler))
+        .route("/multi-search", post(multi_search::multi_search::<UnifiedState>)) // §13.11
         .nest("/_miroir", admin::router::<UnifiedState>())
         .nest("/indexes", indexes::router::<UnifiedState>())
         .nest("/keys", keys::router::<UnifiedState>())
