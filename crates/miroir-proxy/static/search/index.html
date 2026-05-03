@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search</title>
+    <link rel="stylesheet" href="/ui/search/static/search.css">
+</head>
+<body>
+    <div id="app">
+        <header class="header">
+            <div class="header-content">
+                <h1 class="logo" id="logo">Search</h1>
+            </div>
+        </header>
+
+        <main class="main">
+            <div class="search-container">
+                <div class="search-box">
+                    <input
+                        type="text"
+                        id="searchInput"
+                        class="search-input"
+                        placeholder="Search..."
+                        autocomplete="off"
+                    >
+                    <button id="searchBtn" class="search-button">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                            <path d="M9 17A8 8 0 1 0 9 1a8 8 0 0 0 0 16zM19 19l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <div id="facets" class="facets">
+                    <!-- Facets loaded dynamically -->
+                </div>
+
+                <div id="results" class="results">
+                    <!-- Results loaded dynamically -->
+                </div>
+
+                <div id="pagination" class="pagination">
+                    <!-- Pagination loaded dynamically -->
+                </div>
+            </div>
+        </main>
+
+        <footer class="footer">
+            <span id="resultCount"></span>
+        </footer>
+    </div>
+
+    <script src="/ui/search/static/search.js"></script>
+</body>
+</html>
