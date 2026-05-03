@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Miroir Admin</title>
+    <link rel="stylesheet" href="/_miroir/admin/static/admin.css">
+</head>
+<body>
+    <div id="app">
+        <header class="header">
+            <div class="header-content">
+                <h1 class="logo">Miroir Admin</h1>
+                <nav class="nav">
+                    <a href="#/" class="nav-link">Overview</a>
+                    <a href="#/topology" class="nav-link">Topology</a>
+                    <a href="#/indexes" class="nav-link">Indexes</a>
+                    <a href="#/aliases" class="nav-link">Aliases</a>
+                    <a href="#/documents" class="nav-link">Documents</a>
+                    <a href="#/tasks" class="nav-link">Tasks</a>
+                    <a href="#/settings" class="nav-link">Settings</a>
+                </nav>
+                <div class="user-menu">
+                    <button id="logoutBtn" class="btn-logout">Logout</button>
+                </div>
+            </div>
+        </header>
+
+        <main class="main">
+            <div id="content" class="content">
+                <!-- Content loaded dynamically -->
+            </div>
+        </main>
+
+        <footer class="footer">
+            <span>Miroir Admin UI</span>
+            <span id="version"></span>
+        </footer>
+    </div>
+
+    <script src="/_miroir/admin/static/admin.js"></script>
+</body>
+</html>
