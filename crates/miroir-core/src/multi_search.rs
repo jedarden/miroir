@@ -189,6 +189,7 @@ mod tests {
         let queries: Vec<SearchQuery> = (0..20).map(|i| SearchQuery {
             indexUid: format!("index-{}", i),
             q: Some("test".into()),
+            filter: None,
             limit: Some(10),
             offset: Some(0),
             other: HashMap::new(),
@@ -205,6 +206,7 @@ mod tests {
             queries: vec![SearchQuery {
                 indexUid: "products".into(),
                 q: Some("laptop".into()),
+                filter: None,
                 limit: Some(20),
                 offset: Some(0),
                 other: HashMap::new(),
