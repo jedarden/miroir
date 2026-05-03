@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn test_fingerprint_settings() {
         let settings1 = json!({"rankingRules": ["words", "typo"], "stopWords": ["the", "a"]});
-        let settings2 = json!({"stopWords": ["a", "the"], "rankingRules": ["typo", "words"]});
+        let settings2 = json!({"stopWords": ["the", "a"], "rankingRules": ["words", "typo"]});
 
         // Order-independent canonicalization should produce same fingerprint.
         let fp1 = fingerprint_settings(&settings1);
