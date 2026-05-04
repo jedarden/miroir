@@ -1,6 +1,6 @@
 use axum::{
     extract::FromRef,
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use miroir_core::{
@@ -23,11 +23,16 @@ mod scoped_key_rotation;
 
 use admin_session::SealKey;
 use auth::AuthState;
+use miroir_core::{
+    canary::{CanaryAssertion, CanaryRunner, CapturedQuery, QueryCapture, SearchQuery, SearchResponse},
+    task_store::TaskStore,
+};
 use middleware::{Metrics, metrics_router, TelemetryState};
 use routes::{
     admin, admin_endpoints, explain, health, indexes, keys, multi_search, search, settings, tasks, version,
 };
 use scoped_key_rotation::ScopedKeyRotationState;
+use std::sync::Arc;
 
 /// Unified application state containing all shared state.
 #[derive(Clone)]
@@ -37,6 +42,7 @@ struct UnifiedState {
     admin: admin_endpoints::AppState,
     pod_id: String,
     redis_store: Option<miroir_core::task_store::RedisTaskStore>,
+    query_capture: Arc<QueryCapture>,
 }
 
 impl UnifiedState {
@@ -101,7 +107,14 @@ impl UnifiedState {
             seal_key.clone(),
         );
 
-        Self { auth, metrics, admin, pod_id, redis_store }
+        Self {
+            auth,
+            metrics,
+            admin,
+            pod_id,
+            redis_store,
+            query_capture: Arc::new(QueryCapture::new(1000)),
+        }
     }
 }
 
@@ -173,6 +186,21 @@ impl FromRef<UnifiedState> for routes::multi_search::MultiSearchState {
             config: state.admin.config.clone(),
             topology: state.admin.topology.clone(),
             node_master_key: state.admin.config.master_key.clone(),
+            metrics: state.metrics.clone(),
+        }
+    }
+}
+
+// Implement FromRef so that routes::canary::CanaryState can be extracted from UnifiedState
+impl FromRef<UnifiedState> for routes::canary::CanaryState {
+    fn from_ref(state: &UnifiedState) -> Self {
+        // Canary routes require Redis task store
+        let redis_store = state.redis_store.clone()
+            .expect("Canary routes require Redis task store (task_store.backend: redis)");
+        let store: Arc<dyn miroir_core::task_store::TaskStore> = Arc::from(redis_store);
+        Self {
+            store,
+            capture: state.query_capture.clone(),
         }
     }
 }
@@ -292,6 +320,140 @@ async fn main() -> anyhow::Result<()> {
                 error!(error = %e, "admin session revocation subscriber exited with error");
             }
         });
+    }
+
+    // Start canary runner background task (plan §13.18)
+    // Only enabled when canary_runner.enabled = true and Redis is available
+    if config.canary_runner.enabled {
+        if let Some(ref redis) = state.redis_store {
+            let store: Arc<dyn TaskStore> = Arc::from(redis.clone());
+            let canary_config = config.canary_runner.clone();
+
+            // Clone config values for the search executor
+            let search_config = config.clone();
+            let search_executor: miroir_core::canary::SearchExecutor = Arc::new(
+                move |index_uid: &str, query: &SearchQuery| -> std::pin::Pin<Box<dyn std::future::Future<Output = miroir_core::error::Result<SearchResponse>> + Send>> {
+                    let index_uid = index_uid.to_string();
+                    let query = query.clone();
+                    let config = search_config.clone();
+
+                    Box::pin(async move {
+                        // For canary queries, we execute against the first available healthy node
+                        let node_addresses: Vec<_> = config.nodes.iter()
+                            .map(|n| n.address.clone())
+                            .collect();
+
+                        for address in node_addresses {
+                            let client = match reqwest::Client::builder()
+                                .timeout(std::time::Duration::from_millis(config.scatter.node_timeout_ms))
+                                .build()
+                            {
+                                Ok(c) => c,
+                                Err(_) => continue,
+                            };
+
+                            let url = format!("{}/indexes/{}/search", address.trim_end_matches('/'), index_uid);
+
+                            // Build the search request body
+                            let mut body = match serde_json::to_value(&query) {
+                                Ok(v) => v,
+                                Err(e) => return Err(miroir_core::error::MiroirError::InvalidRequest(format!("Failed to serialize query: {}", e))),
+                            };
+
+                            // Add limit to avoid large responses for canary queries
+                            if !body.get("limit").and_then(|v| v.as_u64()).is_some() {
+                                body["limit"] = serde_json::json!(20);
+                            }
+
+                            let response = match client.post(&url)
+                                .header("Authorization", format!("Bearer {}", config.node_master_key))
+                                .json(&body)
+                                .send()
+                                .await
+                            {
+                                Ok(r) => r,
+                                Err(_) => continue,
+                            };
+
+                            if response.status().is_success() {
+                                if let Ok(text) = response.text().await {
+                                    if let Ok(search_response) = serde_json::from_str::<SearchResponse>(&text) {
+                                        return Ok(search_response);
+                                    }
+                                }
+                            }
+                        }
+
+                        // All nodes failed
+                        Err(miroir_core::error::MiroirError::Topology(
+                            "All nodes failed for canary query".to_string()
+                        ))
+                    })
+                }
+            );
+
+            // Create metrics emitter callback
+            let metrics_for_canary = state.metrics.clone();
+            let metrics_emitter: miroir_core::canary::MetricsEmitter = Arc::new(
+                move |result| {
+                    use miroir_core::canary::CanaryStatus;
+                    let result_str = match result.status {
+                        CanaryStatus::Passed => "passed",
+                        CanaryStatus::Failed => "failed",
+                        CanaryStatus::Error => "error",
+                    };
+                    metrics_for_canary.inc_canary_runs(&result.canary_id, result_str);
+                    metrics_for_canary.observe_canary_latency_ms(&result.canary_id, result.latency_ms as f64);
+
+                    for failure in &result.failed_assertions {
+                        metrics_for_canary.inc_canary_assertion_failures(&result.canary_id, &failure.assertion_type);
+                    }
+                }
+            );
+
+            // Create settings version checker callback
+            let store_for_version = store.clone();
+            let version_config = config.clone();
+            let settings_version_checker: miroir_core::canary::SettingsVersionChecker = Arc::new(
+                move |index_uid: &str| -> Option<i64> {
+                    // Try to get the settings version from the task store
+                    let node_ids: Vec<String> = version_config.nodes.iter()
+                        .map(|n| n.id.clone())
+                        .collect();
+
+                    let mut min_version: Option<i64> = None;
+                    for node_id in node_ids {
+                        if let Ok(Some(row)) = store_for_version.get_node_settings_version(index_uid, &node_id) {
+                            match min_version {
+                                None => min_version = Some(row.version),
+                                Some(current) if row.version < current => min_version = Some(row.version),
+                                _ => {}
+                            }
+                        }
+                    }
+                    min_version
+                }
+            );
+
+            // Create and start the canary runner
+            let runner = CanaryRunner::new(
+                store,
+                canary_config.max_concurrent_canaries as usize,
+                canary_config.run_history_per_canary as usize,
+                search_executor,
+                metrics_emitter,
+                settings_version_checker,
+            );
+
+            tokio::spawn(async move {
+                info!("canary runner started");
+                if let Err(e) = runner.start().await {
+                    error!("canary runner exited: {}", e);
+                }
+            });
+        } else {
+            info!("canary runner enabled but Redis not available - skipping");
+        }
     }
 
     // Build the main app router with UnifiedState

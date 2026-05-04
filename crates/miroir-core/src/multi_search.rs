@@ -3,50 +3,14 @@
 //! Allows batching multiple search queries into a single HTTP request.
 
 use crate::error::{MiroirError, Result};
+use crate::config::advanced::MultiSearchConfig as AdvancedMultiSearchConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::future::Future;
 
-/// Multi-search configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MultiSearchConfig {
-    /// Whether multi-search is enabled.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Maximum queries per batch.
-    #[serde(default = "default_max")]
-    pub max_queries_per_batch: usize,
-    /// Total timeout for all queries (ms).
-    #[serde(default = "default_total_timeout")]
-    pub total_timeout_ms: u64,
-    /// Per-query timeout (ms).
-    #[serde(default = "default_query_timeout")]
-    pub per_query_timeout_ms: u64,
-}
-
-fn default_true() -> bool {
-    true
-}
-fn default_max() -> usize {
-    100
-}
-fn default_total_timeout() -> u64 {
-    30000
-}
-fn default_query_timeout() -> u64 {
-    30000
-}
-
-impl Default for MultiSearchConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            max_queries_per_batch: default_max(),
-            total_timeout_ms: default_total_timeout(),
-            per_query_timeout_ms: default_query_timeout(),
-        }
-    }
-}
+/// Multi-search configuration (re-export of advanced config).
+pub type MultiSearchConfig = AdvancedMultiSearchConfig;
 
 /// Multi-search request body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +64,12 @@ pub struct SearchResult {
     pub code: Option<String>,
 }
 
+/// Search result data returned by the executor function.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResultData {
+    pub body: serde_json::Value,
+}
+
 /// Multi-search executor.
 pub struct MultiSearchExecutor {
     /// Configuration.
@@ -112,20 +82,55 @@ impl MultiSearchExecutor {
         Self { config }
     }
 
+    /// Create a new multi-search executor from advanced config.
+    pub fn from_advanced(config: AdvancedMultiSearchConfig) -> Self {
+        Self { config }
+    }
+
     /// Execute a multi-search request.
     ///
-    /// This is a stub - the real implementation would:
-    /// 1. Validate the request
-    /// 2. Scatter each query independently
-    /// 3. Merge results per-query
-    /// 4. Return results in input order
-    pub async fn execute(
+    /// Executes each query independently and returns results in input order.
+    /// Each query is executed via the provided executor function.
+    pub async fn execute<F, Fut>(
         &self,
-        _request: MultiSearchRequest,
-    ) -> Result<MultiSearchResponse> {
-        // Stub implementation
+        request: MultiSearchRequest,
+        mut executor: F,
+    ) -> Result<MultiSearchResponse>
+    where
+        F: FnMut(SearchQuery) -> Fut,
+        Fut: std::future::Future<Output = Result<SearchResultData>>,
+    {
+        self.validate(&request)?;
+
+        // Execute all queries in parallel
+        let mut tasks = Vec::with_capacity(request.queries.len());
+        for query in request.queries {
+            tasks.push(executor(query));
+        }
+
+        let results = futures_util::future::join_all(tasks).await;
+
+        // Convert results to SearchResults
+        let search_results: Vec<SearchResult> = results
+            .into_iter()
+            .map(|r| match r {
+                Ok(data) => SearchResult {
+                    status: 200,
+                    body: Some(data.body),
+                    error: None,
+                    code: None,
+                },
+                Err(e) => SearchResult {
+                    status: 500,
+                    body: None,
+                    error: Some(e.to_string()),
+                    code: Some("internal_error".to_string()),
+                },
+            })
+            .collect();
+
         Ok(MultiSearchResponse {
-            results: vec![],
+            results: search_results,
         })
     }
 
@@ -139,7 +144,7 @@ impl MultiSearchExecutor {
             return Err(MiroirError::InvalidRequest("queries array is empty".into()));
         }
 
-        if request.queries.len() > self.config.max_queries_per_batch {
+        if request.queries.len() > self.config.max_queries_per_batch as usize {
             return Err(MiroirError::InvalidRequest(format!(
                 "too many queries: {} exceeds maximum of {}",
                 request.queries.len(),
@@ -180,10 +185,8 @@ mod tests {
 
     #[test]
     fn test_validate_too_many_queries() {
-        let config = MultiSearchConfig {
-            max_queries_per_batch: 10,
-            ..Default::default()
-        };
+        let mut config = MultiSearchConfig::default();
+        config.max_queries_per_batch = 10;
         let executor = MultiSearchExecutor::new(config);
 
         let queries: Vec<SearchQuery> = (0..20).map(|i| SearchQuery {
@@ -229,5 +232,51 @@ mod tests {
         let json = serde_json::to_string(&query).unwrap();
         assert!(json.contains("\"indexUid\":\"products\""));
         assert!(json.contains("\"q\":\"laptop\""));
+    }
+
+    #[tokio::test]
+    async fn test_execute_multi_search() {
+        let executor = MultiSearchExecutor::default();
+
+        let request = MultiSearchRequest {
+            queries: vec![
+                SearchQuery {
+                    indexUid: "products".into(),
+                    q: Some("laptop".into()),
+                    filter: None,
+                    limit: Some(20),
+                    offset: Some(0),
+                    other: HashMap::new(),
+                },
+                SearchQuery {
+                    indexUid: "users".into(),
+                    q: Some("john".into()),
+                    filter: None,
+                    limit: Some(10),
+                    offset: Some(0),
+                    other: HashMap::new(),
+                },
+            ],
+        };
+
+        let response = executor
+            .execute(request, |query| async move {
+                Ok(SearchResultData {
+                    body: serde_json::json!({
+                        "hits": [],
+                        "estimatedTotalHits": 0,
+                        "limit": query.limit.unwrap_or(20),
+                        "offset": query.offset.unwrap_or(0),
+                        "processingTimeMs": 0,
+                    }),
+                })
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 2);
+        assert_eq!(response.results[0].status, 200);
+        assert!(response.results[0].body.is_some());
+        assert_eq!(response.results[1].status, 200);
     }
 }

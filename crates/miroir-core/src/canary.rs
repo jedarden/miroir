@@ -88,7 +88,7 @@ pub struct Hit {
 }
 
 /// Search executor callback for canary queries.
-pub type SearchExecutor = Arc<dyn Fn(&str, &SearchQuery) -> Result<SearchResponse> + Send + Sync>;
+pub type SearchExecutor = Arc<dyn Fn(&str, &SearchQuery) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SearchResponse>> + Send>> + Send + Sync>;
 
 /// Metrics emitter callback for canary runs.
 pub type MetricsEmitter = Arc<dyn Fn(&CanaryRunResult) + Send + Sync>;
@@ -268,8 +268,8 @@ impl CanaryRunner {
 
     /// Execute a search query against the index
     async fn execute_search(&self, index_uid: &str, query: &SearchQuery) -> Result<SearchResponse> {
-        // Call the search executor callback
-        (self.search_executor)(index_uid, query)
+        // Call the search executor callback (async)
+        (self.search_executor)(index_uid, query).await
     }
 
     /// Evaluate a single assertion

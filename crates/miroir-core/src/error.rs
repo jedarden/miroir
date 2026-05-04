@@ -90,4 +90,11 @@ pub enum MiroirError {
     /// Settings version stale.
     #[error("settings version stale")]
     SettingsVersionStale,
+
+    /// Tenant not allowed.
+    #[error("tenant '{tenant}' not allowed: {reason}")]
+    TenantNotAllowed {
+        tenant: String,
+        reason: String,
+    },
 }

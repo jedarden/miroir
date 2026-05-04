@@ -1,6 +1,6 @@
 //! Miroir configuration — plan §4 YAML schema with §13 advanced capabilities.
 
-mod advanced;
+pub mod advanced;
 mod error;
 mod load;
 mod validate;

@@ -711,6 +711,16 @@ impl TaskRegistryImpl {
         }
     }
 
+    /// Return a reference to the underlying `TaskStore` trait object, if this is a persisted variant.
+    pub fn as_task_store(&self) -> Option<Arc<dyn crate::task_store::TaskStore>> {
+        match self {
+            TaskRegistryImpl::InMemory(_) => None,
+            TaskRegistryImpl::Sqlite(s) => Some(s.clone() as Arc<dyn crate::task_store::TaskStore>),
+            #[cfg(feature = "redis-store")]
+            TaskRegistryImpl::Redis(r) => Some(r.clone() as Arc<dyn crate::task_store::TaskStore>),
+        }
+    }
+
     /// Register a new task with metadata (sync, compatible with `TaskRegistry` trait).
     pub fn register_with_metadata(
         &self,
