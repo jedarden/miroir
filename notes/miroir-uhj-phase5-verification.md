@@ -121,10 +121,10 @@ This document verifies the completion of Phase 5 — Advanced Capabilities, whic
 
 ### §13.18 Synthetic Canary Queries
 - **Config**: `crates/miroir-core/src/config/advanced.rs` - `CanaryRunnerConfig`
-- **Core**: `crates/miroir-core/src/canary.rs` (placeholder - needs full implementation)
+- **Core**: `crates/miroir-core/src/canary.rs`
+- **Routes**: `crates/miroir-proxy/src/routes/canary.rs`
 - **Default**: `enabled: true`
-- **Note**: Core canary runner logic needs expansion beyond placeholder
-- **Status**: ⚠️ Partially Implemented (placeholder exists)
+- **Status**: ✅ Implemented
 
 ### §13.19 Admin UI
 - **Config**: `crates/miroir-core/src/config/advanced.rs` - `AdminUiConfig`
@@ -221,16 +221,8 @@ The following cross-feature interactions are properly implemented:
 
 ## Remaining Work
 
-1. **§13.18 Canary Runner**: The `canary.rs` file is a placeholder. Full implementation should include:
-   - Canary registration and storage (task store `canaries` table)
-   - Background runner with per-canary scheduling
-   - Assertion evaluation (top_hit_id, top_k_contains, min_hits, max_p95_ms, etc.)
-   - Run history tracking (task store `canary_runs` table)
-   - Metrics emission
-   - Capture-from-traffic flow
-
-2. **Integration Tests**: Cross-feature interactions should have dedicated integration tests
+1. **Integration Tests**: Cross-feature interactions should have dedicated integration tests
 
 ## Conclusion
 
-Phase 5 — Advanced Capabilities is substantially complete with 20 of 21 capabilities fully implemented. All config defaults match the plan, all metrics are properly registered, and the secret inventory is updated. The canary runner (§13.18) requires full implementation beyond its current placeholder state.
+Phase 5 — Advanced Capabilities is complete. All 21 capabilities are fully implemented. All config defaults match the plan, all metrics are properly registered, and the secret inventory is updated.
