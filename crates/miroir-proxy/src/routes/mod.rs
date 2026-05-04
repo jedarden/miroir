@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod admin_endpoints;
 pub mod aliases;
+pub mod canary;
 pub mod documents;
 pub mod explain;
 pub mod health;

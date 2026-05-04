@@ -4,10 +4,10 @@
 
 use axum::{
     extract::FromRef,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
-use super::{admin_endpoints, aliases, session};
+use super::{admin_endpoints, aliases, canary, explain, session};
 
 /// Create the admin router with all /_miroir/* endpoints.
 ///
@@ -19,6 +19,8 @@ where
     S: Clone + Send + Sync + 'static,
     admin_endpoints::AppState: FromRef<S>,
     aliases::AliasState: FromRef<S>,
+    explain::ExplainState: FromRef<S>,
+    canary::CanaryState: FromRef<S>,
 {
     Router::new()
         // Admin session endpoints (plan §9, §13.19)
@@ -44,4 +46,15 @@ where
         .route("/aliases/{name}", get(aliases::get_alias::<S>))
         .route("/aliases/{name}", post(aliases::update_alias::<S>))
         .route("/aliases/{name}", delete(aliases::delete_alias::<S>))
+        // Canary management (plan §13.18)
+        .route("/canaries", post(canary::create_canary::<S>))
+        .route("/canaries", get(canary::get_canary_status::<S>))
+        .route("/canaries/{id}", get(canary::get_canary::<S>))
+        .route("/canaries/{id}", put(canary::update_canary::<S>))
+        .route("/canaries/{id}", delete(canary::delete_canary::<S>))
+        .route("/canaries/capture", post(canary::start_capture::<S>))
+        .route("/canaries/captured", get(canary::get_captured::<S>))
+        .route("/canaries/from-capture/{index}", post(canary::create_from_capture::<S>))
+        // Explain endpoint (plan §13.20)
+        .route("/indexes/{index}/explain", post(explain::explain_search::<S>))
 }
