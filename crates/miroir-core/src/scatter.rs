@@ -3,7 +3,7 @@
 use crate::config::UnavailableShardPolicy;
 use tracing::{instrument, info_span, Instrument};
 use crate::merger::{MergeInput, MergedSearchResult, MergeStrategy, ShardHitPage};
-use crate::router::{covering_set, query_group};
+use crate::router::{covering_set, covering_set_with_version_floor, query_group};
 use crate::topology::{NodeId, Topology};
 use crate::Result;
 use serde::{Deserialize, Serialize};
@@ -401,6 +401,62 @@ pub fn plan_search_scatter(
         deadline_ms: 5000,
         hedging_eligible: group.node_count() > 1,
     }
+}
+
+/// Plan search scatter with settings version floor filtering (plan §13.5).
+///
+/// Excludes nodes whose settings version for the given index is below `floor`.
+/// Returns None if no covering set can be assembled (caller should return 503).
+pub fn plan_search_scatter_with_version_floor(
+    topology: &Topology,
+    query_seq: u64,
+    rf: usize,
+    shard_count: u32,
+    index: &str,
+    floor: u64,
+    version_checker: &impl Fn(&str, &str) -> u64,
+) -> Option<ScatterPlan> {
+    let chosen_group = query_group(query_seq, topology.replica_group_count());
+
+    let group = topology.group(chosen_group)?;
+
+    let covering = covering_set_with_version_floor(
+        shard_count,
+        group,
+        rf,
+        query_seq,
+        index,
+        floor,
+        version_checker,
+    )?;
+
+    let mut shard_to_node = HashMap::new();
+    for shard_id in 0..shard_count {
+        let replicas = crate::router::assign_shard_in_group(shard_id, group.nodes(), rf);
+        // Filter by version floor, then rotate by query_seq
+        let eligible: Vec<_> = replicas
+            .iter()
+            .filter(|node_id| {
+                let version = version_checker(index, node_id.as_str());
+                version >= floor
+            })
+            .collect();
+
+        if eligible.is_empty() {
+            return None;
+        }
+
+        let selected = eligible[query_seq as usize % eligible.len()];
+        shard_to_node.insert(shard_id, selected.clone());
+    }
+
+    Some(ScatterPlan {
+        chosen_group,
+        target_shards: (0..shard_count).collect(),
+        shard_to_node,
+        deadline_ms: 5000,
+        hedging_eligible: group.node_count() > 1,
+    })
 }
 
 #[instrument(skip_all, fields(node_count))]

@@ -139,6 +139,8 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             migration_coordinator: state.admin.migration_coordinator.clone(),
             rebalancer_worker: state.admin.rebalancer_worker.clone(),
             rebalancer_metrics: state.admin.rebalancer_metrics.clone(),
+            previous_docs_migrated: state.admin.previous_docs_migrated.clone(),
+            settings_broadcast: state.admin.settings_broadcast.clone(),
         }
     }
 }
@@ -344,6 +346,41 @@ async fn main() -> anyhow::Result<()> {
                 error!(error = %e, "admin session revocation subscriber exited with error");
             }
         });
+    }
+
+    // Start drift reconciler background task (plan §13.5)
+    // Always runs but uses Mode B leader election for horizontal scaling
+    if let Some(ref redis) = state.redis_store {
+        let store: Arc<dyn TaskStore> = Arc::from(redis.clone());
+        let drift_config = miroir_core::drift_reconciler::DriftReconcilerConfig {
+            interval_s: config.settings_drift_check.interval_s,
+            auto_repair: config.settings_drift_check.auto_repair,
+            node_master_key: config.node_master_key.clone(),
+            node_addresses: config.nodes.iter().map(|n| n.address.clone()).collect(),
+            leader_scope: "drift_reconciler".to_string(),
+            pod_id: pod_id.clone(),
+        };
+
+        // Create metrics callback for drift repairs
+        let metrics_for_drift = state.metrics.clone();
+        let drift_metrics_callback: miroir_core::drift_reconciler::DriftRepairMetrics = Arc::new(
+            move |index: &str, _node_id: &str| {
+                metrics_for_drift.inc_settings_drift_repair(index);
+            }
+        );
+
+        let drift_reconciler = miroir_core::drift_reconciler::DriftReconciler::with_metrics(
+            drift_config,
+            store.clone(),
+            Some(drift_metrics_callback),
+        );
+        tokio::spawn(async move {
+            info!("drift reconciler started");
+            drift_reconciler.run().await;
+            error!("drift reconciler exited unexpectedly");
+        });
+    } else {
+        info!("drift reconciler not available (no Redis task store)");
     }
 
     // Start canary runner background task (plan §13.18)

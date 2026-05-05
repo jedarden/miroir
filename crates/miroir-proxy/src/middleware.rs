@@ -213,6 +213,12 @@ pub struct Metrics {
     // ── Admin session sealing metrics (always present) ──
     admin_session_key_generated: Gauge,
     admin_session_revoked_total: Counter,
+
+    // ── §13.5 Two-phase settings broadcast metrics (always present) ──
+    settings_broadcast_phase: GaugeVec,
+    settings_hash_mismatch_total: Counter,
+    settings_drift_repair_total: CounterVec,
+    settings_version: GaugeVec,
 }
 
 impl Clone for Metrics {
@@ -286,6 +292,10 @@ impl Clone for Metrics {
             owned_shards_count: self.owned_shards_count.clone(),
             admin_session_key_generated: self.admin_session_key_generated.clone(),
             admin_session_revoked_total: self.admin_session_revoked_total.clone(),
+            settings_broadcast_phase: self.settings_broadcast_phase.clone(),
+            settings_hash_mismatch_total: self.settings_hash_mismatch_total.clone(),
+            settings_drift_repair_total: self.settings_drift_repair_total.clone(),
+            settings_version: self.settings_version.clone(),
         }
     }
 }
@@ -769,6 +779,27 @@ impl Metrics {
         reg!(admin_session_key_generated);
         reg!(admin_session_revoked_total);
 
+        // ── §13.5 Two-phase settings broadcast metrics (always present) ──
+        let settings_broadcast_phase = GaugeVec::new(
+            Opts::new("miroir_settings_broadcast_phase", "Current phase of settings broadcast (0=idle, 1=propose, 2=verify, 3=commit)"),
+            &["index"],
+        ).expect("create settings_broadcast_phase");
+        let settings_hash_mismatch_total = Counter::with_opts(
+            Opts::new("miroir_settings_hash_mismatch_total", "Settings hash mismatches detected during verify phase"),
+        ).expect("create settings_hash_mismatch_total");
+        let settings_drift_repair_total = CounterVec::new(
+            Opts::new("miroir_settings_drift_repair_total", "Settings drift repairs performed by drift reconciler"),
+            &["index"],
+        ).expect("create settings_drift_repair_total");
+        let settings_version = GaugeVec::new(
+            Opts::new("miroir_settings_version", "Current settings version per index"),
+            &["index"],
+        ).expect("create settings_version");
+        reg!(settings_broadcast_phase);
+        reg!(settings_hash_mismatch_total);
+        reg!(settings_drift_repair_total);
+        reg!(settings_version);
+
         Self {
             registry,
             request_duration,
@@ -838,6 +869,10 @@ impl Metrics {
             owned_shards_count,
             admin_session_key_generated,
             admin_session_revoked_total,
+            settings_broadcast_phase,
+            settings_hash_mismatch_total,
+            settings_drift_repair_total,
+            settings_version,
         }
     }
 
@@ -1431,6 +1466,32 @@ impl Metrics {
 
     pub fn set_owned_shards_count(&self, count: u64) {
         self.owned_shards_count.set(count as f64);
+    }
+
+    // ── §13.5 Two-phase settings broadcast metrics ──
+
+    pub fn set_settings_broadcast_phase(&self, index: &str, phase: u8) {
+        self.settings_broadcast_phase.with_label_values(&[index]).set(phase as f64);
+    }
+
+    pub fn clear_settings_broadcast_phase(&self, index: &str) {
+        self.settings_broadcast_phase.with_label_values(&[index]).set(0.0);
+    }
+
+    pub fn inc_settings_hash_mismatch(&self) {
+        self.settings_hash_mismatch_total.inc();
+    }
+
+    pub fn inc_settings_drift_repair(&self, index: &str) {
+        self.settings_drift_repair_total.with_label_values(&[index]).inc();
+    }
+
+    pub fn set_settings_version(&self, index: &str, version: u64) {
+        self.settings_version.with_label_values(&[index]).set(version as f64);
+    }
+
+    pub fn get_settings_version(&self, index: &str) -> f64 {
+        self.settings_version.with_label_values(&[index]).get()
     }
 
     pub fn registry(&self) -> &Registry {

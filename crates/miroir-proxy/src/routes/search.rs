@@ -4,10 +4,11 @@ use axum::extract::{Extension, Path};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
+use miroir_core::api_error::{MeilisearchError, MiroirCode};
 use miroir_core::config::UnavailableShardPolicy;
 use miroir_core::merger::ScoreMergeStrategy;
 use miroir_core::scatter::{
-    dfs_query_then_fetch_search, plan_search_scatter, SearchRequest, NodeClient,
+    dfs_query_then_fetch_search, plan_search_scatter, plan_search_scatter_with_version_floor, SearchRequest, NodeClient,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -217,6 +218,12 @@ async fn search_handler(
         state.config.node_master_key.clone()
     };
 
+    // Extract X-Miroir-Min-Settings-Version header (plan §13.5)
+    let min_settings_version = headers
+        .get("X-Miroir-Min-Settings-Version")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+
     // Use live topology from shared state (updated by health checker)
     let topo = state.topology.read().await;
     let policy = match state.config.scatter.unavailable_shard_policy.as_str() {
@@ -233,8 +240,51 @@ async fn search_handler(
             replica_groups = state.config.replica_groups,
             shards = state.config.shards,
             rf = state.config.replication_factor,
+            min_settings_version,
         ).entered();
-        plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards)
+
+        // If client provided a min settings version floor, use version-filtered planning
+        if let Some(floor) = min_settings_version {
+            // Clone the settings broadcast for version checking
+            let settings_broadcast = state.settings_broadcast.clone();
+            let plan_result = plan_search_scatter_with_version_floor(
+                &topo,
+                0,
+                state.config.replication_factor as usize,
+                state.config.shards,
+                &index,
+                floor,
+                &move |idx, node_id| {
+                    // Use a blocking task wrapper since we're in a sync context
+                    let sb = settings_broadcast.clone();
+                    let idx = idx.to_string();
+                    let node_id = node_id.to_string();
+                    tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async {
+                            sb.node_version(&idx, &node_id).await
+                        })
+                    })
+                },
+            );
+
+            match plan_result {
+                Some(p) => p,
+                None => {
+                    // No covering set could be assembled after filtering by version floor
+                    let err = MeilisearchError::new(
+                        MiroirCode::SettingsVersionStale,
+                        format!(
+                            "no covering set available for settings version floor {} on index '{}'",
+                            floor, index
+                        ),
+                    );
+                    return Err(StatusCode::SERVICE_UNAVAILABLE);
+                }
+            }
+        } else {
+            // No version floor requested, use normal planning
+            plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards)
+        }
     };
     let node_count = plan.shard_to_node.len() as u64;
 
@@ -299,10 +349,21 @@ async fn search_handler(
         body["facetDistribution"] = serde_json::to_value(facets).unwrap_or(Value::Null);
     }
 
-    // Build response with optional X-Miroir-Degraded header
+    // Build response with optional headers
     let mut response = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json");
+
+    // Add X-Miroir-Settings-Inconsistent header if a broadcast is in flight (plan §13.5)
+    if state.settings_broadcast.is_in_flight(&index).await {
+        response = response.header("X-Miroir-Settings-Inconsistent", "true");
+    }
+
+    // Add X-Miroir-Settings-Version header if we have a version for this index
+    let current_version = state.settings_broadcast.current_version().await;
+    if current_version > 0 {
+        response = response.header("X-Miroir-Settings-Version", current_version.to_string());
+    }
 
     if result.degraded {
         state.metrics.inc_scatter_partial_responses();

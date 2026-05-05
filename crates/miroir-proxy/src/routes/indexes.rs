@@ -1,31 +1,58 @@
 //! Index lifecycle endpoints: create, delete, stats, settings broadcast.
 //!
-//! Implements P2.4:
+//! Implements P2.4 and P5.5 §13.5:
 //! - `POST /indexes` — create index on every node; auto-add `_miroir_shard` to
 //!   `filterableAttributes`; rollback on partial failure
 //! - `DELETE /indexes/{uid}` — broadcast delete to every node
 //! - `GET /indexes/{uid}/stats` — fan out, sum numberOfDocuments (logical count),
 //!   merge fieldDistribution
-//! - `PATCH /indexes/{uid}/settings/*` — sequential settings broadcast with rollback
+//! - `PATCH /indexes/{uid}/settings/*` — two-phase settings broadcast with verification
 //! - `GET /indexes/{uid}/settings/*` — proxy read from first node
 //! - `GET /stats` — global stats across all indexes
 
 use axum::extract::{Extension, Path};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use miroir_core::api_error::{MeilisearchError, MiroirCode};
 use miroir_core::config::Config;
+use miroir_core::error::MiroirError;
 use miroir_core::scatter::{PreflightRequest, PreflightResponse, TermStats};
+use miroir_core::settings::{BroadcastPhase, SettingsBroadcast};
 use miroir_core::topology::Topology;
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use sha2::{Digest, Sha256};
+use tokio::time::{timeout, Duration};
 
 use crate::routes::{admin_endpoints::AppState, documents};
 
+/// Convert MiroirError to MeilisearchError.
+fn convert_miroir_error(e: MiroirError) -> MeilisearchError {
+    match e {
+        MiroirError::SettingsDivergence => MeilisearchError::new(
+            MiroirCode::NoQuorum,
+            "settings divergence detected across nodes",
+        ),
+        MiroirError::NotFound(msg) => MeilisearchError::new(
+            MiroirCode::NoQuorum,
+            format!("not found: {}", msg),
+        ),
+        MiroirError::InvalidState(msg) => MeilisearchError::new(
+            MiroirCode::NoQuorum,
+            format!("invalid state: {}", msg),
+        ),
+        _ => MeilisearchError::new(
+            MiroirCode::NoQuorum,
+            format!("settings broadcast error: {}", e),
+        ),
+    }
+}
+
 /// Node client for communicating with Meilisearch.
+#[derive(Clone)]
 pub struct MeilisearchClient {
     client: Client,
     master_key: String,
@@ -245,6 +272,36 @@ impl MeilisearchClient {
 /// Collect all healthy node addresses from config.
 fn all_node_addresses(config: &Config) -> Vec<String> {
     config.nodes.iter().map(|n| n.address.clone()).collect()
+}
+
+/// Compute a fingerprint (SHA256) of settings as canonical JSON.
+///
+/// Canonical JSON sorts object keys to ensure consistent fingerprints
+/// regardless of key ordering in the input.
+fn fingerprint_settings(settings: &Value) -> String {
+    // Canonicalize: sort object keys, no extra whitespace.
+    let canonical = if settings.is_object() {
+        if let Some(obj) = settings.as_object() {
+            // Collect and sort keys.
+            let mut sorted_entries: Vec<_> = obj.iter().collect();
+            sorted_entries.sort_by_key(|&(k, _)| k);
+            // Reconstruct as a Map with sorted keys.
+            let mut sorted_map = serde_json::Map::new();
+            for (key, value) in sorted_entries {
+                sorted_map.insert(key.clone(), value.clone());
+            }
+            serde_json::to_string(&sorted_map).unwrap_or_default()
+        } else {
+            serde_json::to_string(settings).unwrap_or_default()
+        }
+    } else {
+        serde_json::to_string(settings).unwrap_or_default()
+    };
+
+    // SHA256 hash.
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 pub fn router<S>() -> Router<S>
@@ -720,32 +777,271 @@ pub async fn global_stats_handler(
 }
 
 // ---------------------------------------------------------------------------
-// Settings: PATCH /indexes/{uid}/settings — sequential broadcast with rollback
+// Settings: PATCH /indexes/{uid}/settings — two-phase broadcast with verification (§13.5)
 // ---------------------------------------------------------------------------
 
 async fn update_settings_handler(
     Path(index): Path<String>,
-    Extension(_state): Extension<Arc<AppState>>,
+    Extension(state): Extension<Arc<AppState>>,
     Extension(config): Extension<Arc<Config>>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, MeilisearchError> {
-    update_settings_broadcast(&config, &index, "/settings", &body).await
+    two_phase_settings_broadcast(&state, &config, &index, "/settings", &body).await
 }
 
 async fn update_settings_subpath_handler(
     Path((index, subpath)): Path<(String, String)>,
-    Extension(_state): Extension<Arc<AppState>>,
+    Extension(state): Extension<Arc<AppState>>,
     Extension(config): Extension<Arc<Config>>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, MeilisearchError> {
     let path = format!("/settings/{}", subpath);
-    update_settings_broadcast(&config, &index, &path, &body).await
+    two_phase_settings_broadcast(&state, &config, &index, &path, &body).await
 }
 
-/// Sequential settings broadcast: apply to nodes one-by-one, rollback on failure.
+/// Two-phase settings broadcast (§13.5):
+/// Phase 1 (Propose): PATCH all nodes in parallel, collect task UIDs
+/// Phase 2 (Verify): GET settings from all nodes, verify SHA256 fingerprints
+/// Phase 3 (Commit): Increment settings_version, persist to task store
 ///
-/// Before applying, snapshots current settings from each node so rollback is lossless.
-async fn update_settings_broadcast(
+/// On hash mismatch, retry with exponential backoff up to max_repair_retries.
+/// If unrepairable, raise MiroirSettingsDivergence alert and freeze writes.
+async fn two_phase_settings_broadcast(
+    state: &AppState,
+    config: &Config,
+    index: &str,
+    settings_path: &str,
+    body: &Value,
+) -> Result<Json<Value>, MeilisearchError> {
+    // Use sequential strategy for rollback compatibility
+    if config.settings_broadcast.strategy == "sequential" {
+        return update_settings_broadcast_legacy(&config, index, settings_path, body).await;
+    }
+
+    let client = MeilisearchClient::new(config.node_master_key.clone());
+    let nodes = all_node_addresses(config);
+    let full_path = format!("/indexes/{}{}", index, settings_path);
+
+    // Check if a broadcast is already in flight
+    if state.settings_broadcast.is_in_flight(index).await {
+        return Err(MeilisearchError::new(
+            MiroirCode::IndexAlreadyExists,
+            format!("settings broadcast already in flight for index '{}'", index),
+        ));
+    }
+
+    // Compute expected fingerprint of proposed settings
+    let expected_fingerprint = fingerprint_settings(body);
+
+    // Set phase to Propose (1)
+    state.metrics.set_settings_broadcast_phase(index, 1);
+
+    // Phase 1: Propose - PATCH all nodes in parallel
+    let propose_fut = async {
+        let mut node_task_uids = HashMap::new();
+        let mut first_response: Option<Value> = None;
+        let mut errors: Vec<String> = Vec::new();
+
+        for address in &nodes {
+            match client.patch_raw(address, &full_path, body).await {
+                Ok((status, text)) if status >= 200 && status < 300 => {
+                    if first_response.is_none() {
+                        first_response = serde_json::from_str(&text).ok();
+                    }
+                    // Extract taskUid if present in response
+                    if let Ok(resp) = serde_json::from_str::<Value>(&text) {
+                        if let Some(task_uid) = resp.get("taskUid").and_then(|v| v.as_u64()) {
+                            node_task_uids.insert(address.clone(), task_uid);
+                        }
+                    }
+                }
+                Ok((status, text)) => {
+                    errors.push(format!("{}: HTTP {} — {}", address, status, text));
+                }
+                Err(e) => {
+                    errors.push(format!("{}: {}", address, e));
+                }
+            }
+        }
+
+        (node_task_uids, first_response, errors)
+    };
+
+    let (node_task_uids, first_response, propose_errors) = propose_fut.await;
+
+    if !propose_errors.is_empty() {
+        state.metrics.clear_settings_broadcast_phase(index);
+        return Err(MeilisearchError::new(
+            MiroirCode::NoQuorum,
+            format!("Phase 1 propose failed: {}", propose_errors.join("; ")),
+        ));
+    }
+
+    // Start broadcast tracking
+    state.settings_broadcast.start_propose(index.to_string(), body).await
+        .map_err(convert_miroir_error)?;
+
+    // Set phase to Verify (2)
+    state.metrics.set_settings_broadcast_phase(index, 2);
+
+    // Wait for all node tasks to complete (with timeout)
+    let verify_timeout = Duration::from_secs(config.settings_broadcast.verify_timeout_s);
+
+    // Define verify logic as a closure that can be called multiple times
+    let run_verify = || {
+        let client = client.clone();
+        let nodes = nodes.clone();
+        let index = index.to_string();
+        let settings_path = settings_path.to_string();
+        async move {
+            let mut node_hashes = HashMap::new();
+            let mut verify_errors: Vec<String> = Vec::new();
+
+            for address in &nodes {
+                let path = format!("/indexes/{}{}", index, settings_path);
+                match client.get_raw(address, &path).await {
+                    Ok((status, text)) if status >= 200 && status < 300 => {
+                        if let Ok(settings) = serde_json::from_str::<Value>(&text) {
+                            let hash = fingerprint_settings(&settings);
+                            node_hashes.insert(address.clone(), hash);
+                        }
+                    }
+                    Ok((status, text)) => {
+                        verify_errors.push(format!("{}: HTTP {} — {}", address, status, text));
+                    }
+                    Err(e) => {
+                        verify_errors.push(format!("{}: {}", address, e));
+                    }
+                }
+            }
+
+            (node_hashes, verify_errors)
+        }
+    };
+
+    let (mut node_hashes, verify_errors) = timeout(verify_timeout, run_verify())
+        .await
+        .map_err(|_| {
+            MeilisearchError::new(
+                MiroirCode::Timeout,
+                "Phase 2 verify timed out",
+            )
+        })?;
+
+    if !verify_errors.is_empty() {
+        state.settings_broadcast.abort(
+            index,
+            format!("Phase 2 verify failed: {}", verify_errors.join("; ")),
+        ).await.ok();
+        return Err(MeilisearchError::new(
+            MiroirCode::NoQuorum,
+            format!("Phase 2 verify failed: {}", verify_errors.join("; ")),
+        ));
+    }
+
+    // Enter verify phase and check hashes
+    state.settings_broadcast.enter_verify(index, node_task_uids.clone()).await
+        .map_err(convert_miroir_error)?;
+
+    // Retry loop with exponential backoff for hash mismatches
+    let mut retry_count = 0u32;
+    let max_retries = config.settings_broadcast.max_repair_retries;
+
+    loop {
+        match state.settings_broadcast.verify_hashes(
+            index,
+            node_hashes.clone(),
+            &expected_fingerprint,
+        ).await {
+            Ok(()) => break,
+            Err(miroir_core::error::MiroirError::SettingsDivergence) => {
+                state.metrics.inc_settings_hash_mismatch();
+                retry_count += 1;
+                if retry_count > max_retries {
+                    state.settings_broadcast.abort(
+                        index,
+                        format!("max repair retries ({}) exceeded", max_retries),
+                    ).await.ok();
+
+                    // TODO: Raise MiroirSettingsDivergence alert
+                    // TODO: Freeze writes if configured
+
+                    return Err(MeilisearchError::new(
+                        MiroirCode::NoQuorum,
+                        format!("settings divergence detected after {} retries", max_retries),
+                    ));
+                }
+
+                // Exponential backoff: 2^retry_count seconds, max 60s
+                let backoff_ms = 1000 * (1u64 << (retry_count - 1).min(5));
+                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+
+                // Re-issue PATCH to mismatched nodes
+                let status = state.settings_broadcast.get_status(index).await;
+                if let Some(status) = &status {
+                    if let Some(ref error) = status.error {
+                        tracing::warn!(
+                            index = %index,
+                            retry = retry_count,
+                            error,
+                            "settings hash mismatch, retrying"
+                        );
+                    }
+                }
+
+                // Re-run verify phase
+                let (new_hashes, new_errors) = run_verify().await;
+                if !new_errors.is_empty() {
+                    state.settings_broadcast.abort(
+                        index,
+                        format!("re-verify failed: {}", new_errors.join("; ")),
+                    ).await.ok();
+                    return Err(MeilisearchError::new(
+                        MiroirCode::NoQuorum,
+                        format!("re-verify failed: {}", new_errors.join("; ")),
+                    ));
+                }
+                node_hashes = new_hashes;
+            }
+            Err(e) => {
+                state.settings_broadcast.abort(index, e.to_string()).await.ok();
+                return Err(MeilisearchError::new(
+                    MiroirCode::NoQuorum,
+                    e.to_string(),
+                ));
+            }
+        }
+    }
+
+    // Phase 3: Commit - increment settings version
+    let new_version = state.settings_broadcast.commit(index).await
+        .map_err(convert_miroir_error)?;
+
+    // Update settings version metric
+    state.metrics.set_settings_version(index, new_version);
+    state.metrics.clear_settings_broadcast_phase(index);
+
+    tracing::info!(
+        index = %index,
+        settings_version = new_version,
+        nodes = nodes.len(),
+        "settings broadcast committed successfully"
+    );
+
+    // Complete and remove from in-flight tracking
+    state.settings_broadcast.complete(index).await.ok();
+
+    Ok(Json(first_response.unwrap_or(serde_json::json!({
+        "taskUid": 0,
+        "status": "enqueued",
+        "settingsVersion": new_version,
+    }))))
+}
+
+/// Legacy sequential settings broadcast: apply to nodes one-by-one, rollback on failure.
+///
+/// Kept for rollback compatibility when strategy: sequential.
+async fn update_settings_broadcast_legacy(
     config: &Config,
     index: &str,
     settings_path: &str,

@@ -8,6 +8,7 @@ pub mod api_error;
 pub mod canary;
 pub mod cdc;
 pub mod config;
+pub mod drift_reconciler;
 pub mod dump;
 pub mod dump_import;
 pub mod error;
