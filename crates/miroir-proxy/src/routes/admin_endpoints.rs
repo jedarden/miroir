@@ -320,6 +320,8 @@ pub struct AppState {
     pub rebalancer_metrics: Arc<RwLock<RebalancerMetrics>>,
     /// Track previous documents migrated value for delta calculation.
     pub previous_docs_migrated: Arc<std::sync::atomic::AtomicU64>,
+    /// Two-phase settings broadcast coordinator (§13.5).
+    pub settings_broadcast: Arc<miroir_core::settings::SettingsBroadcast>,
 }
 
 impl AppState {
@@ -447,6 +449,13 @@ impl AppState {
             None
         };
 
+        // Create settings broadcast coordinator (§13.5)
+        let settings_broadcast = if let Some(ref store) = task_store {
+            Arc::new(miroir_core::settings::SettingsBroadcast::with_task_store(store.clone()))
+        } else {
+            Arc::new(miroir_core::settings::SettingsBroadcast::new())
+        };
+
         Self {
             config: Arc::new(config),
             topology: topology_arc,
@@ -465,6 +474,7 @@ impl AppState {
             rebalancer_worker,
             rebalancer_metrics,
             previous_docs_migrated: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            settings_broadcast,
         }
     }
 

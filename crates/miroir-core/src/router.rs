@@ -1,6 +1,7 @@
 //! Rendezvous hash-based routing and shard assignment.
 
 use crate::topology::{Group, NodeId, Topology};
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use twox_hash::XxHash64;
 
@@ -62,9 +63,52 @@ pub fn covering_set(shard_count: u32, group: &Group, rf: usize, query_seq: u64) 
             // rotate through replicas for intra-group load balancing
             replicas[(query_seq as usize) % replicas.len()].clone()
         })
-        .collect::<std::collections::HashSet<_>>()
+        .collect::<HashSet<_>>()
         .into_iter()
         .collect()
+}
+
+/// Covering set with settings version floor filtering (plan §13.5).
+///
+/// Excludes nodes whose settings version for the given index is below `floor`.
+/// Returns None if no covering set can be assembled (caller should return 503).
+pub fn covering_set_with_version_floor(
+    shard_count: u32,
+    group: &Group,
+    rf: usize,
+    query_seq: u64,
+    index: &str,
+    floor: u64,
+    version_checker: &impl Fn(&str, &str) -> u64,
+) -> Option<Vec<NodeId>> {
+    let mut result = Vec::new();
+    let mut used_nodes = HashSet::new();
+
+    for shard_id in 0..shard_count {
+        let replicas = assign_shard_in_group(shard_id, group.nodes(), rf);
+
+        // Filter replicas by settings version floor, then by query_seq rotation
+        let eligible: Vec<_> = replicas
+            .iter()
+            .filter(|node_id| {
+                let version = version_checker(index, node_id.as_str());
+                version >= floor
+            })
+            .collect();
+
+        if eligible.is_empty() {
+            // No eligible replica for this shard
+            return None;
+        }
+
+        // Rotate through eligible replicas using query_seq
+        let selected = eligible[query_seq as usize % eligible.len()];
+        if used_nodes.insert(selected.clone()) {
+            result.push(selected.clone());
+        }
+    }
+
+    Some(result)
 }
 
 /// Compute the shard ID for a document's primary key.

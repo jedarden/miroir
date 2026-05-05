@@ -38,12 +38,14 @@ pub enum MiroirCode {
     InvalidAuth,
     MissingCsrf,
     CsrfMismatch,
+    IndexAlreadyExists,
+    Timeout,
 }
 
 impl MiroirCode {
     /// All variants, used for iteration in tests.
     #[cfg(test)]
-    const ALL: [MiroirCode; 12] = [
+    const ALL: [MiroirCode; 14] = [
         MiroirCode::PrimaryKeyRequired,
         MiroirCode::NoQuorum,
         MiroirCode::ShardUnavailable,
@@ -56,6 +58,8 @@ impl MiroirCode {
         MiroirCode::InvalidAuth,
         MiroirCode::MissingCsrf,
         MiroirCode::CsrfMismatch,
+        MiroirCode::IndexAlreadyExists,
+        MiroirCode::Timeout,
     ];
 
     /// Returns the error code string (e.g., `"miroir_no_quorum"`).
@@ -73,6 +77,8 @@ impl MiroirCode {
             Self::InvalidAuth => "miroir_invalid_auth",
             Self::MissingCsrf => "miroir_missing_csrf",
             Self::CsrfMismatch => "miroir_csrf_mismatch",
+            Self::IndexAlreadyExists => "miroir_index_already_exists",
+            Self::Timeout => "miroir_timeout",
         }
     }
 
@@ -82,11 +88,12 @@ impl MiroirCode {
             Self::PrimaryKeyRequired
             | Self::ReservedField
             | Self::IdempotencyKeyReused
-            | Self::MultiAliasNotWritable => ErrorType::InvalidRequest,
+            | Self::MultiAliasNotWritable
+            | Self::IndexAlreadyExists => ErrorType::InvalidRequest,
 
             Self::JwtInvalid | Self::JwtScopeDenied | Self::InvalidAuth | Self::MissingCsrf | Self::CsrfMismatch => ErrorType::Auth,
 
-            Self::NoQuorum | Self::ShardUnavailable | Self::SettingsVersionStale => {
+            Self::NoQuorum | Self::ShardUnavailable | Self::SettingsVersionStale | Self::Timeout => {
                 ErrorType::System
             }
         }
@@ -99,6 +106,8 @@ impl MiroirCode {
             Self::JwtInvalid | Self::InvalidAuth | Self::MissingCsrf => 401,
             Self::JwtScopeDenied | Self::CsrfMismatch => 403,
             Self::IdempotencyKeyReused | Self::MultiAliasNotWritable => 409,
+            Self::IndexAlreadyExists => 409,
+            Self::Timeout => 504,
             Self::NoQuorum | Self::ShardUnavailable | Self::SettingsVersionStale => 503,
         }
     }
@@ -126,6 +135,8 @@ impl MiroirCode {
             "miroir_invalid_auth" => Some(Self::InvalidAuth),
             "miroir_missing_csrf" => Some(Self::MissingCsrf),
             "miroir_csrf_mismatch" => Some(Self::CsrfMismatch),
+            "miroir_index_already_exists" => Some(Self::IndexAlreadyExists),
+            "miroir_timeout" => Some(Self::Timeout),
             _ => None,
         }
     }

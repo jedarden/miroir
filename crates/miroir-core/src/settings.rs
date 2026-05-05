@@ -4,6 +4,7 @@
 //! replacing the sequential apply-with-rollback approach.
 
 use crate::error::{MiroirError, Result};
+use crate::task_store::TaskStore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -49,6 +50,8 @@ pub struct SettingsBroadcast {
     settings_version: Arc<RwLock<u64>>,
     /// Per-(index, node) settings version (for X-Miroir-Min-Settings-Version).
     node_settings_version: Arc<RwLock<HashMap<(String, String), u64>>>,
+    /// Task store for persistent version tracking.
+    task_store: Option<Arc<dyn TaskStore>>,
 }
 
 impl SettingsBroadcast {
@@ -58,6 +61,17 @@ impl SettingsBroadcast {
             in_flight: Arc::new(RwLock::new(HashMap::new())),
             settings_version: Arc::new(RwLock::new(0)),
             node_settings_version: Arc::new(RwLock::new(HashMap::new())),
+            task_store: None,
+        }
+    }
+
+    /// Create a new settings broadcast coordinator with task store.
+    pub fn with_task_store(task_store: Arc<dyn TaskStore>) -> Self {
+        Self {
+            in_flight: Arc::new(RwLock::new(HashMap::new())),
+            settings_version: Arc::new(RwLock::new(0)),
+            node_settings_version: Arc::new(RwLock::new(HashMap::new())),
+            task_store: Some(task_store),
         }
     }
 
@@ -67,9 +81,47 @@ impl SettingsBroadcast {
     }
 
     /// Get the per-(index, node) settings version.
+    /// Checks in-memory cache first, then task store if available.
     pub async fn node_version(&self, index: &str, node_id: &str) -> u64 {
+        // Check in-memory cache first
         let versions = self.node_settings_version.read().await;
-        *versions.get(&(index.to_string(), node_id.to_string())).unwrap_or(&0)
+        if let Some(&version) = versions.get(&(index.to_string(), node_id.to_string())) {
+            return version;
+        }
+        drop(versions);
+
+        // Fall back to task store if available
+        if let Some(ref store) = self.task_store {
+            if let Ok(Some(row)) = store.get_node_settings_version(index, node_id) {
+                // Update cache
+                let mut versions = self.node_settings_version.write().await;
+                versions.insert((index.to_string(), node_id.to_string()), row.version as u64);
+                return row.version as u64;
+            }
+        }
+
+        0
+    }
+
+    /// Get the minimum settings version across all nodes for an index.
+    /// Used for client-pinned freshness (X-Miroir-Min-Settings-Version).
+    pub async fn min_node_version(&self, index: &str, node_ids: &[String]) -> Option<u64> {
+        let mut min_version: Option<u64> = None;
+        for node_id in node_ids {
+            let version = self.node_version(index, node_id).await;
+            min_version = Some(match min_version {
+                None => version,
+                Some(current) if version < current => version,
+                Some(current) => current,
+            });
+        }
+        min_version
+    }
+
+    /// Check if a node's settings version meets the minimum required version.
+    /// Returns false if the node's version is below the floor.
+    pub async fn node_version_meets_floor(&self, index: &str, node_id: &str, floor: u64) -> bool {
+        self.node_version(index, node_id).await >= floor
     }
 
     /// Start a new settings broadcast (Phase 1: Propose).
@@ -189,8 +241,19 @@ impl SettingsBroadcast {
 
         // Update per-node versions for all nodes that verified successfully.
         let mut node_versions = self.node_settings_version.write().await;
+        let now = now_ms();
         for node_id in status.node_hashes.keys() {
             node_versions.insert((index.to_string(), node_id.clone()), new_version);
+
+            // Persist to task store if available
+            if let Some(ref store) = self.task_store {
+                let _ = store.upsert_node_settings_version(
+                    index,
+                    node_id,
+                    new_version as i64,
+                    now,
+                );
+            }
         }
 
         status.phase = BroadcastPhase::Commit;
@@ -236,8 +299,17 @@ impl Default for SettingsBroadcast {
     }
 }
 
+/// Get current time in milliseconds since Unix epoch.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
 /// Compute a fingerprint (SHA256) of settings as canonical JSON.
-fn fingerprint_settings(settings: &Value) -> String {
+/// Exported for use by the proxy layer during two-phase broadcast verification.
+pub fn fingerprint_settings(settings: &Value) -> String {
     // Canonicalize: sort object keys, no extra whitespace.
     let canonical = if settings.is_object() {
         if let Some(obj) = settings.as_object() {
