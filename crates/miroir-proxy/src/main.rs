@@ -5,6 +5,7 @@ use axum::{
 };
 use miroir_core::{
     config::MiroirConfig,
+    rebalancer_worker::{RebalancerWorker, RebalancerWorkerConfig, TopologyChangeEvent},
     topology::{NodeStatus, Topology},
 };
 use std::net::SocketAddr;
@@ -129,12 +130,15 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             version_state: state.admin.version_state.clone(),
             task_registry: state.admin.task_registry.clone(),
             redis_store: state.redis_store.clone(),
+            task_store: state.admin.task_store.clone(),
             pod_id: state.pod_id.clone(),
             seal_key: state.auth.seal_key.clone(),
             local_rate_limiter: admin_endpoints::LocalAdminRateLimiter::new(),
             local_search_ui_rate_limiter: admin_endpoints::LocalSearchUiRateLimiter::new(),
             rebalancer: state.admin.rebalancer.clone(),
             migration_coordinator: state.admin.migration_coordinator.clone(),
+            rebalancer_worker: state.admin.rebalancer_worker.clone(),
+            rebalancer_metrics: state.admin.rebalancer_metrics.clone(),
         }
     }
 }
@@ -284,6 +288,26 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         run_health_checker(health_checker_state).await;
     });
+
+    // Start rebalancer worker background task (plan §4)
+    if let Some(ref worker) = state.admin.rebalancer_worker {
+        let worker = worker.clone();
+        let pod_id = state.pod_id.clone();
+        tokio::spawn(async move {
+            info!(
+                pod_id = %pod_id,
+                "rebalancer worker task starting"
+            );
+            // Load any persisted rebalance jobs from previous runs
+            if let Err(e) = worker.load_persisted_jobs().await {
+                error!(error = %e, "failed to load persisted rebalance jobs");
+            }
+            worker.run().await;
+            error!("rebalancer worker task exited unexpectedly");
+        });
+    } else {
+        info!("rebalancer worker not available (no task store configured)");
+    }
 
     // Start scoped key rotation background task (requires Redis)
     if let Some(ref redis) = state.redis_store {
@@ -621,6 +645,9 @@ async fn run_health_checker(state: admin_endpoints::AppState) {
         // Update task registry size gauge
         let task_count = state.task_registry.count();
         state.metrics.set_task_registry_size(task_count as f64);
+
+        // Sync rebalancer metrics to Prometheus
+        state.sync_rebalancer_metrics_to_prometheus().await;
 
         // Mark ready once all configured nodes are reachable
         if all_healthy && !state.config.nodes.is_empty() {

@@ -20,6 +20,7 @@ pub mod migration;
 pub mod multi_search;
 pub mod query_planner;
 pub mod rebalancer;
+pub mod rebalancer_worker;
 pub mod replica_selection;
 pub mod reshard;
 pub mod router;
