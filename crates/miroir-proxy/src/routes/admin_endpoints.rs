@@ -981,6 +981,14 @@ where
 ///   "replica_group": 0
 /// }
 /// ```
+///
+/// Implements plan §2 "Adding a node to an existing group":
+/// 1. Mark node as `joining`
+/// 2. Recompute assignments — `affected_shards` where new node enters top-RF within group G
+/// 3. **Dual-write**: new inbound writes for affected shards go to both old owner and new node
+/// 4. Background migration via shard-filter primitive (paginated)
+/// 5. Mark `active`; stop dual-write
+/// 6. Delete migrated shard from old node
 pub async fn add_node<S>(
     State(state): State<S>,
     Json(body): Json<serde_json::Value>,
@@ -990,6 +998,9 @@ where
     AppState: FromRef<S>,
 {
     let app_state = AppState::from_ref(&state);
+
+    let rebalancer = app_state.rebalancer.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Rebalancer not initialized".into()))?;
 
     let id = body.get("id")
         .and_then(|v| v.as_str())
@@ -1006,45 +1017,42 @@ where
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'replica_group' field".into()))?
         as u32;
 
-    // Get index_uid from body or use default
-    let index_uid = body.get("index_uid")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default")
-        .to_string();
+    use miroir_core::rebalancer::AddNodeRequest;
+    let request = AddNodeRequest {
+        id: id.clone(),
+        address: address.clone(),
+        replica_group,
+    };
 
-    // Add node to topology
-    {
-        let mut topo = app_state.topology.write().await;
-        let node = miroir_core::topology::Node::new(
-            miroir_core::topology::NodeId::new(id.clone()),
-            address.clone(),
-            replica_group,
-        );
-        topo.add_node(node);
+    match rebalancer.add_node(request).await {
+        Ok(result) => {
+            info!(node_id = %id, replica_group, migrations_count = result.migrations_count,
+                "Node addition initiated successfully");
+            Ok(Json(serde_json::json!({
+                "operation_id": result.id,
+                "node_id": id,
+                "replica_group": replica_group,
+                "migrations_count": result.migrations_count,
+                "message": result.message,
+            })))
+        }
+        Err(e) => {
+            error!(error = %e, node_id = %id, "Node addition failed");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        }
     }
-
-    // Send event to rebalancer worker if available
-    if let Some(ref worker) = app_state.rebalancer_worker {
-        use miroir_core::rebalancer_worker::TopologyChangeEvent;
-        let event = TopologyChangeEvent::NodeAdded {
-            node_id: id.clone(),
-            replica_group,
-            index_uid: index_uid.clone(),
-        };
-        let _ = worker.event_sender().try_send(event);
-        info!(node_id = %id, replica_group, "Sent NodeAdded event to rebalancer worker");
-    }
-
-    info!(node_id = %id, replica_group, "Node addition initiated");
-    Ok(Json(serde_json::json!({
-        "node_id": id,
-        "replica_group": replica_group,
-        "index_uid": index_uid,
-        "message": "Node addition initiated - rebalancer worker will handle migration",
-    })))
 }
 
 /// DELETE /_miroir/nodes/{id} — Remove a node from the cluster.
+///
+/// Request body (optional):
+/// ```json
+/// {
+///   "force": false  // Set to true to bypass draining check
+/// }
+/// ```
+///
+/// Requires the node to be in `draining` state unless `force=true`.
 pub async fn remove_node<S>(
     State(state): State<S>,
     Path(node_id): Path<String>,
@@ -1056,39 +1064,43 @@ where
 {
     let app_state = AppState::from_ref(&state);
 
+    let rebalancer = app_state.rebalancer.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Rebalancer not initialized".into()))?;
+
     let force = body.get("force")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Check node status
-    let (node_status, replica_group) = {
-        let topo = app_state.topology.read().await;
-        let node = topo.node(&miroir_core::topology::NodeId::new(node_id.clone()))
-            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Node {} not found", node_id)))?;
-        (node.status, node.replica_group)
+    use miroir_core::rebalancer::RemoveNodeRequest;
+    let request = RemoveNodeRequest {
+        node_id: node_id.clone(),
+        force,
     };
 
-    if !force && !matches!(node_status, miroir_core::topology::NodeStatus::Draining) {
-        return Err((StatusCode::BAD_REQUEST, format!(
-            "Node {} is not in draining state (current: {:?}), use force=true to bypass",
-            node_id, node_status
-        )));
+    match rebalancer.remove_node(request).await {
+        Ok(result) => {
+            info!(node_id = %node_id, "Node removal completed");
+            Ok(Json(serde_json::json!({
+                "operation_id": result.id,
+                "node_id": node_id,
+                "message": result.message,
+            })))
+        }
+        Err(e) => {
+            error!(error = %e, node_id = %node_id, "Node removal failed");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        }
     }
-
-    // Remove node from topology
-    {
-        let mut topo = app_state.topology.write().await;
-        topo.remove_node(&miroir_core::topology::NodeId::new(node_id.clone()));
-    }
-
-    info!(node_id = %node_id, "Node removal completed");
-    Ok(Json(serde_json::json!({
-        "node_id": node_id,
-        "message": "Node removed from cluster",
-    })))
 }
 
 /// POST /_miroir/nodes/{id}/drain — Drain a node (prepare for removal).
+///
+/// Implements plan §2 node drain flow:
+/// 1. Mark node as `draining`
+/// 2. Compute shard destinations (where each shard goes)
+/// 3. **Dual-write**: writes go to both draining node and destination
+/// 4. Background migration of all shards from draining node
+/// 5. Mark `removed`; stop dual-write
 pub async fn drain_node<S>(
     State(state): State<S>,
     Path(node_id): Path<String>,
@@ -1099,48 +1111,30 @@ where
 {
     let app_state = AppState::from_ref(&state);
 
-    // Check if node exists and get its replica group
-    let (node_exists, replica_group) = {
-        let topo = app_state.topology.read().await;
-        let node = topo.node(&miroir_core::topology::NodeId::new(node_id.clone()));
-        match node {
-            Some(n) => {
-                if n.status == miroir_core::topology::NodeStatus::Draining {
-                    return Err((StatusCode::CONFLICT, format!("Node {} is already draining", node_id)));
-                }
-                (true, n.replica_group)
-            }
-            None => return Err((StatusCode::NOT_FOUND, format!("Node {} not found", node_id))),
-        }
+    let rebalancer = app_state.rebalancer.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Rebalancer not initialized".into()))?;
+
+    use miroir_core::rebalancer::DrainNodeRequest;
+    let request = DrainNodeRequest {
+        node_id: node_id.clone(),
     };
 
-    // Mark node as draining
-    {
-        let mut topo = app_state.topology.write().await;
-        let node_id_obj = miroir_core::topology::NodeId::new(node_id.clone());
-        if let Some(node) = topo.node_mut(&node_id_obj) {
-            node.status = miroir_core::topology::NodeStatus::Draining;
+    match rebalancer.drain_node(request).await {
+        Ok(result) => {
+            info!(node_id = %node_id, migrations_count = result.migrations_count,
+                "Node drain initiated successfully");
+            Ok(Json(serde_json::json!({
+                "operation_id": result.id,
+                "node_id": node_id,
+                "migrations_count": result.migrations_count,
+                "message": result.message,
+            })))
+        }
+        Err(e) => {
+            error!(error = %e, node_id = %node_id, "Node drain failed");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
         }
     }
-
-    // Send event to rebalancer worker if available
-    if let Some(ref worker) = app_state.rebalancer_worker {
-        use miroir_core::rebalancer_worker::TopologyChangeEvent;
-        let event = TopologyChangeEvent::NodeDraining {
-            node_id: node_id.clone(),
-            replica_group,
-            index_uid: "default".to_string(),
-        };
-        let _ = worker.event_sender().try_send(event);
-        info!(node_id = %node_id, replica_group, "Sent NodeDraining event to rebalancer worker");
-    }
-
-    info!(node_id = %node_id, replica_group, "Node drain initiated");
-    Ok(Json(serde_json::json!({
-        "node_id": node_id,
-        "replica_group": replica_group,
-        "message": "Node drain initiated - rebalancer worker will handle migration",
-    })))
 }
 
 /// GET /_miroir/rebalance/status — Get current rebalance status.
