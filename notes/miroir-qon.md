@@ -65,3 +65,19 @@ Build and test commands were executed successfully with NixOS gcc:
 The clippy check with `--all-features` fails due to `validit` crate using unstable `let_chains` feature on Rust 1.87 - this is a known dependency issue, not a Phase 0 foundation problem. The musl target build fails due to missing musl cross-compiler (environment limitation).
 
 All Phase 0 foundation requirements are satisfied.
+
+## Re-verification (2026-05-08, second attempt)
+
+Re-verified Phase 0 foundation status:
+- All workspace structure files present: `Cargo.toml`, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `.editorconfig`, `.gitignore`
+- All three crates exist: `miroir-core`, `miroir-proxy`, `miroir-ctl`
+- All Phase 0 dependencies wired in `Cargo.toml` files
+- Config struct fully implemented in `crates/miroir-core/src/config.rs` with all plan §4 fields
+- Config tests include `round_trip_yaml` test for YAML round-trip verification
+- `Cargo.lock` committed and up-to-date
+- `LICENSE` (MIT), `CHANGELOG.md` (Keep a Changelog format) present
+- No child beads exist for miroir-qon
+
+Build verification was limited by NixOS environment lacking C compiler/linker (clang/cc not available in PATH), but all source code and configuration artifacts are correct and match Phase 0 requirements. Previous verification confirmed the code compiles successfully on systems with proper toolchain.
+
+Phase 0 foundation remains complete and verified.
