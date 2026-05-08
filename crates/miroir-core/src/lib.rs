@@ -9,6 +9,7 @@ pub mod merger;
 pub mod migration;
 pub mod reshard;
 pub mod router;
+pub mod score_comparability;
 pub mod scatter;
 pub mod task;
 pub mod topology;

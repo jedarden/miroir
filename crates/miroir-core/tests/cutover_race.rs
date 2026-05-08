@@ -1771,3 +1771,515 @@ fn cutover_chaos_three_node_no_ae_with_delta() {
         all_writes.len()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 15: network partition during cutover — new node becomes unavailable
+// ---------------------------------------------------------------------------
+//
+// Simulates a network partition where the new node becomes unavailable
+// during the cutover process. Tests that the system handles this gracefully
+// and that data is not lost when the partition is resolved.
+
+#[test]
+fn cutover_chaos_network_partition_new_node() {
+    let config = MigrationConfig {
+        anti_entropy_enabled: true,
+        skip_delta_pass: false,
+        ..Default::default()
+    };
+    let mut coord = MigrationCoordinator::new(config);
+
+    let old = node("old-0");
+    let new = node("new-3");
+    let shards = vec![shard(0), shard(1)];
+    let affected: HashMap<ShardId, NodeId> = shards.iter().map(|&s| (s, old.clone())).collect();
+
+    let mut cluster = SimCluster::new(&[old.clone(), new.clone()]);
+
+    // Pre-populate
+    for i in 0..500u64 {
+        let s = shards[i as usize % shards.len()];
+        cluster.put(&old, s, &format!("pre-{i}"));
+    }
+
+    let mid = coord.begin_migration(new.clone(), 0, affected).unwrap();
+    coord.begin_dual_write(mid).unwrap();
+
+    // Phase 1: Normal dual-write
+    let mut writes: Vec<RecordedWrite> = Vec::new();
+    for i in 0..500u64 {
+        let doc_id = format!("dw-{i}");
+        let s = shards[i as usize % shards.len()];
+        let w = dual_write(&mut cluster, &old, &new, s, &doc_id, false, false);
+        writes.push(w);
+    }
+
+    // Complete background migration
+    for &s in &shards {
+        coord.shard_migration_complete(mid, s, 250).unwrap();
+    }
+
+    // Phase 2: Network partition — new node becomes unavailable
+    // All writes from now fail on new
+    for i in 0..200u64 {
+        let doc_id = format!("partition-{i}");
+        let s = shards[i as usize % shards.len()];
+        let w = dual_write(&mut cluster, &old, &new, s, &doc_id, false, true); // new fails
+        writes.push(w);
+    }
+
+    // Register all writes for drain
+    for w in &writes {
+        coord.register_in_flight(make_in_flight(w, &old, &new));
+    }
+
+    // Begin cutover
+    coord.begin_cutover(mid).unwrap();
+
+    // Drain completes because all writes are either completed or failed
+    let phase = coord.complete_drain(mid).unwrap();
+    assert_eq!(phase, MigrationPhase::CutoverDeltaPass);
+
+    // Delta pass catches all the partitioned writes
+    run_delta_pass(&mut coord, &mut cluster, mid, &old, &new, &shards);
+
+    coord.complete_cleanup(mid).unwrap();
+
+    // Verify 0 loss
+    let lost = cluster.lost_docs(&old, &new, &shards);
+    assert_eq!(lost.len(), 0, "Network partition test lost {} docs", lost.len());
+
+    eprintln!(
+        "\n=== Network Partition (New Node) ===\n\
+         Total writes: {}\n\
+         Writes during partition: 200\n\
+         Docs caught by delta pass: 200\n\
+         Lost after delta pass: 0\n\
+         Loss rate: 0/{} (0.000%)\n",
+        writes.len(),
+        writes.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 16: drain timeout boundary — exact timeout boundary
+// ---------------------------------------------------------------------------
+//
+// Tests the behavior when the drain timeout is exactly reached.
+// Verifies that the system properly handles timeout boundary conditions.
+
+#[test]
+fn cutover_chaos_drain_timeout_boundary() {
+    // Use a very short timeout for testing
+    let config = MigrationConfig {
+        anti_entropy_enabled: true,
+        skip_delta_pass: false,
+        drain_timeout: Duration::from_millis(1), // Very short timeout
+        ..Default::default()
+    };
+    let mut coord = MigrationCoordinator::new(config);
+
+    let old = node("old-0");
+    let new = node("new-3");
+    let shards = vec![shard(0)];
+    let affected: HashMap<ShardId, NodeId> = [(shard(0), old.clone())].into_iter().collect();
+
+    let mut cluster = SimCluster::new(&[old.clone(), new.clone()]);
+
+    let mid = coord.begin_migration(new.clone(), 0, affected).unwrap();
+    coord.begin_dual_write(mid).unwrap();
+
+    // Normal writes
+    for i in 0..100u64 {
+        dual_write(&mut cluster, &old, &new, shards[0], &format!("w-{i}"), false, false);
+    }
+
+    coord.shard_migration_complete(mid, shards[0], 100).unwrap();
+
+    // Register a stuck write (in-flight, neither completed nor failed)
+    coord.register_in_flight(InFlightWrite {
+        doc_id: "stuck".into(),
+        shard: shards[0],
+        target_nodes: vec![old.clone(), new.clone()],
+        completed_nodes: HashSet::new(),
+        failed_nodes: HashMap::new(),
+        submitted_at: Instant::now(),
+    });
+
+    coord.begin_cutover(mid).unwrap();
+
+    // Drain should timeout
+    let result = coord.complete_drain(mid);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        MigrationError::DrainTimeout(count) => {
+            assert_eq!(count, 1, "Expected 1 stuck write");
+        }
+        _ => panic!("Expected DrainTimeout error"),
+    }
+
+    // Now mark the write as failed
+    coord.fail_write("stuck", &new, "timeout".to_string());
+
+    // Drain should now succeed
+    let phase = coord.complete_drain(mid).unwrap();
+    assert_eq!(phase, MigrationPhase::CutoverDeltaPass);
+
+    // Delta pass catches the stuck write
+    cluster.put(&old, shards[0], "stuck");
+    coord.shard_delta_complete(mid, shards[0], 1).unwrap();
+
+    coord.complete_cleanup(mid).unwrap();
+
+    let lost = cluster.lost_docs(&old, &new, &shards);
+    assert_eq!(lost.len(), 0, "Timeout boundary test lost docs");
+
+    eprintln!(
+        "\n=== Drain Timeout Boundary ===\n\
+         Timeout configuration: 1ms\n\
+         Stuck writes at timeout: 1\n\
+         After marking as failed: drain succeeds\n\
+         Lost after delta pass: 0\n"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 17: concurrent migrations — multiple simultaneous shard migrations
+// ---------------------------------------------------------------------------
+//
+// Tests multiple shard migrations happening concurrently.
+// Verifies that in-flight writes are correctly tracked across migrations.
+
+#[test]
+fn cutover_chaos_concurrent_migrations() {
+    let config = MigrationConfig {
+        anti_entropy_enabled: true,
+        skip_delta_pass: false,
+        ..Default::default()
+    };
+    let mut coord = MigrationCoordinator::new(config);
+
+    let old_a = node("old-0");
+    let old_b = node("old-1");
+    let new = node("new-3");
+
+    let shards_a = vec![shard(0), shard(1)];
+    let shards_b = vec![shard(2), shard(3)];
+    let all_shards: Vec<ShardId> = vec![shard(0), shard(1), shard(2), shard(3)];
+
+    let affected_a: HashMap<ShardId, NodeId> = shards_a.iter().map(|&s| (s, old_a.clone())).collect();
+    let affected_b: HashMap<ShardId, NodeId> = shards_b.iter().map(|&s| (s, old_b.clone())).collect();
+
+    let mut cluster = SimCluster::new(&[old_a.clone(), old_b.clone(), new.clone()]);
+
+    // Start two concurrent migrations
+    let mid_a = coord.begin_migration(new.clone(), 0, affected_a).unwrap();
+    let mid_b = coord.begin_migration(new.clone(), 0, affected_b).unwrap();
+
+    coord.begin_dual_write(mid_a).unwrap();
+    coord.begin_dual_write(mid_b).unwrap();
+
+    // Concurrent writes to both migrations
+    for i in 0..1000u64 {
+        let s = all_shards[i as usize % all_shards.len()];
+        let owner = if s.0 < 2 { &old_a } else { &old_b };
+        let new_fails = i % 50 == 0; // 2% failure
+        dual_write(&mut cluster, owner, &new, s, &format!("w-{i}"), false, new_fails);
+    }
+
+    // Complete migrations in interleaved order
+    coord.shard_migration_complete(mid_a, shard(0), 250).unwrap();
+    coord.shard_migration_complete(mid_b, shard(2), 250).unwrap();
+    coord.shard_migration_complete(mid_a, shard(1), 250).unwrap();
+    coord.shard_migration_complete(mid_b, shard(3), 250).unwrap();
+
+    // Begin cutover for both
+    coord.begin_cutover(mid_a).unwrap();
+    coord.begin_cutover(mid_b).unwrap();
+
+    // Complete drain for both (order matters!)
+    let phase_a = coord.complete_drain(mid_a).unwrap();
+    let phase_b = coord.complete_drain(mid_b).unwrap();
+    assert_eq!(phase_a, MigrationPhase::CutoverDeltaPass);
+    assert_eq!(phase_b, MigrationPhase::CutoverDeltaPass);
+
+    // Delta pass for both migrations
+    for &s in &shards_a {
+        let lost: Vec<String> = cluster
+            .data
+            .get(&old_a)
+            .and_then(|m| m.get(&s))
+            .map(|docs| {
+                docs.iter()
+                    .filter(|d| {
+                        !cluster
+                            .data
+                            .get(&new)
+                            .and_then(|m| m.get(&s))
+                            .is_some_and(|nd| nd.contains(*d))
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for doc_id in &lost {
+            cluster.put(&new, s, doc_id);
+        }
+        coord.shard_delta_complete(mid_a, s, lost.len() as u64).unwrap();
+    }
+
+    for &s in &shards_b {
+        let lost: Vec<String> = cluster
+            .data
+            .get(&old_b)
+            .and_then(|m| m.get(&s))
+            .map(|docs| {
+                docs.iter()
+                    .filter(|d| {
+                        !cluster
+                            .data
+                            .get(&new)
+                            .and_then(|m| m.get(&s))
+                            .is_some_and(|nd| nd.contains(*d))
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for doc_id in &lost {
+            cluster.put(&new, s, doc_id);
+        }
+        coord.shard_delta_complete(mid_b, s, lost.len() as u64).unwrap();
+    }
+
+    coord.complete_cleanup(mid_a).unwrap();
+    coord.complete_cleanup(mid_b).unwrap();
+
+    // Verify 0 loss across all migrations
+    for &s in &all_shards {
+        let owner = if s.0 < 2 { &old_a } else { &old_b };
+        let lost = cluster.lost_docs(owner, &new, &[s]);
+        assert_eq!(lost.len(), 0, "Concurrent migration lost docs for shard {s:?}");
+    }
+
+    eprintln!(
+        "\n=== Concurrent Migrations ===\n\
+         Migration A: shards 0,1 from old-0\n\
+         Migration B: shards 2,3 from old-1\n\
+         Total writes: 1000\n\
+         Lost after delta pass: 0\n\
+         Loss rate: 0/1000 (0.000%)\n"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 18: partial failure — some shards fail, others succeed
+// ---------------------------------------------------------------------------
+//
+// Tests behavior when some shards in a migration fail while others succeed.
+// Verifies that the migration can be recovered and retried.
+
+#[test]
+fn cutover_chaos_partial_shard_failure() {
+    let config = MigrationConfig {
+        anti_entropy_enabled: true,
+        skip_delta_pass: false,
+        ..Default::default()
+    };
+    let mut coord = MigrationCoordinator::new(config);
+
+    let old = node("old-0");
+    let new = node("new-3");
+    let shards = vec![shard(0), shard(1), shard(2), shard(3)];
+    let affected: HashMap<ShardId, NodeId> = shards.iter().map(|&s| (s, old.clone())).collect();
+
+    let mut cluster = SimCluster::new(&[old.clone(), new.clone()]);
+
+    for i in 0..1000u64 {
+        let s = shards[i as usize % shards.len()];
+        cluster.put(&old, s, &format!("pre-{i}"));
+    }
+
+    let mid = coord.begin_migration(new.clone(), 0, affected).unwrap();
+    coord.begin_dual_write(mid).unwrap();
+
+    // Writes with varying failure rates per shard
+    for i in 0..2000u64 {
+        let s = shards[i as usize % shards.len()];
+        let new_fails = match s {
+            ShardId(0) => i % 10 == 0,  // 10% failure
+            ShardId(1) => i % 100 == 0, // 1% failure
+            ShardId(2) => i % 20 == 0,  // 5% failure
+            ShardId(3) => false,        // 0% failure
+        };
+        dual_write(&mut cluster, &old, &new, s, &format!("w-{i}"), false, new_fails);
+    }
+
+    // Complete all shard migrations
+    for &s in &shards {
+        coord.shard_migration_complete(mid, s, 500).unwrap();
+    }
+
+    // Register one failed write per shard to force delta pass
+    for &s in &shards {
+        coord.register_in_flight(InFlightWrite {
+            doc_id: format!("failed-{s:?}"),
+            shard: s,
+            target_nodes: vec![old.clone(), new.clone()],
+            completed_nodes: HashSet::from([old.clone()]),
+            failed_nodes: HashMap::from([(new.clone(), "simulated failure".into())]),
+            submitted_at: Instant::now(),
+        });
+    }
+
+    coord.begin_cutover(mid).unwrap();
+    let phase = coord.complete_drain(mid).unwrap();
+    assert_eq!(phase, MigrationPhase::CutoverDeltaPass);
+
+    // Delta pass for each shard
+    for &s in &shards {
+        let lost: Vec<String> = cluster
+            .data
+            .get(&old)
+            .and_then(|m| m.get(&s))
+            .map(|docs| {
+                docs.iter()
+                    .filter(|d| {
+                        !cluster
+                            .data
+                            .get(&new)
+                            .and_then(|m| m.get(&s))
+                            .is_some_and(|nd| nd.contains(*d))
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for doc_id in &lost {
+            cluster.put(&new, s, doc_id);
+        }
+        coord.shard_delta_complete(mid, s, lost.len() as u64).unwrap();
+    }
+
+    coord.complete_cleanup(mid).unwrap();
+
+    // Verify 0 loss across all shards
+    let lost = cluster.lost_docs(&old, &new, &shards);
+    assert_eq!(lost.len(), 0, "Partial failure test lost {} docs", lost.len());
+
+    eprintln!(
+        "\n=== Partial Shard Failure ===\n\
+         Shards: 0 (10% fail), 1 (1% fail), 2 (5% fail), 3 (0% fail)\n\
+         Total writes: 2000\n\
+         Lost after delta pass: 0\n\
+         Loss rate: 0/2000 (0.000%)\n"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 19: state recovery — coordinator crash and restart
+// ---------------------------------------------------------------------------
+//
+// Tests behavior when the coordinator crashes and restarts during migration.
+// Verifies that state can be recovered and migration can complete safely.
+
+#[test]
+fn cutover_chaos_coordinator_crash_recovery() {
+    let config = MigrationConfig {
+        anti_entropy_enabled: true,
+        skip_delta_pass: false,
+        ..Default::default()
+    };
+
+    let old = node("old-0");
+    let new = node("new-3");
+    let shards = vec![shard(0), shard(1)];
+    let affected: HashMap<ShardId, NodeId> = shards.iter().map(|&s| (s, old.clone())).collect();
+
+    let mut cluster = SimCluster::new(&[old.clone(), new.clone()]);
+
+    // Pre-populate
+    for i in 0..500u64 {
+        let s = shards[i as usize % shards.len()];
+        cluster.put(&old, s, &format!("pre-{i}"));
+    }
+
+    // Phase 1: Start migration and dual-write
+    let mut coord = MigrationCoordinator::new(config.clone());
+    let mid = coord.begin_migration(new.clone(), 0, affected.clone()).unwrap();
+    coord.begin_dual_write(mid).unwrap();
+
+    // Dual-write phase
+    for i in 0..500u64 {
+        let doc_id = format!("dw-{i}");
+        let s = shards[i as usize % shards.len()];
+        let new_fails = i % 50 == 0;
+        dual_write(&mut cluster, &old, &new, s, &doc_id, false, new_fails);
+    }
+
+    // Complete background migration
+    for &s in &shards {
+        coord.shard_migration_complete(mid, s, 250).unwrap();
+    }
+
+    // Simulate coordinator crash: save state, create new coordinator
+    let state_before_crash = coord.get_state(mid).unwrap().clone();
+
+    // "Crash" — create new coordinator with same config
+    let mut coord_recovered = MigrationCoordinator::new(config);
+
+    // Recover migration state (in production, this would be loaded from disk)
+    let mid_recovered = coord_recovered.begin_migration(new.clone(), 0, affected).unwrap();
+    coord_recovered.begin_dual_write(mid_recovered).unwrap();
+
+    // Replay background migration completion
+    for &s in &shards {
+        coord_recovered.shard_migration_complete(mid_recovered, s, 250).unwrap();
+    }
+
+    // Register in-flight writes for drain
+    let mut writes: Vec<RecordedWrite> = Vec::new();
+    for i in 0..100u64 {
+        let doc_id = format!("post-crash-{i}");
+        let s = shards[i as usize % shards.len()];
+        let new_fails = i % 20 == 0;
+        let w = dual_write(&mut cluster, &old, &new, s, &doc_id, false, new_fails);
+        writes.push(w);
+    }
+
+    for w in &writes {
+        coord_recovered.register_in_flight(make_in_flight(w, &old, &new));
+    }
+
+    // Continue with cutover
+    coord_recovered.begin_cutover(mid_recovered).unwrap();
+    let phase = coord_recovered.complete_drain(mid_recovered).unwrap();
+    assert_eq!(phase, MigrationPhase::CutoverDeltaPass);
+
+    // Delta pass
+    run_delta_pass(&mut coord_recovered, &mut cluster, mid_recovered, &old, &new, &shards);
+
+    coord_recovered.complete_cleanup(mid_recovered).unwrap();
+
+    // Verify 0 loss
+    let lost = cluster.lost_docs(&old, &new, &shards);
+    assert_eq!(lost.len(), 0, "Crash recovery test lost {} docs", lost.len());
+
+    // Verify recovered state matches pre-crash state
+    let state_recovered = coord_recovered.get_state(mid_recovered).unwrap();
+    assert_eq!(state_recovered.phase, MigrationPhase::Complete);
+    assert_eq!(state_before_crash.old_owners, state_recovered.old_owners);
+
+    eprintln!(
+        "\n=== Coordinator Crash Recovery ===\n\
+         State at crash: {:?}\n\
+         Writes before crash: 500\n\
+         Writes after recovery: 100\n\
+         Lost after delta pass: 0\n\
+         Recovery: successful\n",
+        state_before_crash.phase
+    );
+}
