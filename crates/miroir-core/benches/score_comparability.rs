@@ -133,7 +133,11 @@ fn main() {
         println!("    top_k: {}", params.top_k);
         println!();
         println!("  shard population:");
-        println!("    cv: {:.4} ({:.2}%)", result.aggregate.shard_pop_cv, result.aggregate.shard_pop_cv * 100.0);
+        println!(
+            "    cv: {:.4} ({:.2}%)",
+            result.aggregate.shard_pop_cv,
+            result.aggregate.shard_pop_cv * 100.0
+        );
         println!(
             "    max/median ratio: {:.2}×",
             result.aggregate.shard_pop_ratio
@@ -216,16 +220,10 @@ fn main() {
 
     println!();
     if all_pass {
-        println!(
-            "All scenarios PASSED the τ ≥ {:.2} threshold.",
-            THRESHOLD
-        );
+        println!("All scenarios PASSED the τ ≥ {:.2} threshold.", THRESHOLD);
         println!("Score comparability is maintained across shard population skew.");
     } else {
-        println!(
-            "Some scenarios FAILED the τ ≥ {:.2} threshold.",
-            THRESHOLD
-        );
+        println!("Some scenarios FAILED the τ ≥ {:.2} threshold.", THRESHOLD);
         println!("Score normalization may be needed for skewed shard distributions.");
     }
 

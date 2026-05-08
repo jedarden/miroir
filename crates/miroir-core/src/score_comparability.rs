@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Parameters for a score comparability simulation run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimParams {
     /// Total number of documents in the corpus.
     pub total_docs: u64,
@@ -132,7 +132,6 @@ pub struct SimResult {
 /// ground-truth ordering using Kendall Tau correlation.
 pub fn simulate(params: &SimParams) -> SimResult {
     use rand::rngs::StdRng;
-    use rand::Rng;
     use rand::SeedableRng;
 
     let mut rng = StdRng::seed_from_u64(params.seed);
@@ -172,8 +171,8 @@ pub fn simulate(params: &SimParams) -> SimResult {
     let std_tau = std_dev(&taus, mean_tau);
     let min_tau = taus.iter().cloned().reduce(f64::min).unwrap_or(0.0);
     let max_tau = taus.iter().cloned().reduce(f64::max).unwrap_or(0.0);
-    let above_threshold = taus.iter().filter(|&&t| t >= 0.95).count() as f64
-        / taus.len() as f64 * 100.0;
+    let above_threshold =
+        taus.iter().filter(|&&t| t >= 0.95).count() as f64 / taus.len() as f64 * 100.0;
 
     let jaccards: Vec<f64> = query_results.iter().map(|r| r.jaccard_similarity).collect();
     let mean_jaccard = mean(&jaccards);
@@ -190,7 +189,7 @@ pub fn simulate(params: &SimParams) -> SimResult {
         min_kendall_tau: min_tau,
         max_kendall_tau: max_tau,
         percent_above_threshold: above_threshold,
-        mean_jaccard: mean_jaccard,
+        mean_jaccard,
         mean_first_divergence: mean_divergence,
         shard_pop_cv: cv,
         shard_pop_ratio: pop_ratio,
@@ -235,7 +234,7 @@ fn generate_skewed_distribution(
 
     weights
         .into_iter()
-        .map(|w| (w * scale).max(1) as u64) // Ensure at least 1 doc per shard
+        .map(|w| (w * scale).max(1.0) as u64) // Ensure at least 1 doc per shard
         .collect()
 }
 
@@ -293,18 +292,16 @@ fn run_query(
         let idf_inflation = global_idf_factor / local_idf_factor.max(0.1);
 
         // Documents on this shard get scores inflated by the local IDF factor.
-        let start_doc = shard_doc_counts[..shard_id as usize]
-            .iter()
-            .sum::<u64>() as usize;
+        let start_doc = shard_doc_counts[..shard_id as usize].iter().sum::<u64>() as usize;
         let end_doc = start_doc + doc_count as usize;
 
-        for doc_id in start_doc..end_doc.min(total_docs) {
-            // Reuse the same base relevance as ground truth.
-            let base_relevance = ground_truth_scores[doc_id].1;
-
-            // Apply local IDF inflation.
-            let score = base_relevance * idf_inflation;
-
+        for (doc_id, base_relevance) in ground_truth_scores
+            .iter()
+            .enumerate()
+            .skip(start_doc)
+            .take(end_doc.min(total_docs) - start_doc)
+        {
+            let score = base_relevance.1 * idf_inflation;
             sharded_scores.push((doc_id, score));
         }
     }
@@ -332,7 +329,8 @@ fn run_query(
         .unwrap_or(params.top_k);
 
     // Collect per-shard score statistics.
-    let shard_stats = collect_shard_stats(shard_id, shard_doc_counts, &sharded_scores, params.top_k);
+    let shard_stats =
+        collect_shard_stats(query_id, shard_doc_counts, &sharded_scores, params.top_k);
 
     QueryResult {
         query_id,
@@ -347,7 +345,7 @@ fn run_query(
 
 /// Collect score statistics for each shard.
 fn collect_shard_stats(
-    query_id: usize,
+    _query_id: usize,
     shard_doc_counts: &[u64],
     sharded_scores: &[(usize, f64)],
     top_k: usize,
@@ -355,27 +353,25 @@ fn collect_shard_stats(
     let mut stats = Vec::new();
 
     // Map doc_id back to its shard.
-    for (shard_id, &doc_count) in shard_doc_counts.iter().enumerate() {
-        let shard_id = shard_id as u32;
-        let start_doc = shard_doc_counts[..shard_id as usize]
-            .iter()
-            .sum::<u64>() as usize;
+    for (shard_idx, &doc_count) in shard_doc_counts.iter().enumerate() {
+        let shard_id = shard_idx as u32;
+        let start_doc = shard_doc_counts[..shard_idx].iter().sum::<u64>() as usize;
         let end_doc = start_doc + doc_count as usize;
 
         // Find scores from this shard in the top-K results.
-        let shard_hits: Vec<&f64> = sharded_scores
+        let shard_hits: Vec<f64> = sharded_scores
             .iter()
             .take(top_k)
             .filter(|(doc_id, _)| *doc_id >= start_doc && *doc_id < end_doc)
-            .map(|(_, score)| score)
+            .map(|(_, score)| *score)
             .collect();
 
         if shard_hits.is_empty() {
             continue;
         }
 
-        let min_score = shard_hits.iter().cloned().reduce(f64::min).unwrap_or(0.0);
-        let max_score = shard_hits.iter().cloned().reduce(f64::max).unwrap_or(0.0);
+        let min_score = shard_hits.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max_score = shard_hits.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
         let mean_score = shard_hits.iter().sum::<f64>() / shard_hits.len() as f64;
 
         stats.push(ShardScoreStats {
@@ -418,8 +414,7 @@ fn kendall_tau<T: Eq + std::hash::Hash + std::fmt::Debug>(rank1: &[T], rank2: &[
         .collect();
 
     // Collect all unique items from both lists.
-    let all_items: std::collections::HashSet<&T> =
-        rank1.iter().chain(rank2.iter()).collect();
+    let all_items: std::collections::HashSet<&T> = rank1.iter().chain(rank2.iter()).collect();
 
     // Count concordant and discordant pairs.
     let mut concordant = 0;
@@ -486,11 +481,8 @@ fn std_dev(values: &[f64], mean_val: f64) -> f64 {
     if values.len() <= 1 {
         return 0.0;
     }
-    let variance = values
-        .iter()
-        .map(|v| (v - mean_val).powi(2))
-        .sum::<f64>()
-        / (values.len() - 1) as f64;
+    let variance =
+        values.iter().map(|v| (v - mean_val).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
     variance.sqrt()
 }
 
@@ -543,10 +535,9 @@ mod tests {
     fn test_kendall_tau_partial_overlap() {
         let a = vec![1, 2, 3, 4, 5];
         let b = vec![1, 3, 2, 4, 5]; // Only 2 and 3 are swapped
-        // Expected: 1 pair (2,3) is discordant out of 10 total pairs
-        // tau = (8 - 2) / 10 = 0.6
+                                     // One discordant pair (2,3) out of 10 total: tau = (9 - 1) / 10 = 0.8
         let tau = kendall_tau(&a, &b);
-        assert!((tau - 0.6).abs() < 0.01);
+        assert!((tau - 0.8).abs() < 0.01);
     }
 
     #[test]

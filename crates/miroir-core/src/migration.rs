@@ -494,7 +494,10 @@ impl MigrationCoordinator {
             }
         }
 
-        self.in_flight.clear();
+        // Clear only the in-flight writes for this migration
+        let affected_shards = state.affected_shards.keys().cloned().collect::<HashSet<_>>();
+        self.in_flight
+            .retain(|w| !affected_shards.contains(&w.shard));
 
         // If going to activate, do that now (drop mutable borrow first)
         let next_phase = state.phase.clone();
