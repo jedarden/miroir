@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // ============================================================================
-// Table 1: Tasks
+// Table 1: Tasks (plan §4)
 // ============================================================================
 
 /// A Miroir task: unified view of a fan-out write operation.
@@ -14,10 +14,10 @@ pub struct Task {
     pub miroir_id: String,
     /// Creation timestamp (Unix millis).
     pub created_at: u64,
-    /// Current task status.
+    /// Current task status (enqueued | processing | succeeded | failed | canceled).
     pub status: TaskStatus,
-    /// Map of node ID to local Meilisearch task UID.
-    pub node_tasks: HashMap<String, NodeTask>,
+    /// Map of node ID to local Meilisearch task UID (JSON: {"node-0": 42, "node-1": 17}).
+    pub node_tasks: HashMap<String, u64>,
     /// Error message if the task failed.
     pub error: Option<String>,
 }
@@ -37,26 +37,31 @@ pub enum TaskStatus {
     Canceled,
 }
 
-/// A node task: local Meilisearch task reference.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NodeTask {
-    /// Local Meilisearch task UID.
-    pub task_uid: u64,
-    /// Current status of this node task.
-    pub status: NodeTaskStatus,
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Enqueued => write!(f, "enqueued"),
+            Self::Processing => write!(f, "processing"),
+            Self::Succeeded => write!(f, "succeeded"),
+            Self::Failed => write!(f, "failed"),
+            Self::Canceled => write!(f, "canceled"),
+        }
+    }
 }
 
-/// Status of a node task.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum NodeTaskStatus {
-    /// Task is enqueued on the node.
-    Enqueued,
-    /// Task is processing on the node.
-    Processing,
-    /// Task succeeded on the node.
-    Succeeded,
-    /// Task failed on the node.
-    Failed,
+impl std::str::FromStr for TaskStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "enqueued" => Ok(Self::Enqueued),
+            "processing" => Ok(Self::Processing),
+            "succeeded" => Ok(Self::Succeeded),
+            "failed" => Ok(Self::Failed),
+            "canceled" => Ok(Self::Canceled),
+            _ => Err(format!("invalid task status: {s}")),
+        }
+    }
 }
 
 /// Filter for listing tasks.
@@ -64,8 +69,6 @@ pub enum NodeTaskStatus {
 pub struct TaskFilter {
     /// Filter by status.
     pub status: Option<TaskStatus>,
-    /// Filter by node ID.
-    pub node_id: Option<String>,
     /// Maximum number of results.
     pub limit: Option<usize>,
     /// Offset for pagination.
@@ -73,24 +76,24 @@ pub struct TaskFilter {
 }
 
 // ============================================================================
-// Table 2: Node settings version
+// Table 2: Node settings version (plan §4)
 // ============================================================================
 
 /// Node settings version entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeSettingsVersion {
-    /// Index name.
-    pub index: String,
+    /// Index UID.
+    pub index_uid: String,
     /// Node ID.
     pub node_id: String,
-    /// Current settings version.
+    /// Last cluster-wide settings_version this (index, node) pair verified.
     pub version: i64,
     /// Last update timestamp (Unix millis).
     pub updated_at: u64,
 }
 
 // ============================================================================
-// Table 3: Aliases
+// Table 3: Aliases (plan §4)
 // ============================================================================
 
 /// Alias definition (single-target or multi-target).
@@ -98,18 +101,31 @@ pub struct NodeSettingsVersion {
 pub struct Alias {
     /// Alias name.
     pub name: String,
-    /// Alias kind (single or multi).
+    /// Alias kind ('single' or 'multi').
     pub kind: AliasKind,
-    /// Current target UID (single-target) or first target (multi-target).
+    /// Current target UID (non-null when kind='single').
     pub current_uid: Option<String>,
-    /// Target UIDs (multi-target only).
-    pub target_uids: Vec<String>,
-    /// Alias version (for multi-target atomic updates).
+    /// JSON array of UIDs (non-null when kind='multi').
+    pub target_uids: Option<Vec<String>>,
+    /// Monotonic flip counter.
     pub version: i64,
     /// Creation timestamp (Unix millis).
     pub created_at: u64,
-    /// Last update timestamp (Unix millis).
-    pub updated_at: u64,
+    /// JSON array: last N prior states, bounded by aliases.history_retention.
+    pub history: Vec<AliasHistoryEntry>,
+}
+
+/// Historical entry for an alias.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AliasHistoryEntry {
+    /// The current_uid at this point in history (for single-target).
+    pub current_uid: Option<String>,
+    /// The target_uids at this point in history (for multi-target).
+    pub target_uids: Option<Vec<String>>,
+    /// The version at this point in history.
+    pub version: i64,
+    /// When this state was active.
+    pub timestamp: u64,
 }
 
 /// Alias kind.
@@ -121,8 +137,29 @@ pub enum AliasKind {
     Multi,
 }
 
+impl std::fmt::Display for AliasKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Single => write!(f, "single"),
+            Self::Multi => write!(f, "multi"),
+        }
+    }
+}
+
+impl std::str::FromStr for AliasKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "single" => Ok(Self::Single),
+            "multi" => Ok(Self::Multi),
+            _ => Err(format!("invalid alias kind: {s}")),
+        }
+    }
+}
+
 // ============================================================================
-// Table 4: Sessions
+// Table 4: Sessions (plan §4)
 // ============================================================================
 
 /// Read-your-writes session pin.
@@ -130,18 +167,20 @@ pub enum AliasKind {
 pub struct Session {
     /// Session ID (UUID).
     pub session_id: String,
-    /// Index name.
-    pub index: String,
-    /// Pinned settings version.
-    pub settings_version: i64,
-    /// Creation timestamp (Unix millis).
-    pub created_at: u64,
-    /// Expiration timestamp (Unix millis).
-    pub expires_at: u64,
+    /// Miroir task ID of the last write (nullable: session may exist before any write).
+    pub last_write_mtask_id: Option<String>,
+    /// Timestamp of the last write (Unix millis).
+    pub last_write_at: Option<u64>,
+    /// group_id that first reached per-group quorum (nullable when pin cleared).
+    pub pinned_group: Option<i64>,
+    /// Minimum settings version for this session.
+    pub min_settings_version: i64,
+    /// Expiry timestamp (ms since epoch); default 15m from last use.
+    pub ttl: u64,
 }
 
 // ============================================================================
-// Table 5: Idempotency cache
+// Table 5: Idempotency cache (plan §4)
 // ============================================================================
 
 /// Idempotency cache entry.
@@ -149,165 +188,202 @@ pub struct Session {
 pub struct IdempotencyEntry {
     /// Request key (hash of request content).
     pub key: String,
-    /// Response JSON.
-    pub response: String,
-    /// HTTP status code.
-    pub status_code: u16,
-    /// Creation timestamp (Unix millis).
-    pub created_at: u64,
+    /// SHA256 hash of request body (32 bytes).
+    pub body_sha256: Vec<u8>,
+    /// Associated Miroir task ID.
+    pub miroir_task_id: String,
+    /// Expiry timestamp (Unix millis).
+    pub expires_at: u64,
 }
 
 // ============================================================================
-// Table 6: Jobs
+// Table 6: Jobs (plan §4)
 // ============================================================================
 
 /// Background job entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     /// Job ID (UUID).
-    pub job_id: String,
-    /// Job type.
+    pub id: String,
+    /// Job type (dump_import | reshard_backfill | ...).
     pub job_type: String,
     /// Job parameters (JSON).
-    pub parameters: String,
-    /// Current job status.
-    pub status: JobStatus,
-    /// Worker ID currently processing the job.
-    pub worker_id: Option<String>,
-    /// Job result (JSON).
-    pub result: Option<String>,
-    /// Error message if the job failed.
-    pub error: Option<String>,
-    /// Creation timestamp (Unix millis).
-    pub created_at: u64,
-    /// Start timestamp (Unix millis).
-    pub started_at: Option<u64>,
-    /// Completion timestamp (Unix millis).
-    pub completed_at: Option<u64>,
+    pub params: String,
+    /// Job state (queued | in_progress | completed | failed).
+    pub state: JobState,
+    /// Pod ID of current claimant (nullable when queued).
+    pub claimed_by: Option<String>,
+    /// Lease heartbeat expiry (Unix millis).
+    pub claim_expires_at: Option<u64>,
+    /// Progress info (JSON: { bytes_processed, docs_routed, last_cursor, ... }).
+    pub progress: String,
 }
 
-/// Job status.
+/// Job state.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum JobStatus {
-    /// Job is enqueued.
-    Enqueued,
-    /// Job is being processed.
-    Processing,
-    /// Job completed successfully.
-    Succeeded,
+pub enum JobState {
+    /// Job is queued.
+    Queued,
+    /// Job is in progress.
+    InProgress,
+    /// Job completed.
+    Completed,
     /// Job failed.
     Failed,
-    /// Job was canceled.
-    Canceled,
+}
+
+impl std::fmt::Display for JobState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Queued => write!(f, "queued"),
+            Self::InProgress => write!(f, "in_progress"),
+            Self::Completed => write!(f, "completed"),
+            Self::Failed => write!(f, "failed"),
+        }
+    }
+}
+
+impl std::str::FromStr for JobState {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "queued" => Ok(Self::Queued),
+            "in_progress" => Ok(Self::InProgress),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            _ => Err(format!("invalid job state: {s}")),
+        }
+    }
 }
 
 // ============================================================================
-// Table 7: Leader lease
+// Table 7: Leader lease (plan §4)
 // ============================================================================
 
 /// Leader lease entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeaderLease {
-    /// Lease ID (UUID).
-    pub lease_id: String,
-    /// Holder identity (pod ID).
+    /// Lease scope (e.g. "reshard:<index>", "alias_flip:<name>", "settings_broadcast:<index>").
+    pub scope: String,
+    /// Pod ID of current leader.
     pub holder: String,
-    /// Lease acquisition timestamp (Unix millis).
-    pub acquired_at: u64,
     /// Lease expiration timestamp (Unix millis).
     pub expires_at: u64,
 }
 
 // ============================================================================
-// Table 8: Canaries
+// Table 8: Canaries (plan §4)
 // ============================================================================
 
 /// Canary definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Canary {
+    /// Canary ID (UUID).
+    pub id: String,
     /// Canary name.
     pub name: String,
     /// Index to query.
-    pub index: String,
-    /// Query to run (Q string).
-    pub query: String,
-    /// Expected minimum result count.
-    pub min_results: usize,
-    /// Expected maximum result count.
-    pub max_results: usize,
+    pub index_uid: String,
     /// Interval between runs (seconds).
-    pub interval_s: u64,
-    /// Whether the canary is enabled.
-    pub enabled: bool,
+    pub interval_s: i64,
+    /// Canary query body (JSON).
+    pub query_json: String,
+    /// Array of assertion specs (JSON).
+    pub assertions_json: String,
+    /// Whether the canary is enabled (0 | 1).
+    pub enabled: i64,
     /// Creation timestamp (Unix millis).
     pub created_at: u64,
-    /// Last update timestamp (Unix millis).
-    pub updated_at: u64,
 }
 
 // ============================================================================
-// Table 9: Canary runs
+// Table 9: Canary runs (plan §4)
 // ============================================================================
 
 /// Canary run history entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanaryRun {
-    /// Run ID (UUID).
-    pub run_id: String,
-    /// Canary name.
-    pub canary_name: String,
+    /// Canary ID.
+    pub canary_id: String,
     /// Run timestamp (Unix millis).
     pub ran_at: u64,
-    /// Whether the run passed.
-    pub passed: bool,
-    /// Actual result count.
-    pub result_count: usize,
-    /// Error message if the run failed.
-    pub error: Option<String>,
+    /// Run status (pass | fail | error).
+    pub status: CanaryRunStatus,
     /// Latency in milliseconds.
-    pub latency_ms: u64,
+    pub latency_ms: i64,
+    /// JSON array of failed assertions (NULL when pass).
+    pub failed_assertions_json: Option<String>,
+}
+
+/// Canary run status.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CanaryRunStatus {
+    /// Run passed.
+    Pass,
+    /// Run failed.
+    Fail,
+    /// Run had error.
+    Error,
+}
+
+impl std::fmt::Display for CanaryRunStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pass => write!(f, "pass"),
+            Self::Fail => write!(f, "fail"),
+            Self::Error => write!(f, "error"),
+        }
+    }
+}
+
+impl std::str::FromStr for CanaryRunStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "pass" => Ok(Self::Pass),
+            "fail" => Ok(Self::Fail),
+            "error" => Ok(Self::Error),
+            _ => Err(format!("invalid canary run status: {s}")),
+        }
+    }
 }
 
 // ============================================================================
-// Table 10: CDC cursors
+// Table 10: CDC cursors (plan §4)
 // ============================================================================
 
 /// CDC cursor entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CdcCursor {
     /// Sink name.
-    pub sink: String,
-    /// Index name.
-    pub index: String,
-    /// Current cursor position.
-    pub cursor: String,
+    pub sink_name: String,
+    /// Index UID.
+    pub index_uid: String,
+    /// Current cursor position (last event sequence).
+    pub last_event_seq: i64,
     /// Last update timestamp (Unix millis).
     pub updated_at: u64,
 }
 
 // ============================================================================
-// Table 11: Tenant map
+// Table 11: Tenant map (plan §4)
 // ============================================================================
 
 /// Tenant mapping (API key -> tenant).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tenant {
-    /// API key.
-    pub api_key: String,
+    /// SHA256 hash of API key (32 bytes).
+    pub api_key_hash: Vec<u8>,
     /// Tenant ID.
     pub tenant_id: String,
-    /// Tenant name.
-    pub name: String,
-    /// Tenant capabilities (JSON).
-    pub capabilities: String,
-    /// Creation timestamp (Unix millis).
-    pub created_at: u64,
-    /// Last update timestamp (Unix millis).
-    pub updated_at: u64,
+    /// Group ID (nullable: NULL falls through to hash(tenant_id) % RG).
+    pub group_id: Option<i64>,
 }
 
 // ============================================================================
-// Table 12: Rollover policies
+// Table 12: Rollover policies (plan §4)
 // ============================================================================
 
 /// ILM rollover policy.
@@ -315,41 +391,39 @@ pub struct Tenant {
 pub struct RolloverPolicy {
     /// Policy name.
     pub name: String,
-    /// Index pattern to apply the policy to.
-    pub index_pattern: String,
-    /// Maximum age for rollover (days).
-    pub max_age_days: Option<u64>,
-    /// Maximum size for rollover (bytes).
-    pub max_size_bytes: Option<u64>,
-    /// Maximum document count for rollover.
-    pub max_docs: Option<u64>,
-    /// Whether the policy is enabled.
-    pub enabled: bool,
-    /// Creation timestamp (Unix millis).
-    pub created_at: u64,
-    /// Last update timestamp (Unix millis).
-    pub updated_at: u64,
+    /// Write alias.
+    pub write_alias: String,
+    /// Read alias.
+    pub read_alias: String,
+    /// Index pattern (e.g. "logs-{YYYY-MM-DD}").
+    pub pattern: String,
+    /// Triggers (JSON: { max_docs, max_age, max_size_gb }).
+    pub triggers_json: String,
+    /// Retention (JSON: { keep_indexes }).
+    pub retention_json: String,
+    /// Template (JSON: { primary_key, settings_ref }).
+    pub template_json: String,
+    /// Whether the policy is enabled (0 | 1).
+    pub enabled: i64,
 }
 
 // ============================================================================
-// Table 13: Search UI config
+// Table 13: Search UI config (plan §4)
 // ============================================================================
 
 /// Search UI configuration for an index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchUiConfig {
-    /// Index name.
-    pub index: String,
+    /// Index UID.
+    pub index_uid: String,
     /// UI configuration (JSON).
-    pub config: String,
-    /// Creation timestamp (Unix millis).
-    pub created_at: u64,
+    pub config_json: String,
     /// Last update timestamp (Unix millis).
     pub updated_at: u64,
 }
 
 // ============================================================================
-// Table 14: Admin sessions
+// Table 14: Admin sessions (plan §4)
 // ============================================================================
 
 /// Admin UI session entry.
@@ -357,14 +431,20 @@ pub struct SearchUiConfig {
 pub struct AdminSession {
     /// Session ID (UUID).
     pub session_id: String,
-    /// User ID or username.
-    pub user_id: String,
+    /// CSRF token.
+    pub csrf_token: String,
+    /// SHA256 of admin key used at login.
+    pub admin_key_hash: String,
     /// Creation timestamp (Unix millis).
     pub created_at: u64,
     /// Expiration timestamp (Unix millis).
     pub expires_at: u64,
-    /// Whether the session is revoked.
-    pub revoked: bool,
+    /// Whether the session is revoked (0 | 1).
+    pub revoked: i64,
+    /// User agent string.
+    pub user_agent: Option<String>,
+    /// Source IP address.
+    pub source_ip: Option<String>,
 }
 
 // ============================================================================

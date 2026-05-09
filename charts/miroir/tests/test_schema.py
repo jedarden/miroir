@@ -112,10 +112,8 @@ def test_schema_constraints():
 
     for replicas, backend, should_pass, description in test_cases:
         instance = {
-            "miroir": {
-                "replicas": replicas,
-                "taskStore": {"backend": backend}
-            }
+            "replicas": replicas,
+            "taskStore": {"backend": backend}
         }
 
         miroir_schema = schema["properties"]["miroir"]

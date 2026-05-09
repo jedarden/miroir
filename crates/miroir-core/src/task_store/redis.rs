@@ -338,10 +338,10 @@ impl TaskStore for RedisTaskStore {
                 .await?
                 .ok_or_else(|| TaskStoreError::NotFound(job_id.clone()))?;
 
-            // Update status
-            job.status = JobStatus::Processing;
-            job.worker_id = Some(worker_id.to_string());
-            job.started_at = Some(chrono::Utc::now().timestamp_millis() as u64);
+            // Update state
+            job.state = JobState::InProgress;
+            job.claimed_by = Some(worker_id.to_string());
+            job.claim_expires_at = Some(chrono::Utc::now().timestamp_millis() as u64 + 300000); // 5 min lease
 
             // Save updated job
             self.job_enqueue(&job).await?;
@@ -359,7 +359,7 @@ impl TaskStore for RedisTaskStore {
     async fn job_update_status(
         &self,
         job_id: &str,
-        status: JobStatus,
+        status: JobState,
         result: Option<&str>,
     ) -> Result<()> {
         let mut job = self
@@ -367,14 +367,20 @@ impl TaskStore for RedisTaskStore {
             .await?
             .ok_or_else(|| TaskStoreError::NotFound(job_id.to_string()))?;
 
-        job.status = status;
-        job.result = result.map(|r| r.to_string());
+        job.state = status;
 
+        // Update progress with result if provided
+        if let Some(r) = result {
+            job.progress = r.to_string();
+        }
+
+        // Clear claim when terminal
         if matches!(
             status,
-            JobStatus::Succeeded | JobStatus::Failed | JobStatus::Canceled
+            JobState::Completed | JobState::Failed
         ) {
-            job.completed_at = Some(chrono::Utc::now().timestamp_millis() as u64);
+            job.claimed_by = None;
+            job.claim_expires_at = None;
         }
 
         self.job_enqueue(&job).await?;
@@ -395,7 +401,7 @@ impl TaskStore for RedisTaskStore {
         }
     }
 
-    async fn job_list(&self, status: Option<JobStatus>, limit: usize) -> Result<Vec<Job>> {
+    async fn job_list(&self, status: Option<JobState>, limit: usize) -> Result<Vec<Job>> {
         // Get all job IDs from the enqueued queue
         let mut conn = self.get_conn().await?;
         let all_ids: Vec<String> = conn.lrange("miroir:jobs:enqueued", 0, -1).await?;
@@ -403,13 +409,14 @@ impl TaskStore for RedisTaskStore {
         let mut jobs = Vec::new();
         for id in all_ids {
             if let Some(job) = self.job_get(&id).await? {
-                if status.is_none() || Some(job.status) == status {
+                if status.is_none() || Some(job.state) == status {
                     jobs.push(job);
                 }
             }
         }
 
-        jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        // Sort by ID (as proxy for time) and limit
+        jobs.sort_by(|a, b| b.id.cmp(&a.id));
         jobs.truncate(limit);
 
         Ok(jobs)

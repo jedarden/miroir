@@ -592,11 +592,7 @@ fn task_list_strategy() -> impl Strategy<Value = Vec<Task>> {
     // Use safe u64 values that fit in SQLite's signed 64-bit integer
     let created_at_strategy = 0u64..9223372036854775807u64;
 
-    prop::collection::vec(
-        (created_at_strategy, task_status_strategy),
-        0..100,
-    )
-    .prop_map(|items| {
+    prop::collection::vec((created_at_strategy, task_status_strategy), 0..100).prop_map(|items| {
         items
             .into_iter()
             .enumerate()

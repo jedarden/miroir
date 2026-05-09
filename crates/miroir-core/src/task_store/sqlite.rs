@@ -1,12 +1,41 @@
 //! SQLite backend for the task store.
 
 use super::error::{Result, TaskStoreError};
-use super::schema::*;
+use super::schema::{
+    AdminSession, Alias, AliasHistoryEntry, AliasKind, Canary, CanaryRun, CdcCursor,
+    IdempotencyEntry, Job, JobState, LeaderLease, NodeSettingsVersion, RolloverPolicy,
+    SearchUiConfig, Session, Task, TaskFilter, TaskStatus, Tenant, SCHEMA_VERSION,
+};
 use super::TaskStore;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+
+// Legacy compatibility types for trait signature
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NodeTask {
+    pub task_uid: u64,
+    pub status: NodeTaskStatus,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum NodeTaskStatus {
+    Enqueued,
+    Processing,
+    Succeeded,
+    Failed,
+}
+
+// Legacy JobStatus for trait compatibility
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobStatus {
+    Enqueued,
+    Processing,
+    Succeeded,
+    Failed,
+    Canceled,
+}
 
 /// Convert a String parse error to a rusqlite error.
 fn parse_error<E: std::fmt::Display>(e: E) -> rusqlite::Error {
@@ -158,7 +187,7 @@ impl TaskStore for SqliteTaskStore {
                 &[&miroir_id as &dyn rusqlite::ToSql],
                 |row| {
                     let node_tasks_json: String = row.get(3)?;
-                    let node_tasks: HashMap<String, NodeTask> = serde_json::from_str(&node_tasks_json).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                    let node_tasks: HashMap<String, u64> = serde_json::from_str(&node_tasks_json).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                     Ok(Task {
                         miroir_id: row.get(0)?,
                         created_at: row.get(1)?,
@@ -194,13 +223,13 @@ impl TaskStore for SqliteTaskStore {
         node_id: &str,
         node_task: &NodeTask,
     ) -> Result<()> {
-        // Get the task, update node_tasks, and write back
+        // Get the task, update node_tasks (store only task_uid), and write back
         let mut task = self
             .task_get(miroir_id)
             .await?
             .ok_or_else(|| TaskStoreError::NotFound(miroir_id.to_string()))?;
         task.node_tasks
-            .insert(node_id.to_string(), node_task.clone());
+            .insert(node_id.to_string(), node_task.task_uid);
         let node_tasks_json = serde_json::to_string(&task.node_tasks)?;
         self.execute(
             "UPDATE tasks SET node_tasks = ?1 WHERE miroir_id = ?2",
@@ -243,7 +272,7 @@ impl TaskStore for SqliteTaskStore {
 
         self.query_map(&sql, &params_refs, |row| {
             let node_tasks_json: String = row.get(3)?;
-            let node_tasks: HashMap<String, NodeTask> = serde_json::from_str(&node_tasks_json)
+            let node_tasks: HashMap<String, u64> = serde_json::from_str(&node_tasks_json)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
             Ok(Task {
                 miroir_id: row.get(0)?,
@@ -265,7 +294,7 @@ impl TaskStore for SqliteTaskStore {
     async fn node_settings_version_get(&self, index: &str, node_id: &str) -> Result<Option<i64>> {
         let version: Option<i64> = self
             .query_row(
-                "SELECT version FROM node_settings_version WHERE [index] = ?1 AND node_id = ?2",
+                "SELECT version FROM node_settings_version WHERE index_uid = ?1 AND node_id = ?2",
                 &[
                     &index as &dyn rusqlite::ToSql,
                     &node_id as &dyn rusqlite::ToSql,
@@ -284,7 +313,7 @@ impl TaskStore for SqliteTaskStore {
     ) -> Result<()> {
         let now = chrono::Utc::now().timestamp_millis() as u64;
         self.execute(
-            "INSERT OR REPLACE INTO node_settings_version ([index], node_id, version, updated_at)
+            "INSERT OR REPLACE INTO node_settings_version (index_uid, node_id, version, updated_at)
              VALUES (?1, ?2, ?3, ?4)",
             &[
                 &index as &dyn rusqlite::ToSql,
@@ -1244,16 +1273,16 @@ impl TaskStore for SqliteTaskStore {
 }
 
 impl SqliteTaskStore {
-    /// Initialize the database schema.
+    /// Initialize the database schema (plan §4 tables 1-7).
     fn init_schema(conn: &Connection) -> Result<()> {
         // Table 1: Tasks
         conn.execute(
             "CREATE TABLE IF NOT EXISTS tasks (
-                miroir_id TEXT PRIMARY KEY,
-                created_at INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                node_tasks TEXT NOT NULL,
-                error TEXT
+                miroir_id   TEXT PRIMARY KEY,
+                created_at  INTEGER NOT NULL,
+                status      TEXT NOT NULL,
+                node_tasks  TEXT NOT NULL,
+                error       TEXT
             )",
             [],
         )?;
@@ -1261,11 +1290,11 @@ impl SqliteTaskStore {
         // Table 2: Node settings version
         conn.execute(
             "CREATE TABLE IF NOT EXISTS node_settings_version (
-                [index] TEXT NOT NULL,
-                node_id TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                PRIMARY KEY ([index], node_id)
+                index_uid   TEXT NOT NULL,
+                node_id     TEXT NOT NULL,
+                version     INTEGER NOT NULL,
+                updated_at  INTEGER NOT NULL,
+                PRIMARY KEY (index_uid, node_id)
             )",
             [],
         )?;
@@ -1273,13 +1302,13 @@ impl SqliteTaskStore {
         // Table 3: Aliases
         conn.execute(
             "CREATE TABLE IF NOT EXISTS aliases (
-                name TEXT PRIMARY KEY,
-                kind TEXT NOT NULL,
-                current_uid TEXT,
-                target_uids TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
+                name          TEXT PRIMARY KEY,
+                kind          TEXT NOT NULL,
+                current_uid   TEXT,
+                target_uids   TEXT,
+                version       INTEGER NOT NULL,
+                created_at    INTEGER NOT NULL,
+                history       TEXT NOT NULL
             )",
             [],
         )?;
@@ -1287,11 +1316,12 @@ impl SqliteTaskStore {
         // Table 4: Sessions
         conn.execute(
             "CREATE TABLE IF NOT EXISTS sessions (
-                session_id TEXT PRIMARY KEY,
-                [index] TEXT NOT NULL,
-                settings_version INTEGER NOT NULL,
-                created_at INTEGER NOT NULL,
-                expires_at INTEGER NOT NULL
+                session_id            TEXT PRIMARY KEY,
+                last_write_mtask_id   TEXT,
+                last_write_at         INTEGER,
+                pinned_group          INTEGER,
+                min_settings_version  INTEGER NOT NULL,
+                ttl                   INTEGER NOT NULL
             )",
             [],
         )?;
@@ -1299,10 +1329,10 @@ impl SqliteTaskStore {
         // Table 5: Idempotency cache
         conn.execute(
             "CREATE TABLE IF NOT EXISTS idempotency_cache (
-                key TEXT PRIMARY KEY,
-                response TEXT NOT NULL,
-                status_code INTEGER NOT NULL,
-                created_at INTEGER NOT NULL
+                key              TEXT PRIMARY KEY,
+                body_sha256      BLOB NOT NULL,
+                miroir_task_id   TEXT NOT NULL,
+                expires_at       INTEGER NOT NULL
             )",
             [],
         )?;
@@ -1310,16 +1340,13 @@ impl SqliteTaskStore {
         // Table 6: Jobs
         conn.execute(
             "CREATE TABLE IF NOT EXISTS jobs (
-                job_id TEXT PRIMARY KEY,
-                job_type TEXT NOT NULL,
-                parameters TEXT NOT NULL,
-                status TEXT NOT NULL,
-                worker_id TEXT,
-                result TEXT,
-                error TEXT,
-                created_at INTEGER NOT NULL,
-                started_at INTEGER,
-                completed_at INTEGER
+                id                 TEXT PRIMARY KEY,
+                type               TEXT NOT NULL,
+                params             TEXT NOT NULL,
+                state              TEXT NOT NULL,
+                claimed_by         TEXT,
+                claim_expires_at   INTEGER,
+                progress           TEXT NOT NULL
             )",
             [],
         )?;
@@ -1327,10 +1354,9 @@ impl SqliteTaskStore {
         // Table 7: Leader lease
         conn.execute(
             "CREATE TABLE IF NOT EXISTS leader_lease (
-                lease_id TEXT PRIMARY KEY,
-                holder TEXT NOT NULL,
-                acquired_at INTEGER NOT NULL,
-                expires_at INTEGER NOT NULL
+                scope        TEXT PRIMARY KEY,
+                holder       TEXT NOT NULL,
+                expires_at   INTEGER NOT NULL
             )",
             [],
         )?;
