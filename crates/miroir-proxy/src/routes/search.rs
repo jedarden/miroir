@@ -129,7 +129,7 @@ async fn search_with_group(
 
     for resp in result.responses {
         let node_id = resp.node_id.as_str().to_string();
-        responses_by_node.insert(node_id, resp.body);
+        responses_by_node.insert(node_id, resp.body.into());
     }
 
     // For each shard, find the response from its assigned node
@@ -167,7 +167,7 @@ async fn search(
     let query_seq = state.next_query_seq();
 
     // Build request body for nodes
-    let req_body = serde_json::to_vec(req.0).unwrap_or_default();
+    let req_body = serde_json::to_vec(&req.0).unwrap_or_default();
 
     let offset = req.offset.unwrap_or(0);
     let limit = req.limit.unwrap_or(20);

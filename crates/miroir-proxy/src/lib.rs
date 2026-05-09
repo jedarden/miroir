@@ -6,3 +6,4 @@ pub mod retry_cache;
 pub mod routes;
 pub mod scatter;
 pub mod state;
+pub mod task_manager;

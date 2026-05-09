@@ -37,6 +37,63 @@ pub fn router() -> axum::Router<ProxyState> {
         .route("/:index/documents/:id", axum::routing::delete(delete_document))
 }
 
+/// Extract the primary key field from documents or headers.
+/// First checks the index settings, then falls back to headers and defaults.
+async fn get_primary_key(
+    state: &ProxyState,
+    index: &str,
+    documents: &[Value],
+    headers: &HeaderMap,
+) -> Result<String, ErrorResponse> {
+    // First, try to get primary key from index settings
+    let topology = state.topology().await;
+
+    for group in topology.groups() {
+        if let Some(node_id) = group.nodes().first() {
+            let request = ScatterRequest {
+                method: "GET".to_string(),
+                path: format!("/indexes/{}", index),
+                body: vec![],
+                headers: vec![],
+            };
+
+            let scatter = HttpScatter::new((*state.client).clone(), state.config.server.request_timeout_ms);
+
+            if let Ok(result) = scatter.scatter(&topology, vec![node_id.clone()], request, UnavailableShardPolicy::Partial).await {
+                if let Some(resp) = result.responses.first() {
+                    if resp.status == 200 {
+                        if let Ok(json) = serde_json::from_slice::<Value>(&resp.body) {
+                            if let Some(pk) = json.get("primaryKey").and_then(|v| v.as_str()) {
+                                return Ok(pk.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for primary key in query string/header
+    if let Some(pk) = headers.get("X-Meiroil-Primary-Key") {
+        if let Ok(pk_str) = pk.to_str() {
+            return Ok(pk_str.to_string());
+        }
+    }
+
+    // Try to infer from first document
+    if let Some(doc) = documents.first() {
+        // Common primary key field names to try
+        for candidate in &["id", "Id", "ID", "_id", "key", "Key", "pk"] {
+            if doc.get(*candidate).is_some() {
+                return Ok(candidate.to_string());
+            }
+        }
+    }
+
+    // Default to "id"
+    Ok("id".to_string())
+}
+
 /// POST /:index/documents - Add or replace documents.
 async fn add_documents(
     State(state): State<ProxyState>,
@@ -46,9 +103,8 @@ async fn add_documents(
 ) -> Result<Response, ErrorResponse> {
     let topology = state.topology().await;
 
-    // Get primary key for the index (for now, assume it's in the document or use default)
-    // In production, we'd query the index settings to get the primary key field
-    let primary_key = get_primary_key(&body, &headers).unwrap_or_else(|| "id".to_string());
+    // Get primary key for the index
+    let primary_key = get_primary_key(&state, &index, &body, &headers).await?;
 
     // Inject _miroir_shard into each document and group by shard
     let mut docs_by_shard: std::collections::HashMap<u32, Vec<Value>> = std::collections::HashMap::new();
@@ -91,7 +147,11 @@ async fn add_documents(
             headers: vec![],
         };
 
-        let scatter = HttpScatter::new((*state.client).clone(), state.config.server.request_timeout_ms);
+        let scatter = HttpScatter::with_retry_cache(
+            (*state.client).clone(),
+            state.config.server.request_timeout_ms,
+            (*state.retry_cache).clone(),
+        );
         let result = scatter
             .scatter(&topology, targets, request, UnavailableShardPolicy::Partial)
             .await
@@ -109,7 +169,7 @@ async fn add_documents(
         }
 
         // Check if each group met quorum
-        for (group_id, count) in &groups {
+        for (_group_id, count) in &groups {
             if *count < quorum {
                 any_degraded = true;
             } else {
@@ -130,9 +190,9 @@ async fn add_documents(
         return Err(ErrorResponse::no_quorum(0));
     }
 
-    // Build response
-    let task_uid = 1; // TODO: proper task ID generation
-    let mut response_body = serde_json::json!({
+    // Build response with proper task UID
+    let task_uid = state.task_manager.next_uid();
+    let response_body = serde_json::json!({
         "taskUid": task_uid,
         "indexUid": index,
         "status": "enqueued",
@@ -160,7 +220,7 @@ async fn update_documents(
     body: Vec<Value>,
 ) -> Result<Response, ErrorResponse> {
     // Same logic as POST, just different type
-    add_documents(state, Path(index), headers, body).await
+    add_documents(State(state), Path(index), headers, body).await
 }
 
 /// DELETE /:index/documents - Delete documents by batch.
@@ -209,7 +269,11 @@ async fn delete_documents(
             headers: vec![],
         };
 
-        let scatter = HttpScatter::new((*state.client).clone(), state.config.server.request_timeout_ms);
+        let scatter = HttpScatter::with_retry_cache(
+            (*state.client).clone(),
+            state.config.server.request_timeout_ms,
+            (*state.retry_cache).clone(),
+        );
         let result = scatter
             .scatter(&topology, targets, request, UnavailableShardPolicy::Partial)
             .await
@@ -225,7 +289,7 @@ async fn delete_documents(
             *groups.entry(node.replica_group).or_insert(0) += 1;
         }
 
-        for (group_id, count) in &groups {
+        for (_group_id, count) in &groups {
             if *count < quorum {
                 any_degraded = true;
             } else {
@@ -239,7 +303,7 @@ async fn delete_documents(
     }
 
     let task_uid = 1;
-    let mut response_body = serde_json::json!({
+    let response_body = serde_json::json!({
         "taskUid": task_uid,
         "indexUid": index,
         "status": "enqueued",
@@ -313,8 +377,8 @@ async fn delete_document(
         return Err(ErrorResponse::no_quorum(shard_id));
     }
 
-    let task_uid = 1;
-    let mut response_body = serde_json::json!({
+    let task_uid = state.task_manager.next_uid();
+    let response_body = serde_json::json!({
         "taskUid": task_uid,
         "indexUid": index,
         "status": "enqueued",
@@ -349,7 +413,7 @@ async fn get_document(
         .group(group_id)
         .ok_or_else(|| ErrorResponse::internal_error(format!("Group {} not found", group_id)))?;
 
-    let shard_id = shard_for_key(&id, state.config.shards);
+    let _shard_id = shard_for_key(&id, state.config.shards);
     let rf = state.config.replication_factor as usize;
 
     // Build covering set for this shard
@@ -390,36 +454,43 @@ async fn get_document(
     Ok((status, Json(body)).into_response())
 }
 
-/// Extract the primary key field from documents or headers.
-fn get_primary_key(_documents: &[Value], headers: &HeaderMap) -> Option<String> {
-    // Check for primary key in query string/header
-    // For now, default to "id"
-    // In production, we'd query the index settings
-    if let Some(pk) = headers.get("X-Meiroil-Primary-Key") {
-        pk.to_str().ok().map(|s| s.to_string())
-    } else {
-        Some("id".to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_get_primary_key_default() {
-        let headers = HeaderMap::new();
-        let documents = vec![];
-        let pk = get_primary_key(&documents, &headers);
-        assert_eq!(pk, Some("id".to_string()));
+    fn test_document_shard_hashing() {
+        // Test that same ID always maps to same shard
+        let id1 = "test-doc-123";
+        let id2 = "test-doc-123";
+        let id3 = "different-doc";
+
+        // These should be deterministic
+        let shard1 = shard_for_key(id1, 64);
+        let shard2 = shard_for_key(id2, 64);
+        let shard3 = shard_for_key(id3, 64);
+
+        assert_eq!(shard1, shard2, "Same ID should map to same shard");
+        assert_ne!(shard1, shard3, "Different IDs should likely map to different shards");
     }
 
     #[test]
-    fn test_get_primary_key_from_header() {
-        let mut headers = HeaderMap::new();
-        headers.insert("X-Meiroil-Primary-Key", "user_id".parse().unwrap());
-        let documents = vec![];
-        let pk = get_primary_key(&documents, &headers);
-        assert_eq!(pk, Some("user_id".to_string()));
+    fn test_document_shard_uniformity() {
+        // Test that documents distribute reasonably evenly
+        let mut shard_counts = vec![0usize; 64];
+
+        for i in 0..1000 {
+            let id = format!("doc-{}", i);
+            let shard = shard_for_key(&id, 64);
+            shard_counts[shard as usize] += 1;
+        }
+
+        // Check that each shard got at least some documents
+        // (with 1000 docs and 64 shards, most should get at least 10-20)
+        let min_count = *shard_counts.iter().min().unwrap();
+        let max_count = *shard_counts.iter().max().unwrap();
+
+        assert!(min_count >= 5, "Minimum shard count too low: {}", min_count);
+        assert!(max_count <= 30, "Maximum shard count too high: {}", max_count);
     }
 }

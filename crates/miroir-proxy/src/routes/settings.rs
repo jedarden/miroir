@@ -109,6 +109,14 @@ async fn get_all_settings(
     Err(ErrorResponse::index_not_found(&index))
 }
 
+/// Cached original value for rollback.
+struct RollbackValue {
+    /// The original value to restore on rollback.
+    original_value: Option<Value>,
+    /// Whether the setting existed before.
+    existed: bool,
+}
+
 /// Generic handler for updating a setting with rollback.
 async fn update_setting_with_rollback(
     state: &ProxyState,
@@ -121,6 +129,46 @@ async fn update_setting_with_rollback(
 
     if targets.is_empty() {
         return Err(ErrorResponse::internal_error("No nodes available"));
+    }
+
+    // Step 1: Fetch current values from all nodes for rollback
+    let mut rollback_values: std::collections::HashMap<String, RollbackValue> = std::collections::HashMap::new();
+
+    for target in &targets {
+        let get_request = ScatterRequest {
+            method: "GET".to_string(),
+            path: format!("/indexes/{}/{}", index, setting_path),
+            body: vec![],
+            headers: vec![],
+        };
+
+        let scatter = HttpScatter::new((*state.client).clone(), state.config.server.request_timeout_ms);
+
+        match scatter.scatter(&topology, vec![target.clone()], get_request, UnavailableShardPolicy::Partial).await {
+            Ok(resp) => {
+                if let Some(r) = resp.responses.first() {
+                    let original_value = if r.status == 200 {
+                        Some(r.body.clone())
+                    } else {
+                        None
+                    };
+                    rollback_values.insert(
+                        target.as_str().to_string(),
+                        RollbackValue {
+                            original_value,
+                            existed: r.status == 200,
+                        },
+                    );
+                }
+            }
+            Err(_) => {
+                // Node is already down, skip rollback for it
+                rollback_values.insert(target.as_str().to_string(), RollbackValue {
+                    original_value: None,
+                    existed: false,
+                });
+            }
+        }
     }
 
     let body_bytes = serde_json::to_vec(value).unwrap_or_default();
@@ -152,7 +200,7 @@ async fn update_setting_with_rollback(
                         last_response = Some(r.body.clone());
                     } else {
                         // Rollback from successful nodes
-                        rollback_setting(state, &topology, &successful_nodes, index, setting_path).await;
+                        rollback_setting(state, &topology, &successful_nodes, &rollback_values, index, setting_path).await;
                         return Err(ErrorResponse::internal_error(format!(
                             "Failed to update setting on node {}: status {}",
                             target.as_str(),
@@ -163,7 +211,7 @@ async fn update_setting_with_rollback(
             }
             Err(e) => {
                 // Rollback from successful nodes
-                rollback_setting(state, &topology, &successful_nodes, index, setting_path).await;
+                rollback_setting(state, &topology, &successful_nodes, &rollback_values, index, setting_path).await;
                 return Err(ErrorResponse::internal_error(format!(
                     "Failed to update setting on node {}: {}",
                     target.as_str(),
@@ -176,8 +224,9 @@ async fn update_setting_with_rollback(
     let response_body = if let Some(body) = last_response {
         body
     } else {
+        let task_uid = state.task_manager.next_uid();
         serde_json::json!({
-            "taskUid": 1,
+            "taskUid": task_uid,
             "indexUid": index,
             "status": "enqueued",
             "type": "settingsUpdate",
@@ -193,23 +242,43 @@ async fn rollback_setting(
     state: &ProxyState,
     topology: &miroir_core::topology::Topology,
     successful_nodes: &[String],
+    rollback_values: &std::collections::HashMap<String, RollbackValue>,
     index: &str,
     setting_path: &str,
 ) {
-    // For rollback, we need to get the original value first
-    // This is a simplified version - in production, we'd cache original values
     for node_id in successful_nodes {
-        let _ = state
-            .client
-            .send_to_node(
-                topology,
-                &node_id.as_str().into(),
-                "DELETE",
-                &format!("/indexes/{}/{}", index, setting_path),
-                None,
-                &[],
-            )
-            .await;
+        if let Some(rollback) = rollback_values.get(node_id) {
+            if rollback.existed {
+                // Restore original value
+                if let Some(original) = &rollback.original_value {
+                    let body_bytes = serde_json::to_vec(original).unwrap_or_default();
+                    let _ = state
+                        .client
+                        .send_to_node(
+                            topology,
+                            &node_id.as_str().into(),
+                            "PUT",
+                            &format!("/indexes/{}/{}", index, setting_path),
+                            Some(&body_bytes),
+                            &[],
+                        )
+                        .await;
+                }
+            } else {
+                // Setting didn't exist before, delete it
+                let _ = state
+                    .client
+                    .send_to_node(
+                        topology,
+                        &node_id.as_str().into(),
+                        "DELETE",
+                        &format!("/indexes/{}/{}", index, setting_path),
+                        None,
+                        &[],
+                    )
+                    .await;
+            }
+        }
     }
 }
 
@@ -570,7 +639,6 @@ async fn delete_setting(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_filterable_attributes_injection() {

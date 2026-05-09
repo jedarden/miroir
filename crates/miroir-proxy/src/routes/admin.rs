@@ -77,7 +77,7 @@ pub async fn get_stats(
     // Aggregate stats from all successful responses
     let mut total_indexes = 0u64;
     let mut total_documents = 0u64;
-    let mut merged_fields: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    let merged_fields: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
 
     for response in result.responses {
         if let Ok(stats) = serde_json::from_slice::<serde_json::Value>(&response.body) {

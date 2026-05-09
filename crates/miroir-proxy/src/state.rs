@@ -9,6 +9,8 @@ use tokio::sync::RwLock;
 
 use crate::client::NodeClient;
 use crate::middleware::Metrics;
+use crate::task_manager::TaskManager;
+use crate::retry_cache::RetryCache;
 
 /// Shared application state.
 #[derive(Clone)]
@@ -33,6 +35,12 @@ pub struct ProxyState {
 
     /// Prometheus metrics.
     pub metrics: Arc<Metrics>,
+
+    /// Task manager for generating and tracking tasks.
+    pub task_manager: Arc<TaskManager>,
+
+    /// Retry cache for idempotency.
+    pub retry_cache: Arc<RetryCache>,
 }
 
 impl ProxyState {
@@ -68,6 +76,8 @@ impl ProxyState {
         let master_key = Arc::new(config.master_key.clone());
         let admin_key = Arc::new(config.admin.api_key.clone());
         let metrics = Arc::new(Metrics::new());
+        let task_manager = Arc::new(TaskManager::new());
+        let retry_cache = Arc::new(RetryCache::new(std::time::Duration::from_secs(60)));
 
         Ok(Self {
             config: Arc::new(config),
@@ -77,6 +87,8 @@ impl ProxyState {
             master_key,
             admin_key,
             metrics,
+            task_manager,
+            retry_cache,
         })
     }
 
