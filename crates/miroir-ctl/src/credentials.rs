@@ -34,9 +34,9 @@ pub enum CredentialError {
 impl std::fmt::Display for CredentialError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CredentialError::NotFound(msg) => write!(f, "Credential not found: {}", msg),
-            CredentialError::IoError(e) => write!(f, "IO error: {}", e),
-            CredentialError::ParseError(msg) => write!(f, "Parse error: {}", msg),
+            CredentialError::NotFound(msg) => write!(f, "Credential not found: {msg}"),
+            CredentialError::IoError(e) => write!(f, "IO error: {e}"),
+            CredentialError::ParseError(msg) => write!(f, "Parse error: {msg}"),
         }
     }
 }
@@ -94,7 +94,7 @@ fn load_from_credentials_file() -> Result<Option<String>, CredentialError> {
             let contents = fs::read_to_string(path).map_err(CredentialError::IoError)?;
 
             let creds: CredentialsFile = toml::from_str(&contents)
-                .map_err(|e| CredentialError::ParseError(format!("Invalid TOML: {}", e)))?;
+                .map_err(|e| CredentialError::ParseError(format!("Invalid TOML: {e}")))?;
 
             if let Some(profile) = creds.default {
                 if let Some(key) = profile.admin_api_key {

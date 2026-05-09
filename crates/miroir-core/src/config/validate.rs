@@ -55,8 +55,7 @@ pub fn validate(cfg: &MiroirConfig) -> Result<(), ConfigError> {
         let rotate_before = cfg.search_ui.scoped_key_rotate_before_expiry_days;
         if rotate_before >= max_age {
             return Err(ConfigError::Validation(format!(
-                "search_ui.scoped_key_rotate_before_expiry_days ({}) must be strictly less than scoped_key_max_age_days ({})",
-                rotate_before, max_age
+                "search_ui.scoped_key_rotate_before_expiry_days ({rotate_before}) must be strictly less than scoped_key_max_age_days ({max_age})"
             )));
         }
     }

@@ -33,14 +33,14 @@ pub enum TaskStoreError {
 impl fmt::Display for TaskStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidBackend(backend) => write!(f, "invalid backend: {}", backend),
-            Self::Sqlite(err) => write!(f, "SQLite error: {}", err),
-            Self::Redis(err) => write!(f, "Redis error: {}", err),
-            Self::Json(err) => write!(f, "JSON error: {}", err),
-            Self::NotFound(key) => write!(f, "not found: {}", key),
-            Self::AlreadyExists(key) => write!(f, "already exists: {}", key),
-            Self::InvalidData(msg) => write!(f, "invalid data: {}", msg),
-            Self::Internal(msg) => write!(f, "internal error: {}", msg),
+            Self::InvalidBackend(backend) => write!(f, "invalid backend: {backend}"),
+            Self::Sqlite(err) => write!(f, "SQLite error: {err}"),
+            Self::Redis(err) => write!(f, "Redis error: {err}"),
+            Self::Json(err) => write!(f, "JSON error: {err}"),
+            Self::NotFound(key) => write!(f, "not found: {key}"),
+            Self::AlreadyExists(key) => write!(f, "already exists: {key}"),
+            Self::InvalidData(msg) => write!(f, "invalid data: {msg}"),
+            Self::Internal(msg) => write!(f, "internal error: {msg}"),
         }
     }
 }

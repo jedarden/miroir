@@ -453,7 +453,7 @@ impl MigrationCoordinator {
         if !matches!(phase, MigrationPhase::CutoverDraining) {
             return Err(MigrationError::InvalidTransition(
                 ShardId(0),
-                format!("expected CutoverDraining, got {}", phase),
+                format!("expected CutoverDraining, got {phase}"),
             ));
         }
 

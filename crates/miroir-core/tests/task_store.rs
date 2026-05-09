@@ -3,7 +3,7 @@
 
 #![cfg(feature = "task-store")]
 
-use miroir_core::task_store::schema::*;
+use miroir_core::task_store::*;
 use miroir_core::task_store::{SqliteTaskStore, TaskStore};
 use proptest::prelude::*;
 use std::collections::HashMap;
@@ -579,25 +579,35 @@ async fn session_roundtrip() {
 
 /// Proptest: task list with filtering.
 fn task_list_strategy() -> impl Strategy<Value = Vec<Task>> {
-    prop::collection::vec((any::<String>(), any::<u64>(), any::<TaskStatus>()), 0..100).prop_map(
-        |items| {
-            items
-                .into_iter()
-                .enumerate()
-                .map(|(i, (id, created_at, status))| Task {
-                    miroir_id: if id.is_empty() {
-                        format!("task-{}", i)
-                    } else {
-                        id
-                    },
-                    created_at,
-                    status,
-                    node_tasks: HashMap::new(),
-                    error: None,
-                })
-                .collect()
-        },
+    let task_status_strategy = prop_oneof![
+        Just(TaskStatus::Enqueued),
+        Just(TaskStatus::Processing),
+        Just(TaskStatus::Succeeded),
+        Just(TaskStatus::Failed),
+        Just(TaskStatus::Canceled),
+    ];
+
+    prop::collection::vec(
+        (any::<String>(), any::<u64>(), task_status_strategy),
+        0..100,
     )
+    .prop_map(|items| {
+        items
+            .into_iter()
+            .enumerate()
+            .map(|(i, (id, created_at, status))| Task {
+                miroir_id: if id.is_empty() {
+                    format!("task-{i}")
+                } else {
+                    id
+                },
+                created_at,
+                status,
+                node_tasks: HashMap::new(),
+                error: None,
+            })
+            .collect()
+    })
 }
 
 proptest! {

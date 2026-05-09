@@ -1,0 +1,20 @@
+apiVersion: v2
+name: miroir
+description: Multi-node Index Replication Orchestrator for Meilisearch
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - meilisearch
+  - search
+  - replication
+  - sharding
+home: https://github.com/jedarden/miroir
+sources:
+  - https://github.com/jedarden/miroir
+maintainers:
+  - name: jedarden
+    email: dev@example.com
+annotations:
+  artifacthub.io/category: database
+  artifacthub.io/license: MIT

@@ -78,12 +78,12 @@ fn main() {
     let mut results = Vec::new();
 
     for (label, params) in &test_matrix {
-        println!("Running: {}", label);
+        println!("Running: {label}");
         let start = std::time::Instant::now();
         let result = simulate(params);
         let elapsed = start.elapsed();
         results.push((label, params.clone(), result, elapsed));
-        println!("  Completed in {:.2?}", elapsed);
+        println!("  Completed in {elapsed:.2?}");
         println!();
     }
 
@@ -124,7 +124,7 @@ fn main() {
     println!();
 
     for (label, params, result, elapsed) in &results {
-        println!("--- {} ---", label);
+        println!("--- {label} ---");
         println!("  configuration:");
         println!("    total_docs: {}", params.total_docs);
         println!("    shard_count: {}", params.shard_count);
@@ -167,7 +167,7 @@ fn main() {
             result.aggregate.mean_first_divergence
         );
         println!();
-        println!("  computed in: {:.2?}", elapsed);
+        println!("  computed in: {elapsed:.2?}");
         println!();
     }
 
@@ -181,7 +181,7 @@ fn main() {
         let mut worst_queries: Vec<_> = result.query_results.iter().collect();
         worst_queries.sort_by(|a, b| a.kendall_tau.partial_cmp(&b.kendall_tau).unwrap());
 
-        println!("--- {} ---", label);
+        println!("--- {label} ---");
         for qr in worst_queries.iter().take(5) {
             println!(
                 "  Query {}: τ={:.4}, Jaccard={:.4}, first_div={}",
@@ -200,7 +200,7 @@ fn main() {
 
     // Validate threshold.
     println!("═══════════════════════════════════════════════════════════════════");
-    println!("Threshold Validation (τ ≥ {:.2})", THRESHOLD);
+    println!("Threshold Validation (τ ≥ {THRESHOLD:.2})");
     println!("═══════════════════════════════════════════════════════════════════");
     println!();
 
@@ -220,10 +220,10 @@ fn main() {
 
     println!();
     if all_pass {
-        println!("All scenarios PASSED the τ ≥ {:.2} threshold.", THRESHOLD);
+        println!("All scenarios PASSED the τ ≥ {THRESHOLD:.2} threshold.");
         println!("Score comparability is maintained across shard population skew.");
     } else {
-        println!("Some scenarios FAILED the τ ≥ {:.2} threshold.", THRESHOLD);
+        println!("Some scenarios FAILED the τ ≥ {THRESHOLD:.2} threshold.");
         println!("Score normalization may be needed for skewed shard distributions.");
     }
 

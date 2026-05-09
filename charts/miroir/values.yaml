@@ -1,0 +1,115 @@
+# Default values for miroir.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+miroir:
+  image:
+    repository: ghcr.io/jedarden/miroir
+    tag: ""  # Defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+
+  replicas: 1  # dev default: override to 2+ in production (requires taskStore.backend=redis)
+
+  # Sharding configuration
+  shards: 64
+  replicationFactor: 1  # dev default: override to 2 in production
+  replicaGroups: 1  # dev default: override to 2 in production
+
+  # Task store backend (plan §4)
+  # IMPORTANT: When replicas > 1, backend MUST be "redis" (enforced by values.schema.json)
+  taskStore:
+    backend: sqlite  # sqlite | redis
+    path: /data/miroir-tasks.db
+    url: ""  # for redis: redis://host:6379
+
+  # Admin UI
+  admin:
+    enabled: true
+
+  # Scatter policy for unavailable shards
+  scatter:
+    unavailableShardPolicy: partial  # partial | error
+
+  # Horizontal Pod Autoscaler
+  hpa:
+    enabled: false  # dev default; production: true (requires taskStore.backend=redis)
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+  # Ingress configuration
+  ingress:
+    enabled: false
+    className: "nginx"
+    annotations: {}
+      # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    hosts:
+      - host: search.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+    # - secretName: search-tls
+    #   hosts:
+    #     - search.example.com
+
+  # Resource limits (plan §14.2: 2 vCPU / 3.75 GB per pod)
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 3840Mi
+    requests:
+      cpu: 1000m
+      memory: 2048Mi
+
+  # Pod annotations
+  podAnnotations: {}
+
+  # Pod security context
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+
+  # Container security context
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 7700
+    annotations: {}
+
+  # Existing secret with keys: masterKey, nodeMasterKey, adminApiKey
+  existingSecret: ""
+
+# Redis deployment (when taskStore.backend=redis)
+redis:
+  enabled: false
+  image:
+    repository: redis
+    tag: 7-alpine
+    pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  persistence:
+    enabled: false
+    size: 1Gi
+    storageClass: ""
+
+# Service account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
