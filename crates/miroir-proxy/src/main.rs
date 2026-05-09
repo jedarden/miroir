@@ -9,9 +9,11 @@ mod auth;
 mod client;
 mod error_response;
 mod middleware;
+mod retry_cache;
 mod routes;
 mod scatter;
 mod state;
+mod task_manager;
 
 use routes::{admin, documents, health, indexes, search, settings, tasks};
 use state::ProxyState;
@@ -51,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
         .nest("/admin", admin::router())
         .nest("/_miroir", admin::miroir_router())
         .layer(axum::extract::DefaultBodyLimit::max(
-            state.config.server.max_body_bytes,
+            state.config.server.max_body_bytes as usize,
         ))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware))
         .layer(axum::middleware::from_fn_with_state(state.clone(), prometheus_middleware))
@@ -67,12 +69,16 @@ async fn main() -> anyhow::Result<()> {
     info!("listening on {}", main_addr);
     info!("metrics on {}", metrics_addr);
 
-    // Metrics server (prometheus format)
-    let metrics_router = Router::new().route("/metrics", get(admin::get_metrics));
-    let metrics_server = axum::serve(tokio::net::TcpListener::bind(metrics_addr).await?, metrics_router);
+    // Metrics server (prometheus format) - with state
+    let metrics_router = Router::new()
+        .route("/metrics", get(admin::get_metrics))
+        .with_state(state.clone());
+    let metrics_listener = tokio::net::TcpListener::bind(metrics_addr).await?;
+    let metrics_server = axum::serve(metrics_listener, metrics_router);
 
     // Main server
-    let main_server = axum::serve(tokio::net::TcpListener::bind(main_addr).await?, app);
+    let main_listener = tokio::net::TcpListener::bind(main_addr).await?;
+    let main_server = axum::serve(main_listener, app);
 
     tokio::select! {
         _ = main_server => {}
