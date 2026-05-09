@@ -587,4 +587,132 @@ leader_election:
         assert!(cfg.admin_ui.enabled);
         assert!(cfg.search_ui.enabled);
     }
+
+    // Additional validation tests to improve coverage
+
+    #[test]
+    fn validation_rejects_hpa_with_sqlite() {
+        let mut cfg = dev_config();
+        cfg.hpa.enabled = true;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("hpa"));
+    }
+
+    #[test]
+    fn validation_rejects_cdc_redis_overflow_with_sqlite() {
+        let mut cfg = dev_config();
+        cfg.cdc.buffer.overflow = "redis".into();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("cdc.buffer.overflow"));
+    }
+
+    #[test]
+    fn validation_rejects_search_ui_rate_limit_redis_with_sqlite() {
+        let mut cfg = dev_config();
+        cfg.search_ui.rate_limit.backend = "redis".into();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("rate_limit"));
+    }
+
+    #[test]
+    fn validation_rejects_replica_groups_without_leader_election() {
+        let mut cfg = dev_config();
+        cfg.replica_groups = 2;
+        cfg.leader_election.enabled = false;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("leader_election"));
+    }
+
+    #[test]
+    fn validation_rejects_tenant_affinity_dedicated_groups_out_of_range() {
+        let mut cfg = dev_config();
+        cfg.tenant_affinity.enabled = true;
+        cfg.tenant_affinity.dedicated_groups = vec![0, 5]; // 5 is out of range (only 0-1 valid)
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("tenant_affinity"));
+    }
+
+    #[test]
+    fn validation_rejects_tenant_affinity_static_map_out_of_range() {
+        let mut cfg = dev_config();
+        cfg.tenant_affinity.enabled = true;
+        cfg.tenant_affinity.static_map.insert("tenant1".into(), 10); // 10 is out of range
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("tenant_affinity"));
+    }
+
+    #[test]
+    fn validation_rejects_shadow_target_invalid_sample_rate_too_low() {
+        let mut cfg = dev_config();
+        cfg.shadow.targets.push(advanced::ShadowTargetConfig {
+            name: "test".into(),
+            url: "http://test".into(),
+            api_key_env: String::new(),
+            sample_rate: 0.0,
+            operations: vec!["search".into()],
+        });
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("sample_rate"));
+    }
+
+    #[test]
+    fn validation_rejects_shadow_target_invalid_sample_rate_too_high() {
+        let mut cfg = dev_config();
+        cfg.shadow.targets.push(advanced::ShadowTargetConfig {
+            name: "test".into(),
+            url: "http://test".into(),
+            api_key_env: String::new(),
+            sample_rate: 1.5,
+            operations: vec!["search".into()],
+        });
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("sample_rate"));
+    }
+
+    #[test]
+    fn validation_rejects_zero_server_port() {
+        let mut cfg = dev_config();
+        cfg.server.port = 0;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("port"));
+    }
+
+    #[test]
+    fn validation_rejects_zero_replication_factor() {
+        let mut cfg = dev_config();
+        cfg.replication_factor = 0;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("replication_factor"));
+    }
+
+    #[test]
+    fn validation_accepts_valid_shadow_target() {
+        let mut cfg = dev_config();
+        cfg.shadow.targets.push(advanced::ShadowTargetConfig {
+            name: "test".into(),
+            url: "http://test".into(),
+            api_key_env: String::new(),
+            sample_rate: 0.5,
+            operations: vec!["search".into()],
+        });
+        cfg.validate().expect("valid shadow target");
+    }
+
+    #[test]
+    fn validation_accepts_tenant_affinity_with_valid_groups() {
+        let mut cfg = dev_config();
+        cfg.replica_groups = 3;
+        cfg.tenant_affinity.enabled = true;
+        cfg.tenant_affinity.dedicated_groups = vec![0, 1, 2];
+        cfg.tenant_affinity.static_map.insert("tenant1".into(), 0);
+        cfg.validate().expect("valid tenant affinity");
+    }
+
+    #[test]
+    fn validation_accepts_hpa_with_redis() {
+        let mut cfg = dev_config();
+        cfg.task_store.backend = "redis".into();
+        cfg.hpa.enabled = true;
+        cfg.validate().expect("valid hpa with redis");
+    }
 }
