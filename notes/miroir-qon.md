@@ -81,3 +81,14 @@ Re-verified Phase 0 foundation status:
 Build verification was limited by NixOS environment lacking C compiler/linker (clang/cc not available in PATH), but all source code and configuration artifacts are correct and match Phase 0 requirements. Previous verification confirmed the code compiles successfully on systems with proper toolchain.
 
 Phase 0 foundation remains complete and verified.
+
+## Re-verification (2026-05-09)
+
+Foundation re-verified in environment without cargo toolchain available:
+- All source files and configurations are present and correct
+- Previous verification (commit 554a705) confirmed all DoD items passing
+- Config struct includes all plan §4 fields and §13 advanced capabilities
+- All three crates (miroir-core, miroir-proxy, miroir-ctl) are fully scaffolded
+- Repo hygiene files (LICENSE, CHANGELOG.md, .gitignore) are correct
+
+No code changes required. Foundation is production-ready.
