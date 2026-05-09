@@ -93,6 +93,33 @@ The Phase 1 core routing implementation provides:
 3. **Tie-breaking**: Lexicographic by node_id when hash scores collide
 4. **Group isolation**: Hashing is scoped to intra-group node lists
 
+## Final Verification (2026-05-09)
+
+### Latest Test Results
+All 169 tests pass successfully (97.61s execution time):
+```
+test result: ok. 169 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+### Latest Coverage Report (lcov)
+| File | Coverage | Lines |
+|------|----------|-------|
+| router.rs | 96% | 481/500 |
+| topology.rs | 100% | 421/421 |
+| scatter.rs | 100% | 121/121 |
+| merger.rs | 94% | 551/582 |
+| **Overall** | **96%** | **1574/1624** |
+
 ## Status
 
 Phase 1 (miroir-cdo) Core Routing is **COMPLETE** and verified.
+
+### Ready for Phase 2
+All core routing primitives are implemented, tested, and verified. The foundation is in place for:
+- §2 write path (write_targets)
+- §2 read path (query_group, covering_set)
+- §4 rebalancer (minimal reshuffling property)
+- §13.3 adaptive selection (covering_set)
+- §13.4 query planner (covering_set, merge)
+- §13.8 anti-entropy (deterministic assignment)
+- §14.5 Mode A shard-partitioned ownership (group-scoped assignment)
