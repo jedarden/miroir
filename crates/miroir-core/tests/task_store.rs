@@ -123,11 +123,13 @@ async fn idempotency_cache_roundtrip() {
 async fn leader_lease_acquire_renew() {
     let store = create_temp_store().await;
 
+    let now = chrono::Utc::now().timestamp_millis() as u64;
+
     let lease1 = LeaderLease {
         lease_id: "lease-1".to_string(),
         holder: "pod-1".to_string(),
-        acquired_at: 1234567890,
-        expires_at: 1234599999, // 3 hours later
+        acquired_at: now,
+        expires_at: now + 10_000, // 10 seconds later
     };
 
     // Acquire
@@ -143,8 +145,8 @@ async fn leader_lease_acquire_renew() {
     let lease2 = LeaderLease {
         lease_id: "lease-2".to_string(),
         holder: "pod-2".to_string(),
-        acquired_at: 1234570000,
-        expires_at: 1234600000,
+        acquired_at: now + 1000,
+        expires_at: now + 15_000,
     };
 
     let acquired2 = store.leader_lease_acquire(&lease2).await.unwrap();
@@ -591,19 +593,16 @@ fn task_list_strategy() -> impl Strategy<Value = Vec<Task>> {
     let created_at_strategy = 0u64..9223372036854775807u64;
 
     prop::collection::vec(
-        (any::<String>(), created_at_strategy, task_status_strategy),
+        (created_at_strategy, task_status_strategy),
         0..100,
     )
     .prop_map(|items| {
         items
             .into_iter()
             .enumerate()
-            .map(|(i, (id, created_at, status))| Task {
-                miroir_id: if id.is_empty() {
-                    format!("task-{i}")
-                } else {
-                    id
-                },
+            .map(|(i, (created_at, status))| Task {
+                // Always use enumerated index to ensure unique IDs
+                miroir_id: format!("task-{i}"),
                 created_at,
                 status,
                 node_tasks: HashMap::new(),
