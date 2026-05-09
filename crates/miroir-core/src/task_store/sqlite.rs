@@ -495,43 +495,69 @@ impl TaskStore for SqliteTaskStore {
             .map_err(|e| TaskStoreError::Internal(e.to_string()))?;
         let tx = conn.unchecked_transaction()?;
 
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+
         // Find and claim a job
-        let job: Option<Job> = tx
+        let job_id: Option<String> = tx
             .query_row(
-                "SELECT job_id, job_type, parameters, status, worker_id, result, error, created_at, started_at, completed_at
-                 FROM jobs WHERE status = 'Enqueued' ORDER BY created_at ASC LIMIT 1",
+                "SELECT job_id FROM jobs WHERE status = 'Enqueued' ORDER BY created_at ASC LIMIT 1",
                 [],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Some(ref job_id) = job_id {
+            tx.execute(
+                "UPDATE jobs SET status = 'Processing', worker_id = ?1, started_at = ?2 WHERE job_id = ?3",
+                [
+                    &worker_id as &dyn rusqlite::ToSql,
+                    &now as &dyn rusqlite::ToSql,
+                    job_id as &dyn rusqlite::ToSql,
+                ],
+            )?;
+
+            // Fetch the updated job
+            let job: Job = tx.query_row(
+                "SELECT job_id, job_type, parameters, status, worker_id, result, error, created_at, started_at, completed_at
+                 FROM jobs WHERE job_id = ?1",
+                [job_id as &dyn rusqlite::ToSql],
                 |row| {
                     Ok(Job {
                         job_id: row.get(0)?,
                         job_type: row.get(1)?,
                         parameters: row.get(2)?,
-                        status: JobStatus::Enqueued,
-                        worker_id: row.get(4)?,
-                        result: row.get(5)?,
-                        error: row.get(6)?,
+                        status: row.get::<_, String>(3)?.parse().map_err(parse_error)?,
+                        worker_id: {
+                            let worker: String = row.get(4)?;
+                            if worker.is_empty() { None } else { Some(worker) }
+                        },
+                        result: {
+                            let result: String = row.get(5)?;
+                            if result.is_empty() { None } else { Some(result) }
+                        },
+                        error: {
+                            let error: String = row.get(6)?;
+                            if error.is_empty() { None } else { Some(error) }
+                        },
                         created_at: row.get(7)?,
-                        started_at: row.get(8)?,
-                        completed_at: row.get(9)?,
+                        started_at: {
+                            let started: i64 = row.get(8)?;
+                            if started == 0 { None } else { Some(started as u64) }
+                        },
+                        completed_at: {
+                            let completed: i64 = row.get(9)?;
+                            if completed == 0 { None } else { Some(completed as u64) }
+                        },
                     })
                 },
-            )
-            .ok();
-
-        if let Some(ref job) = job {
-            tx.execute(
-                "UPDATE jobs SET status = 'Processing', worker_id = ?1, started_at = ?2 WHERE job_id = ?3",
-                [
-                    &worker_id as &dyn rusqlite::ToSql,
-                    &(chrono::Utc::now().timestamp_millis() as u64) as &dyn rusqlite::ToSql,
-                    &job.job_id as &dyn rusqlite::ToSql,
-                ],
             )?;
+
+            tx.commit()?;
+            Ok(Some(job))
+        } else {
+            tx.commit()?;
+            Ok(None)
         }
-
-        tx.commit()?;
-
-        Ok(job)
     }
 
     async fn job_update_status(
