@@ -92,9 +92,11 @@ async fn list_indexes(
                 .map_err(|e| ErrorResponse::internal_error(e.to_string()))?;
 
             if let Some(resp) = result.responses.first() {
-                if let Some(arr) = resp.body.get("results").and_then(|r| r.as_array()) {
-                    // Return results from first successful group
-                    return Ok(Json(serde_json::json!({ "results": arr })));
+                if let Ok(json) = serde_json::from_slice::<Value>(&resp.body) {
+                    if let Some(arr) = json.get("results").and_then(|r| r.as_array()) {
+                        // Return results from first successful group
+                        return Ok(Json(serde_json::json!({ "results": arr })));
+                    }
                 }
             }
         }
@@ -164,8 +166,10 @@ async fn create_index(
 
     // After index creation, we need to update settings to inject _miroir_shard
     // This is done in a follow-up request
+    let body: Value = serde_json::from_slice(&resp.body)
+        .unwrap_or_else(|_| serde_json::json!({}));
 
-    Ok((status, Json(resp.body.clone())).into_response())
+    Ok((status, Json(body)).into_response())
 }
 
 /// GET /indexes/:index - Get index metadata.
@@ -196,7 +200,9 @@ async fn get_index(
             if let Some(resp) = result.responses.first() {
                 let status = resp.status;
                 if status == 200 {
-                    return Ok(Json(resp.body.clone()));
+                    if let Ok(json) = serde_json::from_slice::<Value>(&resp.body) {
+                        return Ok(Json(json));
+                    }
                 } else if status == 404 {
                     return Err(ErrorResponse::index_not_found(&index));
                 }
