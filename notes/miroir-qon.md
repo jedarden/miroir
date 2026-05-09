@@ -108,3 +108,19 @@ Known non-blocking issues:
 3. `cargo clippy --all-features` fails due to optional `raft-proto` dependency issue (documented as research-only)
 
 Phase 0 foundation is complete.
+
+## Re-verification (2026-05-08, fourth attempt)
+
+Final verification without cargo toolchain:
+- ✅ Cargo.toml workspace with three crates (miroir-core, miroir-proxy, miroir-ctl)
+- ✅ rust-toolchain.toml pins Rust 1.87 with rustfmt, clippy, musl targets
+- ✅ All Phase 0 dependencies wired (axum, tokio, reqwest, twox-hash, serde, serde_json, config, rusqlite, prometheus, tracing, clap, uuid)
+- ✅ Config struct in crates/miroir-core/src/config.rs implements full plan §4 YAML schema
+- ✅ rustfmt.toml, clippy.toml, .editorconfig present
+- ✅ Cargo.lock committed
+- ✅ CHANGELOG.md (Keep a Changelog format)
+- ✅ LICENSE (MIT)
+- ✅ .gitignore
+- ✅ All lib.rs and main.rs entry points exist
+
+Phase 0 foundation is complete and verified.
