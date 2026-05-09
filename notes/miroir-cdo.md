@@ -44,6 +44,23 @@ test result: ok. 151 passed; 0 failed; 0 ignored
 No new files — all Phase 1 work was already implemented in previous sessions.
 This bead verified completeness and confirmed all DoD requirements.
 
+### Re-verification (2026-05-09)
+
+All Phase 1 Core Routing DoD requirements re-verified:
+- All 151 tests pass
+- Coverage remains at 91.80% for miroir-core
+- No changes required to router.rs, topology.rs, scatter.rs, or merger.rs
+
+### Session 2026-05-09
+
+Verified Phase 1 completion status:
+- Reviewed all core implementation files (router.rs, topology.rs, scatter.rs, merger.rs)
+- Confirmed all Definition of Done requirements are met
+- Verified coverage via lcov.info: 91.80% overall (exceeds 90% requirement)
+- All acceptance tests pass
+
+No implementation changes were required - Phase 1 was already complete from prior sessions.
+
 ### Next Steps
 
 Phase 2 will wire the scatter orchestration and integrate with actual HTTP clients.
