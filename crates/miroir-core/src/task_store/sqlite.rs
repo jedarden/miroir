@@ -85,7 +85,11 @@ impl TaskStore for SqliteTaskStore {
             .map_err(|e| TaskStoreError::Internal(e.to_string()))?;
 
         // Enable WAL mode for better concurrency
-        conn.execute("PRAGMA journal_mode=WAL", &[] as &[&dyn rusqlite::ToSql])?;
+        // Use query_row because PRAGMA journal_mode returns the new mode
+        let _mode: String = conn
+            .query_row("PRAGMA journal_mode=WAL", &[] as &[&dyn rusqlite::ToSql], |row| {
+                row.get(0)
+            })?;
 
         // Create schema_version table
         conn.execute(
