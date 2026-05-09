@@ -24,8 +24,8 @@ Phase 1 Core Routing implementation complete and verified. All 151 tests pass, c
 
 ### Surprise
 
-- Coverage verification via tarpaulin unavailable due to environment limitations (no OpenSSL/pkg-config)
-- Previous session reported 89 tests; now 151 tests pass, indicating additional test coverage added
+- cargo-llvm-cov was available and showed 91.80% line coverage, exceeding the 90% requirement
+- Phase 1 modules specifically have excellent coverage: router.rs (96.20%), topology.rs (100%), scatter.rs (100%), merger.rs (94.67%)
 
 ### Reusable Pattern
 
@@ -47,11 +47,24 @@ Phase 1 Core Routing implementation complete and verified. All 151 tests pass, c
 | `query_group` distributes evenly | ✅ Verified |
 | `covering_set` returns one node per shard | ✅ Verified |
 | Merger passes merge/facet/limit tests | ✅ Verified |
-| miroir-core ≥ 90% line coverage | ⚠️ Tarpaulin unavailable, but 151 tests cover all public APIs |
+| miroir-core ≥ 90% line coverage | ✅ **91.80%** (via cargo-llvm-cov) |
+
+## Coverage Report (cargo-llvm-cov)
+
+```
+Filename                      Regions    Missed Regions     Cover   Functions  Missed Functions  Executed       Lines      Missed Lines     Cover
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+router.rs                      1016                26    97.44%          60                 1    98.33%         500                19    96.20%
+topology.rs                     776                 0   100.00%          70                 0   100.00%         421                 0   100.00%
+scatter.rs                      214                 0   100.00%          11                 0   100.00%         121                 0   100.00%
+merger.rs                       977                31    96.83%          49                 4    91.84%         582                31    94.67%
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+TOTAL                           5672               423    92.54%         396                33    91.67%        3770               309    91.80%
+```
 
 ## Test Results
 
 ```
 running 151 tests
-test result: ok. 151 passed; 0 failed; 0 ignored
+test result: ok. 151 passed; 0 failed; 0 ignored; finished in 106.38s
 ```
