@@ -80,7 +80,7 @@ async fn run_start(
     match &guard {
         WindowGuardResult::Denied { utc_now, allowed } => {
             if !force {
-                eprintln!("Error: resharding is not allowed at {}.", utc_now);
+                eprintln!("Error: resharding is not allowed at {utc_now}.");
                 eprintln!("Allowed windows: {}", allowed.join(", "));
                 eprintln!("Use --force to override (not recommended during peak load).");
                 std::process::exit(1);
@@ -92,7 +92,7 @@ async fn run_start(
             );
         }
         WindowGuardResult::Allowed { window } => {
-            eprintln!("Schedule window check: within allowed window ({})", window);
+            eprintln!("Schedule window check: within allowed window ({window})");
         }
         WindowGuardResult::NoRestriction => {
             eprintln!("Schedule window check: no restriction configured");
@@ -114,14 +114,11 @@ async fn run_start(
     }
 
     if dry_run {
-        println!(
-            "Dry run: would reshard index '{}' to {} shards",
-            index, new_shards
-        );
-        println!("  throttle: {} docs/sec", throttle);
-        println!("  force: {}", force);
-        println!("  schedule_window: {:?}", schedule_window);
-        println!("  window_guard: {:?}", guard);
+        println!("Dry run: would reshard index '{index}' to {new_shards} shards");
+        println!("  throttle: {throttle} docs/sec");
+        println!("  force: {force}");
+        println!("  schedule_window: {schedule_window:?}");
+        println!("  window_guard: {guard:?}");
         println!(
             "  config.backfill_concurrency: {}",
             config.backfill_concurrency
@@ -191,7 +188,7 @@ fn load_reshard_config() -> Result<ReshardingConfig, Box<dyn std::error::Error>>
 
     let config: ReshardingConfig = resharding
         .try_into()
-        .map_err(|e| format!("Invalid [resharding] config: {}", e))?;
+        .map_err(|e| format!("Invalid [resharding] config: {e}"))?;
 
     Ok(config)
 }

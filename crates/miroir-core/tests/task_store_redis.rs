@@ -7,14 +7,14 @@ use miroir_core::task_store::*;
 use miroir_core::task_store::{RedisTaskStore, TaskStore};
 use std::collections::HashMap;
 use std::sync::Arc;
+use testcontainers::runners::AsyncRunner;
 
 /// Helper function to create a Redis container and connect to it.
 async fn create_redis_store() -> Arc<RedisTaskStore> {
-    let docker = testcontainers::runners::AsyncRunner::default();
     let redis_image = testcontainers::GenericImage::new("redis", "7.2-alpine");
-    let node = docker.start(redis_image).await;
-    let port = node.get_host_port_ipv4(6379).await;
-    let url = format!("redis://127.0.0.1:{}", port);
+    let container = redis_image.start().await.unwrap();
+    let port = container.get_host_port_ipv4(6379).await.unwrap();
+    let url = format!("redis://127.0.0.1:{port}");
 
     let store = RedisTaskStore::new(&url).await.unwrap();
     store.initialize().await.unwrap();

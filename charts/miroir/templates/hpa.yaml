@@ -1,0 +1,32 @@
+{{- if .Values.miroir.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "miroir.fullname" . }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "miroir.fullname" . }}
+  minReplicas: {{ .Values.miroir.hpa.minReplicas }}
+  maxReplicas: {{ .Values.miroir.hpa.maxReplicas }}
+  metrics:
+  {{- if .Values.miroir.hpa.targetCPUUtilizationPercentage }}
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.miroir.hpa.targetCPUUtilizationPercentage }}
+  {{- end }}
+  {{- if .Values.miroir.hpa.targetMemoryUtilizationPercentage }}
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.miroir.hpa.targetMemoryUtilizationPercentage }}
+  {{- end }}
+{{- end }}

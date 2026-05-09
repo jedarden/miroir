@@ -1,0 +1,84 @@
+{{- if and (include "miroir.redisEnabled" .) .Values.redis.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "miroir.fullname" . }}-redis
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "miroir.selectorLabels" . | nindent 6 }}
+      app: redis
+  template:
+    metadata:
+      labels:
+        {{- include "miroir.selectorLabels" . | nindent 8 }}
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        {{- with .Values.redis.image }}
+        image: "{{ .repository }}:{{ .tag }}"
+        imagePullPolicy: {{ .pullPolicy }}
+        {{- end }}
+        ports:
+        - name: redis
+          containerPort: 6379
+          protocol: TCP
+        {{- with .Values.redis.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- if .Values.redis.persistence.enabled }}
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        {{- end }}
+      {{- if .Values.redis.persistence.enabled }}
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "miroir.fullname" . }}-redis
+      {{- end }}
+---
+{{- if and (include "miroir.redisEnabled" .) .Values.redis.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "miroir.fullname" . }}-redis
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app: redis
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6379
+    targetPort: redis
+    protocol: TCP
+    name: redis
+  selector:
+    {{- include "miroir.selectorLabels" . | nindent 4 }}
+    app: redis
+{{- end }}
+---
+{{- if and (include "miroir.redisEnabled" .) .Values.redis.enabled .Values.redis.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "miroir.fullname" . }}-redis
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.redis.persistence.size }}
+  {{- if .Values.redis.persistence.storageClass }}
+  storageClassName: {{ .Values.redis.persistence.storageClass }}
+  {{- end }}
+{{- end }}
+{{- end }}
