@@ -28,6 +28,9 @@ async-trait = "0.1"
 # bincode = { version = "2", features = ["serde"], optional = true }
 
 [features]
+default = []
+# Phase 3: Task store backends
+task-store = []
 # raft-proto = ["bincode"]
 # Enable when openraft compiles on stable Rust:
 # raft-full = ["openraft", "bincode"]
