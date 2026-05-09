@@ -92,3 +92,19 @@ Foundation re-verified in environment without cargo toolchain available:
 - Repo hygiene files (LICENSE, CHANGELOG.md, .gitignore) are correct
 
 No code changes required. Foundation is production-ready.
+
+## Re-verification (2026-05-08, third attempt)
+
+Full verification run completed:
+- `cargo check --all`: ✅ Success (1m 6s)
+- `cargo test -p miroir-core --lib`: ✅ 42 tests passed (217s)
+- `cargo clippy --all-targets -- -D warnings`: ✅ Pass (8s)
+- `cargo fmt --all -- --check`: ✅ Pass
+- Config round-trip test: ✅ Pass
+
+Known non-blocking issues:
+1. `cargo build --release --target x86_64-unknown-linux-musl -p miroir-proxy` fails due to missing `x86_64-linux-musl-gcc` (NixOS environment limitation)
+2. 2 chaos tests fail (Phase 12 work, not Phase 0)
+3. `cargo clippy --all-features` fails due to optional `raft-proto` dependency issue (documented as research-only)
+
+Phase 0 foundation is complete.
