@@ -495,7 +495,11 @@ impl MigrationCoordinator {
         }
 
         // Clear only the in-flight writes for this migration
-        let affected_shards = state.affected_shards.keys().cloned().collect::<HashSet<_>>();
+        let affected_shards = state
+            .affected_shards
+            .keys()
+            .cloned()
+            .collect::<HashSet<_>>();
         self.in_flight
             .retain(|w| !affected_shards.contains(&w.shard));
 
