@@ -48,7 +48,7 @@ async fn add_documents(
 
     // Get primary key for the index (for now, assume it's in the document or use default)
     // In production, we'd query the index settings to get the primary key field
-    let primary_key = get_primary_key(&body, &headers).unwrap_or("id");
+    let primary_key = get_primary_key(&body, &headers).unwrap_or_else(|| "id".to_string());
 
     // Inject _miroir_shard into each document and group by shard
     let mut docs_by_shard: std::collections::HashMap<u32, Vec<Value>> = std::collections::HashMap::new();
@@ -119,7 +119,9 @@ async fn add_documents(
 
         // Merge responses
         for resp in result.responses {
-            all_responses.push(resp.body);
+            if let Ok(json) = serde_json::from_slice::<Value>(&resp.body) {
+                all_responses.push(json);
+            }
         }
     }
 
@@ -377,8 +379,9 @@ async fn get_document(
 
     let resp = &result.responses[0];
 
-    // Strip _miroir_shard from response
-    let mut body = resp.body.clone();
+    // Parse response body as JSON and strip _miroir_shard
+    let mut body: Value = serde_json::from_slice(&resp.body)
+        .unwrap_or_else(|_| serde_json::json!({}));
     if let Some(obj) = body.as_object_mut() {
         obj.remove("_miroir_shard");
     }
