@@ -506,11 +506,11 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("canary_runs", &run.run_id);
 
         let data = serde_json::to_string(run)?;
-        conn.set(&key, data).await?;
+        conn.set::<_, _, ()>(&key, data).await?;
 
         // Add to canary-specific runs list
         let canary_runs_key = format!("miroir:canary_runs:{}:index", run.canary_name);
-        conn.lpush(&canary_runs_key, &run.run_id).await?;
+        conn.lpush::<_, _, ()>(&canary_runs_key, &run.run_id).await?;
 
         Ok(())
     }
@@ -561,7 +561,7 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("cdc_cursors", &format!("{}:{}", cursor.sink, cursor.index));
 
         let data = serde_json::to_string(cursor)?;
-        conn.set(&key, data).await?;
+        conn.set::<_, _, ()>(&key, data).await?;
 
         Ok(())
     }
@@ -577,10 +577,10 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("tenant_map", &tenant.api_key);
 
         let data = serde_json::to_string(tenant)?;
-        conn.set(&key, data).await?;
+        conn.set::<_, _, ()>(&key, data).await?;
 
         let index_key = self.index_key("tenant_map");
-        conn.sadd(&index_key, &tenant.api_key).await?;
+        conn.sadd::<_, _, ()>(&index_key, &tenant.api_key).await?;
 
         Ok(())
     }
@@ -604,8 +604,8 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("tenant_map", api_key);
         let index_key = self.index_key("tenant_map");
 
-        conn.del(&key).await?;
-        conn.srem(&index_key, api_key).await?;
+        conn.del::<_, ()>(&key).await?;
+        conn.srem::<_, _, ()>(&index_key, api_key).await?;
 
         Ok(())
     }
