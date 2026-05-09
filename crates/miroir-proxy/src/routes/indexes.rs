@@ -291,19 +291,22 @@ async fn get_index_stats(
             {
                 if let Some(resp) = result.responses.first() {
                     if resp.status == 200 {
-                        // Extract stats
-                        if let Some(docs) = resp.body.get("numberOfDocuments").and_then(|v| v.as_u64())
-                        {
-                            // Use max document count across replicas (more accurate)
-                            total_documents = total_documents.max(docs);
-                        }
+                        // Parse response body as JSON
+                        if let Ok(json) = serde_json::from_slice::<Value>(&resp.body) {
+                            // Extract stats
+                            if let Some(docs) = json.get("numberOfDocuments").and_then(|v| v.as_u64())
+                            {
+                                // Use max document count across replicas (more accurate)
+                                total_documents = total_documents.max(docs);
+                            }
 
-                        if let Some(indexing) = resp.body.get("isIndexing").and_then(|v| v.as_bool()) {
-                            is_indexing = is_indexing || indexing;
-                        }
+                            if let Some(indexing) = json.get("isIndexing").and_then(|v| v.as_bool()) {
+                                is_indexing = is_indexing || indexing;
+                            }
 
-                        if let Some(fields) = resp.body.get("fieldDistribution") {
-                            field_distributions.push(fields.clone());
+                            if let Some(fields) = json.get("fieldDistribution") {
+                                field_distributions.push(fields.clone());
+                            }
                         }
                     }
                 }
