@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[cfg(test)]
+use proptest::prelude::*;
+
 // ============================================================================
 // Table 1: Tasks
 // ============================================================================
@@ -24,6 +27,7 @@ pub struct Task {
 
 /// Status of a Miroir task.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(proptest::arbitrary::Arbitrary))]
 pub enum TaskStatus {
     /// Task is enqueued.
     Enqueued,
@@ -38,7 +42,7 @@ pub enum TaskStatus {
 }
 
 /// A node task: local Meilisearch task reference.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeTask {
     /// Local Meilisearch task UID.
     pub task_uid: u64,
