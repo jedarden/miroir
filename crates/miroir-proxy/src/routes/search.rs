@@ -12,7 +12,7 @@
 
 use axum::{
     extract::{Path, State},
-    http::{HeaderMap, HeaderValue},
+    http::HeaderValue,
     response::{IntoResponse, Json, Response},
 };
 use miroir_core::{
@@ -30,7 +30,7 @@ use crate::{
 };
 
 /// Search router.
-pub fn router() -> axum::Router {
+pub fn router() -> axum::Router<ProxyState> {
     axum::Router::new().route("/:index/search", axum::routing::post(search))
 }
 

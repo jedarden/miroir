@@ -25,7 +25,7 @@ pub struct MergeInput {
 }
 
 /// A page of hits from a single shard.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShardHitPage {
     /// Raw JSON response from the node.
     pub body: Value,
@@ -35,7 +35,7 @@ pub struct ShardHitPage {
 }
 
 /// Merged search result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MergedSearchResult {
     /// Merged hits (globally sorted, offset/limit applied).
     pub hits: Vec<Value>,

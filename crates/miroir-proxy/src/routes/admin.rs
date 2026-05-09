@@ -1,8 +1,7 @@
 //! Admin endpoints: /admin/* and /_miroir/*
 
 use axum::{
-    extract::{Path, State},
-    http::StatusCode,
+    extract::State,
     Json,
     routing::get,
     Router,

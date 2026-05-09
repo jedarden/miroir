@@ -24,7 +24,7 @@ use crate::{
 };
 
 /// Tasks router.
-pub fn router() -> axum::Router {
+pub fn router() -> axum::Router<ProxyState> {
     axum::Router::new()
         .route("/", axum::routing::get(list_tasks))
         .route("/:uid", axum::routing::get(get_task).delete(delete_task))

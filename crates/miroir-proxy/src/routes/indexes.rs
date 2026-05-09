@@ -25,7 +25,7 @@ use crate::{
 };
 
 /// Indexes router.
-pub fn router() -> axum::Router {
+pub fn router() -> axum::Router<ProxyState> {
     axum::Router::new()
         .route("/", axum::routing::get(list_indexes).post(create_index))
         .route("/:index", axum::routing::get(get_index).delete(delete_index))

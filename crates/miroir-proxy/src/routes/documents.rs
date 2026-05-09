@@ -15,22 +15,19 @@ use axum::{
 };
 use miroir_core::{
     config::UnavailableShardPolicy,
-    merger::MergerImpl,
     router::{shard_for_key, write_targets},
     scatter::{Scatter, ScatterRequest},
-    topology::Topology,
 };
 use serde_json::Value;
 
 use crate::{
-    client::NodeClient,
     error_response::ErrorResponse,
     scatter::HttpScatter,
     state::ProxyState,
 };
 
 /// Documents router.
-pub fn router() -> axum::Router {
+pub fn router() -> axum::Router<ProxyState> {
     axum::Router::new()
         .route("/:index", axum::routing::post(add_documents))
         .route("/:index/documents", axum::routing::post(add_documents))

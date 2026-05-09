@@ -2,33 +2,96 @@
 
 use axum::{
     extract::{Request, State},
-    http::StatusCode,
     middleware::Next,
     response::Response,
 };
 use crate::state::ProxyState;
 use std::time::Instant;
-use prometheus::{Counter, Histogram, IntGauge, Registry, TextEncoder};
-use once_cell::sync::Lazy;
+use prometheus::{Counter, Histogram, IntGauge, Registry, TextEncoder, HistogramOpts};
 
 /// Prometheus metrics registry.
 #[derive(Clone)]
 pub struct Metrics {
     pub registry: Registry,
+    requests_total: Counter,
+    request_duration_seconds: Histogram,
+    requests_in_flight: IntGauge,
+    degraded_requests_total: Counter,
+    no_quorum_requests_total: Counter,
 }
 
 impl Metrics {
     pub fn new() -> Self {
         let registry = Registry::new();
 
-        // Register all metrics
-        registry.register(Box::new(REQUESTS_TOTAL.clone())).unwrap();
-        registry.register(Box::new(REQUEST_DURATION_SECONDS.clone())).unwrap();
-        registry.register(Box::new(REQUESTS_IN_FLIGHT.clone())).unwrap();
-        registry.register(Box::new(DEGRADED_REQUESTS_TOTAL.clone())).unwrap();
-        registry.register(Box::new(NO_QUORUM_REQUESTS_TOTAL.clone())).unwrap();
+        // Create and register metrics
+        let requests_total = Counter::new(
+            "miroir_requests_total",
+            "Total number of requests"
+        ).unwrap();
 
-        Self { registry }
+        let request_duration_seconds = Histogram::with_opts(HistogramOpts {
+            common_name: "miroir_request_duration_seconds".to_string(),
+            help: "Request duration in seconds".to_string(),
+            buckets: vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0],
+        }).unwrap();
+
+        let requests_in_flight = IntGauge::new(
+            "miroir_requests_in_flight",
+            "Current number of requests in flight"
+        ).unwrap();
+
+        let degraded_requests_total = Counter::new(
+            "miroir_degraded_requests_total",
+            "Total number of degraded requests"
+        ).unwrap();
+
+        let no_quorum_requests_total = Counter::new(
+            "miroir_no_quorum_requests_total",
+            "Total number of requests that failed with no quorum"
+        ).unwrap();
+
+        // Register all metrics
+        registry.register(Box::new(requests_total.clone())).unwrap();
+        registry.register(Box::new(request_duration_seconds.clone())).unwrap();
+        registry.register(Box::new(requests_in_flight.clone())).unwrap();
+        registry.register(Box::new(degraded_requests_total.clone())).unwrap();
+        registry.register(Box::new(no_quorum_requests_total.clone())).unwrap();
+
+        Self {
+            registry,
+            requests_total,
+            request_duration_seconds,
+            requests_in_flight,
+            degraded_requests_total,
+            no_quorum_requests_total,
+        }
+    }
+
+    /// Record a request with labels.
+    pub fn record_request(&self, method: &str, path: &str, status: u16, duration_secs: f64) {
+        self.requests_total.inc();
+        self.request_duration_seconds.observe(duration_secs);
+
+        // Check for no quorum (503 status)
+        if status == 503 {
+            self.no_quorum_requests_total.inc();
+        }
+    }
+
+    /// Record a degraded request.
+    pub fn record_degraded(&self, method: &str, path: &str) {
+        self.degraded_requests_total.inc();
+    }
+
+    /// Increment requests in flight.
+    pub fn inc_in_flight(&self) {
+        self.requests_in_flight.inc();
+    }
+
+    /// Decrement requests in flight.
+    pub fn dec_in_flight(&self) {
+        self.requests_in_flight.dec();
     }
 }
 
@@ -37,36 +100,6 @@ impl Default for Metrics {
         Self::new()
     }
 }
-
-/// Total number of requests.
-static REQUESTS_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    Counter::new("miroir_requests_total", "Total number of requests").unwrap()
-});
-
-/// Request duration in seconds.
-static REQUEST_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
-    Histogram::with_opts(prometheus::HistogramOpts {
-        common_name: "miroir_request_duration_seconds".to_string(),
-        help: "Request duration in seconds".to_string(),
-        buckets: vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0],
-    })
-    .unwrap()
-});
-
-/// Current number of requests in flight.
-static REQUESTS_IN_FLIGHT: Lazy<IntGauge> = Lazy::new(|| {
-    IntGauge::new("miroir_requests_in_flight", "Current number of requests in flight").unwrap()
-});
-
-/// Total number of degraded requests.
-static DEGRADED_REQUESTS_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    Counter::new("miroir_degraded_requests_total", "Total number of degraded requests").unwrap()
-});
-
-/// Total number of requests that failed with no quorum.
-static NO_QUORUM_REQUESTS_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    Counter::new("miroir_no_quorum_requests_total", "Total number of requests that failed with no quorum").unwrap()
-});
 
 /// Tracing middleware that logs each request.
 pub async fn tracing_middleware(req: Request, next: Next) -> Response {
@@ -92,14 +125,14 @@ pub async fn tracing_middleware(req: Request, next: Next) -> Response {
 
 /// Prometheus metrics middleware.
 pub async fn prometheus_middleware(
-    State(_state): State<ProxyState>,
+    State(state): State<ProxyState>,
     req: Request,
     next: Next,
 ) -> Response {
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
 
-    REQUESTS_IN_FLIGHT.inc();
+    state.metrics.inc_in_flight();
     let start = Instant::now();
 
     let response = next.run(req).await;
@@ -108,28 +141,12 @@ pub async fn prometheus_middleware(
     let status = response.status().as_u16();
 
     // Record metrics
-    REQUESTS_TOTAL
-        .with_label_values(&[&method, &path, &status.to_string()])
-        .inc();
-
-    REQUEST_DURATION_SECONDS
-        .with_label_values(&[&method, &path])
-        .observe(duration);
-
-    REQUESTS_IN_FLIGHT.dec();
+    state.metrics.record_request(&method, &path, status, duration);
+    state.metrics.dec_in_flight();
 
     // Check for degraded header
     if response.headers().get("X-Miroir-Degraded").is_some() {
-        DEGRADED_REQUESTS_TOTAL
-            .with_label_values(&[&method, &path])
-            .inc();
-    }
-
-    // Check for no quorum (503 status with specific error code)
-    if status == 503 {
-        DEGRADED_REQUESTS_TOTAL
-            .with_label_values(&[&method, &path])
-            .inc();
+        state.metrics.record_degraded(&method, &path);
     }
 
     response
