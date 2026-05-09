@@ -618,6 +618,7 @@ leader_election:
     fn validation_rejects_replica_groups_without_leader_election() {
         let mut cfg = dev_config();
         cfg.replica_groups = 2;
+        cfg.task_store.backend = "redis".into(); // Must be redis to test leader_election independently
         cfg.leader_election.enabled = false;
         let err = cfg.validate().unwrap_err();
         assert!(err.to_string().contains("leader_election"));
@@ -702,6 +703,8 @@ leader_election:
     fn validation_accepts_tenant_affinity_with_valid_groups() {
         let mut cfg = dev_config();
         cfg.replica_groups = 3;
+        cfg.task_store.backend = "redis".into(); // Multi-group requires redis
+        cfg.leader_election.enabled = true; // Multi-group requires leader election
         cfg.tenant_affinity.enabled = true;
         cfg.tenant_affinity.dedicated_groups = vec![0, 1, 2];
         cfg.tenant_affinity.static_map.insert("tenant1".into(), 0);
