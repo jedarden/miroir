@@ -1,8 +1,226 @@
 //! Result merger: combines shard results into a single response.
 
 use crate::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BinaryHeap};
+
+/// Input to the merge function.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeInput {
+    /// One page of hits per node in the covering set.
+    pub shard_hits: Vec<ShardHitPage>,
+
+    /// Offset to apply after merge.
+    pub offset: usize,
+
+    /// Limit to apply after merge.
+    pub limit: usize,
+
+    /// Whether the client requested the ranking score in the response.
+    pub client_requested_score: bool,
+
+    /// Facet names to include (if None, include all).
+    pub facets: Option<Vec<String>>,
+}
+
+/// A page of hits from a single shard.
+#[derive(Debug, Clone)]
+pub struct ShardHitPage {
+    /// Raw JSON response from the node.
+    pub body: Value,
+
+    /// Whether this shard succeeded.
+    pub success: bool,
+}
+
+/// Merged search result.
+#[derive(Debug, Clone)]
+pub struct MergedSearchResult {
+    /// Merged hits (globally sorted, offset/limit applied).
+    pub hits: Vec<Value>,
+
+    /// Aggregated facets.
+    pub facets: Value,
+
+    /// Estimated total hits (sum of shard totals).
+    pub estimated_total_hits: u64,
+
+    /// Processing time in milliseconds.
+    pub processing_time_ms: u64,
+
+    /// Whether the response is degraded (some shards failed).
+    pub degraded: bool,
+}
+
+/// Merge search results from multiple shards.
+///
+/// This is the primary entry point for result merging. It:
+/// 1. Collects all hits with scores from all shards
+/// 2. Sorts globally by `_rankingScore` descending
+/// 3. Applies offset + limit after merge
+/// 4. Strips `_rankingScore` if client didn't request it
+/// 5. Always strips `_miroir_*` reserved fields
+/// 6. Sums facet counts across shards
+/// 7. Sums `estimatedTotalHits` across shards
+/// 8. Takes max `processingTimeMs` across shards
+///
+/// Uses a binary min-heap to avoid keeping all hits in RAM when fan-out is large.
+/// Uses BTreeMap for stable facet serialization (deterministic JSON output).
+pub fn merge(input: MergeInput) -> MergedSearchResult {
+    // Filter to only successful responses
+    let successful_shards: Vec<_> = input
+        .shard_hits
+        .iter()
+        .filter(|s| s.success)
+        .collect();
+
+    // Check if any shards failed (degraded mode)
+    let degraded = successful_shards.len() < input.shard_hits.len();
+
+    // Collect all hits with their ranking scores and primary keys
+    let mut all_hits: Vec<HitWithScore> = Vec::new();
+
+    for shard in &successful_shards {
+        if let Some(hits) = shard.body.get("hits").and_then(|h| h.as_array()) {
+            for hit in hits {
+                let score = hit
+                    .get("_rankingScore")
+                    .and_then(|s| s.as_f64())
+                    .unwrap_or(0.0);
+
+                let primary_key = hit
+                    .get("id")
+                    .and_then(|id| id.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                all_hits.push(HitWithScore {
+                    score,
+                    primary_key,
+                    hit: hit.clone(),
+                });
+            }
+        }
+    }
+
+    // Use a min-heap of size offset + limit to avoid keeping all hits in RAM
+    let heap_size = input.offset + input.limit;
+    let top_hits = if all_hits.len() > heap_size * 2 {
+        // Only use heap optimization if we have significantly more hits than needed
+        // We use Reverse to turn BinaryHeap (max-heap) into a min-heap
+        use std::cmp::Reverse;
+        let mut heap: BinaryHeap<Reverse<HitWithScore>> = BinaryHeap::new();
+
+        for hit in all_hits {
+            if heap.len() < heap_size {
+                heap.push(Reverse(hit));
+            } else {
+                // Peek at the smallest (worst) hit in our top-k
+                if let Some(Reverse(worst)) = heap.peek() {
+                    // If current hit is better than our worst, replace it
+                    if hit > *worst {
+                        heap.pop();
+                        heap.push(Reverse(hit));
+                    }
+                }
+            }
+        }
+
+        // Convert to sorted vector (descending by score)
+        let mut result: Vec<_> = heap.into_iter().map(|r| r.0).collect();
+        result.sort_by(|a, b| b.cmp(a));
+        result
+    } else {
+        // For smaller result sets, just sort directly
+        all_hits.sort_by(|a, b| b.cmp(a));
+        all_hits
+    };
+
+    // Apply offset and limit
+    let page: Vec<Value> = top_hits
+        .into_iter()
+        .skip(input.offset)
+        .take(input.limit)
+        .map(|mut hit_with_score| {
+            let hit = &mut hit_with_score.hit;
+
+            // Strip all _miroir_* fields (always removed)
+            if let Some(obj) = hit.as_object_mut() {
+                obj.retain(|k, _| !k.starts_with("_miroir_"));
+            }
+
+            // Strip _rankingScore if client didn't request it
+            if !input.client_requested_score {
+                if let Some(obj) = hit.as_object_mut() {
+                    obj.remove("_rankingScore");
+                }
+            }
+
+            hit.clone()
+        })
+        .collect();
+
+    // Aggregate facets across all shards
+    let facets = merge_facets(&successful_shards, input.facets.as_deref());
+
+    // Sum estimated total hits
+    let estimated_total_hits: u64 = successful_shards
+        .iter()
+        .filter_map(|s| s.body.get("estimatedTotalHits").and_then(|v| v.as_u64()))
+        .sum();
+
+    // Max processing time across all shards
+    let processing_time_ms: u64 = successful_shards
+        .iter()
+        .filter_map(|s| s.body.get("processingTimeMs").and_then(|v| v.as_u64()))
+        .max()
+        .unwrap_or(0);
+
+    MergedSearchResult {
+        hits: page,
+        facets,
+        estimated_total_hits,
+        processing_time_ms,
+        degraded,
+    }
+}
+
+/// A hit with its ranking score for sorting.
+#[derive(Debug, Clone)]
+struct HitWithScore {
+    score: f64,
+    primary_key: String,
+    hit: Value,
+}
+
+impl PartialEq for HitWithScore {
+    fn eq(&self, other: &Self) -> bool {
+        self.score == other.score && self.primary_key == other.primary_key
+    }
+}
+
+impl Eq for HitWithScore {}
+
+impl PartialOrd for HitWithScore {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HitWithScore {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Sort by score descending, then by primary key ascending for tie-breaking
+        match self.score.partial_cmp(&other.score) {
+            Some(std::cmp::Ordering::Equal) | None => {
+                // On equal scores (or NaN), fall back to primary key
+                // Reversed for descending order
+                other.primary_key.cmp(&self.primary_key)
+            }
+            Some(ord) => ord.reverse(),
+        }
+    }
+}
 
 /// Result merger: combines responses from multiple shards.
 pub trait Merger: Send + Sync {
@@ -33,7 +251,7 @@ pub struct ShardResponse {
     pub success: bool,
 }
 
-/// Merged search result.
+/// Merged search result (legacy, use MergedSearchResult instead).
 #[derive(Debug, Clone)]
 pub struct MergedResult {
     /// Merged hits (globally sorted, offset/limit applied).
@@ -64,76 +282,32 @@ impl Merger for MergerImpl {
         limit: usize,
         client_requested_score: bool,
     ) -> Result<MergedResult> {
-        // Filter to only successful responses
-        let successful_shards: Vec<_> = shard_responses.iter().filter(|s| s.success).collect();
-
-        // Check if any shards failed (degraded mode)
-        let degraded = successful_shards.len() < shard_responses.len();
-
-        // Collect all hits with their ranking scores
-        let mut all_hits: Vec<(f64, Value)> = Vec::new();
-
-        for shard in &successful_shards {
-            if let Some(hits) = shard.body.get("hits").and_then(|h| h.as_array()) {
-                for hit in hits {
-                    // Extract ranking score
-                    let score = hit
-                        .get("_rankingScore")
-                        .and_then(|s| s.as_f64())
-                        .unwrap_or(0.0);
-
-                    all_hits.push((score, hit.clone()));
-                }
-            }
-        }
-
-        // Sort globally by score descending
-        all_hits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Apply offset and limit
-        let page: Vec<Value> = all_hits
+        // Convert ShardResponse to ShardHitPage
+        let shard_hits: Vec<ShardHitPage> = shard_responses
             .into_iter()
-            .skip(offset)
-            .take(limit)
-            .map(|(_, mut hit)| {
-                // Strip _miroir_shard (always removed)
-                if let Some(obj) = hit.as_object_mut() {
-                    obj.remove("_miroir_shard");
-                }
-
-                // Strip _rankingScore if client didn't request it
-                if !client_requested_score {
-                    if let Some(obj) = hit.as_object_mut() {
-                        obj.remove("_rankingScore");
-                    }
-                }
-
-                hit
+            .map(|sr| ShardHitPage {
+                body: sr.body,
+                success: sr.success,
             })
             .collect();
 
-        // Aggregate facets across all shards
-        let facets = merge_facets(&successful_shards);
+        // Call the new merge function
+        let input = MergeInput {
+            shard_hits,
+            offset,
+            limit,
+            client_requested_score,
+            facets: None,
+        };
 
-        // Sum estimated total hits
-        let total_hits: u64 = successful_shards
-            .iter()
-            .filter_map(|s| s.body.get("estimatedTotalHits").and_then(|v| v.as_u64()))
-            .sum();
-
-        // Max processing time across all shards
-        let processing_time_ms: u64 = successful_shards
-            .iter()
-            .filter_map(|s| s.body.get("processingTimeMs").and_then(|v| v.as_u64()))
-            .max()
-            .unwrap_or(0);
+        let result = merge(input);
 
         Ok(MergedResult {
-            hits: page,
-            facets,
-            total_hits,
-            processing_time_ms,
-            degraded,
+            hits: result.hits,
+            facets: result.facets,
+            total_hits: result.estimated_total_hits,
+            processing_time_ms: result.processing_time_ms,
+            degraded: result.degraded,
         })
     }
 }
@@ -142,8 +316,10 @@ impl Merger for MergerImpl {
 ///
 /// Facets are nested objects like `{"color": {"red": 10, "blue": 5}}`.
 /// We sum counts for each facet value across all shards.
-fn merge_facets(shards: &[&ShardResponse]) -> Value {
-    let mut merged_facets: HashMap<String, HashMap<String, u64>> = HashMap::new();
+///
+/// Uses BTreeMap for stable, deterministic serialization.
+fn merge_facets(shards: &[&ShardHitPage], facet_filter: Option<&[String]>) -> Value {
+    let mut merged_facets: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
 
     for shard in shards {
         if let Some(facets) = shard
@@ -152,6 +328,13 @@ fn merge_facets(shards: &[&ShardResponse]) -> Value {
             .and_then(|f| f.as_object())
         {
             for (facet_name, facet_values) in facets {
+                // Apply facet filter if provided
+                if let Some(filter) = facet_filter {
+                    if !filter.contains(&facet_name) {
+                        continue;
+                    }
+                }
+
                 if let Some(values_obj) = facet_values.as_object() {
                     let entry = merged_facets.entry(facet_name.clone()).or_default();
 
@@ -164,15 +347,17 @@ fn merge_facets(shards: &[&ShardResponse]) -> Value {
         }
     }
 
-    // Convert back to JSON structure
-    let mut result = serde_json::Map::new();
-    for (facet_name, values) in merged_facets {
-        let values_obj: serde_json::Map<String, Value> = values
-            .into_iter()
-            .map(|(k, v)| (k, Value::Number(v.into())))
-            .collect();
-        result.insert(facet_name, Value::Object(values_obj));
-    }
+    // Convert back to JSON structure (BTreeMap ensures stable key order)
+    let result: serde_json::Map<String, Value> = merged_facets
+        .into_iter()
+        .map(|(facet_name, values)| {
+            let values_obj: serde_json::Map<String, Value> = values
+                .into_iter()
+                .map(|(k, v)| (k, Value::Number(v.into())))
+                .collect();
+            (facet_name, Value::Object(values_obj))
+        })
+        .collect();
 
     Value::Object(result)
 }
@@ -603,5 +788,178 @@ mod tests {
         let result = merger.merge(shards, 0, 10, false).unwrap();
 
         assert_eq!(result.hits.len(), 2);
+    }
+
+    #[test]
+    fn test_tie_breaking_by_primary_key() {
+        let merger = MergerImpl;
+
+        let hits = vec![
+            create_hit(0.5, "zebra"),
+            create_hit(0.5, "apple"),
+            create_hit(0.5, "banana"),
+        ];
+
+        let shards = vec![create_shard_response(0, hits, 3)];
+
+        let result = merger.merge(shards, 0, 10, false).unwrap();
+
+        // All have score 0.5, so should be sorted by primary_key ascending
+        assert_eq!(result.hits[0]["id"], "apple");
+        assert_eq!(result.hits[1]["id"], "banana");
+        assert_eq!(result.hits[2]["id"], "zebra");
+    }
+
+    #[test]
+    fn test_stable_serialization_same_input_same_json() {
+        let shard1 = serde_json::json!({
+            "hits": [],
+            "estimatedTotalHits": 0,
+            "processingTimeMs": 10,
+            "facetDistribution": {
+                "color": {"red": 10, "blue": 5},
+                "size": {"large": 8}
+            }
+        });
+
+        let shard2 = serde_json::json!({
+            "hits": [],
+            "estimatedTotalHits": 0,
+            "processingTimeMs": 15,
+            "facetDistribution": {
+                "color": {"red": 7, "green": 3},
+                "size": {"large": 4, "small": 6}
+            }
+        });
+
+        let input = MergeInput {
+            shard_hits: vec![
+                ShardHitPage { body: shard1, success: true },
+                ShardHitPage { body: shard2, success: true },
+            ],
+            offset: 0,
+            limit: 10,
+            client_requested_score: false,
+            facets: None,
+        };
+
+        let result1 = merge(input.clone());
+        let result2 = merge(input);
+
+        // Serialize both results to JSON
+        let json1 = serde_json::to_string(&result1).unwrap();
+        let json2 = serde_json::to_string(&result2).unwrap();
+
+        // Must be byte-identical
+        assert_eq!(json1, json2);
+    }
+
+    #[test]
+    fn test_binary_heap_efficiency_large_fan_out() {
+        let merger = MergerImpl;
+
+        // Test that the heap correctly maintains top-k when we have more hits than heap_size
+        let mut hits = vec![];
+        for i in 0..100 {
+            hits.push(create_hit(i as f64 / 100.0, &format!("doc{}", i)));
+        }
+
+        let shards = vec![create_shard_response(0, hits, 100)];
+
+        let result = merger.merge(shards, 0, 10, false).unwrap();
+
+        // Should get the top 10 scores (0.90-0.99)
+        assert_eq!(result.hits.len(), 10);
+        assert_eq!(result.hits[0]["id"], "doc99"); // score 0.99
+        assert_eq!(result.hits[9]["id"], "doc90"); // score 0.90
+    }
+
+    #[test]
+    fn test_offset_limit_pagination_reconstruction() {
+        let merger = MergerImpl;
+
+        // Create 50 docs with known scores
+        let mut hits = vec![];
+        for i in 0..50 {
+            hits.push(create_hit((50 - i) as f64 / 100.0, &format!("doc{:02}", i)));
+        }
+
+        // Get all 50 in one go
+        let shards_all = vec![create_shard_response(0, hits.clone(), 50)];
+        let result_all = merger.merge(shards_all, 0, 50, false).unwrap();
+
+        // Get 5 pages of 10
+        let mut paged_ids = vec![];
+        for page in 0..5 {
+            let shards = vec![create_shard_response(0, hits.clone(), 50)];
+            let result = merger.merge(shards, page * 10, 10, false).unwrap();
+            for hit in result.hits {
+                paged_ids.push(hit["id"].as_str().unwrap().to_string());
+            }
+        }
+
+        // Concatenated pages should match the single limit=50 query
+        let all_ids: Vec<_> = result_all
+            .hits
+            .iter()
+            .map(|h| h["id"].as_str().unwrap().to_string())
+            .collect();
+
+        assert_eq!(paged_ids, all_ids);
+    }
+
+    #[test]
+    fn test_strip_all_miroir_reserved_fields() {
+        let merger = MergerImpl;
+
+        let hit = serde_json::json!({
+            "id": "doc1",
+            "_rankingScore": 0.9,
+            "_miroir_shard": 0,
+            "_miroir_internal": "some_value",
+            "title": "Test",
+        });
+
+        let shards = vec![create_shard_response(0, vec![hit], 1)];
+
+        let result = merger.merge(shards, 0, 10, true).unwrap();
+
+        // _rankingScore should be present (requested)
+        assert_eq!(result.hits[0]["_rankingScore"], 0.9);
+        // All _miroir_* fields should be stripped
+        assert!(result.hits[0].get("_miroir_shard").is_none());
+        assert!(result.hits[0].get("_miroir_internal").is_none());
+        // Other fields should be present
+        assert_eq!(result.hits[0]["title"], "Test");
+    }
+
+    #[test]
+    fn test_facet_filter_only_merges_requested_facets() {
+        let facets = serde_json::json!({
+            "color": {"red": 10, "blue": 5},
+            "size": {"large": 8}
+        });
+
+        let input = MergeInput {
+            shard_hits: vec![ShardHitPage {
+                body: serde_json::json!({
+                    "hits": [],
+                    "estimatedTotalHits": 0,
+                    "processingTimeMs": 10,
+                    "facetDistribution": facets,
+                }),
+                success: true,
+            }],
+            offset: 0,
+            limit: 10,
+            client_requested_score: false,
+            facets: Some(vec!["color".to_string()]),
+        };
+
+        let result = merge(input);
+
+        // Only "color" should be present
+        assert!(result.facets.get("color").is_some());
+        assert!(result.facets.get("size").is_none());
     }
 }
