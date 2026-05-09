@@ -1,16 +1,18 @@
 //! Scatter orchestration: fan-out logic and covering set builder.
 
+use async_trait::async_trait;
 use crate::config::UnavailableShardPolicy;
 use crate::topology::{NodeId, Topology};
 use crate::Result;
 
 /// Scatter orchestrator: fans out requests to the covering set.
+#[async_trait]
 pub trait Scatter: Send + Sync {
     /// Execute a scatter request to multiple nodes.
     ///
     /// Returns a map of node ID to response. Failed nodes are omitted
     /// based on the unavailable shard policy.
-    fn scatter(
+    async fn scatter(
         &self,
         topology: &Topology,
         nodes: Vec<NodeId>,
@@ -65,8 +67,9 @@ pub struct NodeResponse {
 #[derive(Debug, Clone, Default)]
 pub struct StubScatter;
 
+#[async_trait]
 impl Scatter for StubScatter {
-    fn scatter(
+    async fn scatter(
         &self,
         _topology: &Topology,
         _nodes: Vec<NodeId>,
@@ -100,8 +103,8 @@ mod tests {
         assert_eq!(request.path, "/search");
     }
 
-    #[test]
-    fn test_stub_scatter_returns_empty_response() {
+    #[tokio::test]
+    async fn test_stub_scatter_returns_empty_response() {
         let scatter = StubScatter;
         let topology = Topology::new(1);
         let nodes = vec![NodeId::new("node1".to_string())];
@@ -114,6 +117,7 @@ mod tests {
 
         let result = scatter
             .scatter(&topology, nodes, request, UnavailableShardPolicy::Partial)
+            .await
             .unwrap();
 
         assert!(result.responses.is_empty());
@@ -168,8 +172,8 @@ mod tests {
         assert_eq!(response.headers[0].0, "X-Custom");
     }
 
-    #[test]
-    fn test_stub_scatter_with_empty_nodes() {
+    #[tokio::test]
+    async fn test_stub_scatter_with_empty_nodes() {
         let scatter = StubScatter;
         let topology = Topology::new(1);
         let nodes: Vec<NodeId> = Vec::new();
@@ -182,14 +186,15 @@ mod tests {
 
         let result = scatter
             .scatter(&topology, nodes, request, UnavailableShardPolicy::Partial)
+            .await
             .unwrap();
 
         assert!(result.responses.is_empty());
         assert!(result.failed.is_empty());
     }
 
-    #[test]
-    fn test_stub_scatter_with_multiple_nodes() {
+    #[tokio::test]
+    async fn test_stub_scatter_with_multiple_nodes() {
         let scatter = StubScatter;
         let mut topology = Topology::new(1);
 
@@ -223,6 +228,7 @@ mod tests {
 
         let result = scatter
             .scatter(&topology, nodes, request, UnavailableShardPolicy::Partial)
+            .await
             .unwrap();
 
         assert!(result.responses.is_empty());
