@@ -5,8 +5,11 @@
 pub mod anti_entropy;
 pub mod config;
 pub mod error;
+pub mod hedging;
 pub mod merger;
 pub mod migration;
+pub mod query_planner;
+pub mod replica_selection;
 pub mod reshard;
 pub mod router;
 pub mod scatter;
