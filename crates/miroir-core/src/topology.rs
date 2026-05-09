@@ -183,3 +183,131 @@ impl Topology {
         self.groups.len() as u32
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_node_is_healthy() {
+        let mut node = Node::new(
+            NodeId::new("node1".to_string()),
+            "http://example.com".to_string(),
+            0,
+        );
+
+        // Joining status is not healthy
+        assert!(!node.is_healthy());
+
+        // Healthy status is healthy
+        node.status = NodeStatus::Healthy;
+        assert!(node.is_healthy());
+
+        // Draining status is not healthy
+        node.status = NodeStatus::Draining;
+        assert!(!node.is_healthy());
+
+        // Failed status is not healthy
+        node.status = NodeStatus::Failed;
+        assert!(!node.is_healthy());
+    }
+
+    #[test]
+    fn test_group_node_count() {
+        let mut group = Group::new(0);
+        assert_eq!(group.node_count(), 0);
+
+        group.add_node(NodeId::new("node1".to_string()));
+        assert_eq!(group.node_count(), 1);
+
+        group.add_node(NodeId::new("node2".to_string()));
+        assert_eq!(group.node_count(), 2);
+
+        // Adding duplicate node doesn't increase count
+        group.add_node(NodeId::new("node1".to_string()));
+        assert_eq!(group.node_count(), 2);
+    }
+
+    #[test]
+    fn test_topology_replica_group_count() {
+        let mut topology = Topology::new(2);
+
+        // Empty topology has 0 groups
+        assert_eq!(topology.replica_group_count(), 0);
+
+        // Add nodes to group 0
+        topology.add_node(Node::new(
+            NodeId::new("node1".to_string()),
+            "http://example.com".to_string(),
+            0,
+        ));
+        assert_eq!(topology.replica_group_count(), 1);
+
+        // Add nodes to group 1
+        topology.add_node(Node::new(
+            NodeId::new("node2".to_string()),
+            "http://example.com".to_string(),
+            1,
+        ));
+        assert_eq!(topology.replica_group_count(), 2);
+
+        // Add more nodes to existing groups
+        topology.add_node(Node::new(
+            NodeId::new("node3".to_string()),
+            "http://example.com".to_string(),
+            0,
+        ));
+        assert_eq!(topology.replica_group_count(), 2);
+    }
+
+    #[test]
+    fn test_topology_nodes_iter() {
+        let mut topology = Topology::new(1);
+
+        topology.add_node(Node::new(
+            NodeId::new("node1".to_string()),
+            "http://example.com".to_string(),
+            0,
+        ));
+        topology.add_node(Node::new(
+            NodeId::new("node2".to_string()),
+            "http://example.com".to_string(),
+            1,
+        ));
+
+        let nodes: Vec<_> = topology.nodes().collect();
+        assert_eq!(nodes.len(), 2);
+    }
+
+    #[test]
+    fn test_topology_groups_iter() {
+        let mut topology = Topology::new(1);
+
+        topology.add_node(Node::new(
+            NodeId::new("node1".to_string()),
+            "http://example.com".to_string(),
+            0,
+        ));
+        topology.add_node(Node::new(
+            NodeId::new("node2".to_string()),
+            "http://example.com".to_string(),
+            1,
+        ));
+
+        let groups: Vec<_> = topology.groups().collect();
+        assert_eq!(groups.len(), 2);
+    }
+
+    #[test]
+    fn test_node_id_from_string() {
+        let id: NodeId = "test-node".to_string().into();
+        assert_eq!(id.as_str(), "test-node");
+    }
+
+    #[test]
+    fn test_node_id_as_ref() {
+        let id = NodeId::new("test-node".to_string());
+        let s: &str = id.as_ref();
+        assert_eq!(s, "test-node");
+    }
+}
