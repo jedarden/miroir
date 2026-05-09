@@ -86,10 +86,11 @@ impl TaskStore for SqliteTaskStore {
 
         // Enable WAL mode for better concurrency
         // Use query_row because PRAGMA journal_mode returns the new mode
-        let _mode: String = conn
-            .query_row("PRAGMA journal_mode=WAL", &[] as &[&dyn rusqlite::ToSql], |row| {
-                row.get(0)
-            })?;
+        let _mode: String = conn.query_row(
+            "PRAGMA journal_mode=WAL",
+            &[] as &[&dyn rusqlite::ToSql],
+            |row| row.get(0),
+        )?;
 
         // Create schema_version table
         conn.execute(
@@ -264,7 +265,7 @@ impl TaskStore for SqliteTaskStore {
     async fn node_settings_version_get(&self, index: &str, node_id: &str) -> Result<Option<i64>> {
         let version: Option<i64> = self
             .query_row(
-                "SELECT version FROM node_settings_version WHERE index = ?1 AND node_id = ?2",
+                "SELECT version FROM node_settings_version WHERE [index] = ?1 AND node_id = ?2",
                 &[
                     &index as &dyn rusqlite::ToSql,
                     &node_id as &dyn rusqlite::ToSql,
@@ -283,7 +284,7 @@ impl TaskStore for SqliteTaskStore {
     ) -> Result<()> {
         let now = chrono::Utc::now().timestamp_millis() as u64;
         self.execute(
-            "INSERT OR REPLACE INTO node_settings_version (index, node_id, version, updated_at)
+            "INSERT OR REPLACE INTO node_settings_version ([index], node_id, version, updated_at)
              VALUES (?1, ?2, ?3, ?4)",
             &[
                 &index as &dyn rusqlite::ToSql,
@@ -379,7 +380,7 @@ impl TaskStore for SqliteTaskStore {
 
     async fn session_upsert(&self, session: &Session) -> Result<()> {
         self.execute(
-            "INSERT OR REPLACE INTO sessions (session_id, index, settings_version, created_at, expires_at)
+            "INSERT OR REPLACE INTO sessions (session_id, [index], settings_version, created_at, expires_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             &[
                 &session.session_id as &dyn rusqlite::ToSql,
@@ -395,7 +396,7 @@ impl TaskStore for SqliteTaskStore {
     async fn session_get(&self, session_id: &str) -> Result<Option<Session>> {
         let result: Option<Session> = self
             .query_row(
-                "SELECT session_id, index, settings_version, created_at, expires_at
+                "SELECT session_id, [index], settings_version, created_at, expires_at
                  FROM sessions WHERE session_id = ?1",
                 &[&session_id as &dyn rusqlite::ToSql],
                 |row| {
@@ -422,7 +423,7 @@ impl TaskStore for SqliteTaskStore {
 
     async fn session_delete_by_index(&self, index: &str) -> Result<()> {
         self.execute(
-            "DELETE FROM sessions WHERE index = ?1",
+            "DELETE FROM sessions WHERE [index] = ?1",
             &[&index as &dyn rusqlite::ToSql],
         )?;
         Ok(())
@@ -732,7 +733,7 @@ impl TaskStore for SqliteTaskStore {
 
     async fn canary_upsert(&self, canary: &Canary) -> Result<()> {
         self.execute(
-            "INSERT OR REPLACE INTO canaries (name, index, query, min_results, max_results, interval_s, enabled, created_at, updated_at)
+            "INSERT OR REPLACE INTO canaries (name, [index], query, min_results, max_results, interval_s, enabled, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             &[
                 &canary.name as &dyn rusqlite::ToSql,
@@ -752,7 +753,7 @@ impl TaskStore for SqliteTaskStore {
     async fn canary_get(&self, name: &str) -> Result<Option<Canary>> {
         let result: Option<Canary> = self
             .query_row(
-                "SELECT name, index, query, min_results, max_results, interval_s, enabled, created_at, updated_at
+                "SELECT name, [index], query, min_results, max_results, interval_s, enabled, created_at, updated_at
                  FROM canaries WHERE name = ?1",
                 &[&name as &dyn rusqlite::ToSql],
                 |row| Ok(Canary {
@@ -781,7 +782,7 @@ impl TaskStore for SqliteTaskStore {
 
     async fn canary_list(&self) -> Result<Vec<Canary>> {
         self.query_map(
-            "SELECT name, index, query, min_results, max_results, interval_s, enabled, created_at, updated_at FROM canaries",
+            "SELECT name, [index], query, min_results, max_results, interval_s, enabled, created_at, updated_at FROM canaries",
             &[] as &[&dyn rusqlite::ToSql],
             |row| Ok(Canary {
                 name: row.get(0)?,
@@ -853,7 +854,7 @@ impl TaskStore for SqliteTaskStore {
     async fn cdc_cursor_get(&self, sink: &str, index: &str) -> Result<Option<CdcCursor>> {
         let result: Option<CdcCursor> = self
             .query_row(
-                "SELECT sink, index, cursor, updated_at FROM cdc_cursors WHERE sink = ?1 AND index = ?2",
+                "SELECT sink, [index], cursor, updated_at FROM cdc_cursors WHERE sink = ?1 AND [index] = ?2",
                 &[&sink as &dyn rusqlite::ToSql, &index as &dyn rusqlite::ToSql],
                 |row| Ok(CdcCursor {
                     sink: row.get(0)?,
@@ -868,7 +869,7 @@ impl TaskStore for SqliteTaskStore {
 
     async fn cdc_cursor_set(&self, cursor: &CdcCursor) -> Result<()> {
         self.execute(
-            "INSERT OR REPLACE INTO cdc_cursors (sink, index, cursor, updated_at)
+            "INSERT OR REPLACE INTO cdc_cursors (sink, [index], cursor, updated_at)
              VALUES (?1, ?2, ?3, ?4)",
             &[
                 &cursor.sink as &dyn rusqlite::ToSql,
@@ -882,7 +883,7 @@ impl TaskStore for SqliteTaskStore {
 
     async fn cdc_cursor_list(&self, sink: &str) -> Result<Vec<CdcCursor>> {
         self.query_map(
-            "SELECT sink, index, cursor, updated_at FROM cdc_cursors WHERE sink = ?1",
+            "SELECT sink, [index], cursor, updated_at FROM cdc_cursors WHERE sink = ?1",
             &[&sink as &dyn rusqlite::ToSql],
             |row| {
                 Ok(CdcCursor {
@@ -1023,7 +1024,7 @@ impl TaskStore for SqliteTaskStore {
 
     async fn search_ui_config_upsert(&self, config: &SearchUiConfig) -> Result<()> {
         self.execute(
-            "INSERT OR REPLACE INTO search_ui_config (index, config, created_at, updated_at)
+            "INSERT OR REPLACE INTO search_ui_config ([index], config, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4)",
             &[
                 &config.index as &dyn rusqlite::ToSql,
@@ -1038,7 +1039,7 @@ impl TaskStore for SqliteTaskStore {
     async fn search_ui_config_get(&self, index: &str) -> Result<Option<SearchUiConfig>> {
         let result: Option<SearchUiConfig> = self
             .query_row(
-                "SELECT index, config, created_at, updated_at FROM search_ui_config WHERE index = ?1",
+                "SELECT [index], config, created_at, updated_at FROM search_ui_config WHERE [index] = ?1",
                 &[&index as &dyn rusqlite::ToSql],
                 |row| Ok(SearchUiConfig {
                     index: row.get(0)?,
@@ -1053,7 +1054,7 @@ impl TaskStore for SqliteTaskStore {
 
     async fn search_ui_config_delete(&self, index: &str) -> Result<()> {
         self.execute(
-            "DELETE FROM search_ui_config WHERE index = ?1",
+            "DELETE FROM search_ui_config WHERE [index] = ?1",
             &[&index as &dyn rusqlite::ToSql],
         )?;
         Ok(())
@@ -1061,7 +1062,7 @@ impl TaskStore for SqliteTaskStore {
 
     async fn search_ui_config_list(&self) -> Result<Vec<SearchUiConfig>> {
         self.query_map(
-            "SELECT index, config, created_at, updated_at FROM search_ui_config",
+            "SELECT [index], config, created_at, updated_at FROM search_ui_config",
             &[] as &[&dyn rusqlite::ToSql],
             |row| {
                 Ok(SearchUiConfig {
@@ -1234,11 +1235,11 @@ impl SqliteTaskStore {
         // Table 2: Node settings version
         conn.execute(
             "CREATE TABLE IF NOT EXISTS node_settings_version (
-                index TEXT NOT NULL,
+                [index] TEXT NOT NULL,
                 node_id TEXT NOT NULL,
                 version INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
-                PRIMARY KEY (index, node_id)
+                PRIMARY KEY ([index], node_id)
             )",
             [],
         )?;
@@ -1261,7 +1262,7 @@ impl SqliteTaskStore {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY,
-                index TEXT NOT NULL,
+                [index] TEXT NOT NULL,
                 settings_version INTEGER NOT NULL,
                 created_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL
@@ -1312,7 +1313,7 @@ impl SqliteTaskStore {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS canaries (
                 name TEXT PRIMARY KEY,
-                index TEXT NOT NULL,
+                [index] TEXT NOT NULL,
                 query TEXT NOT NULL,
                 min_results INTEGER NOT NULL,
                 max_results INTEGER NOT NULL,
@@ -1342,10 +1343,10 @@ impl SqliteTaskStore {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS cdc_cursors (
                 sink TEXT NOT NULL,
-                index TEXT NOT NULL,
+                [index] TEXT NOT NULL,
                 cursor TEXT NOT NULL,
                 updated_at INTEGER NOT NULL,
-                PRIMARY KEY (sink, index)
+                PRIMARY KEY (sink, [index])
             )",
             [],
         )?;
@@ -1381,7 +1382,7 @@ impl SqliteTaskStore {
         // Table 13: Search UI config
         conn.execute(
             "CREATE TABLE IF NOT EXISTS search_ui_config (
-                index TEXT PRIMARY KEY,
+                [index] TEXT PRIMARY KEY,
                 config TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
