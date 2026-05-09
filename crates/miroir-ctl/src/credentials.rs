@@ -210,6 +210,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_empty_key_is_ignored() {
         env::set_var(ENV_VAR, "");
         let result = load_admin_key(Some("flag-key".to_string())).unwrap();
