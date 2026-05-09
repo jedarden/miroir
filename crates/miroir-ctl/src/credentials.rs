@@ -144,6 +144,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_env_var_takes_precedence() {
         // Ensure clean state at start of test
         env::remove_var(ENV_VAR);
@@ -192,6 +193,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_flag_as_fallback() {
         // No env var, no file - flag should be used
         env::remove_var(ENV_VAR);
@@ -200,6 +202,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_no_credentials_returns_none() {
         env::remove_var(ENV_VAR);
         let result = load_admin_key(None as Option<String>).unwrap();
