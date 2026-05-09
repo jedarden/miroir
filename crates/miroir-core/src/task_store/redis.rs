@@ -50,7 +50,7 @@ impl TaskStore for RedisTaskStore {
         let current_version: Option<i64> = conn.get(version_key).await?;
 
         if current_version.is_none() {
-            conn.set(version_key, SCHEMA_VERSION).await?;
+            conn.set::<_, _, ()>(version_key, SCHEMA_VERSION).await?;
         } else if current_version != Some(SCHEMA_VERSION) {
             return Err(TaskStoreError::InvalidData(format!(
                 "schema version mismatch: expected {}, got {}",
@@ -76,11 +76,11 @@ impl TaskStore for RedisTaskStore {
         let data = serde_json::to_string(task)?;
 
         // Store task data
-        conn.set(&key, data).await?;
+        conn.set::<_, _, ()>(&key, data).await?;
 
         // Add to index
         let index_key = self.index_key("tasks");
-        conn.sadd(&index_key, &task.miroir_id).await?;
+        conn.sadd::<_, _, ()>(&index_key, &task.miroir_id).await?;
 
         Ok(())
     }
@@ -181,7 +181,7 @@ impl TaskStore for RedisTaskStore {
             "version": version,
             "updated_at": now,
         });
-        conn.set(&key, data.to_string()).await?;
+        conn.set::<_, _, ()>(&key, data.to_string()).await?;
 
         Ok(())
     }
@@ -191,11 +191,11 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("aliases", &alias.name);
 
         let data = serde_json::to_string(alias)?;
-        conn.set(&key, data).await?;
+        conn.set::<_, _, ()>(&key, data).await?;
 
         // Add to index
         let index_key = self.index_key("aliases");
-        conn.sadd(&index_key, &alias.name).await?;
+        conn.sadd::<_, _, ()>(&index_key, &alias.name).await?;
 
         Ok(())
     }
@@ -219,8 +219,8 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("aliases", name);
         let index_key = self.index_key("aliases");
 
-        conn.del(&key).await?;
-        conn.srem(&index_key, name).await?;
+        conn.del::<_, ()>(&key).await?;
+        conn.srem::<_, _, ()>(&index_key, name).await?;
 
         Ok(())
     }
@@ -246,7 +246,7 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("sessions", &session.session_id);
 
         let data = serde_json::to_string(session)?;
-        conn.set_ex(&key, data, (session.expires_at - session.created_at) / 1000)
+        conn.set_ex::<_, _, ()>(&key, data, (session.expires_at - session.created_at) / 1000)
             .await?;
 
         Ok(())
@@ -269,7 +269,7 @@ impl TaskStore for RedisTaskStore {
     async fn session_delete(&self, session_id: &str) -> Result<()> {
         let mut conn = self.get_conn().await?;
         let key = self.table_key("sessions", session_id);
-        conn.del(&key).await?;
+        conn.del::<_, ()>(&key).await?;
         Ok(())
     }
 
@@ -301,7 +301,7 @@ impl TaskStore for RedisTaskStore {
 
         let data = serde_json::to_string(entry)?;
         // Set with 1 hour expiration
-        conn.set_ex(&redis_key, data, 3600).await?;
+        conn.set_ex::<_, _, ()>(&redis_key, data, 3600).await?;
 
         Ok(())
     }
@@ -316,10 +316,10 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("jobs", &job.job_id);
 
         let data = serde_json::to_string(job)?;
-        conn.set(&key, data).await?;
+        conn.set::<_, _, ()>(&key, data).await?;
 
         // Add to enqueued queue
-        conn.rpush("miroir:jobs:enqueued", &job.job_id).await?;
+        conn.rpush::<_, _, ()>("miroir:jobs:enqueued", &job.job_id).await?;
 
         Ok(())
     }
@@ -346,7 +346,7 @@ impl TaskStore for RedisTaskStore {
             self.job_enqueue(&job).await?;
 
             // Remove from enqueued queue (we already popped it)
-            conn.lrem("miroir:jobs:enqueued", 1, &job_id).await?;
+            conn.lrem::<_, _, ()>("miroir:jobs:enqueued", 1, &job_id).await?;
 
             Ok(Some(job))
         } else {
@@ -430,7 +430,7 @@ impl TaskStore for RedisTaskStore {
 
     async fn leader_lease_release(&self, _lease_id: &str) -> Result<()> {
         let mut conn = self.get_conn().await?;
-        conn.del("miroir:leader_lease").await?;
+        conn.del::<_, ()>("miroir:leader_lease").await?;
         Ok(())
     }
 
@@ -452,10 +452,10 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("canaries", &canary.name);
 
         let data = serde_json::to_string(canary)?;
-        conn.set(&key, data).await?;
+        conn.set::<_, _, ()>(&key, data).await?;
 
         let index_key = self.index_key("canaries");
-        conn.sadd(&index_key, &canary.name).await?;
+        conn.sadd::<_, _, ()>(&index_key, &canary.name).await?;
 
         Ok(())
     }
@@ -479,8 +479,8 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("canaries", name);
         let index_key = self.index_key("canaries");
 
-        conn.del(&key).await?;
-        conn.srem(&index_key, name).await?;
+        conn.del::<_, ()>(&key).await?;
+        conn.srem::<_, _, ()>(&index_key, name).await?;
 
         Ok(())
     }
