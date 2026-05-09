@@ -61,12 +61,7 @@ pub trait TaskStore: Send + Sync {
     async fn task_update_status(&self, miroir_id: &str, status: TaskStatus) -> Result<()>;
 
     /// Update a node task within a Miroir task.
-    async fn task_update_node(
-        &self,
-        miroir_id: &str,
-        node_id: &str,
-        node_task: &NodeTask,
-    ) -> Result<()>;
+    async fn task_update_node(&self, miroir_id: &str, node_id: &str, task_uid: u64) -> Result<()>;
 
     /// List tasks with optional filtering.
     async fn task_list(&self, filter: &TaskFilter) -> Result<Vec<Task>>;
@@ -135,7 +130,7 @@ pub trait TaskStore: Send + Sync {
     async fn job_update_status(
         &self,
         job_id: &str,
-        status: JobStatus,
+        status: JobState,
         result: Option<&str>,
     ) -> Result<()>;
 
@@ -143,7 +138,7 @@ pub trait TaskStore: Send + Sync {
     async fn job_get(&self, job_id: &str) -> Result<Option<Job>>;
 
     /// List jobs by status.
-    async fn job_list(&self, status: Option<JobStatus>, limit: usize) -> Result<Vec<Job>>;
+    async fn job_list(&self, status: Option<JobState>, limit: usize) -> Result<Vec<Job>>;
 
     // --- Leader lease (plan §4 table 7) ---
 
