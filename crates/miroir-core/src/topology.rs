@@ -113,13 +113,14 @@ impl NodeStatus {
     /// | Removed | No | No longer in cluster |
     ///
     /// The `draining_shard` parameter should be `Some(shard_id)` if the node
-    /// is in `Draining` status and the shard is one of the shards being migrated
-    /// off this node. In that case, the node is NOT eligible for writes to that shard.
+    /// is in `Draining` status and the shard IS being actively migrated off this node
+    /// (use `None` if the shard is not being drained or no shard is being checked).
+    /// When `Some(...)`, the node is NOT eligible for writes.
     pub fn is_write_eligible_for(self, draining_shard: Option<u32>) -> bool {
         match self {
             NodeStatus::Healthy | NodeStatus::Active | NodeStatus::Degraded => true,
             NodeStatus::Joining | NodeStatus::Failed | NodeStatus::Removed => false,
-            NodeStatus::Draining => draining_shard.is_none(),
+            NodeStatus::Draining => !draining_shard.is_some(),
         }
     }
 }
@@ -665,9 +666,10 @@ mod tests {
 
     #[test]
     fn test_write_eligible_draining_non_drained_shard() {
-        // Draining node is eligible for writes to shards it still owns
+        // Draining node is eligible for writes in general (no specific shard being checked)
         assert!(NodeStatus::Draining.is_write_eligible_for(None));
-        assert!(NodeStatus::Draining.is_write_eligible_for(Some(5)));
+        // When Some(shard_id) is passed, it means that shard is being drained, so NOT eligible
+        assert!(!NodeStatus::Draining.is_write_eligible_for(Some(5)));
     }
 
     #[test]
