@@ -145,6 +145,9 @@ mod tests {
 
     #[test]
     fn test_env_var_takes_precedence() {
+        // Ensure clean state at start of test
+        env::remove_var(ENV_VAR);
+
         // Create a credentials file with a key
         let temp_dir = setup_test_config_dir("env_precedence");
         write_credentials_file(
