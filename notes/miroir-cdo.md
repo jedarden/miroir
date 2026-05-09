@@ -46,9 +46,9 @@ All Definition of Done requirements verified.
 - `estimatedTotalHits` summation
 - Binary heap optimization for large result sets
 
-## Test Coverage (2025-05-09 Verification)
+## Test Coverage (2026-05-09 Re-verification)
 
-All 169 tests pass in 99.32s.
+All 169 tests pass in 79.24s.
 
 ### Code Coverage (cargo-llvm-cov)
 
@@ -63,3 +63,21 @@ All Phase 1 components exceed 90% line coverage requirement.
 
 - 88.46% lines (includes future phase modules: hedging.rs 0%, replica_selection.rs 0%, query_planner.rs 65.82%, migration.rs 77.73%)
 - Phase 1 components only: ≥94.67% lines
+
+---
+
+## 2026-05-09 Session
+
+Final verification of Phase 1 — Core Routing. All DoD requirements confirmed met:
+
+1. ✅ Rendezvous determinism (1000 randomized runs)
+2. ✅ Minimal reshuffling on add/remove (2 × 1/4 bound verified)
+3. ✅ Uniform shard distribution (64 shards / 3 nodes / RF=1)
+4. ✅ Top-RF placement stability
+5. ✅ write_targets returns RG × RF nodes
+6. ✅ query_group round-robin distribution
+7. ✅ covering_set one node per shard
+8. ✅ Merger global sort, facets, offset/limit
+9. ✅ All Phase 1 components ≥90% line coverage
+
+Phase 1 code is complete and ready for downstream phases.
