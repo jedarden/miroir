@@ -12,6 +12,9 @@ pub mod router;
 pub mod scatter;
 pub mod score_comparability;
 pub mod task;
+
+// Task store backends (Phase 3) — gate behind feature flag
+#[cfg(feature = "task-store")]
 pub mod task_store;
 pub mod topology;
 
