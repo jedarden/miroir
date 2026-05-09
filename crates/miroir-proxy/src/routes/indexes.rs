@@ -72,7 +72,7 @@ async fn list_indexes(
     let topology = state.topology().await;
 
     // Query the first node in each replica group for index list
-    let mut results: Vec<serde_json::Value> = Vec::new();
+    let results: Vec<serde_json::Value> = Vec::new();
 
     for group in topology.groups() {
         if let Some(node_id) = group.nodes().first() {
@@ -120,16 +120,10 @@ async fn create_index(
     }
 
     // Build request with _miroir_shard injected into filterableAttributes
-    let mut create_req = serde_json::json!({
+    let create_req = serde_json::json!({
         "uid": req.uid,
         "primaryKey": req.primary_key,
     });
-
-    // Inject _miroir_shard into filterableAttributes if settings are present
-    if let Some(obj) = create_req.as_object_mut() {
-        // For index creation, we'll need to update settings after creation
-        // to inject _miroir_shard into filterableAttributes
-    }
 
     let body_bytes = serde_json::to_vec(&create_req).unwrap_or_default();
 
@@ -164,8 +158,21 @@ async fn create_index(
 
     let status = axum::http::StatusCode::from_u16(resp.status).unwrap_or(axum::http::StatusCode::OK);
 
-    // After index creation, we need to update settings to inject _miroir_shard
-    // This is done in a follow-up request
+    // After index creation, inject _miroir_shard into filterableAttributes
+    // We do this by updating the settings on all nodes
+    if status.is_success() {
+        let filterable_req = ScatterRequest {
+            method: "PUT".to_string(),
+            path: format!("/indexes/{}/settings/filterable-attributes", req.uid),
+            body: serde_json::to_vec(&serde_json::json!(["_miroir_shard"])).unwrap_or_default(),
+            headers: vec![],
+        };
+
+        let _ = scatter
+            .scatter(&topology, targets.clone(), filterable_req, UnavailableShardPolicy::Partial)
+            .await;
+    }
+
     let body: Value = serde_json::from_slice(&resp.body)
         .unwrap_or_else(|_| serde_json::json!({}));
 
@@ -352,7 +359,7 @@ async fn get_settings(
             if let Some(resp) = result.responses.first() {
                 let status = resp.status;
                 if status == 200 {
-                    return Ok(Json(resp.body.clone()));
+                    return Ok(Json(resp.body.clone().into()));
                 } else if status == 404 {
                     return Err(ErrorResponse::index_not_found(&index));
                 }
