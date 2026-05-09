@@ -99,7 +99,7 @@ async fn add_documents(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
     headers: HeaderMap,
-    body: Vec<Value>,
+    Json(body): Json<Vec<Value>>,
 ) -> Result<Response, ErrorResponse> {
     let topology = state.topology().await;
 
@@ -217,17 +217,17 @@ async fn update_documents(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
     headers: HeaderMap,
-    body: Vec<Value>,
+    Json(body): Json<Vec<Value>>,
 ) -> Result<Response, ErrorResponse> {
     // Same logic as POST, just different type
-    add_documents(State(state), Path(index), headers, body).await
+    add_documents(State(state), Path(index), headers, Json(body)).await
 }
 
 /// DELETE /:index/documents - Delete documents by batch.
 async fn delete_documents(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
-    body: Value,
+    Json(body): Json<Value>,
 ) -> Result<Response, ErrorResponse> {
     let topology = state.topology().await;
 

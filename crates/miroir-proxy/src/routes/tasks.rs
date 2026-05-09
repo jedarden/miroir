@@ -127,10 +127,12 @@ async fn list_tasks(
                 Ok(result) => {
                     if let Some(resp) = result.responses.first() {
                         if resp.status == 200 {
-                            if let Some(results) = resp.body.get("results").and_then(|r| r.as_array()) {
-                                for task_value in results {
-                                    if let Ok(task) = serde_json::from_value::<NodeTask>(task_value.clone()) {
-                                        all_tasks.push(task);
+                            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&resp.body) {
+                                if let Some(results) = json.get("results").and_then(|r| r.as_array()) {
+                                    for task_value in results {
+                                        if let Ok(task) = serde_json::from_value::<NodeTask>(task_value.clone()) {
+                                            all_tasks.push(task);
+                                        }
                                     }
                                 }
                             }
@@ -274,8 +276,10 @@ async fn get_task(
                 if let Some(resp) = result.responses.first() {
                     if resp.status == 200 {
                         not_found = false;
-                        if let Ok(task) = serde_json::from_value::<NodeTask>(resp.body.clone()) {
-                            node_tasks.push(task);
+                        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&resp.body) {
+                            if let Ok(task) = serde_json::from_value::<NodeTask>(json) {
+                                node_tasks.push(task);
+                            }
                         }
                     } else if resp.status == 404 {
                         // Task not found on this node
