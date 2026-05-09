@@ -36,12 +36,18 @@ impl AsRef<str> for NodeId {
 pub enum NodeStatus {
     /// Node is healthy and serving traffic.
     Healthy,
+    /// Node is degraded (intermittent failures, still serving traffic).
+    Degraded,
+    /// Node is active and fully operational (synonym for Healthy).
+    Active,
     /// Node is joining the cluster (being provisioned).
     Joining,
     /// Node is draining (graceful shutdown, not accepting new writes).
     Draining,
     /// Node has failed (unplanned outage).
     Failed,
+    /// Node has been removed from the cluster (tracked for migration).
+    Removed,
 }
 
 /// A single Meilisearch node in the topology.
@@ -73,7 +79,7 @@ impl Node {
 
     /// Check if the node is healthy (can serve traffic).
     pub fn is_healthy(&self) -> bool {
-        matches!(self.status, NodeStatus::Healthy)
+        matches!(self.status, NodeStatus::Healthy | NodeStatus::Active)
     }
 }
 
@@ -203,12 +209,24 @@ mod tests {
         node.status = NodeStatus::Healthy;
         assert!(node.is_healthy());
 
+        // Active status is healthy (synonym for Healthy)
+        node.status = NodeStatus::Active;
+        assert!(node.is_healthy());
+
+        // Degraded status is not healthy (intermittent failures)
+        node.status = NodeStatus::Degraded;
+        assert!(!node.is_healthy());
+
         // Draining status is not healthy
         node.status = NodeStatus::Draining;
         assert!(!node.is_healthy());
 
         // Failed status is not healthy
         node.status = NodeStatus::Failed;
+        assert!(!node.is_healthy());
+
+        // Removed status is not healthy
+        node.status = NodeStatus::Removed;
         assert!(!node.is_healthy());
     }
 
