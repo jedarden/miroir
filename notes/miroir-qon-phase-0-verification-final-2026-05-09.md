@@ -1,20 +1,21 @@
-# Phase 0 (miroir-qon) Final Re-verification - 2026-05-09
+# Phase 0 (miroir-qon) Final Verification - 2026-05-09
 
 ## Date
-2026-05-09 09:20 UTC (Final)
+2026-05-09 09:20 UTC
 
 ## Context
-Final re-verification of Phase 0 foundation bead before closing. All core infrastructure was previously implemented in commits leading up to 9cd61d5 and re-verified at 059679c.
+Final verification of Phase 0 foundation bead. This is a re-verification to confirm the foundation remains intact after Phase 1 work began.
 
 ## DoD Verification Results
 
-### Build Status (Final Check)
-- ✅ `cargo build --all` - SUCCESS (0.57s)
-- ✅ `cargo test --all` - SUCCESS (243s, 149 tests passed)
-  - miroir-core: 106 tests passed (config, router, scatter, merger, topology, reshard, migration, anti_entropy, score_comparability)
-  - miroir-ctl: 22 tests passed (14 + 8)
-  - cutover_race: 17 chaos tests passed (2 ignored)
-- ✅ `cargo clippy --all-targets --all-features -- -D warnings` - SUCCESS (0.35s)
+### Build Status
+- ✅ `cargo build --all` - SUCCESS (4.5s)
+- ✅ `cargo test --all` - SUCCESS (149 tests passed)
+  - miroir-core: 106 tests passed
+  - miroir-ctl: 22 tests passed
+  - miroir-proxy: 0 tests (no tests written yet for Phase 0)
+  - cutover_race: 17 passed, 2 ignored (chaos tests)
+- ✅ `cargo clippy --all-targets --all-features -- -D warnings` - SUCCESS (2.8s)
 - ✅ `cargo fmt --all -- --check` - SUCCESS (no formatting issues)
 
 ### Config Round-Trip Test
@@ -66,3 +67,5 @@ Phase 0 foundation is **COMPLETE**. All code-related DoD items are met. The only
 2. All tests pass
 3. CI (GitHub Actions, ubuntu-latest) would successfully build musl targets
 4. The limitation is environmental, not a code defect
+
+The foundation is solid and ready to support Phase 1 (Core Routing) and subsequent phases.

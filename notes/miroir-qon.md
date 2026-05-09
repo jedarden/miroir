@@ -38,9 +38,12 @@ All key dependencies from plan §4 are wired:
 
 ### Build & Test Results ✓
 - `cargo build --all`: PASSED
-- `cargo test --all`: PASSED (125 tests)
+- `cargo test --all`: PASSED (133 tests)
 - `cargo clippy --all-targets --all-features -- -D warnings`: PASSED
 - `cargo fmt --all -- --check`: PASSED
+
+### Changes Made This Session
+- Fixed clippy warning in `crates/miroir-core/src/config/load.rs`: changed `eprintln!("Error loading config: {:?}", e)` to `eprintln!("Error loading config: {e:?}")`
 
 ### Known Limitation
 - `cargo build --release --target x86_64-unknown-linux-musl -p miroir-proxy`: SKIPPED
