@@ -31,12 +31,12 @@ impl RedisTaskStore {
 
     /// Generate a Redis key for a table.
     fn table_key(&self, table: &str, id: &str) -> String {
-        format!("miroir:{}:{}", table, id)
+        format!("miroir:{table}:{id}")
     }
 
     /// Generate a Redis key for a table's index.
     fn index_key(&self, table: &str) -> String {
-        format!("miroir:{}:_index", table)
+        format!("miroir:{table}:_index")
     }
 }
 
@@ -160,7 +160,7 @@ impl TaskStore for RedisTaskStore {
 
     async fn node_settings_version_get(&self, index: &str, node_id: &str) -> Result<Option<i64>> {
         let mut conn = self.get_conn().await?;
-        let key = self.table_key("node_settings_version", &format!("{}:{}", index, node_id));
+        let key = self.table_key("node_settings_version", &format!("{index}:{node_id}"));
 
         let version: Option<i64> = conn.get(&key).await?;
         Ok(version)
@@ -173,7 +173,7 @@ impl TaskStore for RedisTaskStore {
         version: i64,
     ) -> Result<()> {
         let mut conn = self.get_conn().await?;
-        let key = self.table_key("node_settings_version", &format!("{}:{}", index, node_id));
+        let key = self.table_key("node_settings_version", &format!("{index}:{node_id}"));
         let now = chrono::Utc::now().timestamp_millis() as u64;
 
         // Store version with timestamp
@@ -527,7 +527,7 @@ impl TaskStore for RedisTaskStore {
 
     async fn canary_run_list(&self, canary_name: &str, limit: usize) -> Result<Vec<CanaryRun>> {
         let mut conn = self.get_conn().await?;
-        let canary_runs_key = format!("miroir:canary_runs:{}:index", canary_name);
+        let canary_runs_key = format!("miroir:canary_runs:{canary_name}:index");
 
         let run_ids: Vec<String> = conn.lrange(&canary_runs_key, 0, limit as isize - 1).await?;
 
@@ -554,7 +554,7 @@ impl TaskStore for RedisTaskStore {
 
     async fn cdc_cursor_get(&self, sink: &str, index: &str) -> Result<Option<CdcCursor>> {
         let mut conn = self.get_conn().await?;
-        let key = self.table_key("cdc_cursors", &format!("{}:{}", sink, index));
+        let key = self.table_key("cdc_cursors", &format!("{sink}:{index}"));
 
         let data: Option<String> = conn.get(&key).await?;
         match data {
@@ -808,10 +808,10 @@ impl TaskStore for RedisTaskStore {
         &self,
         key: &str,
         window_s: u64,
-        limit: u64,
+        _limit: u64,
     ) -> Result<(u64, u64)> {
         let mut conn = self.get_conn().await?;
-        let redis_key = format!("miroir:ratelimit:{}", key);
+        let redis_key = format!("miroir:ratelimit:{key}");
 
         // Increment and get TTL
         let count: u64 = conn.incr(&redis_key, 1).await?;
@@ -828,14 +828,14 @@ impl TaskStore for RedisTaskStore {
 
     async fn ratelimit_set_backoff(&self, key: &str, duration_s: u64) -> Result<()> {
         let mut conn = self.get_conn().await?;
-        let redis_key = format!("miroir:ratelimit:backoff:{}", key);
+        let redis_key = format!("miroir:ratelimit:backoff:{key}");
         conn.set_ex::<_, _, ()>(&redis_key, "1", duration_s).await?;
         Ok(())
     }
 
     async fn ratelimit_check_backoff(&self, key: &str) -> Result<Option<u64>> {
         let mut conn = self.get_conn().await?;
-        let redis_key = format!("miroir:ratelimit:backoff:{}", key);
+        let redis_key = format!("miroir:ratelimit:backoff:{key}");
 
         let exists: bool = conn.exists(&redis_key).await?;
         if exists {
@@ -848,21 +848,21 @@ impl TaskStore for RedisTaskStore {
 
     async fn cdc_overflow_check(&self, sink: &str) -> Result<bool> {
         let mut conn = self.get_conn().await?;
-        let key = format!("miroir:cdc:overflow:{}", sink);
+        let key = format!("miroir:cdc:overflow:{sink}");
         let exists: bool = conn.exists(&key).await?;
         Ok(exists)
     }
 
     async fn cdc_overflow_size(&self, sink: &str) -> Result<u64> {
         let mut conn = self.get_conn().await?;
-        let key = format!("miroir:cdc:overflow:{}", sink);
+        let key = format!("miroir:cdc:overflow:{sink}");
         let size: u64 = conn.strlen(&key).await?;
         Ok(size)
     }
 
     async fn cdc_overflow_append(&self, sink: &str, data: &[u8]) -> Result<()> {
         let mut conn = self.get_conn().await?;
-        let key = format!("miroir:cdc:overflow:{}", sink);
+        let key = format!("miroir:cdc:overflow:{sink}");
 
         // Check if appending would exceed 1 GiB limit
         let current_size: u64 = conn.strlen(&key).await?;
@@ -878,14 +878,14 @@ impl TaskStore for RedisTaskStore {
 
     async fn cdc_overflow_clear(&self, sink: &str) -> Result<()> {
         let mut conn = self.get_conn().await?;
-        let key = format!("miroir:cdc:overflow:{}", sink);
+        let key = format!("miroir:cdc:overflow:{sink}");
         conn.del::<_, ()>(&key).await?;
         Ok(())
     }
 
     async fn scoped_key_set(&self, index: &str, key: &str, expires_at: u64) -> Result<()> {
         let mut conn = self.get_conn().await?;
-        let redis_key = format!("miroir:search_ui_scoped_key:{}", index);
+        let redis_key = format!("miroir:search_ui_scoped_key:{index}");
 
         let ttl = (expires_at - chrono::Utc::now().timestamp_millis() as u64) / 1000;
         conn.set_ex::<_, _, ()>(&redis_key, key, ttl).await?;
@@ -895,7 +895,7 @@ impl TaskStore for RedisTaskStore {
 
     async fn scoped_key_get(&self, index: &str) -> Result<Option<String>> {
         let mut conn = self.get_conn().await?;
-        let redis_key = format!("miroir:search_ui_scoped_key:{}", index);
+        let redis_key = format!("miroir:search_ui_scoped_key:{index}");
 
         let key: Option<String> = conn.get(&redis_key).await?;
         Ok(key)
@@ -903,7 +903,7 @@ impl TaskStore for RedisTaskStore {
 
     async fn scoped_key_observe(&self, pod: &str, index: &str, key: &str) -> Result<()> {
         let mut conn = self.get_conn().await?;
-        let redis_key = format!("miroir:search_ui_scoped_key_observed:{}:{}", pod, index);
+        let redis_key = format!("miroir:search_ui_scoped_key_observed:{pod}:{index}");
 
         conn.set::<_, _, ()>(&redis_key, key).await?;
         Ok(())
@@ -911,7 +911,7 @@ impl TaskStore for RedisTaskStore {
 
     async fn scoped_key_has_observed(&self, pod: &str, index: &str, key: &str) -> Result<bool> {
         let mut conn = self.get_conn().await?;
-        let redis_key = format!("miroir:search_ui_scoped_key_observed:{}:{}", pod, index);
+        let redis_key = format!("miroir:search_ui_scoped_key_observed:{pod}:{index}");
 
         let current: Option<String> = conn.get(&redis_key).await?;
         Ok(current.as_deref() == Some(key))
