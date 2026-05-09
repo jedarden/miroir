@@ -7,7 +7,7 @@ use axum::{
 };
 use crate::state::ProxyState;
 use std::time::Instant;
-use prometheus::{Counter, Histogram, IntGauge, Registry, TextEncoder, HistogramOpts};
+use prometheus::{Counter, Histogram, IntGauge, Registry, TextEncoder, HistogramOpts, Encoder};
 
 /// Prometheus metrics registry.
 #[derive(Clone)]
@@ -31,8 +31,10 @@ impl Metrics {
         ).unwrap();
 
         let request_duration_seconds = Histogram::with_opts(HistogramOpts {
-            common_name: "miroir_request_duration_seconds".to_string(),
-            help: "Request duration in seconds".to_string(),
+            common_opts: prometheus::Opts::new(
+                "miroir_request_duration_seconds",
+                "Request duration in seconds"
+            ),
             buckets: vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0],
         }).unwrap();
 
@@ -69,7 +71,7 @@ impl Metrics {
     }
 
     /// Record a request with labels.
-    pub fn record_request(&self, method: &str, path: &str, status: u16, duration_secs: f64) {
+    pub fn record_request(&self, _method: &str, _path: &str, status: u16, duration_secs: f64) {
         self.requests_total.inc();
         self.request_duration_seconds.observe(duration_secs);
 
@@ -80,7 +82,7 @@ impl Metrics {
     }
 
     /// Record a degraded request.
-    pub fn record_degraded(&self, method: &str, path: &str) {
+    pub fn record_degraded(&self, _method: &str, _path: &str) {
         self.degraded_requests_total.inc();
     }
 

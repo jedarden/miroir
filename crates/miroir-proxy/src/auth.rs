@@ -16,7 +16,7 @@ use crate::state::ProxyState;
 use crate::error_response::ErrorResponse;
 
 /// Token kind determined from the bearer token.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
     /// Master key - full access to all endpoints.
     Master,
@@ -25,7 +25,7 @@ pub enum TokenKind {
 }
 
 /// Authentication result from bearer token validation.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthResult {
     /// Valid token with its kind.
     Valid(TokenKind),
@@ -154,7 +154,7 @@ mod tests {
         config.admin.api_key = "test-admin-key".to_string();
         config.nodes = vec![];
 
-        let mut topology = miroir_core::topology::Topology::new(1);
+        let mut topology = miroir_core::topology::Topology::new(1, 1);
         topology.add_node(Node::new(
             NodeId::new("test-node".to_string()),
             "http://localhost:7700".to_string(),
@@ -172,6 +172,10 @@ mod tests {
             master_key: std::sync::Arc::new("test-master-key".to_string()),
             admin_key: std::sync::Arc::new("test-admin-key".to_string()),
             metrics: std::sync::Arc::new(crate::middleware::Metrics::new()),
+            task_manager: std::sync::Arc::new(crate::task_manager::TaskManager::new()),
+            retry_cache: std::sync::Arc::new(crate::retry_cache::RetryCache::new(
+                std::time::Duration::from_secs(60),
+            )),
         }
     }
 
