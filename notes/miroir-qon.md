@@ -44,7 +44,18 @@
 - ✅ Clap derive API with all planned subcommands
 - ✅ Credential loading (env var, config file, CLI flag)
 
+## Build Verification (2026-05-09)
+
+| Command | Result |
+|---------|--------|
+| `cargo build --all` | ✅ PASS |
+| `cargo test --all` | ✅ PASS (all tests pass) |
+| `cargo clippy --all-targets --all-features -- -D warnings` | ✅ PASS |
+| `cargo fmt --all -- --check` | ✅ PASS |
+| `cargo build --release --target x86_64-unknown-linux-musl -p miroir-proxy` | ⚠️ SKIP (musl-gcc not available in NixOS environment - infrastructure limitation, not project issue) |
+
 ## Notes
-- Environment: NixOS without Rust in default PATH
-- Build verification deferred to CI
-- All source structure verified manually
+- Environment: NixOS without Rust in default PATH (uses ~/.cargo/bin)
+- All DoD criteria verified except musl build (environmental limitation)
+- Config round-trip YAML serialization verified via tests in config.rs
+- Child beads P0.1-P0.7 all implemented (work completed in previous commits)
