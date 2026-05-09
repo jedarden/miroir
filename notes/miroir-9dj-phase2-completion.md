@@ -119,7 +119,10 @@
 
 ## Files Modified/Created
 
-### Created:
+### Modified (this session):
+- `crates/miroir-proxy/src/routes/documents.rs` - Fixed typo in header name (X-Meiroil → X-Miroir)
+
+### Created (previous sessions):
 - `crates/miroir-proxy/src/main.rs` - Main entry point
 - `crates/miroir-proxy/src/lib.rs` - Library exports
 - `crates/miroir-proxy/src/auth.rs` - Authentication middleware
