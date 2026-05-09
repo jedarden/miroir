@@ -8,14 +8,6 @@ pub fn validate(cfg: &MiroirConfig) -> Result<(), ConfigError> {
         ));
     }
 
-    // replica_groups > 1 requires redis backend
-    if cfg.replica_groups > 1 && cfg.task_store.backend == "sqlite" {
-        return Err(ConfigError::Validation(
-            "replica_groups > 1 requires task_store.backend = 'redis' (SQLite is single-writer)"
-                .into(),
-        ));
-    }
-
     // Nodes must belong to a valid replica group
     if cfg.replica_groups > 0 {
         for node in &cfg.nodes {
@@ -77,11 +69,18 @@ pub fn validate(cfg: &MiroirConfig) -> Result<(), ConfigError> {
         ));
     }
 
-    // Leader election should be enabled when replica_groups > 1
-    if cfg.replica_groups > 1 && !cfg.leader_election.enabled {
-        return Err(ConfigError::Validation(
-            "leader_election.enabled must be true when replica_groups > 1".into(),
-        ));
+    // replica_groups > 1 requires both redis backend and leader election
+    if cfg.replica_groups > 1 {
+        if cfg.task_store.backend != "redis" {
+            return Err(ConfigError::Validation(
+                "replica_groups > 1 requires task_store.backend = 'redis' (SQLite is single-writer)".into(),
+            ));
+        }
+        if !cfg.leader_election.enabled {
+            return Err(ConfigError::Validation(
+                "leader_election.enabled must be true when replica_groups > 1".into(),
+            ));
+        }
     }
 
     // Tenant affinity dedicated_groups must be within valid range
