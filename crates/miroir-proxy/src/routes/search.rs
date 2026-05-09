@@ -35,7 +35,7 @@ pub fn router() -> axum::Router<ProxyState> {
 }
 
 /// Search request body (Meilisearch format).
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SearchRequest {
     q: Option<String>,
@@ -91,10 +91,10 @@ async fn search_with_group(
     index: &str,
     req_body: &[u8],
     query_seq: u64,
-    limit: usize,
-    offset: usize,
-    client_requested_score: bool,
-    facets: Option<Vec<String>>,
+    _limit: usize,
+    _offset: usize,
+    _client_requested_score: bool,
+    _facets: Option<Vec<String>>,
 ) -> Result<(Vec<CoreShardResponse>, bool, Vec<u32>), ErrorResponse> {
     let group = topology
         .group(group_id)
@@ -166,6 +166,9 @@ async fn search(
     let topology = state.topology().await;
     let query_seq = state.next_query_seq();
 
+    // Extract query before moving req.0
+    let query_value = req.q.clone();
+
     // Build request body for nodes
     let req_body = serde_json::to_vec(&req.0).unwrap_or_default();
 
@@ -175,8 +178,8 @@ async fn search(
     let facets = req.facets.clone();
 
     // Try the primary group first
-    let primary_group_id = query_group(query_seq, state.config.replication_groups);
-    let (mut shard_responses, mut any_degraded, failed_shard_ids) = search_with_group(
+    let primary_group_id = query_group(query_seq, state.config.replica_groups);
+    let (mut shard_responses, mut any_degraded, mut failed_shard_ids) = search_with_group(
         &state,
         &topology,
         primary_group_id,
@@ -186,7 +189,7 @@ async fn search(
         limit,
         offset,
         client_requested_score,
-        facets,
+        facets.clone(),
     )
     .await?;
 
@@ -218,7 +221,7 @@ async fn search(
                 limit,
                 offset,
                 client_requested_score,
-                facets.clone(),
+                req.facets.clone(),
             )
             .await?;
 
@@ -274,7 +277,7 @@ async fn search(
     // Build response
     let search_response = SearchResponse {
         hits: merged.hits,
-        query: req.q.unwrap_or_default(),
+        query: query_value.unwrap_or_default(),
         limit,
         offset,
         estimated_total_hits: merged.total_hits,
