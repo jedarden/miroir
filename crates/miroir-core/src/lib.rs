@@ -12,10 +12,12 @@ pub mod router;
 pub mod scatter;
 pub mod score_comparability;
 pub mod task;
+pub mod task_store;
 pub mod topology;
 
-#[cfg(feature = "raft-proto")]
-pub mod raft_proto;
+// Raft prototype temporarily disabled (openraft 0.9.22 fails on Rust 1.87)
+// #[cfg(feature = "raft-proto")]
+// pub mod raft_proto;
 
 // Public re-exports
 pub use error::{MiroirError, Result};
