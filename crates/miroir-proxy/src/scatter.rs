@@ -6,7 +6,6 @@ use miroir_core::config::UnavailableShardPolicy;
 use miroir_core::scatter::{NodeResponse, Scatter, ScatterRequest, ScatterResponse};
 use miroir_core::topology::{NodeId, Topology};
 use miroir_core::{MiroirError, Result};
-use serde_json::Value;
 use std::time::Duration;
 use tokio::time::timeout;
 

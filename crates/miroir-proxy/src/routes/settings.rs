@@ -23,7 +23,7 @@ use crate::{
 };
 
 /// Settings router.
-pub fn router() -> axum::Router {
+pub fn router() -> axum::Router<ProxyState> {
     axum::Router::new()
         .route("/", axum::routing::get(get_all_settings))
         .route(
