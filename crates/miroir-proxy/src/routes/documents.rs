@@ -74,7 +74,7 @@ async fn get_primary_key(
     }
 
     // Check for primary key in query string/header
-    if let Some(pk) = headers.get("X-Meiroil-Primary-Key") {
+    if let Some(pk) = headers.get("X-Miroir-Primary-Key") {
         if let Ok(pk_str) = pk.to_str() {
             return Ok(pk_str.to_string());
         }
