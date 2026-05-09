@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 3b3d90350f9e49f193918fb461dbcdf863f0ad2f7038d119306a1a4802b98c26 # shrinks to tasks = []
+cc 1cee4772a94571342e4f3531456bcb2e859ac5bd6aa283bfdaa652919281f034 # shrinks to tasks = [Task { miroir_id: "/", created_at: 0, status: Enqueued, node_tasks: {}, error: None }, Task { miroir_id: "/", created_at: 0, status: Enqueued, node_tasks: {}, error: None }]

@@ -238,7 +238,7 @@ async fn canary_run_history() {
     let run1 = CanaryRun {
         run_id: "run-1".to_string(),
         canary_name: "test-canary".to_string(),
-        ran_at: 1234567890,
+        ran_at: 1234567950,
         passed: true,
         result_count: 100,
         error: None,
@@ -248,7 +248,7 @@ async fn canary_run_history() {
     let run2 = CanaryRun {
         run_id: "run-2".to_string(),
         canary_name: "test-canary".to_string(),
-        ran_at: 1234567950,
+        ran_at: 1234567890,
         passed: false,
         result_count: 0,
         error: Some("no results".to_string()),
@@ -261,7 +261,7 @@ async fn canary_run_history() {
     // List runs
     let runs = store.canary_run_list("test-canary", 10).await.unwrap();
     assert_eq!(runs.len(), 2);
-    assert_eq!(runs[0].run_id, "run-1"); // Most recent first
+    assert_eq!(runs[0].run_id, "run-1"); // Most recent first (ran_at: 1234567950)
     assert_eq!(runs[1].run_id, "run-2");
 }
 
@@ -587,8 +587,11 @@ fn task_list_strategy() -> impl Strategy<Value = Vec<Task>> {
         Just(TaskStatus::Canceled),
     ];
 
+    // Use safe u64 values that fit in SQLite's signed 64-bit integer
+    let created_at_strategy = 0u64..9223372036854775807u64;
+
     prop::collection::vec(
-        (any::<String>(), any::<u64>(), task_status_strategy),
+        (any::<String>(), created_at_strategy, task_status_strategy),
         0..100,
     )
     .prop_map(|items| {
