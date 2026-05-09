@@ -4,7 +4,16 @@ use super::error::{Result, TaskStoreError};
 use super::schema::*;
 use super::TaskStore;
 use redis::AsyncCommands;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
+
+/// Hash an API key using SHA256 and return as hex string for Redis key.
+#[allow(dead_code)]
+fn hash_api_key(api_key: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(api_key.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
 
 /// Redis task store implementation.
 pub struct RedisTaskStore {
@@ -108,18 +117,12 @@ impl TaskStore for RedisTaskStore {
         self.task_insert(&task).await
     }
 
-    async fn task_update_node(
-        &self,
-        miroir_id: &str,
-        node_id: &str,
-        node_task: &NodeTask,
-    ) -> Result<()> {
+    async fn task_update_node(&self, miroir_id: &str, node_id: &str, task_uid: u64) -> Result<()> {
         let mut task = self
             .task_get(miroir_id)
             .await?
             .ok_or_else(|| TaskStoreError::NotFound(miroir_id.to_string()))?;
-        task.node_tasks
-            .insert(node_id.to_string(), node_task.clone());
+        task.node_tasks.insert(node_id.to_string(), task_uid);
         self.task_insert(&task).await
     }
 
@@ -136,11 +139,6 @@ impl TaskStore for RedisTaskStore {
                 // Apply filters
                 if let Some(status) = filter.status {
                     if task.status != status {
-                        continue;
-                    }
-                }
-                if let Some(ref node_id) = filter.node_id {
-                    if !task.node_tasks.contains_key(node_id) {
                         continue;
                     }
                 }
@@ -246,8 +244,14 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("sessions", &session.session_id);
 
         let data = serde_json::to_string(session)?;
-        conn.set_ex::<_, _, ()>(&key, data, (session.expires_at - session.created_at) / 1000)
-            .await?;
+        // Calculate TTL in seconds from the ttl field (Unix millis)
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let ttl_seconds = if session.ttl > now {
+            (session.ttl - now) / 1000
+        } else {
+            1 // Minimum 1 second
+        };
+        conn.set_ex::<_, _, ()>(&key, data, ttl_seconds).await?;
 
         Ok(())
     }
@@ -313,13 +317,13 @@ impl TaskStore for RedisTaskStore {
 
     async fn job_enqueue(&self, job: &Job) -> Result<()> {
         let mut conn = self.get_conn().await?;
-        let key = self.table_key("jobs", &job.job_id);
+        let key = self.table_key("jobs", &job.id);
 
         let data = serde_json::to_string(job)?;
         conn.set::<_, _, ()>(&key, data).await?;
 
         // Add to enqueued queue
-        conn.rpush::<_, _, ()>("miroir:jobs:enqueued", &job.job_id)
+        conn.rpush::<_, _, ()>("miroir:jobs:enqueued", &job.id)
             .await?;
 
         Ok(())
@@ -375,10 +379,7 @@ impl TaskStore for RedisTaskStore {
         }
 
         // Clear claim when terminal
-        if matches!(
-            status,
-            JobState::Completed | JobState::Failed
-        ) {
+        if matches!(status, JobState::Completed | JobState::Failed) {
             job.claimed_by = None;
             job.claim_expires_at = None;
         }
@@ -426,8 +427,13 @@ impl TaskStore for RedisTaskStore {
         let mut conn = self.get_conn().await?;
         let key = "miroir:leader_lease";
 
-        // Use SET with NX (only set if not exists) and EX (expiration)
-        let ttl = (lease.expires_at - lease.acquired_at) / 1000;
+        // Calculate TTL from expires_at to now
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let ttl = if lease.expires_at > now {
+            (lease.expires_at - now) / 1000
+        } else {
+            1 // Minimum 1 second
+        };
         #[allow(clippy::cast_possible_truncation)]
         let ttl_usize = ttl as usize;
 
@@ -519,15 +525,16 @@ impl TaskStore for RedisTaskStore {
 
     async fn canary_run_insert(&self, run: &CanaryRun) -> Result<()> {
         let mut conn = self.get_conn().await?;
-        let key = self.table_key("canary_runs", &run.run_id);
+        // Use canary_id:ran_at as the unique key for the run
+        let run_key = format!("{}:{}", run.canary_id, run.ran_at);
+        let key = self.table_key("canary_runs", &run_key);
 
         let data = serde_json::to_string(run)?;
         conn.set::<_, _, ()>(&key, data).await?;
 
         // Add to canary-specific runs list
-        let canary_runs_key = format!("miroir:canary_runs:{}:index", run.canary_name);
-        conn.lpush::<_, _, ()>(&canary_runs_key, &run.run_id)
-            .await?;
+        let canary_runs_key = format!("miroir:canary_runs:{}:index", run.canary_id);
+        conn.lpush::<_, _, ()>(&canary_runs_key, &run_key).await?;
 
         Ok(())
     }
@@ -575,7 +582,10 @@ impl TaskStore for RedisTaskStore {
 
     async fn cdc_cursor_set(&self, cursor: &CdcCursor) -> Result<()> {
         let mut conn = self.get_conn().await?;
-        let key = self.table_key("cdc_cursors", &format!("{}:{}", cursor.sink, cursor.index));
+        let key = self.table_key(
+            "cdc_cursors",
+            &format!("{}:{}", cursor.sink_name, cursor.index_uid),
+        );
 
         let data = serde_json::to_string(cursor)?;
         conn.set::<_, _, ()>(&key, data).await?;
@@ -591,20 +601,29 @@ impl TaskStore for RedisTaskStore {
 
     async fn tenant_upsert(&self, tenant: &Tenant) -> Result<()> {
         let mut conn = self.get_conn().await?;
-        let key = self.table_key("tenant_map", &tenant.api_key);
+        // Convert hash bytes to hex string for Redis key
+        let key_hex = hex::encode(&tenant.api_key_hash);
+        let key = self.table_key("tenant_map", &key_hex);
 
         let data = serde_json::to_string(tenant)?;
         conn.set::<_, _, ()>(&key, data).await?;
 
         let index_key = self.index_key("tenant_map");
-        conn.sadd::<_, _, ()>(&index_key, &tenant.api_key).await?;
+        conn.sadd::<_, _, ()>(&index_key, &key_hex).await?;
 
         Ok(())
     }
 
     async fn tenant_get(&self, api_key: &str) -> Result<Option<Tenant>> {
         let mut conn = self.get_conn().await?;
-        let key = self.table_key("tenant_map", api_key);
+        // Hash the API key and convert to hex for lookup
+        use std::hash::Hasher;
+        use twox_hash::XxHash64;
+        let mut hasher = XxHash64::with_seed(0);
+        hasher.write(api_key.as_bytes());
+        let hash = hasher.finish();
+        let key_hex = format!("{hash:016x}");
+        let key = self.table_key("tenant_map", &key_hex);
 
         let data: Option<String> = conn.get(&key).await?;
         match data {
@@ -618,11 +637,18 @@ impl TaskStore for RedisTaskStore {
 
     async fn tenant_delete(&self, api_key: &str) -> Result<()> {
         let mut conn = self.get_conn().await?;
-        let key = self.table_key("tenant_map", api_key);
+        // Hash the API key and convert to hex for lookup
+        use std::hash::Hasher;
+        use twox_hash::XxHash64;
+        let mut hasher = XxHash64::with_seed(0);
+        hasher.write(api_key.as_bytes());
+        let hash = hasher.finish();
+        let key_hex = format!("{hash:016x}");
+        let key = self.table_key("tenant_map", &key_hex);
         let index_key = self.index_key("tenant_map");
 
         conn.del::<_, ()>(&key).await?;
-        conn.srem::<_, _, ()>(&index_key, api_key).await?;
+        conn.srem::<_, _, ()>(&index_key, &key_hex).await?;
 
         Ok(())
     }
@@ -699,13 +725,13 @@ impl TaskStore for RedisTaskStore {
 
     async fn search_ui_config_upsert(&self, config: &SearchUiConfig) -> Result<()> {
         let mut conn = self.get_conn().await?;
-        let key = self.table_key("search_ui_config", &config.index);
+        let key = self.table_key("search_ui_config", &config.index_uid);
 
         let data = serde_json::to_string(config)?;
         conn.set::<_, _, ()>(&key, data).await?;
 
         let index_key = self.index_key("search_ui_config");
-        conn.sadd::<_, _, ()>(&index_key, &config.index).await?;
+        conn.sadd::<_, _, ()>(&index_key, &config.index_uid).await?;
 
         Ok(())
     }
@@ -789,7 +815,7 @@ impl TaskStore for RedisTaskStore {
             .await?
             .ok_or_else(|| TaskStoreError::NotFound(session_id.to_string()))?;
 
-        session.revoked = true;
+        session.revoked = 1;
         self.admin_session_upsert(&session).await?;
 
         // Publish to Pub/Sub for instant propagation
@@ -803,7 +829,7 @@ impl TaskStore for RedisTaskStore {
 
     async fn admin_session_is_revoked(&self, session_id: &str) -> Result<bool> {
         if let Some(session) = self.admin_session_get(session_id).await? {
-            Ok(session.revoked)
+            Ok(session.revoked != 0)
         } else {
             Ok(false)
         }
