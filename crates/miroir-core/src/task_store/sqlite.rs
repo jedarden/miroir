@@ -150,10 +150,10 @@ impl TaskStore for SqliteTaskStore {
         let result: Option<Task> = self
             .query_row(
                 "SELECT miroir_id, created_at, status, node_tasks, error FROM tasks WHERE miroir_id = ?1",
-                &[miroir_id] as &[&dyn rusqlite::ToSql],
+                &[&miroir_id as &dyn rusqlite::ToSql],
                 |row| {
                     let node_tasks_json: String = row.get(3)?;
-                    let node_tasks: HashMap<String, NodeTask> = serde_json::from_str(&node_tasks_json)?;
+                    let node_tasks: HashMap<String, NodeTask> = serde_json::from_str(&node_tasks_json).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                     Ok(Task {
                         miroir_id: row.get(0)?,
                         created_at: row.get(1)?,
@@ -175,7 +175,10 @@ impl TaskStore for SqliteTaskStore {
     async fn task_update_status(&self, miroir_id: &str, status: TaskStatus) -> Result<()> {
         self.execute(
             "UPDATE tasks SET status = ?1 WHERE miroir_id = ?2",
-            &[&status.to_string(), miroir_id] as &[&dyn rusqlite::ToSql],
+            &[
+                &status.to_string() as &dyn rusqlite::ToSql,
+                &miroir_id as &dyn rusqlite::ToSql,
+            ],
         )?;
         Ok(())
     }
@@ -196,7 +199,10 @@ impl TaskStore for SqliteTaskStore {
         let node_tasks_json = serde_json::to_string(&task.node_tasks)?;
         self.execute(
             "UPDATE tasks SET node_tasks = ?1 WHERE miroir_id = ?2",
-            [&node_tasks_json, miroir_id],
+            &[
+                &node_tasks_json as &dyn rusqlite::ToSql,
+                &miroir_id as &dyn rusqlite::ToSql,
+            ],
         )?;
         Ok(())
     }
@@ -232,15 +238,15 @@ impl TaskStore for SqliteTaskStore {
 
         self.query_map(&sql, &params_refs, |row| {
             let node_tasks_json: String = row.get(3)?;
-            let node_tasks: HashMap<String, NodeTask> = serde_json::from_str(&node_tasks_json)?;
+            let node_tasks: HashMap<String, NodeTask> = serde_json::from_str(&node_tasks_json)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
             Ok(Task {
                 miroir_id: row.get(0)?,
                 created_at: row.get(1)?,
-                status: row.get::<_, String>(2)?.parse().map_err(|e| {
-                    rusqlite::Error::ToSqlConversionFailure(
-                        Box::new(e) as Box<dyn std::error::Error + Send + Sync>
-                    )
-                })?,
+                status: row
+                    .get::<_, String>(2)?
+                    .parse()
+                    .map_err(|e| parse_error(e))?,
                 node_tasks,
                 error: {
                     let error: String = row.get(4)?;
@@ -258,7 +264,10 @@ impl TaskStore for SqliteTaskStore {
         let version: Option<i64> = self
             .query_row(
                 "SELECT version FROM node_settings_version WHERE index = ?1 AND node_id = ?2",
-                [index, node_id],
+                &[
+                    &index as &dyn rusqlite::ToSql,
+                    &node_id as &dyn rusqlite::ToSql,
+                ],
                 |row| row.get(0),
             )
             .ok();
@@ -275,7 +284,12 @@ impl TaskStore for SqliteTaskStore {
         self.execute(
             "INSERT OR REPLACE INTO node_settings_version (index, node_id, version, updated_at)
              VALUES (?1, ?2, ?3, ?4)",
-            [index, node_id, &version, &now],
+            &[
+                &index as &dyn rusqlite::ToSql,
+                &node_id as &dyn rusqlite::ToSql,
+                &version as &dyn rusqlite::ToSql,
+                &now as &dyn rusqlite::ToSql,
+            ],
         )?;
         Ok(())
     }
@@ -284,7 +298,7 @@ impl TaskStore for SqliteTaskStore {
         self.execute(
             "INSERT OR REPLACE INTO aliases (name, kind, current_uid, target_uids, version, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            [
+            &[
                 &alias.name as &dyn rusqlite::ToSql,
                 &alias.kind.to_string(),
                 &alias.current_uid.as_deref().unwrap_or(""),
@@ -292,7 +306,7 @@ impl TaskStore for SqliteTaskStore {
                 &alias.version,
                 &alias.created_at,
                 &alias.updated_at,
-            ],
+            ] as &[&dyn rusqlite::ToSql],
         )?;
         Ok(())
     }
@@ -302,10 +316,11 @@ impl TaskStore for SqliteTaskStore {
             .query_row(
                 "SELECT name, kind, current_uid, target_uids, version, created_at, updated_at
                  FROM aliases WHERE name = ?1",
-                [name],
+                &[&name as &dyn rusqlite::ToSql],
                 |row| {
                     let target_uids_json: String = row.get(3)?;
-                    let target_uids: Vec<String> = serde_json::from_str(&target_uids_json)?;
+                    let target_uids: Vec<String> = serde_json::from_str(&target_uids_json)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                     Ok(Alias {
                         name: row.get(0)?,
                         kind: row
@@ -332,17 +347,20 @@ impl TaskStore for SqliteTaskStore {
     }
 
     async fn alias_delete(&self, name: &str) -> Result<()> {
-        self.execute("DELETE FROM aliases WHERE name = ?1", [name])?;
+        self.execute(
+            "DELETE FROM aliases WHERE name = ?1",
+            &[&name as &dyn rusqlite::ToSql],
+        )?;
         Ok(())
     }
 
     async fn alias_list(&self) -> Result<Vec<Alias>> {
         self.query_map(
             "SELECT name, kind, current_uid, target_uids, version, created_at, updated_at FROM aliases",
-            [],
+            &[] as &[&dyn rusqlite::ToSql],
             |row| {
                 let target_uids_json: String = row.get(3)?;
-                let target_uids: Vec<String> = serde_json::from_str(&target_uids_json)?;
+                let target_uids: Vec<String> = serde_json::from_str(&target_uids_json).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                 Ok(Alias {
                     name: row.get(0)?,
                     kind: row.get::<_, String>(1)?.parse().map_err(|e| {
@@ -365,13 +383,13 @@ impl TaskStore for SqliteTaskStore {
         self.execute(
             "INSERT OR REPLACE INTO sessions (session_id, index, settings_version, created_at, expires_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            [
+            &[
                 &session.session_id as &dyn rusqlite::ToSql,
                 &session.index,
                 &session.settings_version,
                 &session.created_at,
                 &session.expires_at,
-            ],
+            ] as &[&dyn rusqlite::ToSql],
         )?;
         Ok(())
     }
@@ -381,7 +399,7 @@ impl TaskStore for SqliteTaskStore {
             .query_row(
                 "SELECT session_id, index, settings_version, created_at, expires_at
                  FROM sessions WHERE session_id = ?1",
-                [session_id],
+                &[&session_id as &dyn rusqlite::ToSql],
                 |row| {
                     Ok(Session {
                         session_id: row.get(0)?,
@@ -397,12 +415,18 @@ impl TaskStore for SqliteTaskStore {
     }
 
     async fn session_delete(&self, session_id: &str) -> Result<()> {
-        self.execute("DELETE FROM sessions WHERE session_id = ?1", [session_id])?;
+        self.execute(
+            "DELETE FROM sessions WHERE session_id = ?1",
+            &[&session_id as &dyn rusqlite::ToSql],
+        )?;
         Ok(())
     }
 
     async fn session_delete_by_index(&self, index: &str) -> Result<()> {
-        self.execute("DELETE FROM sessions WHERE index = ?1", [index])?;
+        self.execute(
+            "DELETE FROM sessions WHERE index = ?1",
+            &[&index as &dyn rusqlite::ToSql],
+        )?;
         Ok(())
     }
 
@@ -410,7 +434,7 @@ impl TaskStore for SqliteTaskStore {
         let result: Option<IdempotencyEntry> = self
             .query_row(
                 "SELECT key, response, status_code, created_at FROM idempotency_cache WHERE key = ?1",
-                [key],
+                &[&key as &dyn rusqlite::ToSql],
                 |row| Ok(IdempotencyEntry {
                     key: row.get(0)?,
                     response: row.get(1)?,
@@ -426,12 +450,12 @@ impl TaskStore for SqliteTaskStore {
         self.execute(
             "INSERT OR REPLACE INTO idempotency_cache (key, response, status_code, created_at)
              VALUES (?1, ?2, ?3, ?4)",
-            [
+            &[
                 &entry.key as &dyn rusqlite::ToSql,
                 &entry.response,
                 &entry.status_code,
                 &entry.created_at,
-            ],
+            ] as &[&dyn rusqlite::ToSql],
         )?;
         Ok(())
     }
@@ -439,7 +463,7 @@ impl TaskStore for SqliteTaskStore {
     async fn idempotency_prune(&self, before_ts: u64) -> Result<u64> {
         let count = self.execute(
             "DELETE FROM idempotency_cache WHERE created_at < ?1",
-            [&before_ts],
+            &[&before_ts as &dyn rusqlite::ToSql],
         )?;
         Ok(count as u64)
     }
@@ -448,7 +472,7 @@ impl TaskStore for SqliteTaskStore {
         self.execute(
             "INSERT INTO jobs (job_id, job_type, parameters, status, worker_id, result, error, created_at, started_at, completed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            [
+            &[
                 &job.job_id as &dyn rusqlite::ToSql,
                 &job.job_type,
                 &job.parameters,
@@ -459,7 +483,7 @@ impl TaskStore for SqliteTaskStore {
                 &job.created_at,
                 &job.started_at.map(|v| v as i64).unwrap_or(0),
                 &job.completed_at.map(|v| v as i64).unwrap_or(0),
-            ],
+            ] as &[&dyn rusqlite::ToSql],
         )?;
         Ok(())
     }
@@ -901,7 +925,10 @@ impl TaskStore for SqliteTaskStore {
     }
 
     async fn tenant_delete(&self, api_key: &str) -> Result<()> {
-        self.execute("DELETE FROM tenant_map WHERE api_key = ?1", [api_key])?;
+        self.execute(
+            "DELETE FROM tenant_map WHERE api_key = ?1",
+            &[api_key as &dyn rusqlite::ToSql],
+        )?;
         Ok(())
     }
 
@@ -962,7 +989,7 @@ impl TaskStore for SqliteTaskStore {
     }
 
     async fn rollover_policy_delete(&self, name: &str) -> Result<()> {
-        self.execute("DELETE FROM rollover_policies WHERE name = ?1", [name])?;
+        self.execute("DELETE FROM rollover_policies WHERE name = ?1", &[name as &dyn rusqlite::ToSql])?;
         Ok(())
     }
 
@@ -1014,7 +1041,7 @@ impl TaskStore for SqliteTaskStore {
     }
 
     async fn search_ui_config_delete(&self, index: &str) -> Result<()> {
-        self.execute("DELETE FROM search_ui_config WHERE index = ?1", [index])?;
+        self.execute("DELETE FROM search_ui_config WHERE index = ?1", &[index as &dyn rusqlite::ToSql])?;
         Ok(())
     }
 

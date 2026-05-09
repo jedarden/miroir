@@ -273,7 +273,7 @@ impl TaskStore for RedisTaskStore {
         Ok(())
     }
 
-    async fn session_delete_by_index(&self, index: &str) -> Result<()> {
+    async fn session_delete_by_index(&self, _index: &str) -> Result<()> {
         // This is expensive in Redis - we need to scan all sessions
         // For now, we'll return an error to discourage this pattern
         Err(TaskStoreError::InvalidData(
@@ -319,7 +319,8 @@ impl TaskStore for RedisTaskStore {
         conn.set::<_, _, ()>(&key, data).await?;
 
         // Add to enqueued queue
-        conn.rpush::<_, _, ()>("miroir:jobs:enqueued", &job.job_id).await?;
+        conn.rpush::<_, _, ()>("miroir:jobs:enqueued", &job.job_id)
+            .await?;
 
         Ok(())
     }
@@ -327,8 +328,8 @@ impl TaskStore for RedisTaskStore {
     async fn job_dequeue(&self, worker_id: &str) -> Result<Option<Job>> {
         let mut conn = self.get_conn().await?;
 
-        // Pop from enqueued queue
-        let job_id: Option<String> = conn.lpop("miroir:jobs:enqueued").await?;
+        // Pop from enqueued queue (pop single element)
+        let job_id: Option<String> = conn.lpop("miroir:jobs:enqueued", None).await?;
 
         if let Some(job_id) = job_id {
             // Get the job
@@ -346,7 +347,8 @@ impl TaskStore for RedisTaskStore {
             self.job_enqueue(&job).await?;
 
             // Remove from enqueued queue (we already popped it)
-            conn.lrem::<_, _, ()>("miroir:jobs:enqueued", 1, &job_id).await?;
+            conn.lrem::<_, _, ()>("miroir:jobs:enqueued", 1, &job_id)
+                .await?;
 
             Ok(Some(job))
         } else {
@@ -401,7 +403,7 @@ impl TaskStore for RedisTaskStore {
         let mut jobs = Vec::new();
         for id in all_ids {
             if let Some(job) = self.job_get(&id).await? {
-                if status.is_none() || job.status == status {
+                if status.is_none() || Some(job.status) == status {
                     jobs.push(job);
                 }
             }
@@ -421,8 +423,15 @@ impl TaskStore for RedisTaskStore {
         let ttl = (lease.expires_at - lease.acquired_at) / 1000;
         #[allow(clippy::cast_possible_truncation)]
         let ttl_usize = ttl as usize;
-        let acquired: bool = conn
-            .set_nx(key, serde_json::to_string(lease)?, ttl_usize)
+
+        // Use the options API to set with NX and EX
+        let acquired: bool = redis::cmd("SET")
+            .arg(key)
+            .arg(serde_json::to_string(lease)?)
+            .arg("NX")
+            .arg("EX")
+            .arg(ttl_usize)
+            .query_async(&mut conn)
             .await?;
 
         Ok(acquired)
@@ -510,7 +519,8 @@ impl TaskStore for RedisTaskStore {
 
         // Add to canary-specific runs list
         let canary_runs_key = format!("miroir:canary_runs:{}:index", run.canary_name);
-        conn.lpush::<_, _, ()>(&canary_runs_key, &run.run_id).await?;
+        conn.lpush::<_, _, ()>(&canary_runs_key, &run.run_id)
+            .await?;
 
         Ok(())
     }
@@ -566,7 +576,7 @@ impl TaskStore for RedisTaskStore {
         Ok(())
     }
 
-    async fn cdc_cursor_list(&self, sink: &str) -> Result<Vec<CdcCursor>> {
+    async fn cdc_cursor_list(&self, _sink: &str) -> Result<Vec<CdcCursor>> {
         // This requires scanning, which is expensive
         // For now, return empty list
         Ok(Vec::new())
@@ -631,10 +641,10 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("rollover_policies", &policy.name);
 
         let data = serde_json::to_string(policy)?;
-        conn.set(&key, data).await?;
+        conn.set::<_, _, ()>(&key, data).await?;
 
         let index_key = self.index_key("rollover_policies");
-        conn.sadd(&index_key, &policy.name).await?;
+        conn.sadd::<_, _, ()>(&index_key, &policy.name).await?;
 
         Ok(())
     }
@@ -658,8 +668,8 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("rollover_policies", name);
         let index_key = self.index_key("rollover_policies");
 
-        conn.del(&key).await?;
-        conn.srem(&index_key, name).await?;
+        conn.del::<_, ()>(&key).await?;
+        conn.srem::<_, _, ()>(&index_key, name).await?;
 
         Ok(())
     }
@@ -685,10 +695,10 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("search_ui_config", &config.index);
 
         let data = serde_json::to_string(config)?;
-        conn.set(&key, data).await?;
+        conn.set::<_, _, ()>(&key, data).await?;
 
         let index_key = self.index_key("search_ui_config");
-        conn.sadd(&index_key, &config.index).await?;
+        conn.sadd::<_, _, ()>(&index_key, &config.index).await?;
 
         Ok(())
     }
@@ -712,8 +722,8 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("search_ui_config", index);
         let index_key = self.index_key("search_ui_config");
 
-        conn.del(&key).await?;
-        conn.srem(&index_key, index).await?;
+        conn.del::<_, ()>(&key).await?;
+        conn.srem::<_, _, ()>(&index_key, index).await?;
 
         Ok(())
     }
@@ -739,7 +749,7 @@ impl TaskStore for RedisTaskStore {
         let key = self.table_key("admin_sessions", &session.session_id);
 
         let data = serde_json::to_string(session)?;
-        conn.set_ex(&key, data, (session.expires_at - session.created_at) / 1000)
+        conn.set_ex::<_, _, ()>(&key, data, (session.expires_at - session.created_at) / 1000)
             .await?;
 
         Ok(())
@@ -762,7 +772,7 @@ impl TaskStore for RedisTaskStore {
     async fn admin_session_delete(&self, session_id: &str) -> Result<()> {
         let mut conn = self.get_conn().await?;
         let key = self.table_key("admin_sessions", session_id);
-        conn.del(&key).await?;
+        conn.del::<_, ()>(&key).await?;
         Ok(())
     }
 
@@ -808,7 +818,7 @@ impl TaskStore for RedisTaskStore {
 
         if count == 1 {
             // First request in window - set expiration
-            conn.expire(&redis_key, window_s as usize).await?;
+            conn.expire::<_, ()>(&redis_key, window_s as i64).await?;
         }
 
         let ttl: i64 = conn.ttl(&redis_key).await?;
@@ -819,7 +829,7 @@ impl TaskStore for RedisTaskStore {
     async fn ratelimit_set_backoff(&self, key: &str, duration_s: u64) -> Result<()> {
         let mut conn = self.get_conn().await?;
         let redis_key = format!("miroir:ratelimit:backoff:{}", key);
-        conn.set_ex(&redis_key, "1", duration_s as usize).await?;
+        conn.set_ex::<_, _, ()>(&redis_key, "1", duration_s).await?;
         Ok(())
     }
 
@@ -862,14 +872,14 @@ impl TaskStore for RedisTaskStore {
             ));
         }
 
-        conn.append(&key, data).await?;
+        conn.append::<_, _, ()>(&key, data).await?;
         Ok(())
     }
 
     async fn cdc_overflow_clear(&self, sink: &str) -> Result<()> {
         let mut conn = self.get_conn().await?;
         let key = format!("miroir:cdc:overflow:{}", sink);
-        conn.del(&key).await?;
+        conn.del::<_, ()>(&key).await?;
         Ok(())
     }
 
@@ -878,7 +888,7 @@ impl TaskStore for RedisTaskStore {
         let redis_key = format!("miroir:search_ui_scoped_key:{}", index);
 
         let ttl = (expires_at - chrono::Utc::now().timestamp_millis() as u64) / 1000;
-        conn.set_ex(&redis_key, key, ttl as usize).await?;
+        conn.set_ex::<_, _, ()>(&redis_key, key, ttl).await?;
 
         Ok(())
     }
@@ -895,7 +905,7 @@ impl TaskStore for RedisTaskStore {
         let mut conn = self.get_conn().await?;
         let redis_key = format!("miroir:search_ui_scoped_key_observed:{}:{}", pod, index);
 
-        conn.set(&redis_key, key).await?;
+        conn.set::<_, _, ()>(&redis_key, key).await?;
         Ok(())
     }
 
@@ -909,7 +919,7 @@ impl TaskStore for RedisTaskStore {
 
     async fn health_check(&self) -> Result<bool> {
         let mut conn = self.get_conn().await?;
-        let _: String = conn.ping().await?;
+        redis::cmd("PING").query_async::<_, ()>(&mut conn).await?;
         Ok(true)
     }
 }
