@@ -16,23 +16,31 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 config = "0.14"
 
+# Task store backends (Phase 3)
+rusqlite = { version = "0.32", features = ["bundled"] }
+redis = { version = "0.25", features = ["connection-manager", "tokio-rustls-comp"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+chrono = "0.4"
+async-trait = "0.1"
+
 # Raft prototype (P12.OP2 research) — not for production use
-# openraft 0.9.22 fails on stable Rust 1.87 (validit uses let_chains).
-# The prototype simulates Raft; only bincode is needed for serialization benchmarks.
-openraft = { version = "0.9", features = ["serde"], optional = true }
-bincode = { version = "2", features = ["serde"], optional = true }
+# Temporarily disabled: openraft 0.9.22 fails on stable Rust 1.87 (validit uses let_chains).
+# bincode = { version = "2", features = ["serde"], optional = true }
 
 [features]
-raft-proto = ["bincode"]
+# raft-proto = ["bincode"]
 # Enable when openraft compiles on stable Rust:
 # raft-full = ["openraft", "bincode"]
 
-[[bin]]
-name = "bench-reshard-load"
-path = "benches/reshard_load.rs"
+[[bench]]
+name = "reshard_load"
+harness = false
 
-[[bin]]
-name = "bench-score-comparability"
-path = "benches/score_comparability.rs"
+[[bench]]
+name = "score_comparability"
+harness = false
 
 [dev-dependencies]
+proptest = "1"
+pretty_assertions = "1"
+tempfile = "3"
