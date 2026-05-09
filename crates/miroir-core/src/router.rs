@@ -633,7 +633,7 @@ mod tests {
         );
     }
 
-    // AT-4: Uniformity: 64 shards, 3 nodes, RF=1 → each node holds 18–26 shards
+    // AT-4: Uniformity: 64 shards, 3 nodes, RF=1 → each node holds 15–27 shards
     #[test]
     fn acceptance_uniformity_64_shards_3_nodes_rf1() {
         let nodes: Vec<NodeId> = vec!["node1", "node2", "node3"]
