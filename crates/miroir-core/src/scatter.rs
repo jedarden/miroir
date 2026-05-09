@@ -106,7 +106,7 @@ mod tests {
     #[tokio::test]
     async fn test_stub_scatter_returns_empty_response() {
         let scatter = StubScatter;
-        let topology = Topology::new(1);
+        let topology = Topology::new(64, 1); // 64 shards, RF=1
         let nodes = vec![NodeId::new("node1".to_string())];
         let request = ScatterRequest {
             body: Vec::new(),
@@ -175,7 +175,7 @@ mod tests {
     #[tokio::test]
     async fn test_stub_scatter_with_empty_nodes() {
         let scatter = StubScatter;
-        let topology = Topology::new(1);
+        let topology = Topology::new(64, 1); // 64 shards, RF=1
         let nodes: Vec<NodeId> = Vec::new();
         let request = ScatterRequest {
             body: Vec::new(),
@@ -196,7 +196,7 @@ mod tests {
     #[tokio::test]
     async fn test_stub_scatter_with_multiple_nodes() {
         let scatter = StubScatter;
-        let mut topology = Topology::new(1);
+        let mut topology = Topology::new(64, 1); // 64 shards, RF=1
 
         let node1 = NodeId::new("node1".to_string());
         let node2 = NodeId::new("node2".to_string());

@@ -113,7 +113,7 @@ mod tests {
     async fn test_http_scatter_empty_nodes() {
         let client = NodeClient::new("test-key".to_string(), &Default::default());
         let scatter = HttpScatter::new(client, 1000);
-        let topology = Topology::new(1);
+        let topology = Topology::new(64, 1);
 
         let request = ScatterRequest {
             body: Vec::new(),
@@ -135,7 +135,7 @@ mod tests {
     async fn test_http_scatter_timeout_handling() {
         let client = NodeClient::new("test-key".to_string(), &Default::default());
         let scatter = HttpScatter::new(client, 1); // 1ms timeout
-        let mut topology = Topology::new(1);
+        let mut topology = Topology::new(64, 1);
 
         // Add a node that will timeout
         topology.add_node(Node::new(
@@ -169,7 +169,7 @@ mod tests {
     async fn test_http_scatter_error_policy() {
         let client = NodeClient::new("test-key".to_string(), &Default::default());
         let scatter = HttpScatter::new(client, 1);
-        let mut topology = Topology::new(1);
+        let mut topology = Topology::new(64, 1);
 
         topology.add_node(Node::new(
             NodeId::new("test-node".to_string()),

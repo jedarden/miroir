@@ -144,3 +144,127 @@ impl TaskRegistry for StubTaskRegistry {
         Ok(Vec::new())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stub_task_registry_register() {
+        let registry = StubTaskRegistry;
+        let mut node_tasks = HashMap::new();
+        node_tasks.insert("node1".to_string(), 123);
+
+        let task = registry.register(node_tasks).unwrap();
+        assert!(!task.miroir_id.is_empty());
+        assert_eq!(task.status, TaskStatus::Enqueued);
+        assert!(task.node_tasks.is_empty());
+        assert!(task.error.is_none());
+    }
+
+    #[test]
+    fn test_stub_task_registry_get() {
+        let registry = StubTaskRegistry;
+        let result = registry.get("test-id").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_stub_task_registry_update_status() {
+        let registry = StubTaskRegistry;
+        let result = registry.update_status("test-id", TaskStatus::Succeeded);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_stub_task_registry_update_node_task() {
+        let registry = StubTaskRegistry;
+        let result = registry.update_node_task("test-id", "node1", NodeTaskStatus::Succeeded);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_stub_task_registry_list() {
+        let registry = StubTaskRegistry;
+        let filter = TaskFilter::default();
+        let result = registry.list(filter).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_task_status_equality() {
+        assert_eq!(TaskStatus::Enqueued, TaskStatus::Enqueued);
+        assert_ne!(TaskStatus::Enqueued, TaskStatus::Processing);
+        assert_ne!(TaskStatus::Succeeded, TaskStatus::Failed);
+    }
+
+    #[test]
+    fn test_node_task_status_equality() {
+        assert_eq!(NodeTaskStatus::Enqueued, NodeTaskStatus::Enqueued);
+        assert_ne!(NodeTaskStatus::Processing, NodeTaskStatus::Succeeded);
+        assert_ne!(NodeTaskStatus::Failed, NodeTaskStatus::Succeeded);
+    }
+
+    #[test]
+    fn test_task_filter_default() {
+        let filter = TaskFilter::default();
+        assert!(filter.status.is_none());
+        assert!(filter.node_id.is_none());
+        assert!(filter.limit.is_none());
+        assert!(filter.offset.is_none());
+    }
+
+    #[test]
+    fn test_task_filter_with_fields() {
+        let filter = TaskFilter {
+            status: Some(TaskStatus::Processing),
+            node_id: Some("node1".to_string()),
+            limit: Some(10),
+            offset: Some(5),
+        };
+        assert_eq!(filter.status, Some(TaskStatus::Processing));
+        assert_eq!(filter.node_id, Some("node1".to_string()));
+        assert_eq!(filter.limit, Some(10));
+        assert_eq!(filter.offset, Some(5));
+    }
+
+    #[test]
+    fn test_miroir_task_creation() {
+        let mut node_tasks = HashMap::new();
+        node_tasks.insert(
+            "node1".to_string(),
+            NodeTask {
+                task_uid: 123,
+                status: NodeTaskStatus::Enqueued,
+            },
+        );
+
+        let task = MiroirTask {
+            miroir_id: "test-id".to_string(),
+            created_at: 1234567890,
+            status: TaskStatus::Processing,
+            node_tasks,
+            error: None,
+        };
+
+        assert_eq!(task.miroir_id, "test-id");
+        assert_eq!(task.created_at, 1234567890);
+        assert_eq!(task.status, TaskStatus::Processing);
+        assert_eq!(task.node_tasks.len(), 1);
+        assert!(task.error.is_none());
+    }
+
+    #[test]
+    fn test_miroir_task_with_error() {
+        let task = MiroirTask {
+            miroir_id: "failed-task".to_string(),
+            created_at: 0,
+            status: TaskStatus::Failed,
+            node_tasks: HashMap::new(),
+            error: Some("Something went wrong".to_string()),
+        };
+
+        assert_eq!(task.status, TaskStatus::Failed);
+        assert_eq!(task.error, Some("Something went wrong".to_string()));
+    }
+}
