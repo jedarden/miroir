@@ -108,32 +108,61 @@ pub fn merge(input: MergeInput) -> MergedSearchResult {
     let heap_size = input.offset + input.limit;
     let top_hits = if all_hits.len() > heap_size * 2 {
         // Only use heap optimization if we have significantly more hits than needed
-        // We use Reverse to turn BinaryHeap (max-heap) into a min-heap
+        // Use BinaryHeap with Reverse to get min-heap behavior
+        // Reverse<T> makes the "smallest" T become the "largest" Reverse<T>
+        // So in BinaryHeap (max-heap), the smallest T ends up at the top
         use std::cmp::Reverse;
-        let mut heap: BinaryHeap<Reverse<HitWithScore>> = BinaryHeap::new();
+
+        // First, define a wrapper with natural ascending order by score
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        struct AscendingHit(HitWithScore);
+
+        impl PartialOrd for AscendingHit {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        impl Ord for AscendingHit {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                // Ascending order: lower score first, then primary key ascending
+                match self.0.score.partial_cmp(&other.0.score) {
+                    Some(std::cmp::Ordering::Equal) | None => {
+                        self.0.primary_key.cmp(&other.0.primary_key)
+                    }
+                    Some(ord) => ord,
+                }
+            }
+        }
+
+        // Reverse<AscendingHit> in BinaryHeap gives us a min-heap by score
+        // The lowest score (worst) will be at the top for easy replacement
+        let mut heap: BinaryHeap<Reverse<AscendingHit>> = BinaryHeap::new();
 
         for hit in all_hits {
             if heap.len() < heap_size {
-                heap.push(Reverse(hit));
+                heap.push(Reverse(AscendingHit(hit)));
             } else {
                 // Peek at the smallest (worst) hit in our top-k
                 if let Some(Reverse(worst)) = heap.peek() {
                     // If current hit is better than our worst, replace it
-                    if hit > *worst {
+                    // Compare using the score directly
+                    if hit.score > worst.0.score ||
+                       (hit.score == worst.0.score && hit.primary_key < worst.0.primary_key) {
                         heap.pop();
-                        heap.push(Reverse(hit));
+                        heap.push(Reverse(AscendingHit(hit)));
                     }
                 }
             }
         }
 
         // Convert to sorted vector (descending by score)
-        let mut result: Vec<_> = heap.into_iter().map(|r| r.0).collect();
-        result.sort_by(|a, b| b.cmp(a));
+        let mut result: Vec<_> = heap.into_iter().map(|r| (r.0).0).collect();
+        result.sort_by(|a, b| a.descending_cmp(b));
         result
     } else {
         // For smaller result sets, just sort directly
-        all_hits.sort_by(|a, b| b.cmp(a));
+        all_hits.sort_by(|a, b| a.descending_cmp(b));
         all_hits
     };
 
@@ -205,6 +234,20 @@ impl Eq for HitWithScore {}
 impl PartialOrd for HitWithScore {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+impl HitWithScore {
+    /// Compare for descending order (score desc, primary key asc).
+    fn descending_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Sort by score descending, then by primary key ascending for tie-breaking
+        match other.score.partial_cmp(&self.score) {
+            Some(std::cmp::Ordering::Equal) | None => {
+                // On equal scores (or NaN), fall back to primary key ascending
+                self.primary_key.cmp(&other.primary_key)
+            }
+            Some(ord) => ord,
+        }
     }
 }
 

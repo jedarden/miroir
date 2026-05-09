@@ -6,6 +6,7 @@ use axum::{
     routing::get,
     Router,
 };
+use miroir_core::scatter::Scatter;
 use crate::error_response::ErrorResponse;
 use crate::middleware::export_metrics;
 use crate::state::ProxyState;
@@ -79,7 +80,7 @@ pub async fn get_stats(
     let mut merged_fields: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
 
     for response in result.responses {
-        if let Ok(stats) = serde_json::from_value::<serde_json::Value>(response.body) {
+        if let Ok(stats) = serde_json::from_slice::<serde_json::Value>(&response.body) {
             if let Some(indexes) = stats.get("databaseSize").and_then(|v| v.as_u64()) {
                 total_indexes += indexes;
             }
@@ -104,24 +105,24 @@ pub async fn get_stats(
 pub async fn get_topology(State(state): State<ProxyState>) -> Json<serde_json::Value> {
     let health = state.get_node_health().await;
 
-    serde_json::json!({
+    Json(serde_json::json!({
         "replication_factor": state.config.replication_factor,
         "replica_groups": state.config.replica_groups,
         "shards": state.config.shards,
         "nodes": health,
-    })
+    }))
 }
 
 /// GET /_miroir/shards - Return shard assignment information.
 pub async fn get_shards(State(state): State<ProxyState>) -> Json<serde_json::Value> {
     let assignments = state.get_shard_assignments().await;
 
-    serde_json::json!({
+    Json(serde_json::json!({
         "shards": state.config.shards,
         "replication_factor": state.config.replication_factor,
         "replica_groups": state.config.replica_groups,
         "assignments": assignments,
-    })
+    }))
 }
 
 /// GET /_miroir/metrics - Return Prometheus metrics (admin-key gated).
