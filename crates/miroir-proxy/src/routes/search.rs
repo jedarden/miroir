@@ -17,7 +17,7 @@ use axum::{
 };
 use miroir_core::{
     config::UnavailableShardPolicy,
-    merger::{Merger, MergerImpl, MergedResult, ShardResponse},
+    merger::{Merger, MergerImpl, MergedResult, ShardResponse as CoreShardResponse},
     router::{covering_set, query_group},
     scatter::{Scatter, ScatterRequest},
 };
@@ -81,18 +81,21 @@ struct SearchResponse {
     ranking_score_threshold: Option<f64>,
 }
 
-/// POST /indexes/:index/search - Search documents.
-async fn search(
-    State(state): State<ProxyState>,
-    Path(index): Path<String>,
-    req: Json<SearchRequest>,
-) -> Result<Response, ErrorResponse> {
-    let topology = state.topology().await;
-    let query_seq = state.next_query_seq();
-
-    // Pick replica group for this query
-    let group_id = query_group(query_seq, state.config.replica_groups);
-
+/// Attempt a search with a specific replica group.
+///
+/// Returns (shard_responses, any_degraded, failed_shard_ids)
+async fn search_with_group(
+    state: &ProxyState,
+    topology: &miroir_core::topology::Topology,
+    group_id: u32,
+    index: &str,
+    req_body: &[u8],
+    query_seq: u64,
+    limit: usize,
+    offset: usize,
+    client_requested_score: bool,
+    facets: Option<Vec<String>>,
+) -> Result<(Vec<CoreShardResponse>, bool, Vec<u32>), ErrorResponse> {
     let group = topology
         .group(group_id)
         .ok_or_else(|| ErrorResponse::internal_error(format!("Group {} not found", group_id)))?;
@@ -102,29 +105,27 @@ async fn search(
     let shard_count = state.config.shards;
     let covering = covering_set(shard_count, group, rf, query_seq);
 
-    // Build request body for nodes
-    let req_body = serde_json::to_vec(req.0).unwrap_or_default();
-
     let request = ScatterRequest {
         method: "POST".to_string(),
         path: format!("/indexes/{}/search", index),
-        body: req_body,
+        body: req_body.to_vec(),
         headers: vec![],
     };
 
     // Scatter search to all nodes in covering set
     let scatter = HttpScatter::new((*state.client).clone(), state.config.server.request_timeout_ms);
     let result = scatter
-        .scatter(&topology, covering, request, UnavailableShardPolicy::Partial)
+        .scatter(topology, covering.clone(), request, UnavailableShardPolicy::Partial)
         .await
         .map_err(|e| ErrorResponse::internal_error(e.to_string()))?;
 
     // Build shard responses for merger
-    let mut shard_responses: Vec<ShardResponse> = Vec::new();
+    let mut shard_responses: Vec<CoreShardResponse> = Vec::new();
     let mut any_degraded = false;
+    let mut failed_shard_ids: Vec<u32> = Vec::new();
 
     // Group responses by node
-    let mut responses_by_node: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    let mut responses_by_node: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
 
     for resp in result.responses {
         let node_id = resp.node_id.as_str().to_string();
@@ -136,19 +137,122 @@ async fn search(
         let node_id_str = node_id.as_str().to_string();
 
         if let Some(body) = responses_by_node.get(&node_id_str) {
-            shard_responses.push(ShardResponse {
+            shard_responses.push(CoreShardResponse {
                 shard_id: shard_id as u32,
                 body: body.clone(),
                 success: true,
             });
         } else {
             // No response from this node's shard
-            shard_responses.push(ShardResponse {
+            shard_responses.push(CoreShardResponse {
                 shard_id: shard_id as u32,
                 body: serde_json::json!({}),
                 success: false,
             });
+            failed_shard_ids.push(shard_id as u32);
             any_degraded = true;
+        }
+    }
+
+    Ok((shard_responses, any_degraded, failed_shard_ids))
+}
+
+/// POST /indexes/:index/search - Search documents.
+async fn search(
+    State(state): State<ProxyState>,
+    Path(index): Path<String>,
+    req: Json<SearchRequest>,
+) -> Result<Response, ErrorResponse> {
+    let topology = state.topology().await;
+    let query_seq = state.next_query_seq();
+
+    // Build request body for nodes
+    let req_body = serde_json::to_vec(req.0).unwrap_or_default();
+
+    let offset = req.offset.unwrap_or(0);
+    let limit = req.limit.unwrap_or(20);
+    let client_requested_score = req.show_ranking_score.unwrap_or(false);
+    let facets = req.facets.clone();
+
+    // Try the primary group first
+    let primary_group_id = query_group(query_seq, state.config.replication_groups);
+    let (mut shard_responses, mut any_degraded, failed_shard_ids) = search_with_group(
+        &state,
+        &topology,
+        primary_group_id,
+        &index,
+        &req_body,
+        query_seq,
+        limit,
+        offset,
+        client_requested_score,
+        facets,
+    )
+    .await?;
+
+    // If we have failed shards and there are other replica groups, try group fallback
+    if !failed_shard_ids.is_empty() && state.config.replica_groups > 1 {
+        let replica_groups = state.config.replica_groups;
+        let mut fallback_attempts = 0;
+        const MAX_FALLBACK_ATTEMPTS: u32 = 2; // Limit fallback attempts to avoid cascading
+
+        // Try other groups for the failed shards
+        for fallback_offset in 1..replica_groups as u64 {
+            if fallback_attempts >= MAX_FALLBACK_ATTEMPTS {
+                break;
+            }
+
+            let fallback_group_id = (primary_group_id as u64 + fallback_offset) % replica_groups as u64;
+            if fallback_group_id == primary_group_id as u64 {
+                continue;
+            }
+
+            // Try the fallback group for all failed shards
+            let (fallback_responses, fallback_degraded, fallback_failed) = search_with_group(
+                &state,
+                &topology,
+                fallback_group_id as u32,
+                &index,
+                &req_body,
+                query_seq,
+                limit,
+                offset,
+                client_requested_score,
+                facets.clone(),
+            )
+            .await?;
+
+            // Merge the successful responses from fallback into our main responses
+            for (i, shard_resp) in shard_responses.iter_mut().enumerate() {
+                let shard_id = i as u32;
+                if !shard_resp.success && failed_shard_ids.contains(&shard_id) {
+                    // Try to find a successful response from fallback
+                    if let Some(fallback_resp) = fallback_responses.iter().find(|r| r.shard_id == shard_id && r.success) {
+                        shard_resp.body = fallback_resp.body.clone();
+                        shard_resp.success = true;
+                        // Remove from failed list
+                        failed_shard_ids.retain(|&id| id != shard_id);
+                    }
+                }
+            }
+
+            if fallback_degraded {
+                any_degraded = true;
+            }
+
+            // Update failed_shard_ids with any new failures from fallback
+            for &shard_id in &fallback_failed {
+                if !failed_shard_ids.contains(&shard_id) {
+                    failed_shard_ids.push(shard_id);
+                }
+            }
+
+            fallback_attempts += 1;
+
+            // If we've recovered all failed shards, stop trying fallbacks
+            if failed_shard_ids.is_empty() {
+                break;
+            }
         }
     }
 
@@ -159,10 +263,6 @@ async fn search(
     }
 
     // Merge results
-    let offset = req.offset.unwrap_or(0);
-    let limit = req.limit.unwrap_or(20);
-    let client_requested_score = req.show_ranking_score.unwrap_or(false);
-
     let merger = MergerImpl;
     let merged: MergedResult = merger
         .merge(shard_responses, offset, limit, client_requested_score)

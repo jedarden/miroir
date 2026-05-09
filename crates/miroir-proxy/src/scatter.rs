@@ -1,6 +1,7 @@
 //! HTTP scatter-gather execution for Meilisearch nodes.
 
 use crate::client::NodeClient;
+use crate::retry_cache::{CachedResponse, RetryCache};
 use async_trait::async_trait;
 use miroir_core::config::UnavailableShardPolicy;
 use miroir_core::scatter::{NodeResponse, Scatter, ScatterRequest, ScatterResponse};
@@ -10,9 +11,12 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 /// HTTP scatter implementation using NodeClient.
+#[derive(Clone)]
 pub struct HttpScatter {
     client: NodeClient,
     node_timeout_ms: u64,
+    /// Retry cache for idempotency (plan §4).
+    retry_cache: Option<RetryCache>,
 }
 
 impl HttpScatter {
@@ -20,6 +24,80 @@ impl HttpScatter {
         Self {
             client,
             node_timeout_ms,
+            retry_cache: None,
+        }
+    }
+
+    /// Create a new HttpScatter with retry cache enabled.
+    pub fn with_retry_cache(client: NodeClient, node_timeout_ms: u64, retry_cache: RetryCache) -> Self {
+        Self {
+            client,
+            node_timeout_ms,
+            retry_cache: Some(retry_cache),
+        }
+    }
+
+    /// Send a request to a single node with retry cache lookup.
+    async fn send_to_node_with_cache(
+        &self,
+        topology: &Topology,
+        node_id: &NodeId,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        headers: &[String],
+    ) -> Result<NodeResponse, NodeId> {
+        // Check retry cache first if enabled
+        if let Some(ref cache) = self.retry_cache {
+            let cache_key = RetryCache::cache_key(body, node_id.as_str(), None);
+
+            if let Some(cached) = cache.get(&cache_key).await {
+                // Return cached response
+                return Ok(NodeResponse {
+                    node_id: node_id.clone(),
+                    body: cached.body,
+                    status: cached.status,
+                    headers: Vec::new(),
+                });
+            }
+        }
+
+        // No cache hit, send actual request
+        let timeout_dur = Duration::from_millis(self.node_timeout_ms);
+        let result = timeout(timeout_dur, async {
+            self.client
+                .send_to_node(topology, node_id, method, path, Some(body), headers)
+                .await
+        })
+        .await;
+
+        match result {
+            Ok(Ok(resp)) => {
+                let body_bytes = serde_json::to_vec(&resp.body).unwrap_or_default();
+                let status = resp.status;
+
+                // Cache successful responses
+                if let Some(ref cache) = self.retry_cache {
+                    // Cache only 2xx responses
+                    if (200..300).contains(&status) {
+                        let cache_key = RetryCache::cache_key(body, node_id.as_str(), None);
+                        let cached = CachedResponse {
+                            body: body_bytes.clone(),
+                            status,
+                            cached_at: std::time::Instant::now(),
+                        };
+                        cache.put(cache_key, cached).await;
+                    }
+                }
+
+                Ok(NodeResponse {
+                    node_id: node_id.clone(),
+                    body: body_bytes,
+                    status,
+                    headers: resp.headers,
+                })
+            }
+            _ => Err(node_id.clone()),
         }
     }
 }
@@ -33,44 +111,28 @@ impl Scatter for HttpScatter {
         request: ScatterRequest,
         policy: UnavailableShardPolicy,
     ) -> Result<ScatterResponse> {
-        let timeout_dur = Duration::from_millis(self.node_timeout_ms);
-
         // Fan out requests to all nodes in parallel
         let futures: Vec<_> = nodes
             .iter()
             .map(|node_id| {
-                let client = self.client.clone();
-                let topo = topology.clone();
-                let req = request.clone();
                 let node_id = node_id.clone();
+                let method = request.method.clone();
+                let path = request.path.clone();
+                let body = request.body.clone();
+                let headers = request.headers.clone();
+                let this = self.clone();
+                let topo = topology.clone();
 
                 async move {
-                    let result = timeout(timeout_dur, async move {
-                        client
-                            .send_to_node(
-                                &topo,
-                                &node_id,
-                                &req.method,
-                                &req.path,
-                                Some(&req.body),
-                                &req.headers,
-                            )
-                            .await
-                    })
-                    .await;
-
-                    match result {
-                        Ok(Ok(resp)) => {
-                            let body_bytes = serde_json::to_vec(&resp.body).unwrap_or_default();
-                            Ok(NodeResponse {
-                                node_id,
-                                body: body_bytes,
-                                status: resp.status,
-                                headers: resp.headers,
-                            })
-                        }
-                        _ => Err(node_id),
-                    }
+                    this.send_to_node_with_cache(
+                        &topo,
+                        &node_id,
+                        &method,
+                        &path,
+                        &body,
+                        &headers,
+                    )
+                    .await
                 }
             })
             .collect();
