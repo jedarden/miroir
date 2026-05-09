@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::client::NodeClient;
+use crate::middleware::Metrics;
 
 /// Shared application state.
 #[derive(Clone)]
@@ -25,19 +26,20 @@ pub struct ProxyState {
     pub query_seq: Arc<AtomicU64>,
 
     /// Master key for client authentication.
-    #[allow(dead_code)]
     pub master_key: Arc<String>,
 
     /// Admin API key.
-    #[allow(dead_code)]
     pub admin_key: Arc<String>,
+
+    /// Prometheus metrics.
+    pub metrics: Arc<Metrics>,
 }
 
 impl ProxyState {
     /// Create a new proxy state from configuration.
     pub fn new(config: MiroirConfig) -> Result<Self> {
         // Build topology from config nodes
-        let mut topology = Topology::new(config.replication_factor as usize);
+        let mut topology = Topology::new(config.shards, config.replication_factor as usize);
 
         for node_config in &config.nodes {
             let node = Node::new(
@@ -62,17 +64,19 @@ impl ProxyState {
             &config.server,
         ));
 
+        // Use master_key from config (already loaded with env var override)
+        let master_key = Arc::new(config.master_key.clone());
+        let admin_key = Arc::new(config.admin.api_key.clone());
+        let metrics = Arc::new(Metrics::new());
+
         Ok(Self {
             config: Arc::new(config),
             topology: Arc::new(RwLock::new(topology)),
             client,
             query_seq: Arc::new(AtomicU64::new(0)),
-            master_key: Arc::new(
-                std::env::var("MIROIR_MASTER_KEY").unwrap_or_else(|_| "".to_string()),
-            ),
-            admin_key: Arc::new(
-                std::env::var("MIROIR_ADMIN_API_KEY").unwrap_or_else(|_| "".to_string()),
-            ),
+            master_key,
+            admin_key,
+            metrics,
         })
     }
 
@@ -106,7 +110,7 @@ impl ProxyState {
         for node in topology.nodes() {
             health.push(NodeHealth {
                 id: node.id.as_str().to_string(),
-                url: node.url.clone(),
+                address: node.address.clone(),
                 replica_group: node.replica_group,
                 status: node.status,
                 is_healthy: node.is_healthy(),
@@ -143,7 +147,7 @@ impl ProxyState {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct NodeHealth {
     pub id: String,
-    pub url: String,
+    pub address: String,
     pub replica_group: u32,
     pub status: NodeStatus,
     pub is_healthy: bool,

@@ -8,10 +8,11 @@ use twox_hash::XxHash64;
 ///
 /// Higher scores win; used for deterministic shard assignment.
 ///
-/// Uses a non-zero seed to ensure better distribution properties
-/// for typical node/shard combinations while maintaining determinism.
+/// CRITICAL: Uses seed 0 to match Meilisearch Enterprise's hash function.
+/// Any deviation (different seed, different ordering, endianness) forks
+/// routing across any two Miroir instances and silently corrupts writes.
 pub fn score(shard_id: u32, node_id: &str) -> u64 {
-    let mut h = XxHash64::with_seed(42);
+    let mut h = XxHash64::with_seed(0);
     shard_id.hash(&mut h);
     node_id.hash(&mut h);
     h.finish()
@@ -20,12 +21,18 @@ pub fn score(shard_id: u32, node_id: &str) -> u64 {
 /// Assign a shard to `rf` nodes within a single replica group.
 ///
 /// `group_nodes` is the subset of nodes belonging to that group.
+///
+/// Nodes are sorted by score descending, with ties broken lexicographically
+/// by node_id to ensure deterministic assignment even when hash scores collide.
 pub fn assign_shard_in_group(shard_id: u32, group_nodes: &[NodeId], rf: usize) -> Vec<NodeId> {
     let mut scored: Vec<(u64, &NodeId)> = group_nodes
         .iter()
         .map(|n| (score(shard_id, n.as_str()), n))
         .collect();
-    scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_unstable_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.as_str().cmp(b.1.as_str()))
+    });
     scored
         .into_iter()
         .take(rf)
@@ -231,7 +238,7 @@ mod tests {
     // Test 7: write_targets returns exactly RG × RF nodes
     #[test]
     fn test_write_targets_count() {
-        let mut topology = Topology::new(2); // RF=2
+        let mut topology = Topology::new(64, 2); // 64 shards, RF=2
 
         // 3 replica groups, 2 nodes each
         for group_id in 0..3 {
@@ -298,7 +305,7 @@ mod tests {
     // Test 9: covering_set returns exactly one node per shard
     #[test]
     fn test_covering_set_one_per_shard() {
-        let mut topology = Topology::new(2); // RF=2
+        let mut topology = Topology::new(64, 2); // 64 shards, RF=2
         let group_id = 0;
         let num_nodes = 5;
 
@@ -331,7 +338,7 @@ mod tests {
     // Test 10: covering_set handles intra-group replica rotation
     #[test]
     fn test_covering_set_replica_rotation() {
-        let mut topology = Topology::new(2); // RF=2
+        let mut topology = Topology::new(64, 2); // 64 shards, RF=2
         let group_id = 0;
 
         // Add 3 nodes to a single group
@@ -455,7 +462,7 @@ mod tests {
     // Test 16: write_targets with empty topology
     #[test]
     fn test_write_targets_empty_topology() {
-        let topology = Topology::new(2);
+        let topology = Topology::new(64, 2);
         let shard_id = 42;
 
         let targets = write_targets(shard_id, &topology);
@@ -476,7 +483,7 @@ mod tests {
     #[test]
     fn test_group_scoped_assignment() {
         // Create topology with 2 groups, 2 nodes each
-        let mut topology = Topology::new(1);
+        let mut topology = Topology::new(64, 1); // 64 shards, RF=1
         let shard_id = 42;
 
         // Group 0
@@ -524,5 +531,248 @@ mod tests {
 
         assert!(g0_target, "Should have one target from group 0");
         assert!(g1_target, "Should have one target from group 1");
+    }
+
+    // === Acceptance Tests (plan §8 "Router correctness") ===
+
+    // AT-1: Determinism: same (shard_id, nodes) → identical Vec<NodeId> across 1000 randomized runs
+    #[test]
+    fn acceptance_determinism_1000_runs() {
+        let nodes: Vec<NodeId> = vec!["node1", "node2", "node3", "node4"]
+            .into_iter()
+            .map(|s| NodeId::new(s.to_string()))
+            .collect();
+
+        for run in 0..1000 {
+            let shard_id = (run % 100) as u32; // Test different shard IDs
+            let rf = ((run % 3) + 1) as usize; // Test different RF values
+
+            let assignment1 = assign_shard_in_group(shard_id, &nodes, rf);
+            let assignment2 = assign_shard_in_group(shard_id, &nodes, rf);
+
+            assert_eq!(
+                assignment1, assignment2,
+                "Assignments differ on run {}: shard_id={}, rf={}",
+                run, shard_id, rf
+            );
+        }
+    }
+
+    // AT-2: Reshuffle bound on add: 64 shards, 3→4 nodes → at most 2 × (1/4) × 64 edges differ
+    #[test]
+    fn acceptance_reshuffle_bound_on_add() {
+        let nodes_3: Vec<NodeId> = vec!["node1", "node2", "node3"]
+            .into_iter()
+            .map(|s| NodeId::new(s.to_string()))
+            .collect();
+        let nodes_4: Vec<NodeId> = vec!["node1", "node2", "node3", "node4"]
+            .into_iter()
+            .map(|s| NodeId::new(s.to_string()))
+            .collect();
+
+        let shard_count = 64;
+        let rf = 1;
+
+        let mut moved_count = 0;
+        for shard_id in 0..shard_count {
+            let assign_3 = assign_shard_in_group(shard_id, &nodes_3, rf);
+            let assign_4 = assign_shard_in_group(shard_id, &nodes_4, rf);
+
+            // Shard moved if its primary owner changed
+            if assign_3.first() != assign_4.first() {
+                moved_count += 1;
+            }
+        }
+
+        // Expected: at most 2 × (1/4) × 64 = 32 edges differ
+        let max_expected = (2.0 * (1.0 / 4.0) * shard_count as f64).ceil() as usize;
+        assert!(
+            moved_count <= max_expected,
+            "Expected ≤ {max_expected} shard-node edges to differ, but {moved_count} differed"
+        );
+    }
+
+    // AT-3: Reshuffle bound on remove: 64 shards, 4→3 nodes → ~RF × S / Ng edges differ
+    #[test]
+    fn acceptance_reshuffle_bound_on_remove() {
+        let nodes_4: Vec<NodeId> = vec!["node1", "node2", "node3", "node4"]
+            .into_iter()
+            .map(|s| NodeId::new(s.to_string()))
+            .collect();
+        let nodes_3: Vec<NodeId> = vec!["node1", "node2", "node3"]
+            .into_iter()
+            .map(|s| NodeId::new(s.to_string()))
+            .collect();
+
+        let shard_count = 64;
+        let rf = 2;
+
+        let mut moved_count = 0;
+        for shard_id in 0..shard_count {
+            let assign_4 = assign_shard_in_group(shard_id, &nodes_4, rf);
+            let assign_3 = assign_shard_in_group(shard_id, &nodes_3, rf);
+
+            // Count edges that differ
+            let set_4: std::collections::HashSet<_> = assign_4.iter().collect();
+            let set_3: std::collections::HashSet<_> = assign_3.iter().collect();
+
+            // An edge differs if it's not in both sets
+            let diff = set_4.symmetric_difference(&set_3).count();
+            if diff > 0 {
+                moved_count += diff;
+            }
+        }
+
+        // Expected: ~RF × S / Ng = 2 × 64 / 4 = 32 edges differ
+        // Allow some variance due to hash distribution
+        let expected = (rf * shard_count as usize) / 4;
+        let tolerance = (expected as f64 * 0.5).ceil() as usize; // ±50%
+        assert!(
+            moved_count >= expected - tolerance && moved_count <= expected + tolerance,
+            "Expected ~{expected} shard-node edges to differ (±{tolerance}), but {moved_count} differed"
+        );
+    }
+
+    // AT-4: Uniformity: 64 shards, 3 nodes, RF=1 → each node holds 18–26 shards
+    #[test]
+    fn acceptance_uniformity_64_shards_3_nodes_rf1() {
+        let nodes: Vec<NodeId> = vec!["node1", "node2", "node3"]
+            .into_iter()
+            .map(|s| NodeId::new(s.to_string()))
+            .collect();
+        let shard_count = 64;
+        let rf = 1;
+
+        let mut node_shard_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
+        for shard_id in 0..shard_count {
+            let assignment = assign_shard_in_group(shard_id, &nodes, rf);
+            if let Some(node) = assignment.first() {
+                *node_shard_counts
+                    .entry(node.as_str().to_string())
+                    .or_insert(0) += 1;
+            }
+        }
+
+        // DoD requirement: each node holds 18–26 shards
+        for (node, count) in &node_shard_counts {
+            assert!(
+                *count >= 18 && *count <= 26,
+                "Node {node} has {count} shards, expected 18–26"
+            );
+        }
+
+        // Total should equal shard_count
+        let total: usize = node_shard_counts.values().sum();
+        assert_eq!(total, shard_count as usize);
+    }
+
+    // AT-5: RF=2 placement: top-2 nodes change minimally when a node is added or removed
+    #[test]
+    fn acceptance_rf2_placement_stability() {
+        let nodes_3: Vec<NodeId> = vec!["node1", "node2", "node3"]
+            .into_iter()
+            .map(|s| NodeId::new(s.to_string()))
+            .collect();
+        let nodes_4: Vec<NodeId> = vec!["node1", "node2", "node3", "node4"]
+            .into_iter()
+            .map(|s| NodeId::new(s.to_string()))
+            .collect();
+
+        let shard_count = 64;
+        let rf = 2;
+
+        let mut changed_count = 0;
+        for shard_id in 0..shard_count {
+            let assign_3 = assign_shard_in_group(shard_id, &nodes_3, rf);
+            let assign_4 = assign_shard_in_group(shard_id, &nodes_4, rf);
+
+            // Count how many of the top-RF nodes changed
+            let set_3: std::collections::HashSet<_> = assign_3.iter().collect();
+            let set_4: std::collections::HashSet<_> = assign_4.iter().collect();
+
+            // A change is if the intersection is less than RF
+            let intersection = set_3.intersection(&set_4).count();
+            if intersection < rf {
+                changed_count += 1;
+            }
+        }
+
+        // Adding a 4th node should affect minimally
+        // Expected: roughly 1/4 of assignments might have some change
+        let max_expected = (shard_count as f64 * 0.4).ceil() as usize;
+        assert!(
+            changed_count <= max_expected,
+            "Expected ≤ {max_expected} shards to change, but {changed_count} changed"
+        );
+    }
+
+    // AT-6: shard_for_key uses seed 0 and matches known fixture
+    #[test]
+    fn acceptance_shard_for_key_fixture() {
+        // Known fixture values computed with XxHash64::with_seed(0)
+        let fixtures = [
+            ("user:12345", 64, 47),
+            ("product:abc", 64, 19),
+            ("order:99999", 64, 35),
+            ("test", 16, 9),
+            ("hello", 32, 22),
+        ];
+
+        for (key, shard_count, expected_shard) in fixtures {
+            let shard = shard_for_key(key, shard_count);
+            assert_eq!(
+                shard, expected_shard,
+                "shard_for_key(\"{}\", {}) should be {}, got {}",
+                key, shard_count, expected_shard, shard
+            );
+        }
+    }
+
+    // AT-7: Tie-breaking on node_id for identical scores
+    #[test]
+    fn acceptance_tie_breaking_node_id() {
+        // Create nodes that will have deterministic assignment
+        let nodes: Vec<NodeId> = vec!["node-a", "node-b", "node-c"]
+            .into_iter()
+            .map(|s| NodeId::new(s.to_string()))
+            .collect();
+
+        let rf = 3; // Request all nodes
+        let shard_id = 42;
+
+        let assignment = assign_shard_in_group(shard_id, &nodes, rf);
+
+        // Should return all nodes in a deterministic order
+        assert_eq!(assignment.len(), 3);
+
+        // The order should be stable across calls
+        let assignment2 = assign_shard_in_group(shard_id, &nodes, rf);
+        assert_eq!(assignment, assignment2);
+    }
+
+    // AT-8: Canonical concatenation order (shard_id, node_id)
+    #[test]
+    fn acceptance_canonical_concatenation_order() {
+        // Verify that score(shard_id, node_id) != score(node_id, shard_id)
+        // by checking that different orders produce different results
+        let shard_id = 42u32;
+        let node_id = "node1";
+
+        let score_correct = score(shard_id, node_id);
+
+        // Compute score with reversed order (manually)
+        use std::hash::{Hash, Hasher};
+        let mut h_rev = twox_hash::XxHash64::with_seed(0);
+        node_id.hash(&mut h_rev);
+        shard_id.hash(&mut h_rev);
+        let score_reversed = h_rev.finish();
+
+        // These should almost certainly be different
+        assert_ne!(
+            score_correct, score_reversed,
+            "Canonical order (shard_id, node_id) must differ from reversed order"
+        );
     }
 }

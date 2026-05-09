@@ -1,14 +1,22 @@
 use axum::{routing::get, Router};
+use miroir_core::config::MiroirConfig;
 use std::net::SocketAddr;
 use tokio::signal;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod auth;
+mod client;
+mod error_response;
 mod middleware;
 mod routes;
+mod scatter;
+mod state;
 
 use routes::{admin, documents, health, indexes, search, settings, tasks};
+use state::ProxyState;
+use auth::auth_middleware;
+use middleware::{prometheus_middleware, tracing_middleware};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -17,27 +25,54 @@ async fn main() -> anyhow::Result<()> {
 
     info!("miroir-proxy starting");
 
+    // Load configuration from file + environment
+    let config = MiroirConfig::load().map_err(|e| anyhow::anyhow!("config load failed: {}", e))?;
+
+    info!(
+        "loaded config: {} shards, RF={}, RG={}, {} nodes",
+        config.shards,
+        config.replication_factor,
+        config.replica_groups,
+        config.nodes.len()
+    );
+
+    // Build shared application state
+    let state = ProxyState::new(config).map_err(|e| anyhow::anyhow!("state init failed: {}", e))?;
+
+    // Build router with all routes
     let app = Router::new()
         .route("/health", get(health::get_health))
+        .route("/version", get(health::get_version))
         .nest("/indexes", indexes::router())
         .nest("/documents", documents::router())
         .nest("/search", search::router())
         .nest("/settings", settings::router())
         .nest("/tasks", tasks::router())
         .nest("/admin", admin::router())
-        .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024));
+        .nest("/_miroir", admin::miroir_router())
+        .layer(axum::extract::DefaultBodyLimit::max(
+            state.config.server.max_body_bytes,
+        ))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), prometheus_middleware))
+        .layer(axum::middleware::from_fn(tracing_middleware))
+        .with_state(state);
 
-    let main_addr = SocketAddr::from(([0, 0, 0, 0], 7700));
+    let main_addr = SocketAddr::from((
+        state.config.server.bind.parse::<std::net::IpAddr>()?,
+        state.config.server.port,
+    ));
     let metrics_addr = SocketAddr::from(([0, 0, 0, 0], 9090));
 
     info!("listening on {}", main_addr);
+    info!("metrics on {}", metrics_addr);
 
+    // Metrics server (prometheus format)
+    let metrics_router = Router::new().route("/metrics", get(admin::get_metrics));
+    let metrics_server = axum::serve(tokio::net::TcpListener::bind(metrics_addr).await?, metrics_router);
+
+    // Main server
     let main_server = axum::serve(tokio::net::TcpListener::bind(main_addr).await?, app);
-
-    let metrics_server = axum::serve(
-        tokio::net::TcpListener::bind(metrics_addr).await?,
-        Router::new().route("/metrics", get(|| async { "prometheus metrics\n" })),
-    );
 
     tokio::select! {
         _ = main_server => {}

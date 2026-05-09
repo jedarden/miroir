@@ -77,7 +77,7 @@ impl NodeClient {
             .node(node_id)
             .ok_or_else(|| MiroirError::Routing(format!("node {} not found", node_id.as_str())))?;
 
-        let url = format!("{}{}", node.url, path);
+        let url = format!("{}{}", node.address, path);
 
         let mut request = match method {
             "GET" => self.client.get(&url),
