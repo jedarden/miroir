@@ -46,8 +46,20 @@ All Definition of Done requirements verified.
 - `estimatedTotalHits` summation
 - Binary heap optimization for large result sets
 
-## Test Coverage
+## Test Coverage (2025-05-09 Verification)
 
-- 92 tests for Phase 1 modules (router, topology, scatter, merger)
-- 169 total tests in miroir-core
-- All acceptance tests pass
+All 169 tests pass in 99.32s.
+
+### Code Coverage (cargo-llvm-cov)
+
+- **router.rs**: 96.20% lines, 97.44% regions, 98.33% functions
+- **topology.rs**: 100% lines, 100% regions, 100% functions
+- **scatter.rs**: 100% lines, 100% regions, 100% functions
+- **merger.rs**: 94.67% lines, 96.83% regions, 91.84% functions
+
+All Phase 1 components exceed 90% line coverage requirement.
+
+### Overall miroir-core
+
+- 88.46% lines (includes future phase modules: hedging.rs 0%, replica_selection.rs 0%, query_planner.rs 65.82%, migration.rs 77.73%)
+- Phase 1 components only: ≥94.67% lines
