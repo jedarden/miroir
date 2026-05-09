@@ -136,7 +136,7 @@ async fn create_index(
 
     let scatter = HttpScatter::new((*state.client).clone(), state.config.server.request_timeout_ms);
     let result = scatter
-        .scatter(&topology, targets, request, UnavailableShardPolicy::Partial)
+        .scatter(&topology, targets.clone(), request, UnavailableShardPolicy::Partial)
         .await
         .map_err(|e| ErrorResponse::internal_error(e.to_string()))?;
 

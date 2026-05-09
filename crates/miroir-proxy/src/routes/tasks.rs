@@ -49,7 +49,7 @@ struct TasksQuery {
 }
 
 /// Task response from a single node.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NodeTask {
     task_uid: u64,

@@ -45,8 +45,8 @@ impl HttpScatter {
         method: &str,
         path: &str,
         body: &[u8],
-        headers: &[String],
-    ) -> Result<NodeResponse, NodeId> {
+        headers: &[(String, String)],
+    ) -> Result<miroir_core::scatter::NodeResponse> {
         // Check retry cache first if enabled
         if let Some(ref cache) = self.retry_cache {
             let cache_key = RetryCache::cache_key(body, node_id.as_str(), None);
@@ -73,7 +73,7 @@ impl HttpScatter {
 
         match result {
             Ok(Ok(resp)) => {
-                let body_bytes = serde_json::to_vec(&resp.body).unwrap_or_default();
+                let body_bytes = resp.body;
                 let status = resp.status;
 
                 // Cache successful responses
@@ -90,14 +90,17 @@ impl HttpScatter {
                     }
                 }
 
-                Ok(NodeResponse {
+                Ok(miroir_core::scatter::NodeResponse {
                     node_id: node_id.clone(),
                     body: body_bytes,
                     status,
                     headers: resp.headers,
                 })
             }
-            _ => Err(node_id.clone()),
+            _ => Err(MiroirError::Routing(format!(
+                "request to node {} timed out",
+                node_id.as_str()
+            ))),
         }
     }
 }
@@ -124,7 +127,7 @@ impl Scatter for HttpScatter {
                 let topo = topology.clone();
 
                 async move {
-                    this.send_to_node_with_cache(
+                    match this.send_to_node_with_cache(
                         &topo,
                         &node_id,
                         &method,
@@ -133,6 +136,10 @@ impl Scatter for HttpScatter {
                         &headers,
                     )
                     .await
+                    {
+                        Ok(resp) => Ok(resp),
+                        Err(_) => Err(node_id),
+                    }
                 }
             })
             .collect();

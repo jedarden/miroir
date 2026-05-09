@@ -98,7 +98,9 @@ async fn get_all_settings(
 
             if let Some(resp) = result.responses.first() {
                 if resp.status == 200 {
-                    return Ok(Json(resp.body.clone()));
+                    let body: Value = serde_json::from_slice(&resp.body)
+                        .unwrap_or_else(|_| Value::Null);
+                    return Ok(Json(body));
                 } else if resp.status == 404 {
                     return Err(ErrorResponse::index_not_found(&index));
                 }
@@ -148,7 +150,7 @@ async fn update_setting_with_rollback(
             Ok(resp) => {
                 if let Some(r) = resp.responses.first() {
                     let original_value = if r.status == 200 {
-                        Some(r.body.clone())
+                        Some(serde_json::from_slice(&r.body).unwrap_or(Value::Null))
                     } else {
                         None
                     };
@@ -197,7 +199,8 @@ async fn update_setting_with_rollback(
                 if let Some(r) = resp.responses.first() {
                     if (200..300).contains(&r.status) {
                         successful_nodes.push(target.as_str().to_string());
-                        last_response = Some(r.body.clone());
+                        let body: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
+                        last_response = Some(body);
                     } else {
                         // Rollback from successful nodes
                         rollback_setting(state, &topology, &successful_nodes, &rollback_values, index, setting_path).await;
@@ -248,6 +251,7 @@ async fn rollback_setting(
 ) {
     for node_id in successful_nodes {
         if let Some(rollback) = rollback_values.get(node_id) {
+            let node_id_ref = miroir_core::topology::NodeId::new(node_id.clone());
             if rollback.existed {
                 // Restore original value
                 if let Some(original) = &rollback.original_value {
@@ -256,7 +260,7 @@ async fn rollback_setting(
                         .client
                         .send_to_node(
                             topology,
-                            &node_id.as_str().into(),
+                            &node_id_ref,
                             "PUT",
                             &format!("/indexes/{}/{}", index, setting_path),
                             Some(&body_bytes),
@@ -270,7 +274,7 @@ async fn rollback_setting(
                     .client
                     .send_to_node(
                         topology,
-                        &node_id.as_str().into(),
+                        &node_id_ref,
                         "DELETE",
                         &format!("/indexes/{}/{}", index, setting_path),
                         None,
@@ -287,17 +291,17 @@ async fn get_filterable_attributes(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Json<Value>, ErrorResponse> {
-    get_setting(state, &index, "filterable-attributes").await
+    get_setting(&state, &index, "filterable-attributes").await
 }
 
 /// PUT /indexes/:index/settings/filterable-attributes
 async fn update_filterable_attributes(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
-    body: Value,
+    body: Json<Value>,
 ) -> Result<Response, ErrorResponse> {
     // Ensure _miroir_shard is always in filterable attributes
-    let mut updated = body.clone();
+    let mut updated = body.0.clone();
     if let Some(arr) = updated.as_array_mut() {
         if !arr.iter().any(|v| v.as_str() == Some("_miroir_shard")) {
             arr.push(serde_json::json!("_miroir_shard"));
@@ -321,16 +325,16 @@ async fn get_searchable_attributes(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Json<Value>, ErrorResponse> {
-    get_setting(state, &index, "settings/searchable-attributes").await
+    get_setting(&state, &index, "settings/searchable-attributes").await
 }
 
 /// PUT /indexes/:index/settings/searchable-attributes
 async fn update_searchable_attributes(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
-    body: Value,
+    body: Json<Value>,
 ) -> Result<Response, ErrorResponse> {
-    update_setting_with_rollback(&state, &index, "settings/searchable-attributes", &body).await
+    update_setting_with_rollback(&state, &index, "settings/searchable-attributes", &body.0).await
 }
 
 /// DELETE /indexes/:index/settings/searchable-attributes
@@ -338,7 +342,7 @@ async fn delete_searchable_attributes(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Response, ErrorResponse> {
-    delete_setting(state, &index, "settings/searchable-attributes").await
+    delete_setting(&state, &index, "settings/searchable-attributes").await
 }
 
 /// GET /indexes/:index/settings/sortable-attributes
@@ -346,16 +350,16 @@ async fn get_sortable_attributes(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Json<Value>, ErrorResponse> {
-    get_setting(state, &index, "settings/sortable-attributes").await
+    get_setting(&state, &index, "settings/sortable-attributes").await
 }
 
 /// PUT /indexes/:index/settings/sortable-attributes
 async fn update_sortable_attributes(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
-    body: Value,
+    body: Json<Value>,
 ) -> Result<Response, ErrorResponse> {
-    update_setting_with_rollback(&state, &index, "settings/sortable-attributes", &body).await
+    update_setting_with_rollback(&state, &index, "settings/sortable-attributes", &body.0).await
 }
 
 /// DELETE /indexes/:index/settings/sortable-attributes
@@ -363,7 +367,7 @@ async fn delete_sortable_attributes(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Response, ErrorResponse> {
-    delete_setting(state, &index, "settings/sortable-attributes").await
+    delete_setting(&state, &index, "settings/sortable-attributes").await
 }
 
 /// GET /indexes/:index/settings/displayed-attributes
@@ -371,16 +375,16 @@ async fn get_displayed_attributes(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Json<Value>, ErrorResponse> {
-    get_setting(state, &index, "settings/displayed-attributes").await
+    get_setting(&state, &index, "settings/displayed-attributes").await
 }
 
 /// PUT /indexes/:index/settings/displayed-attributes
 async fn update_displayed_attributes(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
-    body: Value,
+    body: Json<Value>,
 ) -> Result<Response, ErrorResponse> {
-    update_setting_with_rollback(&state, &index, "settings/displayed-attributes", &body).await
+    update_setting_with_rollback(&state, &index, "settings/displayed-attributes", &body.0).await
 }
 
 /// DELETE /indexes/:index/settings/displayed-attributes
@@ -388,7 +392,7 @@ async fn delete_displayed_attributes(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Response, ErrorResponse> {
-    delete_setting(state, &index, "settings/displayed-attributes").await
+    delete_setting(&state, &index, "settings/displayed-attributes").await
 }
 
 /// GET /indexes/:index/settings/ranking-rules
@@ -396,16 +400,16 @@ async fn get_ranking_rules(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Json<Value>, ErrorResponse> {
-    get_setting(state, &index, "settings/ranking-rules").await
+    get_setting(&state, &index, "settings/ranking-rules").await
 }
 
 /// PUT /indexes/:index/settings/ranking-rules
 async fn update_ranking_rules(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
-    body: Value,
+    body: Json<Value>,
 ) -> Result<Response, ErrorResponse> {
-    update_setting_with_rollback(&state, &index, "settings/ranking-rules", &body).await
+    update_setting_with_rollback(&state, &index, "settings/ranking-rules", &body.0).await
 }
 
 /// DELETE /indexes/:index/settings/ranking-rules
@@ -413,7 +417,7 @@ async fn delete_ranking_rules(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Response, ErrorResponse> {
-    delete_setting(state, &index, "settings/ranking-rules").await
+    delete_setting(&state, &index, "settings/ranking-rules").await
 }
 
 /// GET /indexes/:index/settings/stop-words
@@ -421,16 +425,16 @@ async fn get_stop_words(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Json<Value>, ErrorResponse> {
-    get_setting(state, &index, "settings/stop-words").await
+    get_setting(&state, &index, "settings/stop-words").await
 }
 
 /// PUT /indexes/:index/settings/stop-words
 async fn update_stop_words(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
-    body: Value,
+    body: Json<Value>,
 ) -> Result<Response, ErrorResponse> {
-    update_setting_with_rollback(&state, &index, "settings/stop-words", &body).await
+    update_setting_with_rollback(&state, &index, "settings/stop-words", &body.0).await
 }
 
 /// DELETE /indexes/:index/settings/stop-words
@@ -438,7 +442,7 @@ async fn delete_stop_words(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Response, ErrorResponse> {
-    delete_setting(state, &index, "settings/stop-words").await
+    delete_setting(&state, &index, "settings/stop-words").await
 }
 
 /// GET /indexes/:index/settings/synonyms
@@ -446,16 +450,16 @@ async fn get_synonyms(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Json<Value>, ErrorResponse> {
-    get_setting(state, &index, "settings/synonyms").await
+    get_setting(&state, &index, "settings/synonyms").await
 }
 
 /// PUT /indexes/:index/settings/synonyms
 async fn update_synonyms(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
-    body: Value,
+    body: Json<Value>,
 ) -> Result<Response, ErrorResponse> {
-    update_setting_with_rollback(&state, &index, "settings/synonyms", &body).await
+    update_setting_with_rollback(&state, &index, "settings/synonyms", &body.0).await
 }
 
 /// DELETE /indexes/:index/settings/synonyms
@@ -463,7 +467,7 @@ async fn delete_synonyms(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Response, ErrorResponse> {
-    delete_setting(state, &index, "settings/synonyms").await
+    delete_setting(&state, &index, "settings/synonyms").await
 }
 
 /// GET /indexes/:index/settings/distinct-attribute
@@ -471,16 +475,16 @@ async fn get_distinct_attribute(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Json<Value>, ErrorResponse> {
-    get_setting(state, &index, "settings/distinct-attribute").await
+    get_setting(&state, &index, "settings/distinct-attribute").await
 }
 
 /// PUT /indexes/:index/settings/distinct-attribute
 async fn update_distinct_attribute(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
-    body: Value,
+    body: Json<Value>,
 ) -> Result<Response, ErrorResponse> {
-    update_setting_with_rollback(&state, &index, "settings/distinct-attribute", &body).await
+    update_setting_with_rollback(&state, &index, "settings/distinct-attribute", &body.0).await
 }
 
 /// DELETE /indexes/:index/settings/distinct-attribute
@@ -488,7 +492,7 @@ async fn delete_distinct_attribute(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Response, ErrorResponse> {
-    delete_setting(state, &index, "settings/distinct-attribute").await
+    delete_setting(&state, &index, "settings/distinct-attribute").await
 }
 
 /// GET /indexes/:index/settings/typo-tolerance
@@ -496,16 +500,16 @@ async fn get_typo_tolerance(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Json<Value>, ErrorResponse> {
-    get_setting(state, &index, "settings/typo-tolerance").await
+    get_setting(&state, &index, "settings/typo-tolerance").await
 }
 
 /// PUT /indexes/:index/settings/typo-tolerance
 async fn update_typo_tolerance(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
-    body: Value,
+    body: Json<Value>,
 ) -> Result<Response, ErrorResponse> {
-    update_setting_with_rollback(&state, &index, "settings/typo-tolerance", &body).await
+    update_setting_with_rollback(&state, &index, "settings/typo-tolerance", &body.0).await
 }
 
 /// DELETE /indexes/:index/settings/typo-tolerance
@@ -513,7 +517,7 @@ async fn delete_typo_tolerance(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Response, ErrorResponse> {
-    delete_setting(state, &index, "settings/typo-tolerance").await
+    delete_setting(&state, &index, "settings/typo-tolerance").await
 }
 
 /// GET /indexes/:index/settings/faceting
@@ -521,16 +525,16 @@ async fn get_faceting(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Json<Value>, ErrorResponse> {
-    get_setting(state, &index, "settings/faceting").await
+    get_setting(&state, &index, "settings/faceting").await
 }
 
 /// PUT /indexes/:index/settings/faceting
 async fn update_faceting(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
-    body: Value,
+    body: Json<Value>,
 ) -> Result<Response, ErrorResponse> {
-    update_setting_with_rollback(&state, &index, "settings/faceting", &body).await
+    update_setting_with_rollback(&state, &index, "settings/faceting", &body.0).await
 }
 
 /// DELETE /indexes/:index/settings/faceting
@@ -538,7 +542,7 @@ async fn delete_faceting(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Response, ErrorResponse> {
-    delete_setting(state, &index, "settings/faceting").await
+    delete_setting(&state, &index, "settings/faceting").await
 }
 
 /// GET /indexes/:index/settings/pagination
@@ -546,16 +550,16 @@ async fn get_pagination(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Json<Value>, ErrorResponse> {
-    get_setting(state, &index, "settings/pagination").await
+    get_setting(&state, &index, "settings/pagination").await
 }
 
 /// PUT /indexes/:index/settings/pagination
 async fn update_pagination(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
-    body: Value,
+    body: Json<Value>,
 ) -> Result<Response, ErrorResponse> {
-    update_setting_with_rollback(&state, &index, "settings/pagination", &body).await
+    update_setting_with_rollback(&state, &index, "settings/pagination", &body.0).await
 }
 
 /// DELETE /indexes/:index/settings/pagination
@@ -563,7 +567,7 @@ async fn delete_pagination(
     State(state): State<ProxyState>,
     Path(index): Path<String>,
 ) -> Result<Response, ErrorResponse> {
-    delete_setting(state, &index, "settings/pagination").await
+    delete_setting(&state, &index, "settings/pagination").await
 }
 
 /// Generic GET handler for a setting.
@@ -592,7 +596,9 @@ async fn get_setting(
 
             if let Some(resp) = result.responses.first() {
                 if resp.status == 200 {
-                    return Ok(Json(resp.body.clone()));
+                    let value: Value = serde_json::from_slice(&resp.body)
+                        .map_err(|_| ErrorResponse::internal_error("Invalid JSON response"))?;
+                    return Ok(Json(value));
                 } else if resp.status == 404 {
                     return Err(ErrorResponse::index_not_found(index));
                 }
@@ -631,7 +637,9 @@ async fn delete_setting(
 
     if let Some(resp) = result.responses.first() {
         let status = axum::http::StatusCode::from_u16(resp.status).unwrap_or(axum::http::StatusCode::OK);
-        return Ok((status, Json(resp.body.clone())).into_response());
+        let value: Value = serde_json::from_slice(&resp.body)
+            .unwrap_or_else(|_| Value::Null);
+        return Ok((status, Json(value)).into_response());
     }
 
     Ok((axum::http::StatusCode::ACCEPTED, Json(serde_json::json!({}))).into_response())

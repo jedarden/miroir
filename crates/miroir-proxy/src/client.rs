@@ -13,14 +13,22 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-/// Node response with status code and body.
+/// Node response with status code and body (as Vec<u8> for scatter compatibility).
 #[derive(Debug, Clone)]
 pub struct NodeResponse {
     pub node_id: NodeId,
     pub status: u16,
-    pub body: Value,
+    pub body: Vec<u8>,
     #[allow(dead_code)]
     pub headers: Vec<(String, String)>,
+}
+
+impl NodeResponse {
+    /// Convert body to JSON value.
+    #[allow(dead_code)]
+    pub fn body_json(&self) -> Result<Value> {
+        serde_json::from_slice(&self.body).map_err(|e| MiroirError::Json(e))
+    }
 }
 
 /// HTTP client for scatter-gather requests to Meilisearch nodes.
@@ -132,13 +140,10 @@ impl NodeClient {
             .await
             .map_err(|e| MiroirError::Routing(format!("failed to read response body: {e}")))?;
 
-        let body_json: Value = serde_json::from_slice(&body_bytes)
-            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&body_bytes).to_string()));
-
         Ok(NodeResponse {
             node_id: node_id.clone(),
             status,
-            body: body_json,
+            body: body_bytes.to_vec(),
             headers: response_headers,
         })
     }

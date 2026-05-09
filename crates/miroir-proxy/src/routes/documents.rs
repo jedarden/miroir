@@ -111,7 +111,7 @@ async fn add_documents(
 
     for mut doc in body {
         let pk_value = doc
-            .get(primary_key)
+            .get(primary_key.as_str())
             .and_then(|v| v.as_str())
             .ok_or_else(|| ErrorResponse::invalid_request(format!("Missing primary key field '{primary_key}'")))?;
 
