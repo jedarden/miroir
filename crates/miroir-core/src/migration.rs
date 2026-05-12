@@ -650,6 +650,11 @@ impl MigrationCoordinator {
         })
     }
 
+    /// Get all migration states for inspection (e.g., by router for dual-write).
+    pub fn get_all_migrations(&self) -> &HashMap<MigrationId, MigrationState> {
+        &self.migrations
+    }
+
     /// Get the migration config.
     pub fn config(&self) -> &MigrationConfig {
         &self.config
