@@ -16,7 +16,7 @@ use axum::response::{IntoResponse, Response};
 use axum::http::{StatusCode, header};
 use axum::{Json, Router};
 use miroir_core::api_error::{MiroirCode, MeilisearchError};
-use miroir_core::router::{shard_for_key, write_targets};
+use miroir_core::router::{shard_for_key, write_targets_with_migration};
 use miroir_core::scatter::{DeleteByIdsRequest, DeleteByFilterRequest, NodeClient, WriteRequest, WriteResponse};
 use miroir_core::task::TaskRegistry;
 use miroir_core::topology::{Topology, NodeId};
@@ -284,9 +284,24 @@ async fn write_documents_impl(
     let mut quorum_state = QuorumState::default();
     let mut node_task_uids: HashMap<String, u64> = HashMap::new();
 
-    // For each shard, write to all RF nodes in each replica group
+    // For each shard, write to all RF nodes in each replica group (with dual-write support)
     for (shard_id, docs) in node_documents {
-        let targets = write_targets(shard_id, &topology);
+        // Get migration coordinator reference for dual-write detection
+        let migration_coordinator = state.migration_coordinator.as_ref().map(|c| {
+            // We need a read lock on the coordinator
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    c.read().await
+                })
+            })
+        });
+
+        // Use migration-aware routing
+        let targets = write_targets_with_migration(
+            shard_id,
+            &topology,
+            migration_coordinator.as_deref(),
+        );
 
         if targets.is_empty() {
             return Err(MeilisearchError::new(
@@ -403,7 +418,7 @@ async fn delete_by_ids_impl(
 
     // For each shard, write to all RF nodes in each replica group
     for (shard_id, ids) in shard_ids {
-        let targets = write_targets(shard_id, &topology);
+        let targets = miroir_core::router::write_targets(shard_id, &topology);
 
         if targets.is_empty() {
             return Err(MeilisearchError::new(

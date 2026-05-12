@@ -1,5 +1,6 @@
 //! Rendezvous hash-based routing and shard assignment.
 
+use crate::migration::{MigrationCoordinator, ShardId};
 use crate::topology::{Group, NodeId, Topology};
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
@@ -43,6 +44,52 @@ pub fn write_targets(shard_id: u32, topology: &Topology) -> Vec<NodeId> {
         .groups()
         .flat_map(|group| assign_shard_in_group(shard_id, group.nodes(), topology.rf()))
         .collect()
+}
+
+/// All write targets for a document, considering dual-write state during migration.
+///
+/// This is the migration-aware version of `write_targets`. When a shard is in
+/// dual-write phase (node addition in progress), it includes both the old owner
+/// AND the new node in the target list to ensure no writes are lost during migration.
+///
+/// # Arguments
+/// * `shard_id` - The shard ID being written to
+/// * `topology` - The cluster topology
+/// * `migration_coordinator` - Optional migration coordinator for dual-write detection
+///
+/// # Returns
+/// A vector of node IDs that should receive the write. During dual-write for a shard,
+/// this includes both the standard RF nodes AND the new node.
+pub fn write_targets_with_migration(
+    shard_id: u32,
+    topology: &Topology,
+    migration_coordinator: Option<&MigrationCoordinator>,
+) -> Vec<NodeId> {
+    let shard = ShardId(shard_id);
+
+    // Start with standard write targets
+    let mut targets: Vec<NodeId> = write_targets(shard_id, topology);
+
+    // Check if this shard is in dual-write phase
+    if let Some(coordinator) = migration_coordinator {
+        if coordinator.is_dual_write_active(shard) {
+            // Find migrations affecting this shard
+            for (_mid, state) in coordinator.get_all_migrations() {
+                if state.affected_shards.contains_key(&shard) {
+                    // This shard is being migrated - include the new node
+                    // Convert migration NodeId to topology NodeId
+                    let new_node_id = crate::topology::NodeId::new(state.new_node.0.clone());
+
+                    // Only add if not already in targets
+                    if !targets.contains(&new_node_id) {
+                        targets.push(new_node_id);
+                    }
+                }
+            }
+        }
+    }
+
+    targets
 }
 
 /// Select the replica group for a query (round-robin by query counter).

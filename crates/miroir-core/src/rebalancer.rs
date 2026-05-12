@@ -912,6 +912,10 @@ impl Rebalancer {
 
     /// Compute which shards should move to a new node.
     /// Returns shard -> old_owner mapping for shards that will move.
+    ///
+    /// For each shard where the new node enters the assignment, we select one
+    /// of the old owners as the migration source. If the new node displaced
+    /// an old owner, we use that node; otherwise we use the lowest-scored old owner.
     async fn compute_shard_moves_for_new_node(
         &self,
         new_node_id: &str,
@@ -931,7 +935,7 @@ impl Rebalancer {
         let existing_nodes: Vec<_> = group.nodes().iter().cloned().collect();
         let mut affected_shards = Vec::new();
 
-        // For each shard, check if adding the new node would change the assignment
+        // For each shard, check if the new node is in the new assignment
         for shard_id in 0..topo.shards {
             let old_assignment: Vec<_> = assign_shard_in_group(shard_id, &existing_nodes, rf)
                 .into_iter()
@@ -947,17 +951,36 @@ impl Rebalancer {
                 .into_iter()
                 .collect();
 
-            // Check if the new node is in the new assignment
-            if new_assignment.contains(&new_node_id) {
-                // This shard moves to the new node
-                // Find which old node previously held this slot (the one being displaced)
-                // We need to pick an old node to migrate from
-                if let Some(old_owner) = old_assignment.first().cloned() {
-                    // Only add if this shard wasn't already assigned to all existing nodes
-                    // (i.e., the new node is actually taking a slot from someone)
-                    affected_shards.push((ShardId(shard_id), old_owner));
-                }
+            // Check if new node is in the new assignment
+            if !new_assignment.contains(&new_node_id) {
+                continue;
             }
+
+            // Find the source node for migration
+            // Priority 1: Use the displaced node (if any)
+            // Priority 2: Use the lowest-scored old owner (load balancing)
+            let source_node = if let Some(displaced) = old_assignment.iter()
+                .find(|n| !new_assignment.contains(n)) {
+                // An old node was displaced - use it as source
+                displaced.clone()
+            } else {
+                // No displacement - pick lowest-scored old owner
+                // Find the old owner with the minimum rendezvous score
+                let mut min_score = u64::MAX;
+                let mut min_node = old_assignment.first().cloned()
+                    .unwrap_or_else(|| existing_nodes.first().unwrap().clone());
+
+                for old_node in &old_assignment {
+                    let s = score(shard_id, old_node.as_str());
+                    if s < min_score {
+                        min_score = s;
+                        min_node = old_node.clone();
+                    }
+                }
+                min_node
+            };
+
+            affected_shards.push((ShardId(shard_id), source_node));
         }
 
         Ok(affected_shards)
