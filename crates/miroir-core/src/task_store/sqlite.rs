@@ -1440,6 +1440,12 @@ impl SqliteTaskStore {
             [],
         )?;
 
+        // Index for admin_sessions expiration queries (plan §4 table 14)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS admin_sessions_expires ON admin_sessions(expires_at)",
+            [],
+        )?;
+
         Ok(())
     }
 }
