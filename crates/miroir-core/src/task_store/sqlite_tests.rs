@@ -552,3 +552,65 @@ async fn test_task_filter_by_status() {
         .unwrap();
     assert_eq!(page2.len(), 1);
 }
+
+#[tokio::test]
+async fn test_two_handle_concurrent_writes() {
+    // Test concurrent writes from two separate SQLite handles (simulates two pods)
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join("test_concurrent.db");
+
+    // First handle initializes the schema
+    let store1 = std::sync::Arc::new(SqliteTaskStore::new(&db_path).await.unwrap());
+    store1.initialize().await.unwrap();
+
+    // Second handle opens the same DB (no migration re-run)
+    let store2 = std::sync::Arc::new(SqliteTaskStore::new(&db_path).await.unwrap());
+    store2.initialize().await.unwrap();
+
+    // Verify both see the same schema version
+    let v1 = store1.schema_version().await.unwrap();
+    let v2 = store2.schema_version().await.unwrap();
+    assert_eq!(v1, v2);
+    assert_eq!(v1, SCHEMA_VERSION);
+
+    // Spawn concurrent writes from both handles
+    let h1 = tokio::spawn({
+        let store = std::sync::Arc::clone(&store1);
+        async move {
+            for i in 0..5 {
+                let task = Task {
+                    miroir_id: format!("handle1-task-{}", i),
+                    created_at: 12345 + i as u64,
+                    status: TaskStatus::Enqueued,
+                    node_tasks: HashMap::new(),
+                    error: None,
+                };
+                store.task_insert(&task).await.unwrap();
+            }
+        }
+    });
+
+    let h2 = tokio::spawn({
+        let store = std::sync::Arc::clone(&store2);
+        async move {
+            for i in 0..5 {
+                let task = Task {
+                    miroir_id: format!("handle2-task-{}", i),
+                    created_at: 54321 + i as u64,
+                    status: TaskStatus::Enqueued,
+                    node_tasks: HashMap::new(),
+                    error: None,
+                };
+                store.task_insert(&task).await.unwrap();
+            }
+        }
+    });
+
+    // Wait for both to complete
+    h1.await.unwrap();
+    h2.await.unwrap();
+
+    // Verify all tasks were inserted (no deadlock, no corruption)
+    let all_tasks = store1.task_list(&Default::default()).await.unwrap();
+    assert_eq!(all_tasks.len(), 10);
+}
