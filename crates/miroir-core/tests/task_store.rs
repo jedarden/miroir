@@ -8,6 +8,7 @@ use miroir_core::task_store::{SqliteTaskStore, TaskStore};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::NamedTempFile;
+use tokio::task::JoinSet;
 
 /// Helper function to create a temporary SQLite store.
 async fn create_temp_store() -> Arc<SqliteTaskStore> {
@@ -399,4 +400,45 @@ async fn health_check() {
     let store = create_temp_store().await;
     let healthy = store.health_check().await.unwrap();
     assert!(healthy);
+}
+
+/// Concurrent write test: verify WAL mode prevents deadlocks.
+#[tokio::test]
+async fn concurrent_writes_no_deadlock() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let store = Arc::new(SqliteTaskStore::new(temp_file.path()).await.unwrap());
+    store.initialize().await.unwrap();
+
+    let mut join_set = JoinSet::new();
+
+    // Spawn 10 concurrent tasks writing to the database
+    for i in 0..10 {
+        let store_clone = Arc::clone(&store);
+        join_set.spawn(async move {
+            let task = Task {
+                miroir_id: format!("concurrent-{}", i),
+                created_at: 1234567890 + i as u64,
+                status: TaskStatus::Enqueued,
+                node_tasks: HashMap::new(),
+                error: None,
+            };
+
+            // Perform multiple operations
+            store_clone.task_insert(&task).await.unwrap();
+            store_clone.task_get(&format!("concurrent-{}", i)).await.unwrap();
+            store_clone.task_update_status(&format!("concurrent-{}", i), TaskStatus::Processing).await.unwrap();
+        });
+    }
+
+    // Wait for all tasks to complete
+    while let Some(result) = join_set.join_next().await {
+        result.unwrap();
+    }
+
+    // Verify all tasks were written
+    for i in 0..10 {
+        let task = store.task_get(&format!("concurrent-{}", i)).await.unwrap();
+        assert!(task.is_some());
+        assert_eq!(task.unwrap().status, TaskStatus::Processing);
+    }
 }

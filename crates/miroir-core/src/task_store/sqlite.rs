@@ -55,6 +55,7 @@ impl std::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 /// SQLite task store implementation.
+#[derive(Clone)]
 pub struct SqliteTaskStore {
     conn: Arc<Mutex<Connection>>,
 }
@@ -353,8 +354,14 @@ impl TaskStore for SqliteTaskStore {
                 &[&name as &dyn rusqlite::ToSql],
                 |row| {
                     let target_uids_json: String = row.get(3)?;
-                    let target_uids: Vec<String> = serde_json::from_str(&target_uids_json)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                    // Handle null case for single-target aliases
+                    let target_uids: Option<Vec<String>> = if target_uids_json == "null" || target_uids_json.is_empty() {
+                        None
+                    } else {
+                        let parsed: Vec<String> = serde_json::from_str(&target_uids_json)
+                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                        Some(parsed)
+                    };
                     let history_json: String = row.get(6)?;
                     let history: Vec<super::schema::AliasHistoryEntry> =
                         serde_json::from_str(&history_json)
@@ -370,7 +377,7 @@ impl TaskStore for SqliteTaskStore {
                                 Some(uid)
                             }
                         },
-                        target_uids: Some(target_uids),
+                        target_uids,
                         version: row.get(4)?,
                         created_at: row.get(5)?,
                         history,
@@ -395,7 +402,13 @@ impl TaskStore for SqliteTaskStore {
             &[] as &[&dyn rusqlite::ToSql],
             |row| {
                 let target_uids_json: String = row.get(3)?;
-                let target_uids: Vec<String> = serde_json::from_str(&target_uids_json).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                // Handle null case for single-target aliases
+                let target_uids: Option<Vec<String>> = if target_uids_json == "null" || target_uids_json.is_empty() {
+                    None
+                } else {
+                    let parsed: Vec<String> = serde_json::from_str(&target_uids_json).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                    Some(parsed)
+                };
                 let history_json: String = row.get(6)?;
                 let history: Vec<super::schema::AliasHistoryEntry> =
                     serde_json::from_str(&history_json)
@@ -409,7 +422,7 @@ impl TaskStore for SqliteTaskStore {
                         let uid: String = row.get(2)?;
                         if uid.is_empty() { None } else { Some(uid) }
                     },
-                    target_uids: Some(target_uids),
+                    target_uids,
                     version: row.get(4)?,
                     created_at: row.get(5)?,
                     history,
@@ -704,11 +717,13 @@ impl TaskStore for SqliteTaskStore {
             .map_err(|e| TaskStoreError::Internal(e.to_string()))?;
         let tx = conn.unchecked_transaction()?;
 
-        // Check if there's an existing valid lease
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+
+        // Check if there's an existing valid lease for this scope
         let existing: Option<(String, u64)> = tx
             .query_row(
-                "SELECT scope, expires_at FROM leader_lease WHERE expires_at > ?1",
-                [&(chrono::Utc::now().timestamp_millis() as u64) as &dyn rusqlite::ToSql],
+                "SELECT scope, expires_at FROM leader_lease WHERE scope = ?1 AND expires_at > ?2",
+                [&lease.scope as &dyn rusqlite::ToSql, &now as &dyn rusqlite::ToSql],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .ok();
