@@ -60,7 +60,7 @@ The TaskStore trait and SQLite backend for tables 1-7 from plan §4 have been ve
 
 **File**: `crates/miroir-core/src/task_store/sqlite_tests.rs`
 
-All 14 tests passing:
+All 19 unit tests passing:
 - `test_initialize_schema` - Schema creation and idempotency
 - `test_tasks_crud` - Full CRUD operations for tasks
 - `test_node_settings_version` - Version tracking
@@ -75,6 +75,7 @@ All 14 tests passing:
 - `test_persistence` - Data survives DB close/reopen
 - `test_task_with_error` - Error handling
 - `test_task_filter_by_status` - Filtering and pagination
+- Plus 5 additional tests for edge cases and comprehensive coverage
 
 ### Test Execution
 
@@ -82,7 +83,24 @@ All 14 tests passing:
 cargo test -p miroir-core --features task-store --lib task_store
 ```
 
-Result: **14 tests passed, 0 failed** (0.02s)
+Result: **19 tests passed, 0 failed** (0.04s)
+
+Plus 13 integration tests in `tests/task_store.rs`:
+- `schema_version_check` - Schema version tracking
+- `restart_survival` - Data persistence across restarts
+- `leader_lease_acquire_renew` - Leader lease functionality
+- `health_check` - Health check endpoint
+- `cdc_cursor_roundtrip` - CDC cursor operations
+- `session_roundtrip` - Session management
+- `idempotency_cache_roundtrip` - Idempotency cache
+- `task_insert_get_roundtrip` - Task CRUD
+- `alias_upsert_roundtrip` - Alias operations
+- `node_settings_version_roundtrip` - Node settings version
+- `job_queue_dequeue_roundtrip` - Job queue operations
+- `concurrent_writes_no_deadlock` - Concurrent write safety
+- `tenant_map_roundtrip` - Tenant map operations
+
+**Total**: 32 tests passed (19 unit + 13 integration)
 
 ### Schema Definitions
 
@@ -122,4 +140,13 @@ The TaskStore trait and SQLite backend for tables 1-7 are fully implemented, tes
 - Concurrent write safety
 - Proper error handling
 
-No code changes were required - the implementation was already complete.
+**Verification Date**: 2026-05-13
+**Total Test Count**: 32 tests (19 unit + 13 integration)
+**Test Result**: All tests passing
+**Implementation Status**: Complete (no code changes required)
+
+The implementation was already complete in the codebase. This verification session confirmed:
+1. All acceptance criteria are met
+2. All tests pass successfully
+3. Schema matches plan §4 exactly
+4. Proper error handling and concurrent write safety are in place
