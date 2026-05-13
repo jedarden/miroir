@@ -293,11 +293,17 @@ async fn cdc_cursor_roundtrip() {
 async fn tenant_map_roundtrip() {
     let store = create_temp_store().await;
 
-    // Use a hex string representation of the hash
-    let api_key_hex = "010203"; // hex for [1, 2, 3]
+    // Use the actual API key (the implementation will hash it)
+    let api_key = "my-secret-api-key";
+
+    // Manually compute the hash to insert into the database
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(api_key.as_bytes());
+    let api_key_hash: Vec<u8> = hasher.finalize().to_vec();
 
     let tenant = Tenant {
-        api_key_hash: hex::decode(api_key_hex).unwrap(),
+        api_key_hash: api_key_hash.clone(),
         tenant_id: "tenant-1".to_string(),
         group_id: Some(1),
     };
@@ -305,13 +311,13 @@ async fn tenant_map_roundtrip() {
     // Insert tenant
     store.tenant_upsert(&tenant).await.unwrap();
 
-    // Get tenant
-    let retrieved = store.tenant_get(api_key_hex).await.unwrap().unwrap();
+    // Get tenant (using the actual API key)
+    let retrieved = store.tenant_get(api_key).await.unwrap().unwrap();
     assert_eq!(retrieved.tenant_id, tenant.tenant_id);
 
     // Delete tenant
-    store.tenant_delete(api_key_hex).await.unwrap();
-    let retrieved2 = store.tenant_get(api_key_hex).await.unwrap();
+    store.tenant_delete(api_key).await.unwrap();
+    let retrieved2 = store.tenant_get(api_key).await.unwrap();
     assert!(retrieved2.is_none());
 }
 
@@ -342,6 +348,49 @@ async fn session_roundtrip() {
 
     let retrieved2 = store.session_get("session-456").await.unwrap();
     assert!(retrieved2.is_none());
+}
+
+/// Property test: jobs queue and dequeue.
+#[tokio::test]
+async fn job_queue_dequeue_roundtrip() {
+    let store = create_temp_store().await;
+
+    let job = Job {
+        id: "job-1".to_string(),
+        job_type: "test_job".to_string(),
+        params: r#"{"param1": "value1"}"#.to_string(),
+        state: JobState::Queued,
+        claimed_by: None,
+        claim_expires_at: None,
+        progress: r#"{"status": "queued"}"#.to_string(),
+    };
+
+    // Enqueue job
+    store.job_enqueue(&job).await.unwrap();
+
+    // Get job
+    let retrieved = store.job_get("job-1").await.unwrap().unwrap();
+    assert_eq!(retrieved.id, job.id);
+    assert_eq!(retrieved.state, JobState::Queued);
+
+    // List jobs
+    let jobs = store.job_list(Some(JobState::Queued), 10).await.unwrap();
+    assert_eq!(jobs.len(), 1);
+
+    // Dequeue job
+    let claimed = store.job_dequeue("worker-1").await.unwrap().unwrap();
+    assert_eq!(claimed.id, "job-1");
+    assert_eq!(claimed.state, JobState::InProgress);
+    assert_eq!(claimed.claimed_by, Some("worker-1".to_string()));
+
+    // Update status
+    store
+        .job_update_status("job-1", JobState::Completed, Some(r#"{"status": "done"}"#))
+        .await
+        .unwrap();
+
+    let final_job = store.job_get("job-1").await.unwrap().unwrap();
+    assert_eq!(final_job.state, JobState::Completed);
 }
 
 /// Health check test.
