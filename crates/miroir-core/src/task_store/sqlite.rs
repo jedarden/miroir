@@ -121,6 +121,14 @@ impl TaskStore for SqliteTaskStore {
             |row| row.get(0),
         )?;
 
+        // Set busy timeout to avoid deadlock on concurrent writes
+        // Use query_row because PRAGMA busy_timeout returns the value that was set
+        let _timeout: i64 = conn.query_row(
+            "PRAGMA busy_timeout=5000",
+            &[] as &[&dyn rusqlite::ToSql],
+            |row| row.get(0),
+        )?;
+
         // Create schema_version table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS schema_version (
@@ -865,7 +873,7 @@ impl TaskStore for SqliteTaskStore {
     async fn cdc_cursor_get(&self, sink: &str, index: &str) -> Result<Option<CdcCursor>> {
         let result: Option<CdcCursor> = self
             .query_row(
-                "SELECT sink, [index], cursor, updated_at FROM cdc_cursors WHERE sink = ?1 AND [index] = ?2",
+                "SELECT sink_name, index_uid, last_event_seq, updated_at FROM cdc_cursors WHERE sink_name = ?1 AND index_uid = ?2",
                 &[&sink as &dyn rusqlite::ToSql, &index as &dyn rusqlite::ToSql],
                 |row| Ok(CdcCursor {
                     sink_name: row.get(0)?,
@@ -880,7 +888,7 @@ impl TaskStore for SqliteTaskStore {
 
     async fn cdc_cursor_set(&self, cursor: &CdcCursor) -> Result<()> {
         self.execute(
-            "INSERT OR REPLACE INTO cdc_cursors (sink, [index], cursor, updated_at)
+            "INSERT OR REPLACE INTO cdc_cursors (sink_name, index_uid, last_event_seq, updated_at)
              VALUES (?1, ?2, ?3, ?4)",
             &[
                 &cursor.sink_name as &dyn rusqlite::ToSql,
@@ -894,7 +902,7 @@ impl TaskStore for SqliteTaskStore {
 
     async fn cdc_cursor_list(&self, sink: &str) -> Result<Vec<CdcCursor>> {
         self.query_map(
-            "SELECT sink, [index], cursor, updated_at FROM cdc_cursors WHERE sink = ?1",
+            "SELECT sink_name, index_uid, last_event_seq, updated_at FROM cdc_cursors WHERE sink_name = ?1",
             &[&sink as &dyn rusqlite::ToSql],
             |row| {
                 Ok(CdcCursor {
