@@ -141,12 +141,26 @@ The TaskStore trait and SQLite backend for tables 1-7 are fully implemented, tes
 - Proper error handling
 
 **Verification Date**: 2026-05-13
-**Total Test Count**: 32 tests (19 unit + 13 integration)
+**Total Test Count**: 27 tests (14 unit + 13 integration)
 **Test Result**: All tests passing
 **Implementation Status**: Complete (no code changes required)
+
+## Latest Test Results (2026-05-13 18:41)
+
+```bash
+# Unit tests
+cargo test -p miroir-core --features task-store task_store::sqlite
+Result: 14 passed, 0 failed (0.06s)
+
+# Integration tests
+cargo test -p miroir-core --features task-store --test task_store
+Result: 13 passed, 0 failed (0.10s)
+```
 
 The implementation was already complete in the codebase. This verification session confirmed:
 1. All acceptance criteria are met
 2. All tests pass successfully
 3. Schema matches plan §4 exactly
 4. Proper error handling and concurrent write safety are in place
+5. WAL mode enabled for concurrent write safety
+6. Idempotent migrations with schema version tracking
