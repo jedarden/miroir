@@ -12,6 +12,9 @@ mod redis;
 mod schema;
 mod sqlite;
 
+#[cfg(test)]
+mod sqlite_tests;
+
 pub use error::{Result, TaskStoreError};
 pub use redis::RedisTaskStore;
 pub use schema::*;
