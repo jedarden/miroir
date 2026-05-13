@@ -817,4 +817,91 @@ mod tests {
         assert!(msg.contains("joining"));
         assert!(msg.contains("draining"));
     }
+
+    // --- Plan §4 YAML example test ---
+    // This test verifies that a Topology can be correctly built from the plan §4 YAML
+    // example structure (RG=2, 6 nodes, RF=2)
+    #[test]
+    fn test_topology_from_plan_section_4_yaml_structure() {
+        // Plan §4 YAML example:
+        // replica_groups: 2
+        // shards: 64
+        // replication_factor: 2
+        // nodes:
+        //   - id: "meili-0", address: "http://meili-0.search.svc:7700", replica_group: 0
+        //   - id: "meili-1", address: "http://meili-1.search.svc:7700", replica_group: 0
+        //   - id: "meili-2", address: "http://meili-2.search.svc:7700", replica_group: 0
+        //   - id: "meili-3", address: "http://meili-3.search.svc:7700", replica_group: 1
+        //   - id: "meili-4", address: "http://meili-4.search.svc:7700", replica_group: 1
+        //   - id: "meili-5", address: "http://meili-5.search.svc:7700", replica_group: 1
+
+        let mut topology = Topology::new(64, 2); // S=64, RF=2
+
+        // Add group 0 nodes (meili-0, meili-1, meili-2)
+        topology.add_node(Node::new(
+            NodeId::new("meili-0".to_string()),
+            "http://meili-0.search.svc:7700".to_string(),
+            0,
+        ));
+        topology.add_node(Node::new(
+            NodeId::new("meili-1".to_string()),
+            "http://meili-1.search.svc:7700".to_string(),
+            0,
+        ));
+        topology.add_node(Node::new(
+            NodeId::new("meili-2".to_string()),
+            "http://meili-2.search.svc:7700".to_string(),
+            0,
+        ));
+
+        // Add group 1 nodes (meili-3, meili-4, meili-5)
+        topology.add_node(Node::new(
+            NodeId::new("meili-3".to_string()),
+            "http://meili-3.search.svc:7700".to_string(),
+            1,
+        ));
+        topology.add_node(Node::new(
+            NodeId::new("meili-4".to_string()),
+            "http://meili-4.search.svc:7700".to_string(),
+            1,
+        ));
+        topology.add_node(Node::new(
+            NodeId::new("meili-5".to_string()),
+            "http://meili-5.search.svc:7700".to_string(),
+            1,
+        ));
+
+        // Verify topology properties
+        assert_eq!(topology.shards(), 64, "S should be 64");
+        assert_eq!(topology.rf(), 2, "RF should be 2");
+        assert_eq!(topology.replica_group_count(), 2, "RG should be 2");
+
+        // Verify groups() iterator returns RG groups in ascending order
+        let groups: Vec<_> = topology.groups().collect();
+        assert_eq!(groups.len(), 2, "Should have 2 groups");
+        assert_eq!(groups[0].id, 0, "First group should be ID 0");
+        assert_eq!(groups[1].id, 1, "Second group should be ID 1");
+
+        // Verify each group holds exactly its configured nodes
+        let group0_nodes = groups[0].nodes();
+        assert_eq!(group0_nodes.len(), 3, "Group 0 should have 3 nodes");
+        assert!(group0_nodes.contains(&NodeId::new("meili-0".to_string())));
+        assert!(group0_nodes.contains(&NodeId::new("meili-1".to_string())));
+        assert!(group0_nodes.contains(&NodeId::new("meili-2".to_string())));
+
+        let group1_nodes = groups[1].nodes();
+        assert_eq!(group1_nodes.len(), 3, "Group 1 should have 3 nodes");
+        assert!(group1_nodes.contains(&NodeId::new("meili-3".to_string())));
+        assert!(group1_nodes.contains(&NodeId::new("meili-4".to_string())));
+        assert!(group1_nodes.contains(&NodeId::new("meili-5".to_string())));
+
+        // Verify node addresses are correct
+        let node0 = topology.node(&NodeId::new("meili-0".to_string())).unwrap();
+        assert_eq!(node0.address, "http://meili-0.search.svc:7700");
+        assert_eq!(node0.replica_group, 0);
+
+        let node5 = topology.node(&NodeId::new("meili-5".to_string())).unwrap();
+        assert_eq!(node5.address, "http://meili-5.search.svc:7700");
+        assert_eq!(node5.replica_group, 1);
+    }
 }
