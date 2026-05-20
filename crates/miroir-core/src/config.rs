@@ -11,6 +11,38 @@ pub use advanced::{SearchUiConfig, CspOverridesConfig};
 use serde::{Deserialize, Serialize};
 
 /// Top-level configuration matching plan §4 YAML schema under `miroir:`.
+///
+/// # Drift Guard (§14.8)
+///
+/// The default values for resource-sensitive knobs are sized for the
+/// 2 vCPU / 3.75 GB envelope. This doc-test ensures the Rust defaults
+/// match the §14.8 reference fixture:
+///
+/// ```
+/// use miroir_core::config::MiroirConfig;
+/// let cfg = MiroirConfig::default();
+/// assert_eq!(cfg.server.max_body_bytes, 104_857_600);
+/// assert_eq!(cfg.server.max_concurrent_requests, 500);
+/// assert_eq!(cfg.server.request_timeout_ms, 30_000);
+/// assert_eq!(cfg.connection_pool_per_node.max_idle, 32);
+/// assert_eq!(cfg.connection_pool_per_node.max_total, 128);
+/// assert_eq!(cfg.connection_pool_per_node.idle_timeout_s, 60);
+/// assert_eq!(cfg.task_registry.cache_size, 10_000);
+/// assert_eq!(cfg.task_registry.redis_pool_max, 50);
+/// assert_eq!(cfg.idempotency.max_cached_keys, 1_000_000);
+/// assert_eq!(cfg.idempotency.ttl_seconds, 86_400);
+/// assert_eq!(cfg.session_pinning.max_sessions, 100_000);
+/// assert_eq!(cfg.query_coalescing.max_subscribers, 1_000);
+/// assert_eq!(cfg.query_coalescing.max_pending_queries, 10_000);
+/// assert_eq!(cfg.anti_entropy.max_read_concurrency, 2);
+/// assert_eq!(cfg.anti_entropy.fingerprint_batch_size, 1_000);
+/// assert_eq!(cfg.resharding.backfill_concurrency, 4);
+/// assert_eq!(cfg.resharding.backfill_batch_size, 1_000);
+/// assert_eq!(cfg.peer_discovery.service_name, "miroir-headless");
+/// assert_eq!(cfg.peer_discovery.refresh_interval_s, 15);
+/// assert_eq!(cfg.leader_election.lease_ttl_s, 10);
+/// assert_eq!(cfg.leader_election.renew_interval_s, 3);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MiroirConfig {
@@ -642,5 +674,56 @@ task_store:
     fn load_from_missing_file_fails() {
         let cfg = MiroirConfig::load_from(std::path::Path::new("/nonexistent/miroir.yaml"));
         assert!(cfg.is_err());
+    }
+
+    /// Drift guard: ensure Config::default() matches §14.8 reference defaults.
+    ///
+    /// This test serializes the default config and compares key §14.8 knobs
+    /// against the reference fixture. If this fails, either the Rust defaults
+    /// have drifted from §14.8, or the plan needs updating.
+    #[test]
+    fn section_14_8_defaults_match() {
+        let cfg = MiroirConfig::default();
+
+        // §14.8 server defaults
+        assert_eq!(cfg.server.max_body_bytes, 104_857_600, "server.max_body_bytes");
+        assert_eq!(cfg.server.max_concurrent_requests, 500, "server.max_concurrent_requests");
+        assert_eq!(cfg.server.request_timeout_ms, 30_000, "server.request_timeout_ms");
+
+        // §14.8 connection_pool_per_node defaults
+        assert_eq!(cfg.connection_pool_per_node.max_idle, 32, "connection_pool_per_node.max_idle");
+        assert_eq!(cfg.connection_pool_per_node.max_total, 128, "connection_pool_per_node.max_total");
+        assert_eq!(cfg.connection_pool_per_node.idle_timeout_s, 60, "connection_pool_per_node.idle_timeout_s");
+
+        // §14.8 task_registry defaults
+        assert_eq!(cfg.task_registry.cache_size, 10_000, "task_registry.cache_size");
+        assert_eq!(cfg.task_registry.redis_pool_max, 50, "task_registry.redis_pool_max");
+
+        // §14.8 idempotency defaults
+        assert_eq!(cfg.idempotency.max_cached_keys, 1_000_000, "idempotency.max_cached_keys");
+        assert_eq!(cfg.idempotency.ttl_seconds, 86_400, "idempotency.ttl_seconds");
+
+        // §14.8 session_pinning defaults
+        assert_eq!(cfg.session_pinning.max_sessions, 100_000, "session_pinning.max_sessions");
+
+        // §14.8 query_coalescing defaults
+        assert_eq!(cfg.query_coalescing.max_subscribers, 1_000, "query_coalescing.max_subscribers");
+        assert_eq!(cfg.query_coalescing.max_pending_queries, 10_000, "query_coalescing.max_pending_queries");
+
+        // §14.8 anti_entropy defaults
+        assert_eq!(cfg.anti_entropy.max_read_concurrency, 2, "anti_entropy.max_read_concurrency");
+        assert_eq!(cfg.anti_entropy.fingerprint_batch_size, 1_000, "anti_entropy.fingerprint_batch_size");
+
+        // §14.8 resharding defaults
+        assert_eq!(cfg.resharding.backfill_concurrency, 4, "resharding.backfill_concurrency");
+        assert_eq!(cfg.resharding.backfill_batch_size, 1_000, "resharding.backfill_batch_size");
+
+        // §14.8 peer_discovery defaults
+        assert_eq!(cfg.peer_discovery.service_name, "miroir-headless", "peer_discovery.service_name");
+        assert_eq!(cfg.peer_discovery.refresh_interval_s, 15, "peer_discovery.refresh_interval_s");
+
+        // §14.8 leader_election defaults
+        assert_eq!(cfg.leader_election.lease_ttl_s, 10, "leader_election.lease_ttl_s");
+        assert_eq!(cfg.leader_election.renew_interval_s, 3, "leader_election.renew_interval_s");
     }
 }
