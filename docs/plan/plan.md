@@ -1996,7 +1996,7 @@ Structured JSON to stdout:
 ```bash
 git clone https://github.com/jedarden/miroir.git
 cd miroir
-docker-compose -f examples/docker-compose-dev.yml up -d
+docker compose -f examples/docker-compose-dev.yml up -d
 
 # Verify
 curl http://localhost:7700/health
@@ -2170,11 +2170,12 @@ jedarden/miroir/
 ├── charts/miroir/
 ├── crates/
 │   ├── miroir-core/
+│   │   └── tests/           # Integration tests (idiomatic Rust)
 │   ├── miroir-proxy/
+│   │   └── tests/           # Integration tests (idiomatic Rust)
 │   └── miroir-ctl/
-├── tests/
-│   ├── integration/
-│   └── chaos/
+│       └── tests/           # Integration tests (idiomatic Rust)
+├── benches/                 # Criterion benchmarks
 ├── examples/
 │   ├── docker-compose-dev.yml
 │   ├── dev-config.yaml
@@ -2190,6 +2191,8 @@ jedarden/miroir/
     ├── plan/
     └── research/
 ```
+
+**Tests:** Integration tests live in `crates/*/tests/` following Rust workspace conventions. Run with `cargo test --all --all-features`. Chaos test material is documented in `docs/chaos_testing_report.md`.
 
 The Argo Workflows template lives in:
 ```
