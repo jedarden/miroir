@@ -1,9 +1,20 @@
-# bf-1p4v: Borrow of moved value `state`
+# bf-1p4v: Compile Error Already Fixed
 
-The reported compile error was already fixed in the codebase. Line 568 in `crates/miroir-proxy/src/main.rs` correctly uses `.with_state(state.clone())` instead of `.with_state(state)`.
+## Task
+Fix compile error: borrow of moved value `state` in miroir-proxy/src/main.rs:64
 
-The fix works because:
-1. `UnifiedState` derives `Clone` (line 39)
-2. `state.clone()` is passed to `.with_state()`, leaving the original `state` available for the metrics server on line 590
+## Finding
+The compile error has already been fixed. Current code at line 568 uses:
+```rust
+.with_state(state.clone());
+```
 
-Build verified: `cargo build` succeeds with no errors.
+The build succeeds with no errors:
+```
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s
+```
+
+Git history shows commit `f20c1ba` with message "bf-1p4v: Verify compile error already fixed".
+
+## Resolution
+No code changes needed. Task was already complete.
