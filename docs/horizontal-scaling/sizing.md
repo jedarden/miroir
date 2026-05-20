@@ -2,6 +2,8 @@
 
 This guide provides a sizing matrix for provisioning Miroir orchestrator pods based on corpus size and query throughput. Meilisearch node sizing follows the guidance in [plan.md §6](../../plan/plan.md) independently.
 
+For per-feature scaling behavior (which capabilities need Redis, work queues, or nothing), see [Per-Feature Scaling Behavior](per-feature.md).
+
 ## Sizing matrix
 
 | Corpus | Peak QPS | Orchestrator pods | Task store |
