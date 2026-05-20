@@ -1,0 +1,102 @@
+# Miroir development stack — 3 Meilisearch nodes + 1 Miroir orchestrator
+# Quick start: docker compose -f examples/docker-compose-dev.yml up -d
+
+services:
+  # Meilisearch node 0 (shard replica group 0)
+  meili-0:
+    image: getmeilisearch/meilisearch:v1.12
+    container_name: miroir-meili-0
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=dev-node-key
+      - MEILI_NO_ANALYTICS=true
+    ports:
+      - "7701:7700"
+    volumes:
+      - meili-0-data:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Meilisearch node 1 (shard replica group 0)
+  meili-1:
+    image: getmeilisearch/meilisearch:v1.12
+    container_name: miroir-meili-1
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=dev-node-key
+      - MEILI_NO_ANALYTICS=true
+    ports:
+      - "7702:7700"
+    volumes:
+      - meili-1-data:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Meilisearch node 2 (shard replica group 0)
+  meili-2:
+    image: getmeilisearch/meilisearch:v1.12
+    container_name: miroir-meili-2
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=dev-node-key
+      - MEILI_NO_ANALYTICS=true
+    ports:
+      - "7703:7700"
+    volumes:
+      - meili-2-data:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Miroir orchestrator
+  miroir:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: miroir-dev:latest
+    container_name: miroir-orchestrator
+    environment:
+      - MIROIR_MASTER_KEY=dev-key
+      - MIROIR_NODE_MASTER_KEY=dev-node-key
+    ports:
+      - "7700:7700"
+    volumes:
+      - ../examples/dev-config.yaml:/etc/miroir/config.yaml:ro
+      - miroir-data:/data
+    depends_on:
+      meili-0:
+        condition: service_healthy
+      meili-1:
+        condition: service_healthy
+      meili-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Optional: Redis for multi-replica Miroir deployments
+  # Uncomment this service and set task_store.backend=redis in dev-config.yaml
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: miroir-redis
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis-data:/data
+
+volumes:
+  meili-0-data:
+  meili-1-data:
+  meili-2-data:
+  miroir-data:
+  # redis-data:

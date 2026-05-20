@@ -1,0 +1,290 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: miroir-docker-compose-smoke
+  namespace: argo-workflows
+  labels:
+    app: miroir-docker-compose-smoke
+spec:
+  entrypoint: pipeline
+  serviceAccountName: argo-workflow
+  arguments:
+    parameters:
+      - name: repo
+        value: https://github.com/jedarden/miroir.git
+      - name: revision
+        value: main
+  volumes:
+    - name: docker-graph
+      emptyDir: {}
+  templates:
+    - name: pipeline
+      dag:
+        tasks:
+          - name: checkout
+            template: git-checkout
+          - name: build
+            template: docker-build
+            dependencies: [checkout]
+          - name: smoke-test
+            template: run-smoke-tests
+            dependencies: [build]
+          - name: cleanup
+            template: compose-cleanup
+            dependencies: [smoke-test]
+            onExit: true
+
+    - name: git-checkout
+      activeDeadlineSeconds: 300
+      container:
+        image: alpine/git:2.43.0
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            REPO="{{workflow.parameters.repo}}"
+            REPO_PATH="${REPO#https://}"
+            git clone --depth 1 --branch "{{workflow.parameters.revision}}" \
+              "https://x-access-token:${GH_TOKEN}@${REPO_PATH}}" /workspace/src
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: github-token
+                key: token
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+    - name: docker-build
+      activeDeadlineSeconds: 1800
+      container:
+        image: docker:27.4.1-dind-alpine3.20
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+
+            # Start Docker daemon
+            dockerd-entrypoint.sh &
+
+            # Wait for Docker daemon to be ready
+            for i in $(seq 1 30); do
+              if docker info >/dev/null 2>&1; then
+                echo "Docker daemon is ready"
+                break
+              fi
+              echo "Waiting for Docker daemon... ($i/30)"
+              sleep 1
+            done
+
+            # Build Miroir image
+            cd /workspace/src
+            docker build -t miroir-dev:latest -f Dockerfile .
+
+            echo "=== Build complete ==="
+            docker images | grep miroir
+        env:
+          - name: DOCKER_TLS_CERTDIR
+            value: ""
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: docker-graph
+            mountPath: /var/lib/docker
+        securityContext:
+          privileged: true
+        resources:
+          requests:
+            cpu: 2000m
+            memory: 4Gi
+          limits:
+            cpu: 4000m
+            memory: 8Gi
+
+    - name: run-smoke-tests
+      activeDeadlineSeconds: 600
+      container:
+        image: docker:27.4.1-dind-alpine3.20
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+
+            # Start Docker daemon
+            dockerd-entrypoint.sh &
+
+            # Wait for Docker daemon to be ready
+            for i in $(seq 1 30); do
+              if docker info >/dev/null 2>&1; then
+                echo "Docker daemon is ready"
+                break
+              fi
+              echo "Waiting for Docker daemon... ($i/30)"
+              sleep 1
+            done
+
+            cd /workspace/src
+
+            # Load the pre-built image from previous step (if available)
+            # Otherwise build it locally
+            if ! docker images | grep -q "miroir-dev"; then
+              echo "Building Miroir image..."
+              docker build -t miroir-dev:latest -f Dockerfile .
+            fi
+
+            # Start the compose stack
+            echo "=== Starting Docker Compose stack ==="
+            docker compose -f examples/docker-compose-dev.yml up -d
+
+            # Wait for containers to be healthy
+            echo "=== Waiting for containers to be healthy ==="
+            for i in $(seq 1 60); do
+              if docker compose -f examples/docker-compose-dev.yml ps | grep -q "healthy"; then
+                echo "Containers are healthy"
+                break
+              fi
+              if [ $i -eq 60 ]; then
+                echo "Timeout waiting for containers to be healthy"
+                docker compose -f examples/docker-compose-dev.yml logs
+                exit 1
+              fi
+              sleep 2
+            done
+
+            # Run smoke tests
+            echo "=== Running smoke tests ==="
+
+            # Test 1: Health check
+            echo "Test 1: Health check"
+            response=$(curl -s -w "\n%{http_code}" http://localhost:7700/health)
+            http_code=$(echo "$response" | tail -n1)
+            body=$(echo "$response" | head -n-1)
+
+            if [ "$http_code" != "200" ]; then
+              echo "Health check failed with HTTP ${http_code}"
+              echo "Response: ${body}"
+              docker compose -f examples/docker-compose-dev.yml logs
+              exit 1
+            fi
+            echo "Health check passed: ${body}"
+
+            # Test 2: Create index
+            echo "Test 2: Create index"
+            response=$(curl -s -w "\n%{http_code}" \
+              -X POST http://localhost:7700/indexes \
+              -H "Authorization: Bearer dev-key" \
+              -H "Content-Type: application/json" \
+              -d '{"uid": "movies", "primaryKey": "id"}')
+
+            http_code=$(echo "$response" | tail -n1)
+            body=$(echo "$response" | head -n-1)
+
+            if [ "$http_code" != "202" ]; then
+              echo "Index creation failed with HTTP ${http_code}"
+              echo "Response: ${body}"
+              exit 1
+            fi
+            echo "Index creation accepted"
+
+            # Test 3: Index documents
+            echo "Test 3: Index documents"
+            response=$(curl -s -w "\n%{http_code}" \
+              -X POST http://localhost:7700/indexes/movies/documents \
+              -H "Authorization: Bearer dev-key" \
+              -H "Content-Type: application/json" \
+              -d '[
+                {"id": 1, "title": "Inception", "genres": ["sci-fi", "thriller"]},
+                {"id": 2, "title": "Interstellar", "genres": ["sci-fi", "drama"]},
+                {"id": 3, "title": "The Dark Knight", "genres": ["action", "crime"]}
+              ]')
+
+            http_code=$(echo "$response" | tail -n1)
+            body=$(echo "$response" | head -n-1)
+
+            if [ "$http_code" != "202" ]; then
+              echo "Document indexing failed with HTTP ${http_code}"
+              echo "Response: ${body}"
+              exit 1
+            fi
+            echo "Document indexing accepted"
+
+            # Wait for indexing to complete
+            sleep 5
+
+            # Test 4: Search
+            echo "Test 4: Search"
+            response=$(curl -s -w "\n%{http_code}" \
+              -X POST http://localhost:7700/indexes/movies/search \
+              -H "Authorization: Bearer dev-key" \
+              -H "Content-Type: application/json" \
+              -d '{"q": "dark"}')
+
+            http_code=$(echo "$response" | tail -n1)
+            body=$(echo "$response" | head -n-1)
+
+            if [ "$http_code" != "200" ]; then
+              echo "Search failed with HTTP ${http_code}"
+              echo "Response: ${body}"
+              exit 1
+            fi
+
+            echo "Search response: ${body}"
+
+            if echo "$body" | grep -q '"The Dark Knight"'; then
+              echo "=== All smoke tests passed ==="
+            else
+              echo "Expected 'The Dark Knight' in results"
+              exit 1
+            fi
+        env:
+          - name: DOCKER_TLS_CERTDIR
+            value: ""
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: docker-graph
+            mountPath: /var/lib/docker
+        securityContext:
+          privileged: true
+        resources:
+          requests:
+            cpu: 2000m
+            memory: 4Gi
+          limits:
+            cpu: 4000m
+            memory: 8Gi
+
+    - name: compose-cleanup
+      activeDeadlineSeconds: 120
+      container:
+        image: docker:27.4.1-cli-alpine3.20
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            cd /workspace/src
+
+            echo "=== Cleaning up Docker Compose stack ==="
+            docker compose -f examples/docker-compose-dev.yml down -v || true
+
+            echo "=== Cleanup complete ==="
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: docker-graph
+            mountPath: /var/lib/docker
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
