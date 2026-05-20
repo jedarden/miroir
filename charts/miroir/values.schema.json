@@ -62,6 +62,98 @@
               }
             }
           }
+        },
+        "server": {
+          "type": "object",
+          "properties": {
+            "max_body_bytes": { "type": "integer", "minimum": 0 },
+            "max_concurrent_requests": { "type": "integer", "minimum": 1 },
+            "request_timeout_ms": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "connection_pool_per_node": {
+          "type": "object",
+          "properties": {
+            "max_idle": { "type": "integer", "minimum": 0 },
+            "max_total": { "type": "integer", "minimum": 1 },
+            "idle_timeout_s": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "task_registry": {
+          "type": "object",
+          "properties": {
+            "cache_size": { "type": "integer", "minimum": 0 },
+            "redis_pool_max": { "type": "integer", "minimum": 1 },
+            "ttl_seconds": { "type": "integer", "minimum": 1 },
+            "prune_interval_s": { "type": "integer", "minimum": 1 },
+            "prune_batch_size": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "idempotency": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "max_cached_keys": { "type": "integer", "minimum": 0 },
+            "ttl_seconds": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "session_pinning": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "ttl_seconds": { "type": "integer", "minimum": 1 },
+            "max_sessions": { "type": "integer", "minimum": 0 },
+            "wait_strategy": { "type": "string", "enum": ["block", "route_pin"] },
+            "max_wait_ms": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "query_coalescing": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "window_ms": { "type": "integer", "minimum": 0 },
+            "max_subscribers": { "type": "integer", "minimum": 1 },
+            "max_pending_queries": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "anti_entropy": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "schedule": { "type": "string" },
+            "shards_per_pass": { "type": "integer", "minimum": 0 },
+            "max_read_concurrency": { "type": "integer", "minimum": 1 },
+            "fingerprint_batch_size": { "type": "integer", "minimum": 1 },
+            "auto_repair": { "type": "boolean" },
+            "updated_at_field": { "type": "string" }
+          }
+        },
+        "resharding": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "backfill_concurrency": { "type": "integer", "minimum": 1 },
+            "backfill_batch_size": { "type": "integer", "minimum": 1 },
+            "throttle_docs_per_sec": { "type": "integer", "minimum": 0 },
+            "verify_before_swap": { "type": "boolean" },
+            "retain_old_index_hours": { "type": "integer", "minimum": 0 },
+            "allowed_windows": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "peer_discovery": {
+          "type": "object",
+          "properties": {
+            "service_name": { "type": "string" },
+            "refresh_interval_s": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "leader_election": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "lease_ttl_s": { "type": "integer", "minimum": 1 },
+            "renew_interval_s": { "type": "integer", "minimum": 1 }
+          }
         }
       }
     },
@@ -415,6 +507,9 @@
     },
     {
       "description": "Rule 5: scoped_key_rotate_before_expiry_days must be strictly less than scoped_key_max_age_days (enforced at render time via _helpers.tpl since JSON Schema draft-7 cannot compare sibling properties)"
+    },
+    {
+      "description": "Rule 6: leader_election.lease_ttl_s must be greater than leader_election.renew_interval_s (enforced at render time via _helpers.tpl since JSON Schema draft-7 cannot compare sibling properties)"
     }
   ]
 }

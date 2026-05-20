@@ -46,11 +46,11 @@ miroir:
   podLabels: {}
   resources:
     limits:
-      cpu: 1000m
-      memory: 1Gi
+      cpu: 2000m
+      memory: 3584Mi  # 3.5 GiB (leaves headroom under 3.75 GB envelope)
     requests:
-      cpu: 250m
-      memory: 512Mi
+      cpu: 500m
+      memory: 1Gi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -64,6 +64,60 @@ miroir:
       pvc_size: 10Gi
       pvc_storage_class: ""
       memory_bytes: 67108864
+  # §14.8 Resource-aware configuration defaults
+  # All defaults sized for 2 vCPU / 3.75 GB envelope
+  server:
+    max_body_bytes: 104857600          # 100 MiB per request
+    max_concurrent_requests: 500
+    request_timeout_ms: 30000
+  connection_pool_per_node:
+    max_idle: 32
+    max_total: 128
+    idle_timeout_s: 60
+  task_registry:
+    cache_size: 10000
+    redis_pool_max: 50
+    ttl_seconds: 604800                # 7 days
+    prune_interval_s: 300
+    prune_batch_size: 10000
+  idempotency:
+    enabled: true
+    max_cached_keys: 1000000           # ~100 MB
+    ttl_seconds: 86400
+  session_pinning:
+    enabled: true
+    ttl_seconds: 900
+    max_sessions: 100000               # ~50 MB
+    wait_strategy: block               # block | route_pin
+    max_wait_ms: 5000
+  query_coalescing:
+    enabled: true
+    window_ms: 50
+    max_subscribers: 1000
+    max_pending_queries: 10000
+  anti_entropy:
+    enabled: true
+    schedule: every 6h
+    shards_per_pass: 0                 # 0 = all shards
+    max_read_concurrency: 2
+    fingerprint_batch_size: 1000
+    auto_repair: true
+    updated_at_field: _miroir_updated_at
+  resharding:
+    enabled: true
+    backfill_concurrency: 4
+    backfill_batch_size: 1000
+    throttle_docs_per_sec: 0           # 0 = no throttle
+    verify_before_swap: true
+    retain_old_index_hours: 48
+    allowed_windows: []                # e.g., ["22:00-04:00 UTC"]
+  peer_discovery:
+    service_name: miroir-headless
+    refresh_interval_s: 15
+  leader_election:
+    enabled: true                      # auto-true when replicas > 1
+    lease_ttl_s: 10
+    renew_interval_s: 3
 
 search_ui:
   enabled: true

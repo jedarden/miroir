@@ -133,26 +133,57 @@ rebalancer:
 server:
   port: 7700
   bind: "0.0.0.0"
-  max_body_bytes: 104857600
-  max_concurrent_requests: 500
-  request_timeout_ms: 30000
+  max_body_bytes: {{ .Values.miroir.server.max_body_bytes | default 104857600 }}
+  max_concurrent_requests: {{ .Values.miroir.server.max_concurrent_requests | default 500 }}
+  request_timeout_ms: {{ .Values.miroir.server.request_timeout_ms | default 30000 }}
 connection_pool_per_node:
-  max_idle: 32
-  max_total: 128
-  idle_timeout_s: 60
+  max_idle: {{ .Values.miroir.connection_pool_per_node.max_idle | default 32 }}
+  max_total: {{ .Values.miroir.connection_pool_per_node.max_total | default 128 }}
+  idle_timeout_s: {{ .Values.miroir.connection_pool_per_node.idle_timeout_s | default 60 }}
 task_registry:
-  cache_size: 10000
-  redis_pool_max: 50
-  ttl_seconds: 604800
-  prune_interval_s: 300
-  prune_batch_size: 10000
+  cache_size: {{ .Values.miroir.task_registry.cache_size | default 10000 }}
+  redis_pool_max: {{ .Values.miroir.task_registry.redis_pool_max | default 50 }}
+  ttl_seconds: {{ .Values.miroir.task_registry.ttl_seconds | default 604800 }}
+  prune_interval_s: {{ .Values.miroir.task_registry.prune_interval_s | default 300 }}
+  prune_batch_size: {{ .Values.miroir.task_registry.prune_batch_size | default 10000 }}
+idempotency:
+  enabled: {{ .Values.miroir.idempotency.enabled | default true }}
+  max_cached_keys: {{ .Values.miroir.idempotency.max_cached_keys | default 1000000 }}
+  ttl_seconds: {{ .Values.miroir.idempotency.ttl_seconds | default 86400 }}
+session_pinning:
+  enabled: {{ .Values.miroir.session_pinning.enabled | default true }}
+  ttl_seconds: {{ .Values.miroir.session_pinning.ttl_seconds | default 900 }}
+  max_sessions: {{ .Values.miroir.session_pinning.max_sessions | default 100000 }}
+  wait_strategy: {{ .Values.miroir.session_pinning.wait_strategy | default "block" }}
+  max_wait_ms: {{ .Values.miroir.session_pinning.max_wait_ms | default 5000 }}
+query_coalescing:
+  enabled: {{ .Values.miroir.query_coalescing.enabled | default true }}
+  window_ms: {{ .Values.miroir.query_coalescing.window_ms | default 50 }}
+  max_subscribers: {{ .Values.miroir.query_coalescing.max_subscribers | default 1000 }}
+  max_pending_queries: {{ .Values.miroir.query_coalescing.max_pending_queries | default 10000 }}
+anti_entropy:
+  enabled: {{ .Values.miroir.anti_entropy.enabled | default true }}
+  schedule: {{ .Values.miroir.anti_entropy.schedule | default "every 6h" }}
+  shards_per_pass: {{ .Values.miroir.anti_entropy.shards_per_pass | default 0 }}
+  max_read_concurrency: {{ .Values.miroir.anti_entropy.max_read_concurrency | default 2 }}
+  fingerprint_batch_size: {{ .Values.miroir.anti_entropy.fingerprint_batch_size | default 1000 }}
+  auto_repair: {{ .Values.miroir.anti_entropy.auto_repair | default true }}
+  updated_at_field: {{ .Values.miroir.anti_entropy.updated_at_field | default "_miroir_updated_at" }}
+resharding:
+  enabled: {{ .Values.miroir.resharding.enabled | default true }}
+  backfill_concurrency: {{ .Values.miroir.resharding.backfill_concurrency | default 4 }}
+  backfill_batch_size: {{ .Values.miroir.resharding.backfill_batch_size | default 1000 }}
+  throttle_docs_per_sec: {{ .Values.miroir.resharding.throttle_docs_per_sec | default 0 }}
+  verify_before_swap: {{ .Values.miroir.resharding.verify_before_swap | default true }}
+  retain_old_index_hours: {{ .Values.miroir.resharding.retain_old_index_hours | default 48 }}
+  allowed_windows: {{ .Values.miroir.resharding.allowed_windows | default list | toJson }}
 peer_discovery:
-  service_name: {{ .Release.Name }}-headless
-  refresh_interval_s: 15
+  service_name: {{ .Values.miroir.peer_discovery.service_name | default .Release.Name }}-headless
+  refresh_interval_s: {{ .Values.miroir.peer_discovery.refresh_interval_s | default 15 }}
 leader_election:
-  enabled: true
-  lease_ttl_s: 10
-  renew_interval_s: 3
+  enabled: {{ .Values.miroir.leader_election.enabled | default true }}
+  lease_ttl_s: {{ .Values.miroir.leader_election.lease_ttl_s | default 10 }}
+  renew_interval_s: {{ .Values.miroir.leader_election.renew_interval_s | default 3 }}
 hpa:
   enabled: {{ .Values.hpa.enabled | default false }}
 tracing:
@@ -234,6 +265,13 @@ Rendered as an empty ConfigMap; fails template rendering on invalid config.
 {{- if and (hasKey .Values.search_ui "scoped_key_rotate_before_expiry_days") (hasKey .Values.search_ui "scoped_key_max_age_days") -}}
 {{- if ge (int .Values.search_ui.scoped_key_rotate_before_expiry_days) (int .Values.search_ui.scoped_key_max_age_days) -}}
 {{- fail (printf "search_ui.scoped_key_rotate_before_expiry_days (%d) must be strictly less than scoped_key_max_age_days (%d); otherwise rotation fires before/at key issuance, producing a continuous rotation loop" (int .Values.search_ui.scoped_key_rotate_before_expiry_days) (int .Values.search_ui.scoped_key_max_age_days)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.miroir.leader_election -}}
+{{- if and (hasKey .Values.miroir.leader_election "lease_ttl_s") (hasKey .Values.miroir.leader_election "renew_interval_s") -}}
+{{- if le (int .Values.miroir.leader_election.lease_ttl_s) (int .Values.miroir.leader_election.renew_interval_s) -}}
+{{- fail (printf "leader_election.lease_ttl_s (%d) must be greater than leader_election.renew_interval_s (%d); otherwise the lease expires before it can be renewed" (int .Values.miroir.leader_election.lease_ttl_s) (int .Values.miroir.leader_election.renew_interval_s)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
