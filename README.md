@@ -49,3 +49,53 @@ See [`docs/versioning-policy.md`](docs/versioning-policy.md) for the full versio
 ## Status
 
 Design phase. See [`docs/`](docs/) for architecture detail.
+
+## Quick Start
+
+Get Miroir running locally in 5 minutes with Docker Compose:
+
+```bash
+# Clone the repository
+git clone https://github.com/jedarden/miroir.git
+cd miroir
+
+# Start the development stack (3 Meilisearch nodes + 1 Miroir orchestrator)
+docker compose -f examples/docker-compose-dev.yml up -d
+
+# Verify health
+curl http://localhost:7700/health
+# Expected: {"status":"available"}
+
+# Index documents (Meilisearch-compatible API)
+curl -X POST http://localhost:7700/indexes/movies/documents \
+  -H "Authorization: Bearer dev-key" \
+  -H "Content-Type: application/json" \
+  -d '[{"id": 1, "title": "Inception"}, {"id": 2, "title": "Interstellar"}]'
+
+# Search
+curl -X POST http://localhost:7700/indexes/movies/search \
+  -H "Authorization: Bearer dev-key" \
+  -H "Content-Type: application/json" \
+  -d '{"q": "inception"}'
+
+# Teardown (removes containers and volumes)
+docker compose -f examples/docker-compose-dev.yml down -v
+```
+
+See [`examples/README.md`](examples/README.md) for more details on the development stack, configuration options, and troubleshooting.
+
+## Production deployment
+
+For production deployments, see the [Deployment Sizing Guide](docs/horizontal-scaling/sizing.md) to determine orchestrator pod count and task store configuration based on your corpus size and query throughput.
+
+### When to use
+
+- **Multi-pod with Redis** — Recommended for production. Horizontal scaling with 2+ orchestrator pods delivers fault tolerance (zero-downtime rollouts, pod-loss survival) and scales query throughput via HPA. See [Deployment Sizing Guide](docs/horizontal-scaling/sizing.md).
+
+- **Single oversized pod** — Supported for dev clusters, very small deployments, or constrained environments. A single pod at 4 vCPU / 8 GB is validated but loses HA benefits (no zero-downtime rollouts, no pod-loss survival). See [Single-Pod Mode](docs/horizontal-scaling/single-pod.md).
+
+- **Large index sharding** — When a single Meilisearch node cannot fit your corpus in RAM, Miroir stripes it across multiple nodes with configurable replication factor.
+
+Additional production resources:
+- [Production Deployment Guide](docs/onboarding/production.md) — Operational considerations, monitoring, and troubleshooting
+- [Versioning Policy](docs/versioning-policy.md) — Backward compatibility commitments and upgrade guidance
