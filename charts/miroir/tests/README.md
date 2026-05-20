@@ -34,6 +34,7 @@ Rule 5 uses template-level `fail()` because JSON Schema draft-7 cannot compare s
 | File | Description |
 |------|-------------|
 | `valid-single-replica-sqlite.yaml` | Single replica with SQLite (dev default) |
+| `valid-single-pod-oversized.yaml` | Single-pod oversized mode (4 vCPU / 8 GB) for dev/small deployments |
 | `valid-multi-replica-redis.yaml` | Multi-replica with Redis |
 | `good-production.yaml` | Full production config with HPA, Redis rate limiting, and scoped keys |
 | `good-dev-no-ui.yaml` | Minimal dev defaults |
