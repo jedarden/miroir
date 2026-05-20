@@ -23,6 +23,22 @@ CREATE TABLE IF NOT EXISTS canary_runs (
     PRIMARY KEY (canary_id, ran_at)
 );
 
+-- Trigger to auto-prune canary_runs to run_history_per_canary (default 100)
+-- Fires after insert to keep only the N most recent runs per canary
+CREATE TRIGGER IF NOT EXISTS canary_runs_auto_prune
+AFTER INSERT ON canary_runs
+BEGIN
+    DELETE FROM canary_runs
+    WHERE canary_id = NEW.canary_id
+      AND ran_at NOT IN (
+          SELECT ran_at
+          FROM canary_runs
+          WHERE canary_id = NEW.canary_id
+          ORDER BY ran_at DESC
+          LIMIT 100
+      );
+END;
+
 -- Table 10: cdc_cursors — per-sink per-index CDC cursor
 CREATE TABLE IF NOT EXISTS cdc_cursors (
     sink_name       TEXT NOT NULL,
