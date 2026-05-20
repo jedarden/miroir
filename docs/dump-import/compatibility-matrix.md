@@ -85,7 +85,7 @@ Streaming mode can reconstruct:
 1. Rename the existing field before dump creation
 2. Or use a custom `shard_field` config (future enhancement)
 
-See enhancement bead: `miroir-zc2.6` (configurable shard metadata field)
+**Future enhancement**: Configurable shard metadata field name would allow using a different field instead of `_miroir_shard` to avoid conflicts.
 
 ## Decision Tree: Use Streaming or Broadcast?
 
@@ -143,10 +143,10 @@ See: docs/dump-import/compatibility-matrix.md
 - [Plan §13.5: Two-phase settings broadcast](../plan/plan.md#135-two-phase-settings-broadcast)
 - [CLI: miroir-ctl dump import](../cli/reference.md#dump-import)
 
-## Enhancement Tracking
+## Future Enhancements
 
-| Issue | Description | Status |
-|-------|-------------|--------|
-| `miroir-zc2.6` | Configurable shard metadata field name | Open |
-| `miroir-zc2.7` | Pre-import validation and field conflict detection | Open |
-| `miroir-zc2.8` | EE-to-CE dump conversion tool | Open |
+| Enhancement | Description | Priority |
+|-------------|-------------|----------|
+| Configurable shard metadata field name | Allow operators to customize the field name used for shard metadata (default: `_miroir_shard`) to avoid conflicts with existing data schemas | P3 |
+| Pre-import validation and field conflict detection | Analyze dump files before import to detect incompatibilities early (e.g., `_miroir_shard` conflicts, version issues) | P2 |
+| EE-to-CE dump conversion tool | Convert Enterprise Edition dumps to Community Edition-compatible format for streaming import | P4 |
