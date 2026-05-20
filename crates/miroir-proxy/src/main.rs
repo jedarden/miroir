@@ -6,6 +6,7 @@ use axum::{
 use miroir_core::{
     config::MiroirConfig,
     rebalancer_worker::{RebalancerWorker, RebalancerWorkerConfig, TopologyChangeEvent},
+    task_pruner,
     topology::{NodeStatus, Topology},
 };
 use std::net::SocketAddr;
@@ -381,6 +382,23 @@ async fn main() -> anyhow::Result<()> {
         });
     } else {
         info!("drift reconciler not available (no Redis task store)");
+    }
+
+    // Start task registry TTL pruner background task (plan §4, Phase 3)
+    // Runs on single-pod with advisory lock; Phase 6 §14.5 Mode A replaces with rendezvous
+    if let Some(ref store) = state.admin.task_store {
+        let store = store.clone();
+        let pruner_config = config.task_registry.clone();
+        tokio::spawn(async move {
+            // The pruner runs in its own thread via spawn_pruner
+            let _pruner_handle = task_pruner::spawn_pruner(store, pruner_config);
+            // The handle is dropped here only on process exit
+            info!("task registry TTL pruner started");
+            // Keep this task alive forever
+            std::future::pending::<()>().await;
+        });
+    } else {
+        info!("task registry TTL pruner not available (no task store)");
     }
 
     // Start canary runner background task (plan §13.18)
