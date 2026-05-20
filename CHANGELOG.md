@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## Versioning Policy
+
+Miroir provides backward-compatibility guarantees for four surfaces starting at v1.0:
+- Meilisearch API compatibility layer
+- `miroir-ctl` CLI flags
+- Config file schema
+- Helm chart values schema
+
+See [`docs/versioning-policy.md`](docs/versioning-policy.md) for the full policy, including what constitutes a breaking change for each surface, deprecation procedures, and the pre-1.0 policy.
+
 ## [Unreleased]
 
 ### Added

@@ -40,6 +40,12 @@ Analogous to software RAID — configurable per deployment:
 - **Rebalancer** — on node add/remove, recomputes assignments and migrates only the shards that changed owners; surviving replicas serve reads during rebuild
 - **Result merger** — normalizes and merges ranked result sets from multiple shards into a single coherent response
 
+## Stability
+
+Miroir is currently in development (v0.x). Starting with v1.0, the project provides backward-compatibility commitments for the Meilisearch API layer, `miroir-ctl` CLI, config file schema, and Helm chart values.
+
+See [`docs/versioning-policy.md`](docs/versioning-policy.md) for the full versioning policy, including what constitutes a breaking change and the deprecation process.
+
 ## Status
 
 Design phase. See [`docs/`](docs/) for architecture detail.
