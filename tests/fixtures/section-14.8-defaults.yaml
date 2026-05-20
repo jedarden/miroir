@@ -1,0 +1,48 @@
+# Reference defaults from plan §14.8 Resource-aware configuration defaults
+# This file is the authoritative source for drift detection tests.
+#
+# Every resource-sensitive knob has a default sized for the 2 vCPU / 3.75 GB envelope.
+#
+# Generated from: docs/plan/plan.md §14.8
+
+server:
+  max_body_bytes: 104857600          # 100 MiB per request
+  max_concurrent_requests: 500
+  request_timeout_ms: 30000
+
+connection_pool_per_node:
+  max_idle: 32
+  max_total: 128
+  idle_timeout_s: 60
+
+task_registry:
+  cache_size: 10000
+  redis_pool_max: 50
+
+idempotency:
+  max_cached_keys: 1000000           # ~100 MB
+  ttl_seconds: 86400
+
+session_pinning:
+  max_sessions: 100000               # ~50 MB
+
+query_coalescing:
+  max_subscribers: 1000
+  max_pending_queries: 10000
+
+anti_entropy:
+  max_read_concurrency: 2
+  fingerprint_batch_size: 1000
+
+resharding:
+  backfill_concurrency: 4
+  backfill_batch_size: 1000
+
+peer_discovery:
+  service_name: "miroir-headless"
+  refresh_interval_s: 15
+
+leader_election:
+  enabled: true                      # auto-true when replicas > 1
+  lease_ttl_s: 10
+  renew_interval_s: 3
