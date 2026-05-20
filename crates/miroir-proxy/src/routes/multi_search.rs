@@ -251,6 +251,7 @@ where
                 };
 
                 // Execute DFS query-then-fetch
+                let ttl_enabled = config.ttl.enabled;
                 match dfs_query_then_fetch_search(
                     plan,
                     &node_client,
@@ -258,6 +259,7 @@ where
                     &topology,
                     policy,
                     &strategy as &dyn MergeStrategy,
+                    ttl_enabled,
                 )
                 .await
                 {

@@ -315,6 +315,7 @@ async fn search_handler(
     let strategy = ScoreMergeStrategy::new();
 
     // Execute DFS query-then-fetch
+    let ttl_enabled = state.config.ttl.enabled;
     let mut result = dfs_query_then_fetch_search(
         plan,
         &client,
@@ -322,6 +323,7 @@ async fn search_handler(
         &topo,
         policy,
         &strategy,
+        ttl_enabled,
     )
     .await
     .map_err(|e| {
