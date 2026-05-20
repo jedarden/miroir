@@ -98,4 +98,5 @@ For production deployments, see the [Deployment Sizing Guide](docs/horizontal-sc
 
 Additional production resources:
 - [Production Deployment Guide](docs/onboarding/production.md) — Operational considerations, monitoring, and troubleshooting
+- [Per-Feature Scaling Behavior](docs/horizontal-scaling/per-feature.md) — Which features need Redis, work queues, or nothing
 - [Versioning Policy](docs/versioning-policy.md) — Backward compatibility commitments and upgrade guidance
