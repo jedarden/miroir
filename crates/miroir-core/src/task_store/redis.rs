@@ -275,11 +275,12 @@ impl TaskStore for RedisTaskStore {
                 }
             }
 
-            // If this is a fresh store, record our version
-            if current.is_none() {
-                let _: () = conn.set(&version_key, binary_version).await
-                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
-            }
+            // Record or update schema version to match binary
+            // Redis doesn't need SQL migrations (no tables), but we track
+            // version for compatibility with SQLite and to enable the
+            // version-ahead safety check on rollback.
+            let _: () = conn.set(&version_key, binary_version).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             Ok(())
         })
