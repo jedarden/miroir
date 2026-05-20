@@ -20,3 +20,7 @@ The file was already created in a previous attempt. The forced-mode constraints 
 - Rule 4: `admin_ui.rate_limit.backend: local` rejected when `miroir.replicas > 1`
 
 The doc is well-structured and provides operators with a clear reference for horizontal scaling requirements per feature.
+
+## Additional work (2026-05-20)
+
+Added cross-reference comments to beads `miroir-m9q.3`, `miroir-m9q.4`, and `miroir-m9q.5` pointing to `docs/horizontal-scaling/per-feature.md`. This enables bidirectional navigation between the mode implementation beads and the per-feature scaling reference.
