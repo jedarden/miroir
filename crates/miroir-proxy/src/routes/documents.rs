@@ -241,6 +241,8 @@ async fn write_documents_impl(
     // 2. Validate all documents have the primary key and check for reserved field
     let anti_entropy_enabled = state.config.anti_entropy.enabled;
     let updated_at_field = &state.config.anti_entropy.updated_at_field;
+    let ttl_enabled = state.config.ttl.enabled;
+    let expires_at_field = &state.config.ttl.expires_at_field;
 
     for (i, doc) in documents.iter().enumerate() {
         // Check for reserved field BEFORE checking primary key (per acceptance criteria)
@@ -260,8 +262,15 @@ async fn write_documents_impl(
             ));
         }
 
-        // _miroir_expires_at is NEVER reserved for writes (clients SET it per plan §13.14)
-        // The merger strips it on read, but writes always accept it
+        // _miroir_expires_at is reserved ONLY when ttl.enabled: true (plan §5, §13.14)
+        // When reserved, clients cannot SET it; the orchestrator controls it. When disabled,
+        // client values pass through end-to-end.
+        if ttl_enabled && doc.get(expires_at_field).is_some() {
+            return Err(MeilisearchError::new(
+                MiroirCode::ReservedField,
+                format!("document contains reserved field `{}` (reserved when ttl.enabled: true)", expires_at_field),
+            ));
+        }
 
         if doc.get(&primary_key).is_none() {
             return Err(MeilisearchError::new(
@@ -727,7 +736,7 @@ mod tests {
     // Tests the reserved field matrix per plan §5:
     // - `_miroir_shard`: Always reserved (unconditional)
     // - `_miroir_updated_at`: Reserved only when `anti_entropy.enabled: true`
-    // - `_miroir_expires_at`: Reserved only when `ttl.enabled: true` (read path only - writes always accept it)
+    // - `_miroir_expires_at`: Reserved only when `ttl.enabled: true`
 
     /// Helper to build the expected reserved field error.
     fn reserved_field_error(field: &str) -> MeilisearchError {
@@ -759,12 +768,15 @@ mod tests {
     }
 
     #[test]
-    fn test_reserved_field_miroir_expires_at_not_reserved_for_writes() {
-        // _miroir_expires_at is NEVER reserved for writes (clients SET it per plan §13.14)
-        // Write path always accepts it; read path strips it when ttl.enabled: true
-        let doc_with_expires = json!({"id": "test", "_miroir_expires_at": "2024-12-31T23:59:59Z"});
-        assert!(doc_with_expires.get("_miroir_expires_at").is_some());
-        assert!(doc_with_expires.get("id").is_some());
+    fn test_reserved_field_miroir_expires_at_when_ttl_enabled() {
+        // When ttl.enabled: true, _miroir_expires_at is reserved
+        let field = "_miroir_expires_at";
+        let err = MeilisearchError::new(
+            MiroirCode::ReservedField,
+            format!("document contains reserved field `{}` (reserved when ttl.enabled: true)", field),
+        );
+        assert_eq!(err.code, "miroir_reserved_field");
+        assert_eq!(err.http_status(), 400);
     }
 
     #[test]
@@ -777,12 +789,12 @@ mod tests {
 
     /// Test matrix of all reserved field combinations per plan §5 table.
     ///
-    /// Matrix cells:
-    /// | Field           | anti_entropy=false | anti_entropy=true |
-    /// |-----------------|--------------------|-------------------|
+    /// Matrix cells (write behavior):
+    /// | Field           | Config disabled | Config enabled |
+    /// |-----------------|-----------------|----------------|
     /// | _miroir_shard   | REJECTED (always)  | REJECTED (always) |
-    /// | _miroir_updated_at | ALLOWED        | REJECTED           |
-    /// | _miroir_expires_at | ALLOWED (write) | ALLOWED (write)   |
+    /// | _miroir_updated_at | ALLOWED      | REJECTED (anti_entropy) |
+    /// | _miroir_expires_at | ALLOWED      | REJECTED (ttl) |
     #[test]
     fn test_reserved_field_matrix() {
         struct TestCase {
@@ -817,7 +829,7 @@ mod tests {
             },
             TestCase {
                 doc: json!({"id": "test", "_miroir_expires_at": "2024-12-31T23:59:59Z"}),
-                description: "_miroir_expires_at always allowed for writes",
+                description: "_miroir_expires_at allowed when ttl.disabled",
                 has_shard: false,
                 has_updated_at: false,
                 has_expires_at: true,
@@ -907,5 +919,64 @@ mod tests {
         // The validation should catch _miroir_shard first, not missing primary key
         let err = reserved_field_error("_miroir_shard");
         assert_eq!(err.code, "miroir_reserved_field");
+    }
+
+    // P2.9: Complete reserved field matrix tests
+    //
+    // Matrix cells per plan §5:
+    // | Field           | Config disabled | Config enabled |
+    // |-----------------|-----------------|----------------|
+    // | _miroir_shard   | REJECTED        | REJECTED       |
+    // | _miroir_updated_at | ALLOWED    | REJECTED (AE)  |
+    // | _miroir_expires_at | ALLOWED    | REJECTED (TTL) |
+
+    #[test]
+    fn test_reserved_field_matrix_shard_always_rejected() {
+        // _miroir_shard: Always reserved regardless of config
+        let err = reserved_field_error("_miroir_shard");
+        assert_eq!(err.code, "miroir_reserved_field");
+        assert_eq!(err.http_status(), 400);
+    }
+
+    #[test]
+    fn test_reserved_field_matrix_updated_at_rejected_when_ae_enabled() {
+        // _miroir_updated_at: Rejected when anti_entropy.enabled: true
+        let err = MeilisearchError::new(
+            MiroirCode::ReservedField,
+            "document contains reserved field `_miroir_updated_at` (reserved when anti_entropy.enabled: true)",
+        );
+        assert_eq!(err.code, "miroir_reserved_field");
+        assert_eq!(err.http_status(), 400);
+    }
+
+    #[test]
+    fn test_reserved_field_matrix_expires_at_rejected_when_ttl_enabled() {
+        // _miroir_expires_at: Rejected when ttl.enabled: true
+        let err = MeilisearchError::new(
+            MiroirCode::ReservedField,
+            "document contains reserved field `_miroir_expires_at` (reserved when ttl.enabled: true)",
+        );
+        assert_eq!(err.code, "miroir_reserved_field");
+        assert_eq!(err.http_status(), 400);
+    }
+
+    #[test]
+    fn test_reserved_field_matrix_updated_at_allowed_when_ae_disabled() {
+        // _miroir_updated_at: Allowed when anti_entropy.enabled: false
+        // When disabled, client values pass through end-to-end
+        let doc = json!({"id": "test", "_miroir_updated_at": "2024-01-01T00:00:00Z"});
+        assert!(doc.get("_miroir_updated_at").is_some());
+        assert!(doc.get("id").is_some());
+        // No validation error would be raised in this case
+    }
+
+    #[test]
+    fn test_reserved_field_matrix_expires_at_allowed_when_ttl_disabled() {
+        // _miroir_expires_at: Allowed when ttl.enabled: false
+        // When disabled, client values pass through end-to-end
+        let doc = json!({"id": "test", "_miroir_expires_at": "2024-12-31T23:59:59Z"});
+        assert!(doc.get("_miroir_expires_at").is_some());
+        assert!(doc.get("id").is_some());
+        // No validation error would be raised in this case
     }
 }
