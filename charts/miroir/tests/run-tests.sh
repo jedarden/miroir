@@ -81,6 +81,8 @@ echo ""
 echo "=== Positive tests (should all pass) ==="
 expect_pass_lint "$SCRIPT_DIR/valid-single-replica-sqlite.yaml" \
   "valid: single replica, sqlite"
+expect_pass_lint "$SCRIPT_DIR/valid-single-pod-oversized.yaml" \
+  "valid: single-pod oversized (4 vCPU / 8 GB)"
 expect_pass_lint "$SCRIPT_DIR/valid-multi-replica-redis.yaml" \
   "valid: multi replica, redis"
 expect_pass_lint "$SCRIPT_DIR/good-production.yaml" \
