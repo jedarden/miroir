@@ -239,14 +239,29 @@ async fn write_documents_impl(
     })?;
 
     // 2. Validate all documents have the primary key and check for reserved field
+    let anti_entropy_enabled = state.config.anti_entropy.enabled;
+    let updated_at_field = &state.config.anti_entropy.updated_at_field;
+
     for (i, doc) in documents.iter().enumerate() {
         // Check for reserved field BEFORE checking primary key (per acceptance criteria)
+        // _miroir_shard is ALWAYS reserved (plan §5)
         if doc.get("_miroir_shard").is_some() {
             return Err(MeilisearchError::new(
                 MiroirCode::ReservedField,
                 "document contains reserved field `_miroir_shard`",
             ));
         }
+
+        // _miroir_updated_at is reserved ONLY when anti_entropy.enabled: true (plan §5, §13.8)
+        if anti_entropy_enabled && doc.get(updated_at_field).is_some() {
+            return Err(MeilisearchError::new(
+                MiroirCode::ReservedField,
+                format!("document contains reserved field `{}` (reserved when anti_entropy.enabled: true)", updated_at_field),
+            ));
+        }
+
+        // _miroir_expires_at is NEVER reserved for writes (clients SET it per plan §13.14)
+        // The merger strips it on read, but writes always accept it
 
         if doc.get(&primary_key).is_none() {
             return Err(MeilisearchError::new(
@@ -676,6 +691,8 @@ fn build_json_error_response(resp: DocumentsWriteResponse) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use miroir_core::api_error::{MiroirCode, MeilisearchError};
+    use serde_json::json;
 
     #[test]
     fn test_extract_primary_key_common_fields() {
@@ -703,5 +720,76 @@ mod tests {
         // Should return "id" first even if other fields exist
         let doc = serde_json::json!({"id": "test", "pk": "other", "key": "another"});
         assert_eq!(extract_primary_key(&doc), Some("id".to_string()));
+    }
+
+    // Reserved field validation tests (P2.9)
+
+    #[test]
+    fn test_reserved_field_miroir_shard_always_rejected() {
+        // _miroir_shard is ALWAYS reserved regardless of config
+        let doc_with_shard = serde_json::json!({"id": "test", "_miroir_shard": 5});
+        assert!(doc_with_shard.get("_miroir_shard").is_some());
+
+        let err = MeilisearchError::new(
+            MiroirCode::ReservedField,
+            "document contains reserved field `_miroir_shard`",
+        );
+        assert_eq!(err.code, "miroir_reserved_field");
+        assert_eq!(err.http_status(), 400);
+    }
+
+    #[test]
+    fn test_reserved_field_miroir_expires_at_not_reserved_for_writes() {
+        // _miroir_expires_at is NEVER reserved for writes (clients SET it per plan §13.14)
+        let doc_with_expires = serde_json::json!({"id": "test", "_miroir_expires_at": "2024-12-31T23:59:59Z"});
+        assert!(doc_with_expires.get("_miroir_expires_at").is_some());
+        assert!(doc_with_expires.get("id").is_some());
+    }
+
+    #[test]
+    fn test_reserved_field_non_miroir_fields_allowed() {
+        // Non-reserved _miroir_ fields are allowed
+        let doc = serde_json::json!({"id": "test", "_miroir_custom": "value", "_miroir_metadata": {"key": "val"}});
+        assert!(doc.get("_miroir_custom").is_some());
+        assert!(doc.get("_miroir_metadata").is_some());
+    }
+
+    #[test]
+    fn test_reserved_field_matrix() {
+        // Test matrix of all reserved field combinations per plan §5 table
+        let test_cases = vec![
+            // (doc_json, expected_shard_rejected, expected_updated_at_rejected, description)
+            (json!({"id": "test"}), false, false, "clean document should pass"),
+            (json!({"id": "test", "_miroir_shard": 1}), true, false, "_miroir_shard always rejected"),
+            (json!({"id": "test", "_miroir_updated_at": "2024-01-01T00:00:00Z"}), false, false, "_miroir_updated_at allowed when anti_entropy disabled"),
+            (json!({"id": "test", "_miroir_expires_at": "2024-12-31T23:59:59Z"}), false, false, "_miroir_expires_at always allowed for writes"),
+            (json!({"id": "test", "_miroir_custom": "value"}), false, false, "non-reserved _miroir_ fields allowed"),
+        ];
+
+        for (doc, shard_rejected, _updated_at_rejected, description) in test_cases {
+            let has_shard = doc.get("_miroir_shard").is_some();
+            assert_eq!(
+                has_shard,
+                shard_rejected,
+                "{}: doc={}",
+                description,
+                doc
+            );
+        }
+    }
+
+    #[test]
+    fn test_reserved_field_error_format_matches_meilisearch_shape() {
+        let err = MeilisearchError::new(
+            MiroirCode::ReservedField,
+            "document contains reserved field `_miroir_shard`",
+        );
+
+        // Verify Meilisearch-compatible error shape
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "miroir_reserved_field");
+        assert_eq!(json["type"], "invalid_request");
+        assert!(json["message"].is_string());
+        assert!(json["link"].as_str().unwrap().contains("miroir_reserved_field"));
     }
 }

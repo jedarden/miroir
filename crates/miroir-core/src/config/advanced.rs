@@ -16,6 +16,9 @@ pub struct ReshardingConfig {
     pub throttle_docs_per_sec: u32,
     pub verify_before_swap: bool,
     pub retain_old_index_hours: u32,
+    /// Allowed schedule windows in `"HH:MM-HH:MM UTC"` format.
+    /// Empty means any time is allowed (no restriction).
+    pub allowed_windows: Vec<String>,
 }
 
 impl Default for ReshardingConfig {
@@ -27,6 +30,7 @@ impl Default for ReshardingConfig {
             throttle_docs_per_sec: 0,
             verify_before_swap: true,
             retain_old_index_hours: 48,
+            allowed_windows: Vec::new(),
         }
     }
 }

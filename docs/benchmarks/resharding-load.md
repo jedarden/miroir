@@ -94,4 +94,4 @@ The simulation builds a synthetic topology matching the test parameters, then it
 
 Run with: `cargo run --bin bench-reshard-load`
 
-Last run: 2026-04-18
+Last run: 2026-05-20
