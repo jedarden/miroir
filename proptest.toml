@@ -1,0 +1,10 @@
+# Proptest configuration for plan §8 acceptance: 1024 cases per property test
+# See: https://altsysrq.github.io/proptest-book/proptest/config/index.html
+
+[default]
+# Default cases per property test (plan §8 acceptance: 1024 cases)
+cases = 1024
+
+[ci]
+# CI runs with same config as local
+cases = 1024
