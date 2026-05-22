@@ -2,15 +2,15 @@
 
 use axum::{
     extract::{FromRef, Path, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     Json,
 };
 use miroir_core::{
     alias::{Alias, AliasKind},
-    api_error::{MeilisearchError, MiroirCode},
     config::MiroirConfig,
     task_store::TaskStore,
 };
+use crate::middleware::Metrics;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -19,6 +19,7 @@ use std::sync::Arc;
 pub struct AliasState {
     pub config: Arc<MiroirConfig>,
     pub task_store: Option<Arc<dyn TaskStore>>,
+    pub metrics: Metrics,
 }
 
 /// Request body for POST /_miroir/aliases.
@@ -74,12 +75,12 @@ pub struct AliasInfo {
 
 /// Error response for 409 conflicts.
 #[derive(Debug, Serialize)]
-struct ErrorResponse {
+pub struct ErrorResponse {
     pub code: String,
     pub message: String,
 }
 
-/// POST /_miroir/aliases — create a new alias.
+/// POST /_miroir/aliases/{name} — create a new alias.
 ///
 /// Request body:
 /// - Single-target: `{"target": "products_v3"}`
@@ -88,7 +89,7 @@ struct ErrorResponse {
 /// Plan §13.7: Atomic index aliases for blue-green reindexing.
 pub async fn create_alias<S>(
     State(state): State<AliasState>,
-    headers: HeaderMap,
+    Path(name): Path<String>,
     Json(body): Json<CreateAliasRequest>,
 ) -> Result<Json<GetAliasResponse>, (StatusCode, Json<ErrorResponse>)>
 where
@@ -141,10 +142,8 @@ where
         .unwrap_or_default()
         .as_secs();
 
-    let alias_name = extract_alias_name(&headers)?;
-
     // Check for conflicts with ILM-managed aliases
-    if let Ok(Some(existing)) = task_store.get_alias(&alias_name) {
+    if let Ok(Some(existing)) = task_store.get_alias(&name) {
         if existing.kind == "multi" {
             // Multi-target aliases are ILM-managed and cannot be created by operators
             return Err((
@@ -153,7 +152,7 @@ where
                     code: "alias_exists_ilm_managed".to_string(),
                     message: format!(
                         "alias '{}' exists and is managed by ILM policy; use ILM API to modify",
-                        alias_name
+                        name
                     ),
                 }),
             ));
@@ -161,7 +160,7 @@ where
     }
 
     let new_alias = miroir_core::task_store::NewAlias {
-        name: alias_name.clone(),
+        name: name.clone(),
         kind: if matches!(kind, AliasKind::Single) {
             "single".to_string()
         } else {
@@ -350,6 +349,9 @@ where
             )
         })?;
 
+        // Record alias flip metric
+        state.metrics.inc_alias_flip(&name);
+
         // Get updated alias
         let updated = task_store.get_alias(&name).map_err(|e| {
             (
@@ -492,23 +494,6 @@ where
     Ok(Json(ListAliasesResponse {
         aliases: alias_infos,
     }))
-}
-
-/// Extract alias name from X-Miroir-Alias-Name header (for POST).
-fn extract_alias_name(headers: &HeaderMap) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
-    headers
-        .get("x-miroir-alias-name")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    code: "missing_alias_name".to_string(),
-                    message: "X-Miroir-Alias-Name header is required".to_string(),
-                }),
-            )
-        })
 }
 
 #[cfg(test)]
