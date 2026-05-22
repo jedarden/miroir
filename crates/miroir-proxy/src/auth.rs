@@ -1022,6 +1022,18 @@ mod tests {
         assert!(!is_dispatch_exempt(&Method::POST, "/_miroir/ready"));
     }
 
+    #[test]
+    fn exempt_get_health() {
+        assert!(is_dispatch_exempt(&Method::GET, "/health"));
+        assert!(!is_dispatch_exempt(&Method::POST, "/health"));
+    }
+
+    #[test]
+    fn exempt_get_version() {
+        assert!(is_dispatch_exempt(&Method::GET, "/version"));
+        assert!(!is_dispatch_exempt(&Method::POST, "/version"));
+    }
+
     // -----------------------------------------------------------------------
     // Rule 0 — exempt endpoints skip auth entirely
     // -----------------------------------------------------------------------
@@ -1083,6 +1095,44 @@ mod tests {
             Some("bogus-token"),
             &state,
         );
+        assert_eq!(verdict, AuthVerdict::Exempt);
+    }
+
+    #[test]
+    fn exempt_health_ignores_all_tokens() {
+        let state = test_state();
+        let verdict = dispatch_bearer(
+            &Method::GET,
+            "/health",
+            Some("bogus-token"),
+            &state,
+        );
+        assert_eq!(verdict, AuthVerdict::Exempt);
+    }
+
+    #[test]
+    fn exempt_health_with_no_token() {
+        let state = test_state();
+        let verdict = dispatch_bearer(&Method::GET, "/health", None, &state);
+        assert_eq!(verdict, AuthVerdict::Exempt);
+    }
+
+    #[test]
+    fn exempt_version_ignores_all_tokens() {
+        let state = test_state();
+        let verdict = dispatch_bearer(
+            &Method::GET,
+            "/version",
+            Some("bogus-token"),
+            &state,
+        );
+        assert_eq!(verdict, AuthVerdict::Exempt);
+    }
+
+    #[test]
+    fn exempt_version_with_no_token() {
+        let state = test_state();
+        let verdict = dispatch_bearer(&Method::GET, "/version", None, &state);
         assert_eq!(verdict, AuthVerdict::Exempt);
     }
 
