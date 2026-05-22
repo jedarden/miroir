@@ -470,7 +470,7 @@ async fn acceptance_2_mid_broadcast_node_failure_recovery() {
 
 #[tokio::test]
 async fn acceptance_3_out_of_band_drift_detection_and_repair() {
-    use crate::drift_reconciler::{DriftReconciler, DriftReconcilerConfig};
+    use super::drift_reconciler::{DriftReconciler, DriftReconcilerConfig};
 
     let task_store = Arc::new(MockTaskStore::new());
     let index = "products";
@@ -496,24 +496,31 @@ async fn acceptance_3_out_of_band_drift_detection_and_repair() {
     let config = DriftReconcilerConfig {
         interval_s: 5,
         auto_repair: true,
-        node_master_key: "test_key".to_string(),
-        node_addresses: vec![
-            "http://node-0:7700".to_string(),
-            "http://node-1:7700".to_string(),
-            "http://node-2:7700".to_string(),
-        ],
-        leader_scope: "test_drift_reconciler".to_string(),
-        pod_id: "test-pod".to_string(),
+        lease_ttl_secs: 10,
+        lease_renewal_interval_ms: 2000,
     };
 
     // Verify config before moving it
     assert!(config.auto_repair, "should be configured for auto-repair");
 
-    let reconciler = DriftReconciler::new(config, task_store.clone());
+    let settings_broadcast = Arc::new(SettingsBroadcast::with_task_store(task_store.clone()));
+    let node_addresses = vec![
+        "http://node-0:7700".to_string(),
+        "http://node-1:7700".to_string(),
+        "http://node-2:7700".to_string(),
+    ];
+    let reconciler = DriftReconciler::new(
+        config,
+        settings_broadcast,
+        task_store.clone(),
+        node_addresses,
+        "test_key".to_string(),
+        "test-pod".to_string(),
+    );
 
     // The actual drift detection and repair logic is tested through the
     // drift reconciler's public methods. In production, the background
-    // task would call check_and_repair() every interval_s seconds.
+    // task would call run() which runs check_and_repair() every interval_s seconds.
 }
 
 // ---------------------------------------------------------------------------

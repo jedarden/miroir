@@ -120,6 +120,8 @@ spec:
             cd /workspace/src
             export CARGO_TARGET_DIR=/workspace/target-test
             cargo test --all --all-features
+            # Plan §8 Phase 1: compile benchmarks on every build (without running)
+            cargo bench --no-run
         volumeMounts:
           - name: workspace
             mountPath: /workspace

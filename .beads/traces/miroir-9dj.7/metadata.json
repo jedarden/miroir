@@ -1,15 +1,15 @@
 {
-  "bead_id": "miroir-cdo.6",
+  "bead_id": "miroir-9dj.7",
   "agent": "claude-code-glm-4.7",
   "provider": "zai",
   "model": "glm-4.7",
   "exit_code": 0,
   "outcome": "success",
-  "duration_ms": 134017,
+  "duration_ms": 172356,
   "input_tokens": null,
   "output_tokens": null,
   "cost_usd": null,
-  "captured_at": "2026-05-20T12:28:44.045158115Z",
+  "captured_at": "2026-05-22T19:32:16.005401350Z",
   "trace_format": "claude_json",
   "pruned": false,
   "template_version": null
