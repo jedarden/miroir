@@ -219,6 +219,10 @@ pub struct Metrics {
     settings_hash_mismatch_total: Counter,
     settings_drift_repair_total: CounterVec,
     settings_version: GaugeVec,
+
+    // ── §13.7 Alias metrics (always present) ──
+    alias_resolutions_total: CounterVec,
+    alias_flips_total: CounterVec,
 }
 
 impl Clone for Metrics {
@@ -296,6 +300,8 @@ impl Clone for Metrics {
             settings_hash_mismatch_total: self.settings_hash_mismatch_total.clone(),
             settings_drift_repair_total: self.settings_drift_repair_total.clone(),
             settings_version: self.settings_version.clone(),
+            alias_resolutions_total: self.alias_resolutions_total.clone(),
+            alias_flips_total: self.alias_flips_total.clone(),
         }
     }
 }
@@ -800,6 +806,18 @@ impl Metrics {
         reg!(settings_drift_repair_total);
         reg!(settings_version);
 
+        // ── §13.7 Alias metrics (always present) ──
+        let alias_resolutions_total = CounterVec::new(
+            Opts::new("miroir_alias_resolutions_total", "Number of alias resolutions"),
+            &["alias"],
+        ).expect("create alias_resolutions_total");
+        let alias_flips_total = CounterVec::new(
+            Opts::new("miroir_alias_flips_total", "Number of alias flips"),
+            &["alias"],
+        ).expect("create alias_flips_total");
+        reg!(alias_resolutions_total);
+        reg!(alias_flips_total);
+
         Self {
             registry,
             request_duration,
@@ -873,6 +891,8 @@ impl Metrics {
             settings_hash_mismatch_total,
             settings_drift_repair_total,
             settings_version,
+            alias_resolutions_total,
+            alias_flips_total,
         }
     }
 
@@ -1492,6 +1512,16 @@ impl Metrics {
 
     pub fn get_settings_version(&self, index: &str) -> f64 {
         self.settings_version.with_label_values(&[index]).get()
+    }
+
+    // ── §13.7 Alias metrics ──
+
+    pub fn inc_alias_resolution(&self, alias: &str) {
+        self.alias_resolutions_total.with_label_values(&[alias]).inc();
+    }
+
+    pub fn inc_alias_flip(&self, alias: &str) {
+        self.alias_flips_total.with_label_values(&[alias]).inc();
     }
 
     pub fn registry(&self) -> &Registry {

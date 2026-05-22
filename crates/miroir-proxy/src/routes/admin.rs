@@ -42,6 +42,7 @@ where
             post(admin_endpoints::rotate_scoped_key_handler),
         )
         // Alias management (plan §13.7)
+        .route("/aliases", post(aliases::create_alias::<S>))
         .route("/aliases", get(aliases::list_aliases::<S>))
         .route("/aliases/{name}", get(aliases::get_alias::<S>))
         .route("/aliases/{name}", post(aliases::update_alias::<S>))
@@ -61,6 +62,8 @@ where
         .route("/nodes", post(admin_endpoints::add_node::<S>))
         .route("/nodes/{id}", delete(admin_endpoints::remove_node::<S>))
         .route("/nodes/{id}/drain", post(admin_endpoints::drain_node::<S>))
+        .route("/nodes/{id}/fail", post(admin_endpoints::fail_node::<S>))
+        .route("/nodes/{id}/recover", post(admin_endpoints::recover_node::<S>))
         // Rebalancer status
         .route("/rebalance/status", get(admin_endpoints::get_rebalance_status::<S>))
         // Replica group management

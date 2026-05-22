@@ -2,11 +2,12 @@
 
 use axum::{
     extract::{FromRef, Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use miroir_core::{
     alias::{Alias, AliasKind},
+    api_error::{MeilisearchError, MiroirCode},
     config::MiroirConfig,
     task_store::TaskStore,
 };
@@ -17,13 +18,25 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct AliasState {
     pub config: Arc<MiroirConfig>,
-    pub task_registry: Arc<miroir_core::task_registry::TaskRegistryImpl>,
+    pub task_store: Option<Arc<dyn TaskStore>>,
+}
+
+/// Request body for POST /_miroir/aliases.
+#[derive(Debug, Deserialize)]
+pub struct CreateAliasRequest {
+    /// Single target (creates single-target alias)
+    pub target: Option<String>,
+    /// Multiple targets (creates multi-target alias)
+    pub targets: Option<Vec<String>>,
 }
 
 /// Request body for PUT /_miroir/aliases/{name}.
 #[derive(Debug, Deserialize)]
 pub struct UpdateAliasRequest {
-    pub target: String,
+    /// New target for single-target alias flip
+    pub target: Option<String>,
+    /// New targets for multi-target alias update (ILM-only)
+    pub targets: Option<Vec<String>>,
 }
 
 /// Response for GET /_miroir/aliases/{name}.
@@ -34,6 +47,14 @@ pub struct GetAliasResponse {
     pub current_uid: Option<String>,
     pub target_uids: Option<Vec<String>>,
     pub version: u64,
+    pub created_at: u64,
+    pub history: Vec<AliasHistoryEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AliasHistoryEntry {
+    pub uid: String,
+    pub flipped_at: u64,
 }
 
 /// Response for LIST /_miroir/aliases.
@@ -51,137 +72,542 @@ pub struct AliasInfo {
     pub version: u64,
 }
 
-/// GET /_miroir/aliases/{name} — get alias details.
-pub async fn get_alias<S>(
+/// Error response for 409 conflicts.
+#[derive(Debug, Serialize)]
+struct ErrorResponse {
+    pub code: String,
+    pub message: String,
+}
+
+/// POST /_miroir/aliases — create a new alias.
+///
+/// Request body:
+/// - Single-target: `{"target": "products_v3"}`
+/// - Multi-target: `{"targets": ["logs-2026-01-01", "logs-2026-01-02"]}`
+///
+/// Plan §13.7: Atomic index aliases for blue-green reindexing.
+pub async fn create_alias<S>(
     State(state): State<AliasState>,
-    Path(name): Path<String>,
-) -> Result<Json<GetAliasResponse>, StatusCode>
+    headers: HeaderMap,
+    Json(body): Json<CreateAliasRequest>,
+) -> Result<Json<GetAliasResponse>, (StatusCode, Json<ErrorResponse>)>
 where
     S: Clone + Send + Sync + 'static,
     AliasState: FromRef<S>,
 {
     if !state.config.aliases.enabled {
-        return Err(StatusCode::NOT_IMPLEMENTED);
+        return Err((
+            StatusCode::NOT_IMPLEMENTED,
+            Json(ErrorResponse {
+                code: "feature_disabled".to_string(),
+                message: "aliases feature is disabled".to_string(),
+            }),
+        ));
     }
 
-    // TODO: Look up alias from task store
-    let alias = state.task_registry.get_alias(&name);
+    let task_store = state.task_store.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                code: "task_store_unavailable".to_string(),
+                message: "task store required for aliases".to_string(),
+            }),
+        )
+    })?;
+
+    // Determine alias kind from request body
+    let (kind, current_uid, target_uids) = match (&body.target, &body.targets) {
+        (Some(target), None) => (AliasKind::Single, Some(target.clone()), None),
+        (None, Some(targets)) => (AliasKind::Multi, None, Some(targets.clone())),
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    code: "invalid_request".to_string(),
+                    message: "must provide either 'target' (single) or 'targets' (multi)".to_string(),
+                }),
+            ));
+        }
+    };
+
+    // Validate target existence if required
+    if state.config.aliases.require_target_exists {
+        // TODO: Check if target index exists in Meilisearch
+        // This would require calling the index list endpoint on each node
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let alias_name = extract_alias_name(&headers)?;
+
+    // Check for conflicts with ILM-managed aliases
+    if let Ok(Some(existing)) = task_store.get_alias(&alias_name) {
+        if existing.kind == "multi" {
+            // Multi-target aliases are ILM-managed and cannot be created by operators
+            return Err((
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    code: "alias_exists_ilm_managed".to_string(),
+                    message: format!(
+                        "alias '{}' exists and is managed by ILM policy; use ILM API to modify",
+                        alias_name
+                    ),
+                }),
+            ));
+        }
+    }
+
+    let new_alias = miroir_core::task_store::NewAlias {
+        name: alias_name.clone(),
+        kind: if matches!(kind, AliasKind::Single) {
+            "single".to_string()
+        } else {
+            "multi".to_string()
+        },
+        current_uid,
+        target_uids,
+        version: 1,
+        created_at: now as i64,
+        history: vec![],
+    };
+
+    task_store.create_alias(&new_alias).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                code: "alias_creation_failed".to_string(),
+                message: format!("failed to create alias: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(GetAliasResponse {
+        name: new_alias.name,
+        kind: new_alias.kind,
+        current_uid: new_alias.current_uid,
+        target_uids: new_alias.target_uids,
+        version: new_alias.version as u64,
+        created_at: new_alias.created_at as u64,
+        history: vec![],
+    }))
+}
+
+/// GET /_miroir/aliases/{name} — get alias details including history.
+pub async fn get_alias<S>(
+    State(state): State<AliasState>,
+    Path(name): Path<String>,
+) -> Result<Json<GetAliasResponse>, (StatusCode, Json<ErrorResponse>)>
+where
+    S: Clone + Send + Sync + 'static,
+    AliasState: FromRef<S>,
+{
+    if !state.config.aliases.enabled {
+        return Err((
+            StatusCode::NOT_IMPLEMENTED,
+            Json(ErrorResponse {
+                code: "feature_disabled".to_string(),
+                message: "aliases feature is disabled".to_string(),
+            }),
+        ));
+    }
+
+    let task_store = state.task_store.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                code: "task_store_unavailable".to_string(),
+                message: "task store required for aliases".to_string(),
+            }),
+        )
+    })?;
+
+    let alias = task_store.get_alias(&name).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                code: "alias_lookup_failed".to_string(),
+                message: format!("failed to lookup alias: {}", e),
+            }),
+        )
+    })?;
 
     match alias {
-        Ok(Some(alias)) => Ok(Json(GetAliasResponse {
-            name: alias.name.clone(),
-            kind: match alias.kind {
-                AliasKind::Single => "single".to_string(),
-                AliasKind::Multi => "multi".to_string(),
-            },
-            current_uid: alias.current_uid,
-            target_uids: alias.target_uids.map(|uids| {
-                uids.into_iter().collect()
+        Some(alias) => {
+            let history = alias.history.into_iter().map(|entry| AliasHistoryEntry {
+                uid: entry.uid,
+                flipped_at: entry.flipped_at as u64,
+            }).collect();
+
+            Ok(Json(GetAliasResponse {
+                name: alias.name,
+                kind: alias.kind,
+                current_uid: alias.current_uid,
+                target_uids: alias.target_uids,
+                version: alias.version as u64,
+                created_at: alias.created_at as u64,
+                history,
+            }))
+        }
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                code: "alias_not_found".to_string(),
+                message: format!("alias '{}' not found", name),
             }),
-            version: alias.generation,
-        })),
-        Ok(None) => Err(StatusCode::NOT_FOUND),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        )),
     }
 }
 
-/// PUT /_miroir/aliases/{name} — create or update an alias (atomic flip).
+/// PUT /_miroir/aliases/{name} — update an alias (flip single or update multi).
 ///
-/// Plan §13.7: Atomic alias flip for blue-green deployments.
+/// Request body for single-target flip:
+/// - `{"target": "products_v4"}`
+///
+/// Request body for multi-target update (ILM-only):
+/// - `{"targets": ["logs-2026-01-03", "logs-2026-01-02"]}`
 pub async fn update_alias<S>(
     State(state): State<AliasState>,
     Path(name): Path<String>,
     Json(body): Json<UpdateAliasRequest>,
-) -> Result<Json<AliasInfo>, StatusCode>
+) -> Result<Json<GetAliasResponse>, (StatusCode, Json<ErrorResponse>)>
 where
     S: Clone + Send + Sync + 'static,
     AliasState: FromRef<S>,
 {
     if !state.config.aliases.enabled {
-        return Err(StatusCode::NOT_IMPLEMENTED);
+        return Err((
+            StatusCode::NOT_IMPLEMENTED,
+            Json(ErrorResponse {
+                code: "feature_disabled".to_string(),
+                message: "aliases feature is disabled".to_string(),
+            }),
+        ));
     }
 
-    // Validate target exists
-    // TODO: Check if target index exists
+    let task_store = state.task_store.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                code: "task_store_unavailable".to_string(),
+                message: "task store required for aliases".to_string(),
+            }),
+        )
+    })?;
 
-    // Create or update alias
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as u64;
-    let alias = Alias {
-        name: name.clone(),
-        kind: AliasKind::Single,
-        current_uid: Some(body.target),
-        target_uids: None,
-        generation: 1,
-        created_at: now,
-        updated_at: now,
-    };
+    // Get existing alias
+    let existing = task_store.get_alias(&name).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                code: "alias_lookup_failed".to_string(),
+                message: format!("failed to lookup alias: {}", e),
+            }),
+        )
+    })?;
 
-    // TODO: Persist to task store
-    let _ = state.task_registry.put_alias(&alias);
+    let existing = existing.ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                code: "alias_not_found".to_string(),
+                message: format!("alias '{}' not found", name),
+            }),
+        )
+    })?;
 
-    Ok(Json(AliasInfo {
-        name: alias.name,
-        kind: "single".to_string(),
-        current_uid: alias.current_uid,
-        target_uids: None,
-        version: alias.generation,
-    }))
+    // Handle single-target alias flip
+    if existing.kind == "single" {
+        let new_target = body.target.ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    code: "invalid_request".to_string(),
+                    message: "single-target alias requires 'target' field".to_string(),
+                }),
+            )
+        })?;
+
+        // Validate target existence if required
+        if state.config.aliases.require_target_exists {
+            // TODO: Check if target index exists in Meilisearch
+        }
+
+        // Perform the atomic flip
+        task_store.flip_alias(
+            &name,
+            &new_target,
+            state.config.aliases.history_retention as usize,
+        ).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    code: "alias_flip_failed".to_string(),
+                    message: format!("failed to flip alias: {}", e),
+                }),
+            )
+        })?;
+
+        // Get updated alias
+        let updated = task_store.get_alias(&name).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    code: "alias_lookup_failed".to_string(),
+                    message: format!("failed to lookup updated alias: {}", e),
+                }),
+            )
+        })?.unwrap();
+
+        let history = updated.history.into_iter().map(|entry| AliasHistoryEntry {
+            uid: entry.uid,
+            flipped_at: entry.flipped_at as u64,
+        }).collect();
+
+        Ok(Json(GetAliasResponse {
+            name: updated.name,
+            kind: updated.kind,
+            current_uid: updated.current_uid,
+            target_uids: updated.target_uids,
+            version: updated.version as u64,
+            created_at: updated.created_at as u64,
+            history,
+        }))
+    } else {
+        // Handle multi-target alias update (ILM-only)
+        // Reject operator edits to ILM-managed multi-target aliases
+        Err((
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                code: "miroir_multi_alias_not_writable".to_string(),
+                message: "multi-target aliases are managed exclusively by ILM; use the ILM policy API to modify".to_string(),
+            }),
+        ))
+    }
 }
 
 /// DELETE /_miroir/aliases/{name} — delete an alias.
 pub async fn delete_alias<S>(
     State(state): State<AliasState>,
     Path(name): Path<String>,
-) -> Result<StatusCode, StatusCode>
+) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)>
 where
     S: Clone + Send + Sync + 'static,
     AliasState: FromRef<S>,
 {
     if !state.config.aliases.enabled {
-        return Err(StatusCode::NOT_IMPLEMENTED);
+        return Err((
+            StatusCode::NOT_IMPLEMENTED,
+            Json(ErrorResponse {
+                code: "feature_disabled".to_string(),
+                message: "aliases feature is disabled".to_string(),
+            }),
+        ));
     }
 
-    // TODO: Delete from task store
-    let _ = state.task_registry.delete_alias(&name);
+    let task_store = state.task_store.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                code: "task_store_unavailable".to_string(),
+                message: "task store required for aliases".to_string(),
+            }),
+        )
+    })?;
 
-    Ok(StatusCode::NO_CONTENT)
+    let deleted = task_store.delete_alias(&name).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                code: "alias_deletion_failed".to_string(),
+                message: format!("failed to delete alias: {}", e),
+            }),
+        )
+    })?;
+
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                code: "alias_not_found".to_string(),
+                message: format!("alias '{}' not found", name),
+            }),
+        ))
+    }
 }
 
 /// GET /_miroir/aliases — list all aliases.
 pub async fn list_aliases<S>(
     State(state): State<AliasState>,
-) -> Result<Json<ListAliasesResponse>, StatusCode>
+) -> Result<Json<ListAliasesResponse>, (StatusCode, Json<ErrorResponse>)>
 where
     S: Clone + Send + Sync + 'static,
     AliasState: FromRef<S>,
 {
     if !state.config.aliases.enabled {
-        return Err(StatusCode::NOT_IMPLEMENTED);
+        return Err((
+            StatusCode::NOT_IMPLEMENTED,
+            Json(ErrorResponse {
+                code: "feature_disabled".to_string(),
+                message: "aliases feature is disabled".to_string(),
+            }),
+        ));
     }
 
-    // TODO: List aliases from task store
-    let aliases = state.task_registry.list_aliases().unwrap_or_default();
+    let task_store = state.task_store.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                code: "task_store_unavailable".to_string(),
+                message: "task store required for aliases".to_string(),
+            }),
+        )
+    })?;
+
+    let aliases = task_store.list_aliases().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                code: "alias_list_failed".to_string(),
+                message: format!("failed to list aliases: {}", e),
+            }),
+        )
+    })?;
 
     let alias_infos: Vec<AliasInfo> = aliases
         .into_iter()
         .map(|alias| AliasInfo {
             name: alias.name,
-            kind: match alias.kind {
-                AliasKind::Single => "single".to_string(),
-                AliasKind::Multi => "multi".to_string(),
-            },
+            kind: alias.kind,
             current_uid: alias.current_uid,
-            target_uids: alias.target_uids.map(|uids| {
-                uids.into_iter().collect()
-            }),
-            version: alias.generation,
+            target_uids: alias.target_uids,
+            version: alias.version as u64,
         })
         .collect();
 
     Ok(Json(ListAliasesResponse {
         aliases: alias_infos,
     }))
+}
+
+/// Extract alias name from X-Miroir-Alias-Name header (for POST).
+fn extract_alias_name(headers: &HeaderMap) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
+    headers
+        .get("x-miroir-alias-name")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    code: "missing_alias_name".to_string(),
+                    message: "X-Miroir-Alias-Name header is required".to_string(),
+                }),
+            )
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    #[test]
+    fn test_create_alias_request_single() {
+        let json = r#"{"target": "products_v3"}"#;
+        let req: CreateAliasRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.target, Some("products_v3".to_string()));
+        assert!(req.targets.is_none());
+    }
+
+    #[test]
+    fn test_create_alias_request_multi() {
+        let json = r#"{"targets": ["logs-2026-01-01", "logs-2026-01-02"]}"#;
+        let req: CreateAliasRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.targets, Some(vec!["logs-2026-01-01".to_string(), "logs-2026-01-02".to_string()]));
+        assert!(req.target.is_none());
+    }
+
+    #[test]
+    fn test_update_alias_request() {
+        let json = r#"{"target": "products_v4"}"#;
+        let req: UpdateAliasRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.target, Some("products_v4".to_string()));
+        assert!(req.targets.is_none());
+    }
+
+    #[test]
+    fn test_get_alias_response_serialization() {
+        let response = GetAliasResponse {
+            name: "products".to_string(),
+            kind: "single".to_string(),
+            current_uid: Some("products_v3".to_string()),
+            target_uids: None,
+            version: 5,
+            created_at: 1704067200,
+            history: vec![
+                AliasHistoryEntry {
+                    uid: "products_v2".to_string(),
+                    flipped_at: 1704067200,
+                },
+                AliasHistoryEntry {
+                    uid: "products_v1".to_string(),
+                    flipped_at: 1703980800,
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains(r#""name":"products""#));
+        assert!(json.contains(r#""kind":"single""#));
+        assert!(json.contains(r#""current_uid":"products_v3""#));
+        assert!(json.contains(r#""version":5"#));
+        assert!(json.contains(r#""history""#));
+    }
+
+    #[test]
+    fn test_list_aliases_response_serialization() {
+        let response = ListAliasesResponse {
+            aliases: vec![
+                AliasInfo {
+                    name: "products".to_string(),
+                    kind: "single".to_string(),
+                    current_uid: Some("products_v3".to_string()),
+                    target_uids: None,
+                    version: 5,
+                },
+                AliasInfo {
+                    name: "logs".to_string(),
+                    kind: "multi".to_string(),
+                    current_uid: None,
+                    target_uids: Some(vec!["logs-2026-01-01".to_string(), "logs-2026-01-02".to_string()]),
+                    version: 1,
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains(r#""name":"products""#));
+        assert!(json.contains(r#""kind":"single""#));
+        assert!(json.contains(r#""name":"logs""#));
+        assert!(json.contains(r#""kind":"multi""#));
+    }
+
+    #[test]
+    fn test_error_response_serialization() {
+        let error = ErrorResponse {
+            code: "miroir_multi_alias_not_writable".to_string(),
+            message: "multi-target aliases are managed exclusively by ILM".to_string(),
+        };
+
+        let json = serde_json::to_string(&error).unwrap();
+        assert!(json.contains(r#""code":"miroir_multi_alias_not_writable""#));
+        assert!(json.contains(r#""message":"multi-target aliases are managed exclusively by ILM""#));
+    }
 }

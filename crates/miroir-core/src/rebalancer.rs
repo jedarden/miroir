@@ -500,6 +500,7 @@ impl Rebalancer {
         let active_arc = self.active_migrations.clone();
         let config = self.config.clone();
         let executor = self.migration_executor.clone();
+        let metrics_arc = self.metrics.clone();
 
         tokio::spawn(async move {
             if let Err(e) = run_migration_task(
@@ -511,6 +512,7 @@ impl Rebalancer {
                 migrations,
                 config,
                 executor,
+                metrics_arc,
             )
             .await
             {
@@ -633,6 +635,7 @@ impl Rebalancer {
         let config = self.config.clone();
         let drain_node_id = request.node_id.clone();
         let executor = self.migration_executor.clone();
+        let metrics_arc = self.metrics.clone();
 
         tokio::spawn(async move {
             if let Err(e) = run_drain_task(
@@ -645,6 +648,7 @@ impl Rebalancer {
                 config,
                 drain_node_id,
                 executor,
+                metrics_arc,
             )
             .await
             {
@@ -1056,6 +1060,7 @@ async fn run_migration_task(
     migrations: Vec<MigrationId>,
     config: RebalancerConfig,
     executor: Option<Arc<dyn MigrationExecutor>>,
+    metrics: Arc<RwLock<RebalancerMetrics>>,
 ) -> Result<(), RebalancerError> {
     let Some(exec) = executor else {
         // No executor - simulate completion for testing
@@ -1074,11 +1079,18 @@ async fn run_migration_task(
                 }
             };
 
+            let docs_per_shard = 1000u64;
             {
                 let mut coord = coordinator.write().await;
-                for shard in shards_to_complete {
-                    coord.shard_migration_complete(mid, shard, 1000)?;
+                for shard in &shards_to_complete {
+                    coord.shard_migration_complete(mid, *shard, docs_per_shard)?;
                 }
+            }
+
+            // Record metrics for simulated migration
+            {
+                let mut metrics_guard = metrics.write().await;
+                metrics_guard.record_documents_migrated(docs_per_shard * shards_to_complete.len() as u64);
             }
 
             {
@@ -1158,6 +1170,8 @@ async fn run_migration_task(
             (new_addr, old_addrs)
         };
 
+        let mut migration_total_docs = 0u64;
+
         // For each shard in the migration
         for (shard_id, old_node_id) in &old_owners {
             let old_address = old_owner_addresses.get(shard_id)
@@ -1221,12 +1235,20 @@ async fn run_migration_task(
                 coord.shard_migration_complete(mid, *shard_id, total_docs_copied)?;
             }
 
+            migration_total_docs += total_docs_copied;
+
             info!(
                 migration_id = %mid,
                 shard_id = shard_id.0,
                 docs_copied = total_docs_copied,
                 "shard migration complete"
             );
+        }
+
+        // Record metrics for this migration
+        {
+            let mut metrics_guard = metrics.write().await;
+            metrics_guard.record_documents_migrated(migration_total_docs);
         }
 
         // All shards for this migration complete - begin cutover
@@ -1339,6 +1361,7 @@ async fn run_drain_task(
     config: RebalancerConfig,
     drain_node_id: String,
     executor: Option<Arc<dyn MigrationExecutor>>,
+    metrics: Arc<RwLock<RebalancerMetrics>>,
 ) -> Result<(), RebalancerError> {
     let Some(exec) = executor else {
         // No executor - simulate completion for testing
@@ -1348,20 +1371,27 @@ async fn run_drain_task(
             ))
             .await;
 
-            {
-                let shards_to_complete = {
-                    let coord = coordinator.read().await;
-                    if let Some(state) = coord.get_state(mid) {
-                        state.old_owners.keys().copied().collect::<Vec<_>>()
-                    } else {
-                        continue;
-                    }
-                };
-
-                let mut coord = coordinator.write().await;
-                for shard in shards_to_complete {
-                    coord.shard_migration_complete(mid, shard, 1000)?;
+            let shards_to_complete = {
+                let coord = coordinator.read().await;
+                if let Some(state) = coord.get_state(mid) {
+                    state.old_owners.keys().copied().collect::<Vec<_>>()
+                } else {
+                    continue;
                 }
+            };
+
+            let docs_per_shard = 1000u64;
+            {
+                let mut coord = coordinator.write().await;
+                for shard in &shards_to_complete {
+                    coord.shard_migration_complete(mid, *shard, docs_per_shard)?;
+                }
+            }
+
+            // Record metrics for simulated migration
+            {
+                let mut metrics_guard = metrics.write().await;
+                metrics_guard.record_documents_migrated(docs_per_shard * shards_to_complete.len() as u64);
             }
 
             {
