@@ -142,6 +142,7 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             rebalancer_metrics: state.admin.rebalancer_metrics.clone(),
             previous_docs_migrated: state.admin.previous_docs_migrated.clone(),
             settings_broadcast: state.admin.settings_broadcast.clone(),
+            drift_reconciler: state.admin.drift_reconciler.clone(),
         }
     }
 }

@@ -8,8 +8,15 @@
 //! - Updates Prometheus metrics (plan §10)
 //! - Progress persistence via jobs table for resumability
 
+mod drift_reconciler;
+
 #[cfg(test)]
 mod acceptance_tests;
+
+#[cfg(test)]
+mod settings_broadcast_acceptance_tests;
+
+pub use drift_reconciler::{DriftReconciler, DriftReconcilerConfig};
 
 use crate::migration::{MigrationCoordinator, ShardId};
 use crate::rebalancer::{Rebalancer, RebalancerMetrics};
