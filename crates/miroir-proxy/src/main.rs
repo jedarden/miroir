@@ -172,7 +172,8 @@ impl FromRef<UnifiedState> for routes::aliases::AliasState {
     fn from_ref(state: &UnifiedState) -> Self {
         Self {
             config: state.admin.config.clone(),
-            task_registry: state.admin.task_registry.clone(),
+            task_store: state.admin.task_store.clone(),
+            metrics: state.metrics.clone(),
         }
     }
 }
