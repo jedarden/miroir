@@ -1,67 +1,51 @@
-# P2.8 Middleware: structured logging + prometheus metrics + request IDs
+# P2.8 Middleware Verification
 
-## Verification Summary
+## Acceptance Criteria Verified
 
-This bead verified that the middleware implementation in `crates/miroir-proxy/src/middleware.rs` already satisfies all acceptance criteria for P2.8.
+### 1. Metrics endpoint returns all listed metrics
+- Request metrics: `miroir_request_duration_seconds{method,path_template,status}` ✓
+- Request counter: `miroir_requests_total{method,path_template,status}` ✓
+- In-flight gauge: `miroir_requests_in_flight` ✓
+- Scatter metrics: `miroir_scatter_fan_out_size`, `miroir_scatter_partial_responses_total`, `miroir_scatter_retries_total` ✓
+- Node metrics: `miroir_node_healthy`, `miroir_node_request_duration_seconds`, `miroir_node_errors_total` (defined, registered when nodes configured)
 
-## Acceptance Criteria Status
+### 2. Log format is valid JSON
+All log lines parseable by `jq` with structured fields:
+- `timestamp`, `level`, `message`, `pod_id` (global)
+- `request_id`, `duration_ms`, `status`, `method`, `path_template` (per-request)
 
-### 1. Request ID generation (UUIDv7 prefix short-hashed) ✅
-- `RequestId::new()` generates 8-character hex IDs from UUIDv7
-- `request_id_middleware` sets `X-Request-Id` header on every response
-- Verified: Response headers contain 8-char hex request IDs
+### 3. Request ID propagation
+- Response header: `x-request-id: c4deaedd` ✓
+- Log entry: `"request_id": "c4deaedd"` ✓
+- Generated via UUIDv7 with short-hashing (8 hex chars)
 
-### 2. Structured JSON log per plan §10 shape ✅
-- `telemetry_middleware` creates structured logs with tracing-subscriber JSON formatter
-- Log fields: timestamp, level, message, duration_ms, request_id, pod_id, method, path_template, status
-- Verified: `jq` successfully parses all log lines
+### 4. High-cardinality defense
+- Metrics use `path_template="/health"` not actual path ✓
+- Axum `MatchedPath` extractor provides route template
 
-### 3. Prometheus metrics ✅
-All required metrics are defined in the `Metrics` struct:
-- `miroir_request_duration_seconds{method, path_template, status}` - Histogram
-- `miroir_requests_total{method, path_template, status}` - Counter
-- `miroir_requests_in_flight` - Gauge
-- Scatter metrics: `miroir_scatter_fan_out_size`, `miroir_scatter_partial_responses_total`, `miroir_scatter_retries_total`
-- Node metrics: `miroir_node_healthy`, `miroir_node_request_duration_seconds`, `miroir_node_errors_total`
+## Implementation Details
 
-### 4. Metrics server on :9090 ✅
-- `metrics_router()` provides `/metrics` endpoint
-- Separate axum listener on port 9090 in `main.rs`
-- Verified: `curl localhost:9090/metrics` returns all metrics
+### Request ID Generation (middleware.rs:36-45)
+- Uses `uuid::Uuid::now_v7()` for time-ordered uniqueness
+- Hashes full UUID to produce 8-character hex ID
+- Stored in request extensions for handler access
 
-### 5. High-cardinality defense: path_template ✅
-- `extract_path_template()` uses `MatchedPath` extractor
-- Labels use template (e.g., `/indexes/{uid}/search`) instead of actual UIDs
-- Verified: Metrics show `path_template="/health"` not actual paths
+### Structured Logging (main.rs:246-286)
+- `tracing-subscriber` with JSON formatter
+- Global `pod_id` field via runtime span
+- Per-request `request_id` via telemetry middleware span
+- `target: "miroir.request"` for request logs
 
-### 6. In-flight gauge with Drop guard ✅
-- `InFlightGuard` increments on request start, decrements via `Drop`
-- Ensures accurate count even if handler panics
-- Verified: `miroir_requests_in_flight` metric exists and works
+### Prometheus Metrics (middleware.rs:404-418)
+- Separate `Metrics` struct with all required metrics
+- `encode_metrics()` for text exposition format
+- Metrics server on `:9090` (separate listener from main API)
 
-## Test Coverage
+### In-flight Tracking (middleware.rs:1118-1147)
+- `InFlightGuard` increments on request start
+- `Drop` trait ensures decrement even on panic
 
-All tests pass:
-- `p7_1_core_metrics.rs` - 5 tests passing
-- `p7_5_structured_logging.rs` - 17 tests passing
-- Unit tests in `middleware.rs` - all passing
-
-## Manual Verification
-
-```bash
-# Started proxy, made request to /health
-curl -D - localhost:7700/health
-# Response header: x-request-id: b65bfa06
-
-# Checked metrics endpoint
-curl localhost:9090/metrics | grep miroir_request_duration
-# Shows samples with method=GET,path_template=/health,status=200
-
-# Verified log format
-tail -1 /tmp/proxy.log | jq '.'
-# Parses successfully, shows request_id matches response header
-```
-
-## Conclusion
-
-No code changes were required. The P2.8 middleware implementation was already complete in the codebase.
+## Tests Passing
+- All 13 middleware tests pass
+- `test_metrics_creation` verifies all metrics are defined
+- `test_request_id_middleware_*` tests verify header propagation
