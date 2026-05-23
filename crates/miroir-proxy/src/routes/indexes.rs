@@ -1016,7 +1016,7 @@ async fn two_phase_settings_broadcast(
                 let mut repair_errors: Vec<String> = Vec::new();
                 for address in &mismatched_nodes {
                     match client.patch_raw(address, &full_path, body).await {
-                        Ok((status, text)) if status >= 200 && status < 300 => {
+                        Ok((status, _text)) if status >= 200 && status < 300 => {
                             tracing::info!(
                                 node = %address,
                                 index = %index,

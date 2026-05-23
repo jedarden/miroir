@@ -476,7 +476,7 @@ async fn search_handler(
                         pinned_group = group,
                         "pinned group unavailable, falling back to normal routing"
                     );
-                    Some(plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, replica_selector_ref).await)
+                    plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, replica_selector_ref).await
                 }
             }
         } else if let Some(floor) = min_settings_version {
@@ -508,7 +508,7 @@ async fn search_handler(
                 Some(p) => p,
                 None => {
                     // No covering set could be assembled after filtering by version floor
-                    let err = MeilisearchError::new(
+                    let _err = MeilisearchError::new(
                         MiroirCode::SettingsVersionStale,
                         format!(
                             "no covering set available for settings version floor {} on index '{}'",
@@ -520,7 +520,7 @@ async fn search_handler(
             }
         } else {
             // No version floor requested, use normal planning
-            Some(plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, replica_selector_ref).await)
+            plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, replica_selector_ref).await
         }
     };
     let node_count = plan.shard_to_node.len() as u64;
@@ -529,6 +529,8 @@ async fn search_handler(
     state.metrics.record_scatter_fan_out(node_count);
 
     // Build search request
+    // Clone facets for fingerprinting before moving into SearchRequest
+    let facets_clone = body.facets.clone();
     let rest_body = body.rest.clone(); // Clone before body is partially moved
     let search_req = SearchRequest {
         index_uid: effective_index.clone(),
@@ -556,7 +558,17 @@ async fn search_handler(
     // Only register if coalescing is enabled and this is a single-target query
     let (tx, fingerprint) = if state.config.query_coalescing.enabled && resolved_targets.len() == 1 {
         let settings_version = state.settings_broadcast.current_version().await;
-        let query_json = serde_json::to_string(&body).unwrap_or_default();
+        // Reconstruct body for fingerprinting (use cloned facets)
+        let fingerprint_body = SearchRequestBody {
+            q: search_req.query.clone(),
+            offset: Some(search_req.offset),
+            limit: Some(search_req.limit),
+            filter: search_req.filter.clone(),
+            facets: facets_clone,
+            ranking_score: Some(search_req.ranking_score),
+            rest: search_req.body.clone(),
+        };
+        let query_json = serde_json::to_string(&fingerprint_body).unwrap_or_default();
         let fp = QueryFingerprint {
             index: effective_index.clone(),
             query_json,
@@ -869,14 +881,14 @@ async fn search_multi_targets(
                 state.config.shards,
                 group,
                 None,
-            ) {
+            ).await {
                 Some(p) => p,
                 None => {
                     warn!(
                         pinned_group = group,
                         "pinned group unavailable, falling back to normal routing"
                     );
-                    Some(plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, None).await)
+                    plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, None).await
                 }
             }
         } else if let Some(floor) = min_settings_version {
@@ -904,7 +916,7 @@ async fn search_multi_targets(
             match plan_result {
                 Some(p) => p,
                 None => {
-                    let err = MeilisearchError::new(
+                    let _err = MeilisearchError::new(
                         MiroirCode::SettingsVersionStale,
                         format!(
                             "no covering set available for settings version floor {} on index '{}'",
