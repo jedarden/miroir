@@ -66,6 +66,12 @@ impl RequestId {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SessionId(pub String);
 
+impl Default for SessionId {
+    fn default() -> Self {
+        Self(String::new())
+    }
+}
+
 impl SessionId {
     /// Get the inner session ID string.
     pub fn as_str(&self) -> &str {

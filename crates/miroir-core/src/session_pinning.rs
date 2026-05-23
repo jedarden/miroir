@@ -4,11 +4,13 @@
 //! and routes subsequent reads to the pinned replica group.
 
 use crate::error::{MiroirError, Result};
+use crate::task::{TaskRegistry, TaskStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
+use tracing::{debug, info, warn};
 
 /// Session pinning configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,11 +125,14 @@ impl SessionManager {
     /// Record a write for a session.
     ///
     /// Returns the group ID that was pinned (first to reach quorum).
-    pub async fn record_write(
+    ///
+    /// This method should be called AFTER per-group quorum is achieved,
+    /// with the `first_quorum_group` being the first group to reach quorum.
+    pub async fn record_write_with_quorum(
         &self,
         session_id: &str,
         mtask_id: String,
-        pinned_group: u32,
+        first_quorum_group: u32,
     ) -> Result<()> {
         if !self.config.enabled {
             return Ok(());
@@ -138,11 +143,12 @@ impl SessionManager {
 
         let mut sessions = self.sessions.write().await;
 
-        // Enforce max sessions (simple FIFO)
+        // Enforce max sessions (simple FIFO - remove oldest entry when at capacity)
         if sessions.len() >= self.config.max_sessions as usize {
-            // Remove oldest entry
+            // Remove oldest entry (first key in HashMap)
             if let Some(key) = sessions.keys().next().cloned() {
                 sessions.remove(&key);
+                debug!(session_id = %key, "evicted oldest session to enforce max_sessions");
             }
         }
 
@@ -157,23 +163,97 @@ impl SessionManager {
         });
 
         // Update session state
-        session.last_write_mtask_id = Some(mtask_id);
+        session.last_write_mtask_id = Some(mtask_id.clone());
         session.last_write_at = now;
         session.expires_at = expires_at;
 
         // Pin the group if not already pinned (first write wins)
         if session.pinned_group.is_none() {
-            session.pinned_group = Some(pinned_group);
+            session.pinned_group = Some(first_quorum_group);
+            info!(
+                session_id = %session_id,
+                mtask_id = %mtask_id,
+                pinned_group = first_quorum_group,
+                "session pinned to first-quorum group"
+            );
+        } else {
+            debug!(
+                session_id = %session_id,
+                existing_group = session.pinned_group,
+                new_quorum_group = first_quorum_group,
+                "session already pinned, ignoring new quorum group"
+            );
         }
 
-        // Track pending write per index
-        // Note: mtask_id format includes index, we'll parse it
+        // Track pending write per session
         let mut pending = self.pending_writes.write().await;
-        // Simple tracking: session_id -> mtask_id
-        // In production, you'd track per-index
-        pending.entry(session_id.to_string()).or_insert_with(HashMap::new);
+        pending.entry(session_id.to_string())
+            .or_insert_with(HashMap::new)
+            .insert(mtask_id.clone(), first_quorum_group.to_string());
 
         Ok(())
+    }
+
+    /// Wait for a pending write to complete (block strategy).
+    ///
+    /// Polls the task registry until the write succeeds or times out.
+    pub async fn wait_for_write_completion(
+        &self,
+        session_id: &str,
+        task_registry: &Arc<dyn TaskRegistry>,
+        max_wait: Duration,
+    ) -> Result<bool> {
+        let session = {
+            let sessions = self.sessions.read().await;
+            sessions.get(session_id).cloned()
+        };
+
+        let session = session.ok_or_else(|| {
+            MiroirError::InvalidRequest("session not found".to_string())
+        })?;
+
+        let mtask_id = session.last_write_mtask_id.ok_or_else(|| {
+            MiroirError::InvalidRequest("no pending write for session".to_string())
+        })?;
+
+        let start = SystemTime::now();
+        let mut poll_delay = 25; // Start with 25ms
+
+        loop {
+            // Check task status
+            if let Ok(Some(task)) = task_registry.get(&mtask_id) {
+                match task.status {
+                    TaskStatus::Succeeded => {
+                        // Clear pending write state
+                        self.clear_pending_write(session_id).await;
+                        return Ok(true);
+                    }
+                    TaskStatus::Failed | TaskStatus::Canceled => {
+                        // Clear pending write state even on failure
+                        self.clear_pending_write(session_id).await;
+                        return Ok(false);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Check timeout
+            let elapsed = start.elapsed().unwrap_or(Duration::ZERO);
+            if elapsed >= max_wait {
+                warn!(
+                    session_id = %session_id,
+                    mtask_id = %mtask_id,
+                    elapsed_ms = elapsed.as_millis(),
+                    max_wait_ms = max_wait.as_millis(),
+                    "session pin wait timeout"
+                );
+                return Err(MiroirError::InvalidState("session pin wait timeout".to_string()));
+            }
+
+            // Exponential backoff with cap
+            tokio::time::sleep(Duration::from_millis(poll_delay)).await;
+            poll_delay = std::cmp::min(poll_delay * 2, 500); // Cap at 500ms
+        }
     }
 
     /// Get the pinned group for a session (if any).
@@ -257,6 +337,28 @@ impl SessionManager {
         sessions.len()
     }
 
+    /// Handle pinned group failure - clear the pin for a session.
+    ///
+    /// Called when the pinned group for a session becomes unavailable.
+    /// Subsequent reads will use normal routing.
+    pub async fn handle_pinned_group_failure(&self, session_id: &str, failed_group: u32) -> bool {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            if session.pinned_group == Some(failed_group) {
+                info!(
+                    session_id = %session_id,
+                    failed_group,
+                    "clearing session pin due to group failure"
+                );
+                session.pinned_group = None;
+                // Also clear pending write state since we can't guarantee visibility
+                session.last_write_mtask_id = None;
+                return true;
+            }
+        }
+        false
+    }
+
     /// Get the wait strategy.
     pub fn wait_strategy(&self) -> WaitStrategy {
         match self.config.wait_strategy.as_str() {
@@ -269,6 +371,17 @@ impl SessionManager {
     /// Get max wait duration.
     pub fn max_wait_duration(&self) -> Duration {
         Duration::from_millis(self.config.max_wait_ms)
+    }
+
+    /// Update the session active count metric.
+    pub fn update_metrics(&self, active_count_fn: impl FnOnce(usize)) {
+        let count = self.sessions.blocking_read().len();
+        active_count_fn(count);
+    }
+
+    /// Check if session pinning is enabled.
+    pub fn is_enabled(&self) -> bool {
+        self.config.enabled
     }
 }
 
@@ -313,7 +426,7 @@ mod tests {
     async fn test_record_write() {
         let manager = SessionManager::default();
         manager
-            .record_write("session-1", "mtask-123".into(), 0)
+            .record_write_with_quorum("session-1", "mtask-123".into(), 0)
             .await
             .unwrap();
 
@@ -327,7 +440,7 @@ mod tests {
     async fn test_pinned_group() {
         let manager = SessionManager::default();
         manager
-            .record_write("session-1", "mtask-123".into(), 2)
+            .record_write_with_quorum("session-1", "mtask-123".into(), 2)
             .await
             .unwrap();
 
@@ -339,7 +452,7 @@ mod tests {
     async fn test_clear_pending_write() {
         let manager = SessionManager::default();
         manager
-            .record_write("session-1", "mtask-123".into(), 0)
+            .record_write_with_quorum("session-1", "mtask-123".into(), 0)
             .await
             .unwrap();
 
@@ -361,15 +474,15 @@ mod tests {
         let manager = SessionManager::new(config);
 
         manager
-            .record_write("session-1", "mtask-1".into(), 0)
+            .record_write_with_quorum("session-1", "mtask-1".into(), 0)
             .await
             .unwrap();
         manager
-            .record_write("session-2", "mtask-2".into(), 0)
+            .record_write_with_quorum("session-2", "mtask-2".into(), 0)
             .await
             .unwrap();
         manager
-            .record_write("session-3", "mtask-3".into(), 0)
+            .record_write_with_quorum("session-3", "mtask-3".into(), 0)
             .await
             .unwrap();
 
