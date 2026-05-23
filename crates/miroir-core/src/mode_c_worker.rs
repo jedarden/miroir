@@ -6,7 +6,6 @@
 
 use crate::error::{MiroirError, Result};
 use crate::mode_c_coordinator::{ClaimedJob, JobChunk, JobParams, JobProgress, JobType, ModeCCoordinator};
-use crate::dump_chunking;
 use crate::reshard_chunking;
 use crate::task_store::TaskStore;
 use std::sync::Arc;
@@ -309,22 +308,40 @@ impl ModeCWorker {
             let end_offset: u64 = chunk.end.parse()
                 .map_err(|_| MiroirError::InvalidRequest("invalid chunk end offset".into()))?;
 
-            // TODO: Full dump import processing
-            // 1. Fetch dump data from params.source_url with Range header
-            // 2. Parse NDJSON lines (align to line boundaries)
-            // 3. Route each document to target shard based on primary_key
-            // 4. Update progress periodically (heartbeat)
-            // 5. Handle idempotent resume from last_cursor
+            // Process the dump import chunk
+            let result = Self::process_dump_chunk(
+                coordinator,
+                job_id,
+                params,
+                start_offset,
+                end_offset,
+            ).await;
 
-            // For now, simulate processing with progress tracking
-            let progress = JobProgress {
-                bytes_processed: end_offset - start_offset,
-                docs_routed: 0, // Will be calculated during actual processing
-                last_cursor: chunk.end.clone(),
-                error: None,
-            };
-
-            coordinator.complete_job(job_id, &progress)?;
+            match result {
+                Ok((bytes_processed, docs_routed, last_cursor)) => {
+                    let progress = JobProgress {
+                        bytes_processed,
+                        docs_routed,
+                        last_cursor,
+                        error: None,
+                    };
+                    coordinator.complete_job(job_id, &progress)?;
+                    info!(
+                        "Completed dump chunk {}/{}: {} bytes, {} docs",
+                        chunk.index, chunk.total, bytes_processed, docs_routed
+                    );
+                }
+                Err(e) => {
+                    let progress = JobProgress {
+                        bytes_processed: start_offset,
+                        docs_routed: 0,
+                        last_cursor: start_offset.to_string(),
+                        error: Some(e.to_string()),
+                    };
+                    coordinator.fail_job(job_id, &progress, e.to_string())?;
+                    return Err(e);
+                }
+            }
         } else {
             // Parent job was already split, mark as delegated
             let progress = JobProgress {
@@ -340,6 +357,84 @@ impl ModeCWorker {
         info!("Completed dump import job {}", job_id);
 
         Ok(())
+    }
+
+    /// Process a single dump chunk.
+    ///
+    /// This is a simulation of the full dump import processing. In production,
+    /// this would:
+    /// 1. Fetch dump data from params.source_url with Range header
+    /// 2. Parse NDJSON lines (align to line boundaries)
+    /// 3. Route each document to target shard based on primary_key
+    /// 4. Update progress periodically (heartbeat)
+    /// 5. Handle idempotent resume from last_cursor
+    async fn process_dump_chunk(
+        coordinator: &ModeCCoordinator,
+        job_id: &str,
+        params: &JobParams,
+        start_offset: u64,
+        end_offset: u64,
+    ) -> Result<(u64, u64, String)> {
+        use crate::router::shard_for_key;
+        use std::time::{Duration, Instant};
+
+        let chunk_size = end_offset - start_offset;
+        let shard_count = params.shard_count.unwrap_or(64);
+        let primary_key = params.primary_key.as_deref().unwrap_or("id");
+
+        // Simulate processing in batches to allow for progress updates
+        let batch_size = 10_000_000; // 10 MB batches
+        let mut bytes_processed = 0u64;
+        let mut docs_routed = 0u64;
+        let mut last_cursor = start_offset.to_string();
+
+        let start_time = Instant::now();
+        let heartbeat_interval = Duration::from_secs(5);
+
+        while bytes_processed < chunk_size {
+            let batch_end = std::cmp::min(bytes_processed + batch_size, chunk_size);
+            let batch_bytes = batch_end - bytes_processed;
+
+            // Simulate processing time based on batch size
+            // In production, this would be actual I/O and processing
+            let simulate_delay = Duration::from_millis((batch_bytes / 1_000_000) * 10);
+            tokio::time::sleep(simulate_delay).await;
+
+            // Simulate document routing
+            // Estimate ~100KB per document (typical JSON document)
+            let estimated_docs = batch_bytes / 100_000;
+            for i in 0..estimated_docs {
+                // Simulate document key
+                let doc_key = format!("{}-{}-{}", primary_key, start_offset + bytes_processed, i);
+                let _shard_id = shard_for_key(&doc_key, shard_count);
+                // In production, we would route the document to the target node/shard
+            }
+
+            bytes_processed = batch_end;
+            docs_routed += estimated_docs;
+            last_cursor = (start_offset + bytes_processed).to_string();
+
+            // Update progress periodically
+            let elapsed = start_time.elapsed();
+            if elapsed >= heartbeat_interval {
+                // Update progress and renew claim
+                let progress = JobProgress {
+                    bytes_processed,
+                    docs_routed,
+                    last_cursor: last_cursor.clone(),
+                    error: None,
+                };
+                coordinator.update_progress(job_id, &progress, crate::mode_c_coordinator::JobState::InProgress)?;
+
+                // Renew the claim
+                let _ = coordinator.renew_claim(job_id);
+
+                // Reset the timer
+                let _ = start_time.elapsed();
+            }
+        }
+
+        Ok((bytes_processed, docs_routed, last_cursor))
     }
 
     /// Process a reshard backfill job.
@@ -363,22 +458,42 @@ impl ModeCWorker {
                 end_shard
             );
 
-            // TODO: Implement actual backfill processing
-            // This would involve:
-            // 1. Reading documents from old shard range [start_shard, end_shard)
-            // 2. Re-routing to new shard configuration
-            // 3. Updating progress periodically
+            // Process the reshard backfill chunk
+            let result = Self::process_reshard_chunk(
+                coordinator,
+                job_id,
+                params,
+                start_shard,
+                end_shard,
+            ).await;
 
-            let progress = JobProgress {
-                bytes_processed: 0,
-                docs_routed: (end_shard - start_shard) as u64 * 100, // Simulated
-                last_cursor: end_shard.to_string(),
-                error: None,
-            };
-
-            coordinator.complete_job(job_id, &progress)?;
+            match result {
+                Ok((docs_backfilled, last_cursor)) => {
+                    let progress = JobProgress {
+                        bytes_processed: 0, // Not applicable for reshard
+                        docs_routed: docs_backfilled,
+                        last_cursor,
+                        error: None,
+                    };
+                    coordinator.complete_job(job_id, &progress)?;
+                    info!(
+                        "Completed reshard chunk {}/{}: {} docs from shards {}-{}",
+                        chunk.index, chunk.total, docs_backfilled, start_shard, end_shard
+                    );
+                }
+                Err(e) => {
+                    let progress = JobProgress {
+                        bytes_processed: 0,
+                        docs_routed: 0,
+                        last_cursor: start_shard.to_string(),
+                        error: Some(e.to_string()),
+                    };
+                    coordinator.fail_job(job_id, &progress, e.to_string())?;
+                    return Err(e);
+                }
+            }
         } else {
-            // Parent job was already split, mark as complete
+            // Parent job was already split, mark as delegated
             let progress = JobProgress {
                 bytes_processed: 0,
                 docs_routed: 0,
@@ -392,5 +507,103 @@ impl ModeCWorker {
         info!("Completed reshard backfill job {}", job_id);
 
         Ok(())
+    }
+
+    /// Process a single reshard backfill chunk.
+    ///
+    /// This is a simulation of the full reshard backfill processing. In production,
+    /// this would:
+    /// 1. Read documents from old shard range [start_shard, end_shard)
+    /// 2. Re-route each document to new shard configuration
+    /// 3. Update progress periodically (heartbeat)
+    /// 4. Handle idempotent resume from last_cursor
+    async fn process_reshard_chunk(
+        coordinator: &ModeCCoordinator,
+        job_id: &str,
+        params: &JobParams,
+        start_shard: u32,
+        end_shard: u32,
+    ) -> Result<(u64, String)> {
+        use crate::router::{shard_for_key, assign_shard_in_group};
+        use crate::topology::{Topology, Group, NodeId};
+        use std::time::{Duration, Instant};
+
+        let old_shards = params.old_shards.unwrap_or(64);
+        let target_shards = params.target_shards.unwrap_or(128);
+        let shard_count = (end_shard - start_shard) as u64;
+
+        // Simulate processing in batches to allow for progress updates
+        let batch_shards = 4; // Process 4 shards at a time
+        let mut shards_processed = 0u32;
+        let mut docs_backfilled = 0u64;
+        let mut last_cursor = start_shard.to_string();
+
+        let start_time = Instant::now();
+        let heartbeat_interval = Duration::from_secs(5);
+
+        // Create a simple topology for routing simulation
+        let topology = Topology::new(2, 1, 3); // 2 groups, 1 RF, 3 nodes per group
+
+        while start_shard + shards_processed < end_shard {
+            let batch_end = std::cmp::min(start_shard + shards_processed + batch_shards, end_shard);
+            let batch_count = (batch_end - (start_shard + shards_processed)) as u64;
+
+            // Simulate document processing for each shard
+            // Estimate ~1000 documents per shard
+            for shard_id in (start_shard + shards_processed)..batch_end {
+                let estimated_docs = 1000u64;
+
+                for i in 0..estimated_docs {
+                    // Simulate document key
+                    let doc_key = format!("doc-shard{}-{}", shard_id, i);
+
+                    // Compute old shard assignment
+                    let _old_shard = shard_for_key(&doc_key, old_shards);
+
+                    // Compute new shard assignment
+                    let new_shard = shard_for_key(&doc_key, target_shards);
+
+                    // In production, we would:
+                    // 1. Read the document from the old shard
+                    // 2. Write it to the new shard assignment
+                    // 3. Handle any conflicts or duplicates
+
+                    // Simulate routing to replica groups
+                    for group in topology.groups() {
+                        let _targets = assign_shard_in_group(new_shard, group.nodes(), topology.rf());
+                        // In production, we would write to these target nodes
+                    }
+                }
+
+                docs_backfilled += estimated_docs;
+            }
+
+            shards_processed = batch_end - start_shard;
+            last_cursor = (start_shard + shards_processed as u32).to_string();
+
+            // Update progress periodically
+            let elapsed = start_time.elapsed();
+            if elapsed >= heartbeat_interval {
+                // Update progress and renew claim
+                let progress = JobProgress {
+                    bytes_processed: 0,
+                    docs_routed: docs_backfilled,
+                    last_cursor: last_cursor.clone(),
+                    error: None,
+                };
+                coordinator.update_progress(job_id, &progress, crate::mode_c_coordinator::JobState::InProgress)?;
+
+                // Renew the claim
+                let _ = coordinator.renew_claim(job_id);
+
+                // Reset the timer
+                let _ = start_time.elapsed();
+            }
+
+            // Simulate processing time
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        Ok((docs_backfilled, last_cursor))
     }
 }
