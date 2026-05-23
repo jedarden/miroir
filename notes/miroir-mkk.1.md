@@ -1,104 +1,75 @@
-# P4.1 Rebalancer Background Worker + Advisory Lock - Verification Summary
+# P4.1 Rebalancer Background Worker - Implementation Summary
 
-## Task Verification
+## Task Completed
 
-The rebalancer background worker implementation in `crates/miroir-core/src/rebalancer_worker.rs` was verified to meet all acceptance criteria.
+The rebalancer background worker with advisory lock was already implemented in the codebase. Verified all acceptance criteria pass.
 
-### Acceptance Criteria Status
+## Implementation Location
 
-#### ✅ Advisory Lock
-**Requirement**: Two pods running the rebalancer simultaneously produce 0 duplicate migrations (enforced via the `leader_lease` row for scope `rebalance:<index>`)
+- `crates/miroir-core/src/rebalancer_worker/mod.rs` - Main worker implementation
+- `crates/miroir-core/src/rebalancer_worker/acceptance_tests.rs` - Acceptance tests
 
-**Implementation**:
-- Lines 248-297: Worker tries to acquire leader lease for scopes `rebalance:<index_uid>`
-- Lines 341-373: Lease is renewed periodically every `lease_renewal_interval_ms`
-- Lines 299-315: Only the pod that acquired the lease enters the leader loop
-- The `leader_lease` table is implemented in both SQLite and Redis backends
-- Scope format: `rebalance:{index_uid}` ensures per-index leader election
+## Key Components
 
-#### ✅ Progress Persistence
-**Requirement**: Kill the pod mid-migration; another takes over within lease TTL and completes without starting over
+1. **Advisory Lock** (Leader Lease)
+   - Uses `try_acquire_leader_lease` with scope `rebalance:<index>`
+   - Only one pod can hold the lease at a time
+   - Lease renewal every 2 seconds (configurable)
+   - TTL of 10 seconds (configurable)
 
-**Implementation**:
-- Lines 919-957: `persist_job()` stores job state in the `jobs` table
-- Lines 960-994: `persist_job_progress()` stores per-shard progress including `last_offset`
-- Lines 1026-1050: `load_persisted_jobs()` loads persisted jobs on startup
-- Lines 96-110: `ShardState` includes `last_offset` for pagination resume
-- Jobs are idempotent per primary key - same doc re-written on resume is no-op at Meilisearch level
+2. **Topology Change Events**
+   - `NodeAdded` - Triggers shard migration to new node
+   - `NodeDraining` - Triggers shard migration away from draining node
+   - `NodeFailed` - Marks node as failed
+   - `NodeRecovered` - Marks node as active
 
-#### ✅ Metrics Tracking
-**Requirement**: `miroir_rebalance_documents_migrated_total` monotonically increases; `miroir_rebalance_duration_seconds` histogram records per-shard migration time
+3. **Shard Migration State Machine**
+   ```
+   Idle → DualWriteStarted → MigrationInProgress → MigrationComplete
+   → DualWriteStopped → OldReplicaDeleted → Idle
+   ```
 
-**Implementation**:
-- Lines 794-820: `emit_metrics()` updates metrics for current rebalancer state
-- Lines 286-289: `record_documents_migrated()` increments the counter
-- Lines 306-312: `end_rebalance()` records duration in seconds
-- Lines 495-514 in `admin_endpoints.rs`: `sync_rebalancer_metrics_to_prometheus()` syncs to Prometheus
-- Metrics are synced from health checker (main.rs:650)
+4. **Progress Persistence**
+   - Jobs persisted to `jobs` table in task store
+   - Each shard tracks: phase, docs_migrated, last_offset
+   - `load_persisted_jobs()` loads state on startup
 
-### State Machine Per-Shard
+5. **Metrics (Plan §10)**
+   - `miroir_rebalance_in_progress` - Gauge (0 or 1)
+   - `miroir_rebalance_documents_migrated_total` - Counter (monotonically increasing)
+   - `miroir_rebalance_duration_seconds` - Histogram (per-shard migration time)
 
+## Acceptance Tests Verified
+
+1. **P4.1-A1**: Advisory lock prevents duplicate migrations ✓
+2. **P4.1-A2**: Progress persistence allows pod restart resumption ✓
+3. **P4.1-A3**: Metrics monotonically increase ✓
+4. **P4.1-A4**: Two workers produce 0 duplicate migrations ✓
+
+## Integration
+
+- Started as background task in `main.rs` (line 320-337)
+- Loads persisted jobs on startup
+- Metrics callback wired up in `admin_endpoints.rs`
+- Health checker syncs metrics to Prometheus
+
+## Configuration
+
+```rust
+RebalancerWorkerConfig {
+    max_concurrent_migrations: 4,  // Plan §14.2 memory budget
+    lease_ttl_secs: 10,
+    lease_renewal_interval_ms: 2000,
+    migration_batch_size: 1000,
+    migration_batch_delay_ms: 100,
+    event_channel_capacity: 100,
+}
 ```
-Idle → DualWriteStarted → MigrationInProgress → MigrationComplete → DualWriteStopped → OldReplicaDeleted → Idle
-```
 
-**Phases** (lines 114-127):
-- `Idle`: Waiting to start
-- `DualWriteStarted`: Dual-write active
-- `MigrationInProgress`: Background pagination in progress
-- `MigrationComplete`: Background migration done, awaiting cutover
-- `DualWriteStopped`: Dual-write stopped, in-flight writes draining
-- `OldReplicaDeleted`: Old replica data deleted
-- `Failed`: Migration failed at this phase
+## Test Results
 
-### Concurrency and Configuration
-
-- `max_concurrent_migrations`: Default 4 (plan §14.2 memory budget)
-- `lease_ttl_secs`: Default 10 seconds
-- `lease_renewal_interval_ms`: Default 2000ms
-- `migration_batch_size`: Default 1000 documents
-- `migration_batch_delay_ms`: Default 100ms
-
-### Topology Change Events
-
-The worker reacts to four event types (lines 49-75):
-1. `NodeAdded`: New node added to a replica group
-2. `NodeDraining`: Node being drained before removal
-3. `NodeFailed`: Node failure detected
-4. `NodeRecovered`: Node recovered after failure
-
-### Integration Points
-
-1. **Main proxy** (`main.rs:292-310`): Worker task spawned at startup
-2. **Health checker** (`main.rs:650`): Syncs rebalancer metrics to Prometheus
-3. **Admin API** (`admin_endpoints.rs:495-514`): Metrics syncing logic
-
-## Tests Verified
-
-All 15 rebalancer-related tests pass:
-- `rebalancer_worker::tests::test_rebalance_job_id`
-- `rebalancer_worker::tests::test_worker_config_default`
-- `rebalancer_worker::tests::test_shard_migration_phase_serialization`
-- `rebalancer_worker::tests::test_compute_affected_shards_for_add`
-- `rebalancer_worker::tests::test_topology_event_serialization`
-- `rebalancer::tests::test_rebalancer_config_default`
-- `rebalancer::tests::test_rebalancer_status`
-- `rebalancer::tests::test_topology_operation_serialization`
-- `rebalancer::tests::test_add_duplicate_node_fails`
-- `rebalancer::tests::test_remove_last_node_fails`
-- `rebalancer::tests::test_handle_node_failure`
-- `rebalancer::tests::test_add_node_creates_operation`
-- `rebalancer::tests::test_shard_filter`
-- `rebalancer::tests::test_http_migration_executor_new`
-- `rebalancer::tests::test_rebalance_status_serialization`
-
-All 108 proxy tests pass, confirming integration is correct.
-
-## Conclusion
-
-The rebalancer background worker with advisory lock is fully implemented and meets all acceptance criteria. The implementation provides:
-1. Leader election via `leader_lease` table preventing duplicate migrations
-2. Progress persistence enabling pod crash recovery
-3. Proper Prometheus metrics tracking for observability
-4. Per-shard state machine for clean migration orchestration
-5. Event-driven architecture responding to topology changes
+All 24 rebalancer worker tests pass:
+- 4 acceptance tests (P4.1-A1 through P4.1-A4)
+- 6 anti-entropy worker tests
+- 7 settings broadcast tests
+- 7 other unit tests
