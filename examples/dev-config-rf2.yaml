@@ -1,0 +1,146 @@
+# Miroir development configuration — RF=2, RG=2 for HA testing
+# 16 shards, RF=2, 6 Meilisearch nodes (2 replica groups of 3 nodes each)
+
+# Client-facing API key (use 'dev-key' for local testing)
+master_key: "dev-key"
+
+# Key Miroir uses to authenticate to Meilisearch nodes
+node_master_key: "dev-node-key"
+
+# Topology: 16 logical shards spread across 2 replica groups
+shards: 16
+replication_factor: 2
+replica_groups: 2
+
+# Node addresses (container names from docker-compose-dev-rf2.yml)
+nodes:
+  - id: "meili-0"
+    address: "http://meili-0:7700"
+    replica_group: 0
+  - id: "meili-1"
+    address: "http://meili-1:7700"
+    replica_group: 0
+  - id: "meili-2"
+    address: "http://meili-2:7700"
+    replica_group: 0
+  - id: "meili-3"
+    address: "http://meili-3:7700"
+    replica_group: 1
+  - id: "meili-4"
+    address: "http://meili-4:7700"
+    replica_group: 1
+  - id: "meili-5"
+    address: "http://meili-5:7700"
+    replica_group: 1
+
+# Task store (Redis for multi-replica deployments)
+task_store:
+  backend: redis
+  url: "redis://redis:6379"
+
+# Admin API (disabled in dev — enable for management UI)
+admin:
+  enabled: false
+
+# Health check settings
+health:
+  interval_ms: 5000
+  timeout_ms: 2000
+  unhealthy_threshold: 3
+  recovery_threshold: 2
+
+# Scatter-gather query behavior
+scatter:
+  node_timeout_ms: 5000
+  retry_on_timeout: true
+  unavailable_shard_policy: partial
+
+# Rebalancer settings
+rebalancer:
+  auto_rebalance_on_recovery: true
+  max_concurrent_migrations: 4
+  migration_timeout_s: 3600
+
+# Server (HTTP listener)
+server:
+  port: 7700
+  bind: "0.0.0.0"
+
+# Connection pool per node
+connection_pool_per_node:
+  max_idle: 8
+  max_total: 32
+  idle_timeout_s: 60
+
+# Task registry cache and TTL pruner
+task_registry:
+  cache_size: 1000
+  redis_pool_max: 10
+  ttl_seconds: 86400
+  prune_interval_s: 300
+  prune_batch_size: 1000
+
+# Advanced capabilities (all enabled by default in v0.1+)
+resharding:
+  enabled: true
+hedging:
+  enabled: true
+replica_selection:
+  strategy: adaptive
+query_planner:
+  enabled: true
+settings_broadcast:
+  strategy: two_phase
+settings_drift_check:
+  enabled: true
+session_pinning:
+  enabled: true
+aliases:
+  enabled: true
+anti_entropy:
+  enabled: true
+dump_import:
+  mode: streaming
+idempotency:
+  enabled: true
+query_coalescing:
+  enabled: true
+multi_search:
+  enabled: true
+vector_search:
+  enabled: true
+cdc:
+  enabled: true
+  buffer:
+    overflow: drop
+ttl:
+  enabled: true
+tenant_affinity:
+  enabled: true
+shadow:
+  enabled: true
+ilm:
+  enabled: true
+canary_runner:
+  enabled: true
+explain:
+  enabled: true
+admin_ui:
+  enabled: false
+search_ui:
+  enabled: false
+  rate_limit:
+    backend: local
+
+# Horizontal scaling (dev defaults — disabled for single-replica)
+peer_discovery:
+  service_name: miroir-headless
+  refresh_interval_s: 15
+leader_election:
+  enabled: false
+hpa:
+  enabled: false
+
+# Observability
+tracing:
+  enabled: false
