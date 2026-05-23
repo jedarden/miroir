@@ -216,6 +216,10 @@ pub struct AntiEntropyConfig {
     pub fingerprint_batch_size: u32,
     pub auto_repair: bool,
     pub updated_at_field: String,
+    /// TTL expires_at field name (plan §13.14 interaction).
+    pub expires_at_field: String,
+    /// Whether TTL is enabled (plan §13.14 interaction).
+    pub ttl_enabled: bool,
 }
 
 impl Default for AntiEntropyConfig {
@@ -228,6 +232,8 @@ impl Default for AntiEntropyConfig {
             fingerprint_batch_size: 1000,
             auto_repair: true,
             updated_at_field: "_miroir_updated_at".into(),
+            expires_at_field: "_miroir_expires_at".into(),
+            ttl_enabled: false,
         }
     }
 }

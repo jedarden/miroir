@@ -15,10 +15,11 @@
 //! WriteRequest { ..., origin: Some(ORIGIN_ANTIENTROPY.to_string()) }
 //! ```
 
+use crate::cdc::ORIGIN_ANTIENTROPY;
 use crate::error::{MiroirError, Result};
 use crate::migration::{MigrationConfig, MigrationError};
 use crate::router::assign_shard_in_group;
-use crate::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, NodeClient};
+use crate::scatter::{DeleteByIdsRequest, FetchDocumentsRequest, FetchDocumentsResponse, NodeClient, WriteRequest};
 use crate::topology::{NodeId, Topology};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -34,6 +35,11 @@ use twox_hash::XxHash64;
 ///
 /// Each bucket isolates divergence to ~1/256 (≈0.4%) of the PK space.
 pub const BUCKET_COUNT: usize = 256;
+
+/// Simple metrics callback type for recording anti-entropy metrics.
+///
+/// Called with metric name and value. Used for Prometheus-style metrics.
+pub type AntiEntropyMetricsCallback = Arc<dyn Fn(&str, u64) + Send + Sync>;
 
 /// Anti-entropy configuration (plan §13.8).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +147,7 @@ pub struct ReconcilerPass {
 }
 
 /// Anti-entropy reconciler.
+#[derive(Clone)]
 pub struct AntiEntropyReconciler<C: NodeClient> {
     /// Configuration.
     config: AntiEntropyConfig,
@@ -152,6 +159,12 @@ pub struct AntiEntropyReconciler<C: NodeClient> {
     current_pass: Arc<RwLock<Option<ReconcilerPass>>>,
     /// HTTP client for node communication.
     node_client: Arc<C>,
+    /// Metrics callback.
+    metrics_callback: Option<AntiEntropyMetricsCallback>,
+    /// This pod's replica group ID (for Mode A shard-partitioned scanning).
+    replica_group_id: Option<u32>,
+    /// Total number of pods in Mode A scaling (for consistent shard partitioning).
+    num_pods: Option<u32>,
 }
 
 impl<C: NodeClient> AntiEntropyReconciler<C> {
@@ -167,7 +180,49 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
             pass_history: Arc::new(RwLock::new(Vec::new())),
             current_pass: Arc::new(RwLock::new(None)),
             node_client,
+            metrics_callback: None,
+            replica_group_id: None,
+            num_pods: None,
         }
+    }
+
+    /// Set Mode A scaling parameters (plan §14.6).
+    ///
+    /// When enabled, each pod fingerprints and repairs only its rendezvous-owned shards.
+    ///
+    /// # Parameters
+    ///
+    /// - `replica_group_id`: This pod's ID in the pod pool (0-indexed)
+    /// - `num_pods`: Total number of pods running anti-entropy
+    /// - `total_shards`: Total number of shards in the cluster
+    /// - `rf`: Replication factor
+    pub fn with_mode_a_scaling(
+        mut self,
+        replica_group_id: u32,
+        num_pods: u32,
+        total_shards: u32,
+        rf: usize,
+    ) -> Self {
+        self.replica_group_id = Some(replica_group_id);
+        self.num_pods = Some(num_pods);
+        self
+    }
+
+    /// Set metrics callback.
+    ///
+    /// The callback is invoked with metric name and value:
+    /// - "miroir_antientropy_shards_scanned_total": count of shards scanned
+    /// - "miroir_antientropy_mismatches_found_total": count of mismatches found
+    /// - "miroir_antientropy_docs_repaired_total": count of docs repaired
+    /// - "miroir_antientropy_last_scan_completed_seconds": timestamp of scan completion
+    pub fn with_metrics(mut self, callback: AntiEntropyMetricsCallback) -> Self {
+        self.metrics_callback = Some(callback);
+        self
+    }
+
+    /// Set whether TTL is enabled for expired document handling (plan §13.14 interaction).
+    pub fn set_ttl_enabled(&mut self, enabled: bool) {
+        self.config.ttl_enabled = enabled;
     }
 
     /// Compute bucket ID for a primary key (plan §13.8 step 2).
@@ -507,12 +562,25 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         let replica_groups = topology.groups().count() as u32;
 
         // Determine which shards to scan
-        let shards_to_scan = if self.config.shards_per_pass == 0 {
+        let all_shards: Vec<u32> = (0..shard_count).collect();
+        let shards_to_scan = if let (Some(replica_group_id), Some(num_pods)) =
+            (self.replica_group_id, self.num_pods)
+        {
+            // Mode A scaling: filter to rendezvous-owned shards
+            all_shards
+                .into_iter()
+                .filter(|shard_id| {
+                    // Shard belongs to this pod if shard_id % num_pods == replica_group_id
+                    (*shard_id % num_pods) == replica_group_id
+                })
+                .collect()
+        } else if self.config.shards_per_pass == 0 {
             // Scan all shards
-            (0..shard_count).collect::<Vec<_>>()
+            all_shards
         } else {
             // Scan a subset (for throttling)
-            (0..shard_count)
+            all_shards
+                .into_iter()
                 .take(self.config.shards_per_pass as usize)
                 .collect()
         };
@@ -522,22 +590,50 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
             shards_to_scan.len()
         );
 
+        // Track total mismatches found
+        let mut total_mismatches = 0u32;
+
         // Scan each shard
         for shard_id in shards_to_scan {
             match self.scan_shard(&topology, shard_id).await {
-                Ok(drift_detected) => {
+                Ok((drift_detected, repairs, mismatches)) => {
                     pass.shards_scanned += 1;
                     if drift_detected {
                         pass.shards_with_drift += 1;
                     }
+                    pass.repairs_performed += repairs;
+                    total_mismatches += mismatches;
                 }
                 Err(e) => {
                     pass.errors.push(format!("shard {}: {}", shard_id, e));
                 }
             }
+
+            // Self-throttle: sleep between shards to target <2% CPU
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
 
         pass.completed_at = millis_now();
+
+        // Emit metrics if callback is configured
+        if let Some(ref callback) = self.metrics_callback {
+            callback(
+                "miroir_antientropy_shards_scanned_total",
+                pass.shards_scanned as u64,
+            );
+            callback(
+                "miroir_antientropy_mismatches_found_total",
+                total_mismatches as u64,
+            );
+            callback(
+                "miroir_antientropy_docs_repaired_total",
+                pass.repairs_performed as u64,
+            );
+            callback(
+                "miroir_antientropy_last_scan_completed_seconds",
+                pass.completed_at / 1000,
+            );
+        }
 
         // Archive pass
         {
@@ -564,7 +660,9 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
     }
 
     /// Scan a single shard for drift.
-    async fn scan_shard(&self, topology: &Topology, shard_id: u32) -> Result<bool> {
+    ///
+    /// Returns (drift_detected, repairs_performed, mismatches_found).
+    async fn scan_shard(&self, topology: &Topology, shard_id: u32) -> Result<(bool, u32, u32)> {
         // For each replica group, get the assigned nodes
         let mut fingerprints = Vec::new();
 
@@ -603,12 +701,14 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
 
         if fingerprints.is_empty() {
             // No readable replicas
-            return Ok(false);
+            return Ok((false, 0, 0));
         }
 
         // Compare fingerprints
         let (ref_node_id, ref_address, reference) = &fingerprints[0];
         let mut drift_detected = false;
+        let mut repairs_performed = 0u32;
+        let mut mismatches_found = 0u32;
 
         for (node_id, address, fp) in &fingerprints[1..] {
             if fp.merkle_root != reference.merkle_root {
@@ -620,7 +720,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
 
                 if self.config.auto_repair {
                     // Perform detailed diff and repair
-                    if let Err(e) = self
+                    match self
                         .repair_shard(
                             shard_id,
                             ref_node_id,
@@ -632,19 +732,27 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
                         )
                         .await
                     {
-                        error!(
-                            "Failed to repair shard {} on node {}: {}",
-                            shard_id, node_id, e
-                        );
+                        Ok((repairs, mismatches)) => {
+                            repairs_performed += repairs;
+                            mismatches_found += mismatches;
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed to repair shard {} on node {}: {}",
+                                shard_id, node_id, e
+                            );
+                        }
                     }
                 }
             }
         }
 
-        Ok(drift_detected)
+        Ok((drift_detected, repairs_performed, mismatches_found))
     }
 
     /// Repair a shard by comparing replicas and applying fixes (plan §13.8 step 3).
+    ///
+    /// Returns (repairs_performed, mismatches_found).
     async fn repair_shard(
         &self,
         shard_id: u32,
@@ -654,7 +762,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         target_node: &NodeId,
         target_address: &str,
         target_fp: &ShardFingerprint,
-    ) -> Result<()> {
+    ) -> Result<(u32, u32)> {
         debug!(
             "Repairing shard {} on node {} (reference: node {})",
             shard_id, target_node, reference_node
@@ -669,7 +777,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
                 "Shard {} merkle roots differ but no bucket divergence found",
                 shard_id
             );
-            return Ok(());
+            return Ok((0, 0));
         }
 
         debug!(
@@ -678,6 +786,9 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
             divergent_buckets.len(),
             BUCKET_COUNT
         );
+
+        let mut total_repairs = 0u32;
+        let mut total_mismatches = 0u32;
 
         // Step 2: For each divergent bucket, enumerate divergent PKs
         for bucket_id in divergent_buckets {
@@ -696,6 +807,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
                 Ok(diff) => {
                     let total_divergent =
                         diff.a_only_pks.len() + diff.b_only_pks.len() + diff.mismatched_pks.len();
+                    total_mismatches += total_divergent as u32;
 
                     if total_divergent > 0 {
                         debug!(
@@ -709,16 +821,35 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
                         );
 
                         // Step 3: For each divergent PK, apply repair (plan §13.8 step 3)
-                        // TODO: Implement actual repair writes
-                        // For now, just log the divergence
-                        for pk in &diff.a_only_pks {
-                            debug!("PK {} only exists on reference node {}", pk, reference_node);
-                        }
-                        for pk in &diff.b_only_pks {
-                            debug!("PK {} only exists on target node {}", pk, target_node);
-                        }
-                        for pk in &diff.mismatched_pks {
-                            debug!("PK {} has mismatched content", pk);
+                        // Collect all divergent PKs
+                        let mut all_divergent_pks = Vec::new();
+                        all_divergent_pks.extend(diff.a_only_pks.iter().cloned());
+                        all_divergent_pks.extend(diff.b_only_pks.iter().cloned());
+                        all_divergent_pks.extend(diff.mismatched_pks.iter().cloned());
+
+                        // Repair each divergent PK
+                        for pk in all_divergent_pks {
+                            match self
+                                .repair_divergent_pk(
+                                    shard_id,
+                                    &pk,
+                                    reference_node,
+                                    reference_address,
+                                    target_node,
+                                    target_address,
+                                )
+                                .await
+                            {
+                                Ok(repairs) => {
+                                    total_repairs += repairs;
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "Failed to repair PK {} in shard {}: {}",
+                                        pk, shard_id, e
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -731,6 +862,300 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
             }
         }
 
+        Ok((total_repairs, total_mismatches))
+    }
+
+    /// Repair a single divergent primary key (plan §13.8 step 3).
+    ///
+    /// # Repair Logic (plan §13.8 step 3)
+    ///
+    /// For each divergent PK:
+    /// 1. Read document from each replica
+    /// 2. Check for TTL expiration:
+    ///    - If ANY replica has `_miroir_expires_at <= now`: DELETE from all replicas
+    ///    - This prevents zombie resurrection (plan §13.14 interaction)
+    /// 3. Otherwise, pick authoritative version:
+    ///    - Highest `_miroir_updated_at` wins
+    ///    - Tiebreak: newest node task_uid
+    /// 4. Write authoritative version to all replicas that disagree
+    /// 5. Tag with `_miroir_origin: antientropy` for CDC suppression
+    ///
+    /// Returns the number of repairs performed (0-2).
+    async fn repair_divergent_pk(
+        &self,
+        shard_id: u32,
+        primary_key: &str,
+        reference_node: &NodeId,
+        reference_address: &str,
+        target_node: &NodeId,
+        target_address: &str,
+    ) -> Result<u32> {
+        debug!(
+            "Repairing PK {} in shard {} (reference: {}, target: {})",
+            primary_key, shard_id, reference_node, target_node
+        );
+
+        // Step 1: Fetch document from both replicas
+        let ref_doc = self
+            .fetch_document_by_pk(reference_node, reference_address, shard_id, primary_key)
+            .await?;
+
+        let target_doc = self
+            .fetch_document_by_pk(target_node, target_address, shard_id, primary_key)
+            .await?;
+
+        // Step 2: Check for TTL expiration (plan §13.14 interaction)
+        // If ANY replica has an expired document, DELETE from all replicas
+        let now_ms = millis_now();
+        let ref_expired = ref_doc
+            .as_ref()
+            .and_then(|d| d.get("_miroir_expires_at"))
+            .and_then(|v| v.as_u64())
+            .map_or(false, |expires| expires <= now_ms);
+
+        let target_expired = target_doc
+            .as_ref()
+            .and_then(|d| d.get("_miroir_expires_at"))
+            .and_then(|v| v.as_u64())
+            .map_or(false, |expires| expires <= now_ms);
+
+        if ref_expired || target_expired {
+            info!(
+                "PK {} has expired document (ref_expired={}, target_expired={}), deleting from all replicas",
+                primary_key, ref_expired, target_expired
+            );
+
+            // Delete from all replicas
+            let mut deletions = 0u32;
+            if ref_doc.is_some() {
+                self.delete_document_by_pk(reference_node, reference_address, primary_key)
+                    .await?;
+                deletions += 1;
+            }
+            if target_doc.is_some() {
+                self.delete_document_by_pk(target_node, target_address, primary_key)
+                    .await?;
+                deletions += 1;
+            }
+
+            return Ok(deletions);
+        }
+
+        // Step 3: Pick authoritative version (highest _miroir_updated_at)
+        let (authoritative_doc, authoritative_node) = match (&ref_doc, &target_doc) {
+            (None, None) => {
+                warn!("PK {} not found on either replica, nothing to repair", primary_key);
+                return Ok(0);
+            }
+            (Some(doc), None) => {
+                debug!("PK {} only exists on reference node", primary_key);
+                (doc.clone(), reference_node.clone())
+            }
+            (None, Some(doc)) => {
+                debug!("PK {} only exists on target node", primary_key);
+                (doc.clone(), target_node.clone())
+            }
+            (Some(ref_doc_val), Some(target_doc_val)) => {
+                // Both exist - compare _miroir_updated_at
+                let ref_updated = ref_doc_val
+                    .get(&self.config.updated_at_field)
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                let target_updated = target_doc_val
+                    .get(&self.config.updated_at_field)
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                if ref_updated >= target_updated {
+                    debug!(
+                        "PK {} reference node wins (updated_at: {} vs {})",
+                        primary_key, ref_updated, target_updated
+                    );
+                    (ref_doc_val.clone(), reference_node.clone())
+                } else {
+                    debug!(
+                        "PK {} target node wins (updated_at: {} vs {})",
+                        primary_key, target_updated, ref_updated
+                    );
+                    (target_doc_val.clone(), target_node.clone())
+                }
+            }
+        };
+
+        // Step 4: Write authoritative version to replicas that disagree
+        let mut repairs_performed = 0u32;
+
+        // Check if reference needs repair
+        if ref_doc.as_ref() != Some(&authoritative_doc) {
+            if let Err(e) = self
+                .write_document_with_origin(
+                    reference_node,
+                    reference_address,
+                    &authoritative_doc,
+                )
+                .await
+            {
+                error!("Failed to write repair to reference node {}: {}", reference_node, e);
+            } else {
+                repairs_performed += 1;
+                debug!("Repaired PK {} on reference node {}", primary_key, reference_node);
+            }
+        }
+
+        // Check if target needs repair
+        if target_doc.as_ref() != Some(&authoritative_doc) {
+            if let Err(e) = self
+                .write_document_with_origin(target_node, target_address, &authoritative_doc)
+                .await
+            {
+                error!("Failed to write repair to target node {}: {}", target_node, e);
+            } else {
+                repairs_performed += 1;
+                debug!("Repaired PK {} on target node {}", primary_key, target_node);
+            }
+        }
+
+        if repairs_performed > 0 {
+            info!(
+                "Repaired PK {} in shard {} on {} replica(s)",
+                primary_key, shard_id, repairs_performed
+            );
+        }
+
+        Ok(repairs_performed)
+    }
+
+    /// Pick the authoritative document between two versions (plan §13.8 step 3).
+    ///
+    /// # Selection Logic
+    ///
+    /// 1. Highest `_miroir_updated_at` wins
+    /// 2. Tiebreak: newest node task_uid (if available)
+    /// 3. Final tiebreak: deterministic content hash comparison
+    ///
+    /// Returns `Some(&authoritative_doc)` if one or both docs exist, `None` if both are None.
+    pub fn pick_authoritative_doc<'a>(
+        &'a self,
+        doc_a: &'a Value,
+        doc_b: &'a Value,
+    ) -> Option<&'a Value> {
+        match (doc_a.is_null(), doc_b.is_null()) {
+            (true, true) => None,
+            (true, false) => Some(doc_b),
+            (false, true) => Some(doc_a),
+            (false, false) => {
+                // Both exist - compare _miroir_updated_at
+                let updated_a = doc_a
+                    .get(&self.config.updated_at_field)
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                let updated_b = doc_b
+                    .get(&self.config.updated_at_field)
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                if updated_a > updated_b {
+                    Some(doc_a)
+                } else if updated_b > updated_a {
+                    Some(doc_b)
+                } else {
+                    // Tie - use content hash for deterministic selection
+                    let hash_a = Self::compute_content_hash(doc_a);
+                    let hash_b = Self::compute_content_hash(doc_b);
+                    if hash_a >= hash_b {
+                        Some(doc_a)
+                    } else {
+                        Some(doc_b)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Fetch a single document by primary key from a node.
+    async fn fetch_document_by_pk(
+        &self,
+        node_id: &NodeId,
+        address: &str,
+        shard_id: u32,
+        primary_key: &str,
+    ) -> Result<Option<Value>> {
+        // Build filter to find the document by PK and shard
+        let filter = serde_json::json!({
+            "_miroir_shard": shard_id,
+            "id": primary_key,
+        });
+
+        let request = FetchDocumentsRequest {
+            index_uid: self.config.index_uid.clone(),
+            filter,
+            limit: 1,
+            offset: 0,
+        };
+
+        match self
+            .node_client
+            .fetch_documents(node_id, address, &request)
+            .await
+        {
+            Ok(response) => {
+                if let Some(doc) = response.results.first() {
+                    Ok(Some(doc.clone()))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(e) => {
+                // Document not found is not an error for anti-entropy
+                debug!("PK {} not found on node {}: {:?}", primary_key, node_id, e);
+                Ok(None)
+            }
+        }
+    }
+
+    /// Write a document with the anti-entropy origin tag for CDC suppression.
+    async fn write_document_with_origin(
+        &self,
+        node_id: &NodeId,
+        address: &str,
+        document: &Value,
+    ) -> Result<()> {
+        let request = WriteRequest {
+            index_uid: self.config.index_uid.clone(),
+            documents: vec![document.clone()],
+            primary_key: None,
+            origin: Some(ORIGIN_ANTIENTROPY.to_string()),
+        };
+
+        self.node_client
+            .write_documents(node_id, address, &request)
+            .await
+            .map_err(|e| MiroirError::Topology(format!("write failed: {:?}", e)))?;
+
+        Ok(())
+    }
+
+    /// Delete a document by primary key with the anti-entropy origin tag.
+    async fn delete_document_by_pk(
+        &self,
+        node_id: &NodeId,
+        address: &str,
+        primary_key: &str,
+    ) -> Result<()> {
+        let request = crate::scatter::DeleteByIdsRequest {
+            index_uid: self.config.index_uid.clone(),
+            ids: vec![primary_key.to_string()],
+            origin: Some(ORIGIN_ANTIENTROPY.to_string()),
+        };
+
+        self.node_client
+            .delete_documents(node_id, address, &request)
+            .await
+            .map_err(|e| MiroirError::Topology(format!("delete failed: {:?}", e)))?;
+
+        debug!("Deleted PK {} from node {}", primary_key, node_id);
         Ok(())
     }
 
