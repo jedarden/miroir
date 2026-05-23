@@ -12,6 +12,7 @@ use miroir_core::{
     migration::{MigrationConfig, MigrationCoordinator},
     rebalancer::{MigrationExecutor, Rebalancer, RebalancerConfig, RebalancerMetrics},
     rebalancer_worker::{RebalancerMetricsCallback, RebalancerWorker, RebalancerWorkerConfig, TopologyChangeEvent},
+ replica_selection::{ReplicaSelector, SelectionObserver},
     router,
     scatter::{DeleteByFilterRequest, FetchDocumentsRequest, FetchDocumentsResponse, WriteRequest},
     task_registry::TaskRegistryImpl,
@@ -301,6 +302,23 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
+/// Metrics observer for replica selection events.
+///
+/// Reports selection scores and exploration events to Prometheus.
+struct ReplicaSelectionMetricsObserver {
+    metrics: super::super::middleware::Metrics,
+}
+
+impl SelectionObserver for ReplicaSelectionMetricsObserver {
+    fn report_selection(&self, node_id: &str, score: f64) {
+        self.metrics.set_replica_selection_score(node_id, score);
+    }
+
+    fn report_exploration(&self) {
+        self.metrics.inc_replica_selection_exploration();
+    }
+}
+
 /// Shared application state for admin endpoints.
 #[derive(Clone)]
 pub struct AppState {
@@ -338,6 +356,10 @@ pub struct AppState {
     pub mode_c_worker: Option<Arc<ModeCWorker>>,
     /// Adaptive replica selector (plan §13.3).
     pub replica_selector: Arc<miroir_core::replica_selection::ReplicaSelector>,
+    /// Idempotency cache for write deduplication (plan §13.10).
+    pub idempotency_cache: Arc<miroir_core::idempotency::IdempotencyCache>,
+    /// Query coalescer for read deduplication (plan §13.10).
+    pub query_coalescer: Arc<miroir_core::idempotency::QueryCoalescer>,
 }
 
 impl AppState {
@@ -633,7 +655,22 @@ impl AppState {
             alias_registry,
             leader_election,
             mode_c_worker,
-            replica_selector: Arc::new(miroir_core::replica_selection::ReplicaSelector::default()),
+            replica_selector: {
+                let config = config.replica_selection.clone();
+                let observer = Arc::new(ReplicaSelectionMetricsObserver {
+                    metrics: metrics.clone(),
+                });
+                Arc::new(ReplicaSelector::new_with_observer(config, observer))
+            },
+            idempotency_cache: Arc::new(miroir_core::idempotency::IdempotencyCache::new(
+                config.idempotency.max_cached_keys as usize,
+                config.idempotency.ttl_seconds,
+            )),
+            query_coalescer: Arc::new(miroir_core::idempotency::QueryCoalescer::new(
+                config.query_coalescing.window_ms,
+                config.query_coalescing.max_pending_queries as usize,
+                config.query_coalescing.max_subscribers as usize,
+            )),
         }
     }
 

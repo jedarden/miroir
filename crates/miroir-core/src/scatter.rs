@@ -384,11 +384,12 @@ pub struct ScatterResult {
 }
 
 #[instrument(skip_all, fields(query_seq, rf, shard_count))]
-pub fn plan_search_scatter(
+pub async fn plan_search_scatter(
     topology: &Topology,
     query_seq: u64,
     rf: usize,
     shard_count: u32,
+    replica_selector: Option<&ReplicaSelector>,
 ) -> ScatterPlan {
     let chosen_group = query_group(query_seq, topology.replica_group_count());
 
@@ -407,7 +408,16 @@ pub fn plan_search_scatter(
     let mut shard_to_node = HashMap::new();
     for shard_id in 0..shard_count {
         let replicas = crate::router::assign_shard_in_group(shard_id, group.nodes(), rf);
-        let selected = replicas[(query_seq as usize) % replicas.len()].clone();
+
+        let selected = if let Some(selector) = replica_selector {
+            match selector.select(&replicas, chosen_group).await {
+                Some(node) => node,
+                None => replicas[(query_seq as usize) % replicas.len()].clone(),
+            }
+        } else {
+            replicas[(query_seq as usize) % replicas.len()].clone()
+        };
+
         shard_to_node.insert(shard_id, selected);
     }
 
@@ -424,7 +434,7 @@ pub fn plan_search_scatter(
 ///
 /// Excludes nodes whose settings version for the given index is below `floor`.
 /// Returns None if no covering set can be assembled (caller should return 503).
-pub fn plan_search_scatter_with_version_floor(
+pub async fn plan_search_scatter_with_version_floor(
     topology: &Topology,
     query_seq: u64,
     rf: usize,
@@ -432,6 +442,7 @@ pub fn plan_search_scatter_with_version_floor(
     index: &str,
     floor: u64,
     version_checker: &impl Fn(&str, &str) -> u64,
+    replica_selector: Option<&ReplicaSelector>,
 ) -> Option<ScatterPlan> {
     let chosen_group = query_group(query_seq, topology.replica_group_count());
 
@@ -450,7 +461,7 @@ pub fn plan_search_scatter_with_version_floor(
     let mut shard_to_node = HashMap::new();
     for shard_id in 0..shard_count {
         let replicas = crate::router::assign_shard_in_group(shard_id, group.nodes(), rf);
-        // Filter by version floor, then rotate by query_seq
+        // Filter by version floor
         let eligible: Vec<_> = replicas
             .iter()
             .filter(|node_id| {
@@ -463,7 +474,17 @@ pub fn plan_search_scatter_with_version_floor(
             return None;
         }
 
-        let selected = eligible[query_seq as usize % eligible.len()];
+        let selected = if let Some(selector) = replica_selector {
+            // Convert Vec<&NodeId> to Vec<NodeId> for selector
+            let eligible_owned: Vec<NodeId> = eligible.iter().map(|&n| n.clone()).collect();
+            match selector.select(&eligible_owned, chosen_group).await {
+                Some(node) => node,
+                None => eligible[query_seq as usize % eligible.len()].clone(),
+            }
+        } else {
+            eligible[query_seq as usize % eligible.len()].clone()
+        };
+
         shard_to_node.insert(shard_id, selected.clone());
     }
 
@@ -480,12 +501,13 @@ pub fn plan_search_scatter_with_version_floor(
 ///
 /// Used when a session has a pending write and needs to read from the pinned group
 /// to ensure read-your-writes consistency.
-pub fn plan_search_scatter_for_group(
+pub async fn plan_search_scatter_for_group(
     topology: &Topology,
     query_seq: u64,
     rf: usize,
     shard_count: u32,
     pinned_group: u32,
+    replica_selector: Option<&ReplicaSelector>,
 ) -> Option<ScatterPlan> {
     let group = topology.group(pinned_group)?;
 
@@ -495,7 +517,16 @@ pub fn plan_search_scatter_for_group(
         if replicas.is_empty() {
             continue;
         }
-        let selected = replicas[query_seq as usize % replicas.len()].clone();
+
+        let selected = if let Some(selector) = replica_selector {
+            match selector.select(&replicas, pinned_group).await {
+                Some(node) => node,
+                None => replicas[query_seq as usize % replicas.len()].clone(),
+            }
+        } else {
+            replicas[query_seq as usize % replicas.len()].clone()
+        };
+
         shard_to_node.insert(shard_id, selected);
     }
 
@@ -979,43 +1010,43 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_plan_pure_function() {
+    #[tokio::test]
+    async fn test_plan_pure_function() {
         let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         assert_eq!(plan.chosen_group, 0);
         assert_eq!(plan.target_shards.len(), 64);
         assert!(plan.hedging_eligible);
     }
 
-    #[test]
-    fn test_plan_group_rotation() {
+    #[tokio::test]
+    async fn test_plan_group_rotation() {
         let topo = make_test_topology();
-        assert_eq!(plan_search_scatter(&topo, 0, 2, 64).chosen_group, 0);
-        assert_eq!(plan_search_scatter(&topo, 1, 2, 64).chosen_group, 1);
+        assert_eq!(plan_search_scatter(&topo, 0, 2, 64, None).await.chosen_group, 0);
+        assert_eq!(plan_search_scatter(&topo, 1, 2, 64, None).await.chosen_group, 1);
     }
 
-    #[test]
-    fn test_plan_shard_mapping() {
+    #[tokio::test]
+    async fn test_plan_shard_mapping() {
         let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         for s in 0..64 { assert!(plan.shard_to_node.contains_key(&s)); }
         let g0 = topo.group(0).unwrap();
         for (_, nid) in &plan.shard_to_node { assert!(g0.nodes().contains(nid)); }
     }
 
-    #[test]
-    fn test_plan_hedging() {
+    #[tokio::test]
+    async fn test_plan_hedging() {
         let mut topo = Topology::new(64, 1, 1);
         topo.add_node(Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0));
-        assert!(!plan_search_scatter(&topo, 0, 1, 64).hedging_eligible);
-        assert!(plan_search_scatter(&make_test_topology(), 0, 2, 64).hedging_eligible);
+        assert!(!plan_search_scatter(&topo, 0, 1, 64, None).await.hedging_eligible);
+        assert!(plan_search_scatter(&make_test_topology(), 0, 2, 64, None).await.hedging_eligible);
     }
 
     #[tokio::test]
     async fn test_scatter_mock() {
         let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let mut c = MockNodeClient::default();
         c.responses.insert(NodeId::new("node-0".into()), serde_json::json!({"hits": [{"id": "doc1"}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
         let r = execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial).await.unwrap();
@@ -1026,7 +1057,7 @@ mod tests {
     #[tokio::test]
     async fn test_scatter_partial() {
         let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let mut c = MockNodeClient::default();
         c.errors.insert(NodeId::new("node-0".into()), NodeError::Timeout);
         let r = execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial).await.unwrap();
@@ -1036,21 +1067,21 @@ mod tests {
     #[tokio::test]
     async fn test_scatter_error_policy() {
         let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let mut c = MockNodeClient::default();
         c.errors.insert(NodeId::new("node-0".into()), NodeError::Timeout);
         assert!(execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Error).await.is_err());
     }
 
-    #[test]
-    fn test_plan_invalid_group() {
-        assert!(plan_search_scatter(&Topology::new(64, 0, 1), 0, 1, 64).shard_to_node.is_empty());
+    #[tokio::test]
+    async fn test_plan_invalid_group() {
+        assert!(plan_search_scatter(&Topology::new(64, 0, 1), 0, 1, 64, None).await.shard_to_node.is_empty());
     }
 
     #[tokio::test]
     async fn test_scatter_node_not_in_topo() {
         let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let r = execute_scatter(plan, &MockNodeClient::default(), make_req(), &Topology::new(64, 2, 2), UnavailableShardPolicy::Partial).await.unwrap();
         assert!(r.partial);
     }
@@ -1058,7 +1089,7 @@ mod tests {
     #[tokio::test]
     async fn test_sg_rrf() {
         let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let mut c = MockNodeClient::default();
         c.responses.insert(NodeId::new("node-0".into()), serde_json::json!({"hits": [{"id": "a", "_rankingScore": 0.9}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
         let s = crate::merger::RrfStrategy::default_strategy();
@@ -1069,7 +1100,7 @@ mod tests {
     #[tokio::test]
     async fn test_sg_degraded() {
         let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let mut c = MockNodeClient::default();
         c.responses.insert(NodeId::new("node-0".into()), serde_json::json!({"hits": [{"id": "a"}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
         c.errors.insert(NodeId::new("node-2".into()), NodeError::Timeout);
@@ -1105,7 +1136,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_preflight() {
         let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let mut c = MockNodeClient::default();
         c.preflight_responses.insert(NodeId::new("node-0".into()), PreflightResponse {
             total_docs: 30000, avg_doc_length: 50.0,
@@ -1128,7 +1159,7 @@ mod tests {
     #[tokio::test]
     async fn test_dfs_query_then_fetch() {
         let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let mut c = MockNodeClient::default();
         c.responses.insert(NodeId::new("node-0".into()), serde_json::json!({"hits": [{"id": "a", "_rankingScore": 0.9}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
         c.preflight_responses.insert(NodeId::new("node-0".into()), PreflightResponse {
@@ -1165,7 +1196,7 @@ mod tests {
         topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
         topo.add_node(Node::new(NodeId::new("node-2".into()), "http://node-2:7700".into(), 0));
 
-        let plan = plan_search_scatter(&topo, 0, 1, 3);
+        let plan = plan_search_scatter(&topo, 0, 1, 3, None).await;
 
         // Simulate severely skewed shard distribution
         let mut c = MockNodeClient::default();
@@ -1239,7 +1270,7 @@ mod tests {
     #[tokio::test]
     async fn test_dfs_empty_query_terms() {
         let topo = make_test_topology();
-        let plan = plan_search_scatter(&topo, 0, 2, 64);
+        let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let c = MockNodeClient::default();
 
         let preflight_req = PreflightRequest {
@@ -1261,7 +1292,7 @@ mod tests {
         topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
         topo.add_node(Node::new(NodeId::new("node-2".into()), "http://node-2:7700".into(), 0));
 
-        let plan = plan_search_scatter(&topo, 0, 1, 3);
+        let plan = plan_search_scatter(&topo, 0, 1, 3, None).await;
         let mut c = MockNodeClient::default();
 
         // Node 0 returns valid data
@@ -1394,7 +1425,7 @@ mod tests {
         topo.add_node(Node::new(NodeId::new("node-g1-0".into()), "http://g1-0:7700".into(), 1));
         topo.add_node(Node::new(NodeId::new("node-g1-1".into()), "http://g1-1:7700".into(), 1));
 
-        let plan = plan_search_scatter(&topo, 0, 2, 16); // query_seq=0 → group 0
+        let plan = plan_search_scatter(&topo, 0, 2, 16, None).await; // query_seq=0 → group 0
         assert_eq!(plan.chosen_group, 0);
 
         let mut c = MockNodeClient::default();
@@ -1432,7 +1463,7 @@ mod tests {
         topo.add_node(Node::new(NodeId::new("node-g1-0".into()), "http://g1-0:7700".into(), 1));
         topo.add_node(Node::new(NodeId::new("node-g1-1".into()), "http://g1-1:7700".into(), 1));
 
-        let plan = plan_search_scatter(&topo, 0, 2, 16);
+        let plan = plan_search_scatter(&topo, 0, 2, 16, None).await;
         let mut c = MockNodeClient::default();
 
         // All nodes fail
@@ -1459,7 +1490,7 @@ mod tests {
         topo.add_node(Node::new(NodeId::new("node-g1-0".into()), "http://g1-0:7700".into(), 1));
         topo.add_node(Node::new(NodeId::new("node-g1-1".into()), "http://g1-1:7700".into(), 1));
 
-        let plan = plan_search_scatter(&topo, 0, 2, 16);
+        let plan = plan_search_scatter(&topo, 0, 2, 16, None).await;
         let mut c = MockNodeClient::default();
 
         // Group 1 nodes are healthy but partial policy shouldn't use them

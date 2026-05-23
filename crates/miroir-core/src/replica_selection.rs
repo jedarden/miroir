@@ -148,6 +148,21 @@ impl Default for NodeMetrics {
     }
 }
 
+/// Callback for reporting selection events.
+pub trait SelectionObserver: Send + Sync {
+    /// Called when a node is selected with its score.
+    fn report_selection(&self, node_id: &str, score: f64);
+    /// Called when exploration selects a random node.
+    fn report_exploration(&self);
+}
+
+/// No-op observer for when metrics aren't needed.
+struct NoOpObserver;
+impl SelectionObserver for NoOpObserver {
+    fn report_selection(&self, _node_id: &str, _score: f64) {}
+    fn report_exploration(&self) {}
+}
+
 /// Replica selector.
 pub struct ReplicaSelector {
     /// Configuration.
@@ -158,17 +173,25 @@ pub struct ReplicaSelector {
     rr_counter: Arc<RwLock<HashMap<String, u64>>>,
     /// Random number generator.
     rng: Arc<std::sync::Mutex<StdRng>>,
+    /// Observer for selection events.
+    observer: Arc<dyn SelectionObserver>,
 }
 
 impl ReplicaSelector {
-    /// Create a new replica selector.
-    pub fn new(config: ReplicaSelectionConfig) -> Self {
+    /// Create a new replica selector with a metrics observer.
+    pub fn new_with_observer(config: ReplicaSelectionConfig, observer: Arc<dyn SelectionObserver>) -> Self {
         Self {
             config,
             metrics: Arc::new(RwLock::new(HashMap::new())),
             rr_counter: Arc::new(RwLock::new(HashMap::new())),
             rng: Arc::new(std::sync::Mutex::new(StdRng::from_entropy())),
+            observer,
         }
+    }
+
+    /// Create a new replica selector without metrics.
+    pub fn new(config: ReplicaSelectionConfig) -> Self {
+        Self::new_with_observer(config, Arc::new(NoOpObserver))
     }
 
     /// Select a node from the given candidates.
@@ -194,12 +217,21 @@ impl ReplicaSelector {
 
         // Exploration: with probability epsilon, pick randomly
         if self.should_explore() {
-            return self.select_random(candidates);
+            self.observer.report_exploration();
+            let selected = self.select_random(candidates);
+            if let Some(ref node) = selected {
+                let score = metrics
+                    .get(node)
+                    .map(|m| m.score(&self.config))
+                    .unwrap_or(1000.0);
+                self.observer.report_selection(node.as_str(), score);
+            }
+            return selected;
         }
 
-        // Compute scores and find the minimum
-        let mut best_node = None;
+        // Compute scores and collect all nodes with the minimum score
         let mut best_score = f64::INFINITY;
+        let mut best_nodes: Vec<NodeId> = Vec::new();
 
         for node in candidates {
             let score = metrics
@@ -209,11 +241,27 @@ impl ReplicaSelector {
 
             if score < best_score {
                 best_score = score;
-                best_node = Some(node.clone());
+                best_nodes.clear();
+                best_nodes.push(node.clone());
+            } else if (score - best_score).abs() < 1e-10 {
+                // Scores are essentially equal - add to tie list
+                best_nodes.push(node.clone());
             }
         }
 
-        best_node
+        // If multiple nodes have the same best score, pick randomly
+        let selected = if best_nodes.len() == 1 {
+            best_nodes.into_iter().next()
+        } else {
+            let idx = self.rng.lock().unwrap().gen_range(0..best_nodes.len());
+            best_nodes.get(idx).cloned()
+        };
+
+        if let Some(ref node) = selected {
+            self.observer.report_selection(node.as_str(), best_score);
+        }
+
+        selected
     }
 
     /// Round-robin selection.
@@ -293,6 +341,18 @@ impl ReplicaSelector {
     }
 }
 
+impl Clone for ReplicaSelector {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            metrics: Arc::clone(&self.metrics),
+            rr_counter: Arc::clone(&self.rr_counter),
+            rng: Arc::clone(&self.rng),
+            observer: Arc::clone(&self.observer),
+        }
+    }
+}
+
 impl Default for ReplicaSelector {
     fn default() -> Self {
         Self::new(ReplicaSelectionConfig::default())
@@ -348,30 +408,9 @@ mod tests {
         let node1 = NodeId::new("node-1".to_string());
         let node2 = NodeId::new("node-2".to_string());
 
-        // Record some metrics
-        {
-            let mut metrics = selector.metrics.write().await;
-            metrics.insert(
-                node1.clone(),
-                NodeMetrics {
-                    latency_p95_ms: 10.0,
-                    in_flight: 0,
-                    error_rate: 0.0,
-                    half_life_ms: 5000,
-                    last_updated: Instant::now(),
-                },
-            );
-            metrics.insert(
-                node2.clone(),
-                NodeMetrics {
-                    latency_p95_ms: 100.0,
-                    in_flight: 0,
-                    error_rate: 0.0,
-                    half_life_ms: 5000,
-                    last_updated: Instant::now(),
-                },
-            );
-        }
+        // Seed metrics by recording successful requests
+        selector.record_success(&node1, 10.0).await;
+        selector.record_success(&node2, 100.0).await;
 
         // Should select node-1 (lower score)
         let candidates = vec![node2.clone(), node1.clone()];
@@ -416,10 +455,12 @@ mod tests {
         assert!(metrics.is_some());
         assert_eq!(metrics.unwrap().in_flight, 1);
 
+        // Record success decrements in-flight and updates latency
         selector.record_success(&node, 50.0).await;
 
         let metrics = selector.get_metrics(&node).await;
         assert!(metrics.is_some());
+        // In-flight should be decremented (from 1 to 0)
         assert_eq!(metrics.unwrap().in_flight, 0);
     }
 

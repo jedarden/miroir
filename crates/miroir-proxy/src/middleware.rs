@@ -295,6 +295,14 @@ pub struct Metrics {
     // ── §13.3 Adaptive replica selection metrics (always present) ──
     replica_selection_score: GaugeVec,
     replica_selection_exploration_total: Counter,
+
+    // ── §13.10 Idempotency metrics (always present) ──
+    idempotency_hits_total: CounterVec,
+    idempotency_cache_size: Gauge,
+
+    // ── §13.10 Query coalescing metrics (always present) ──
+    query_coalesce_subscribers_total: Counter,
+    query_coalesce_hits_total: Counter,
 }
 
 impl Clone for Metrics {
@@ -386,6 +394,10 @@ impl Clone for Metrics {
             antientropy_last_scan_completed_seconds: self.antientropy_last_scan_completed_seconds.clone(),
             replica_selection_score: self.replica_selection_score.clone(),
             replica_selection_exploration_total: self.replica_selection_exploration_total.clone(),
+            idempotency_hits_total: self.idempotency_hits_total.clone(),
+            idempotency_cache_size: self.idempotency_cache_size.clone(),
+            query_coalesce_subscribers_total: self.query_coalesce_subscribers_total.clone(),
+            query_coalesce_hits_total: self.query_coalesce_hits_total.clone(),
         }
     }
 }
@@ -966,6 +978,27 @@ impl Metrics {
         reg!(replica_selection_score);
         reg!(replica_selection_exploration_total);
 
+        // ── §13.10 Idempotency metrics (always present) ──
+        let idempotency_hits_total = CounterVec::new(
+            Opts::new("miroir_idempotency_hits_total", "Idempotency key hits by outcome"),
+            &["outcome"],
+        ).expect("create idempotency_hits_total");
+        let idempotency_cache_size = Gauge::with_opts(
+            Opts::new("miroir_idempotency_cache_size", "Current number of entries in idempotency cache")
+        ).expect("create idempotency_cache_size");
+        reg!(idempotency_hits_total);
+        reg!(idempotency_cache_size);
+
+        // ── §13.10 Query coalescing metrics (always present) ──
+        let query_coalesce_subscribers_total = Counter::with_opts(
+            Opts::new("miroir_query_coalesce_subscribers_total", "Total number of subscribers to coalesced queries")
+        ).expect("create query_coalesce_subscribers_total");
+        let query_coalesce_hits_total = Counter::with_opts(
+            Opts::new("miroir_query_coalesce_hits_total", "Total number of queries that hit an in-flight coalesced query")
+        ).expect("create query_coalesce_hits_total");
+        reg!(query_coalesce_subscribers_total);
+        reg!(query_coalesce_hits_total);
+
         Self {
             registry,
             request_duration,
@@ -1053,6 +1086,10 @@ impl Metrics {
             antientropy_last_scan_completed_seconds,
             replica_selection_score,
             replica_selection_exploration_total,
+            idempotency_hits_total,
+            idempotency_cache_size,
+            query_coalesce_subscribers_total,
+            query_coalesce_hits_total,
         }
     }
 
@@ -1761,6 +1798,26 @@ impl Metrics {
 
     pub fn inc_replica_selection_exploration(&self) {
         self.replica_selection_exploration_total.inc();
+    }
+
+    // ── §13.10 Idempotency metrics ──
+
+    pub fn inc_idempotency_hit(&self, outcome: &str) {
+        self.idempotency_hits_total.with_label_values(&[outcome]).inc();
+    }
+
+    pub fn set_idempotency_cache_size(&self, size: u64) {
+        self.idempotency_cache_size.set(size as f64);
+    }
+
+    // ── §13.10 Query coalescing metrics ──
+
+    pub fn inc_query_coalesce_subscribers(&self, count: u64) {
+        self.query_coalesce_subscribers_total.inc_by(count as f64);
+    }
+
+    pub fn inc_query_coalesce_hits(&self) {
+        self.query_coalesce_hits_total.inc();
     }
 
     pub fn registry(&self) -> &Registry {
