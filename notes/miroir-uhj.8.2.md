@@ -58,3 +58,27 @@ Comprehensive tests in `/home/coding/miroir/crates/miroir-proxy/tests/p5_8_b_ant
 ## Reusability for §13.1 Reshard Verify
 
 The `bucket_for_primary_key()` function is public and documented for reuse in reshard verification (plan §13.1), where PK-keyed (not shard-keyed) bucketing is needed for cross-shard comparison.
+
+## Verification (2026-05-23)
+
+All 18 tests in `p5_8_b_anti_entropy_diff.rs` passed:
+- `test_bucket_count_constant` - Verifies BUCKET_COUNT = 256
+- `test_bucket_for_primary_key_deterministic` - Verifies deterministic bucket assignment
+- `test_bucket_for_primary_key_distributes` - Verifies even distribution across buckets
+- `test_fingerprint_shard_includes_bucket_hashes` - Verifies per-bucket hash computation
+- `test_diff_fingerprints_identical` - Tests no divergence case
+- `test_diff_fingerprints_divergent_buckets` - Tests divergent bucket detection
+- `test_diff_fingerprints_isolates_divergence` - Verifies ~0.4% isolation per bucket
+- `test_fetch_bucket_pks_filters_by_bucket` - Tests bucket filtering
+- `test_compare_bucket_replicas_no_divergence` - Tests identical buckets
+- `test_compare_bucket_replicas_a_only` - Tests PK only on replica A
+- `test_compare_bucket_replicas_b_only` - Tests PK only on replica B
+- `test_compare_bucket_replicas_mismatched_content` - Tests content hash mismatch
+- `test_compare_index_buckets_identical` - Cross-index comparison with identical content
+- `test_compare_index_buckets_a_only` - Cross-index comparison with documents only in A
+- `test_compare_index_buckets_b_only` - Cross-index comparison with documents only in B
+- `test_compare_index_buckets_mismatched_content` - Cross-index comparison with mismatched content
+- `test_compare_index_buckets_across_different_shard_counts` - PK-keyed bucketing works across different shard counts (reshard verification)
+- `test_compare_index_buckets_multiple_divergent_buckets` - Divergence isolation to specific buckets
+
+The bucket-granular re-digest implementation for P5.8.b is verified complete.
