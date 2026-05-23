@@ -62,7 +62,16 @@ else
 fi
 
 echo ""
-echo "6. Checking peer_discovery configuration..."
+echo "6. Verifying POD_IP env var is set (if running in K8s)..."
+POD_IP="${POD_IP:-unknown}"
+if [ "$POD_IP" != "unknown" ]; then
+    echo "   ✓ POD_IP=$POD_IP"
+else
+    echo "   ⚠ POD_IP not set (not running in Kubernetes)"
+fi
+
+echo ""
+echo "7. Checking peer_discovery configuration..."
 # The peer_discovery config is internal, but we can check the log for the refresh loop starting
 # For local dev, peer discovery may be disabled if POD_NAME=unknown
 if [ "$POD_NAME" = "unknown" ]; then

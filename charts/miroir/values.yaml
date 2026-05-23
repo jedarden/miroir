@@ -112,7 +112,7 @@ miroir:
     retain_old_index_hours: 48
     allowed_windows: []                # e.g., ["22:00-04:00 UTC"]
   peer_discovery:
-    service_name: miroir-headless
+    service_name: ""  # default: "<fullname>-headless" (auto-derived from release name)
     refresh_interval_s: 15
   leader_election:
     enabled: true                      # auto-true when replicas > 1
