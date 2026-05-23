@@ -117,7 +117,7 @@ impl PeerDiscovery {
 
     /// Refresh the peer set by performing an SRV lookup (plan §14.5).
     ///
-    /// This resolves `_miroir._tcp.<service>.<namespace>.svc.cluster.local`
+    /// This resolves `_http._tcp.<service>.<namespace>.svc.cluster.local`
     /// and extracts pod names from the returned targets. Uses the system
     /// DNS resolver configuration from /etc/resolv.conf for maximum
     /// compatibility across different Kubernetes distributions.
@@ -126,7 +126,7 @@ impl PeerDiscovery {
     #[cfg(feature = "peer-discovery")]
     pub async fn refresh(&self) -> Result<PeerSet> {
         let srv_name = format!(
-            "_miroir._tcp.{}.{}.svc.cluster.local",
+            "_http._tcp.{}.{}.svc.cluster.local",
             self.service_name, self.namespace
         );
 
@@ -156,8 +156,8 @@ impl PeerDiscovery {
                 let target = srv.target().to_string();
                 // Remove trailing dot if present
                 let target = target.strip_suffix('.').unwrap_or(&target);
-                // Split and take first component
-                target.split('.').next().map(|s| s.to_string())
+                // Split and take first component, skip empty strings
+                target.split('.').next().filter(|s| !s.is_empty()).map(|s| s.to_string())
             })
             .collect();
 
@@ -201,5 +201,26 @@ mod tests {
         let set = PeerSet::new(vec!["pod-1".into(), "pod-2".into(), "pod-3".into()]);
         assert!(!set.is_empty());
         assert_eq!(set.len(), 3);
+    }
+
+    #[test]
+    fn test_srv_target_pod_name_extraction() {
+        // Test that pod names are correctly extracted from SRV target strings.
+        // SRV records return targets like:
+        // "miroir-miroir-0.miroir-headless.default.svc.cluster.local."
+        // We extract the first component as the pod name.
+
+        let test_cases = vec![
+            ("miroir-miroir-0.miroir-headless.default.svc.cluster.local", Some("miroir-miroir-0")),
+            ("miroir-miroir-1.miroir-headless.default.svc.cluster.local.", Some("miroir-miroir-1")),
+            ("miroir-miroir-2.miroir-headless.production.svc.cluster.local", Some("miroir-miroir-2")),
+            ("invalid", Some("invalid")),
+            ("", None),  // Empty string returns None after filter
+        ];
+
+        for (target, expected) in test_cases {
+            let result = target.strip_suffix('.').unwrap_or(target).split('.').next().filter(|s| !s.is_empty());
+            assert_eq!(result, expected, "Failed for target: {}", target);
+        }
     }
 }
