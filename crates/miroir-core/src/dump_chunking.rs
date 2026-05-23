@@ -3,7 +3,7 @@
 //! Splits large NDJSON dumps into chunks on line boundaries.
 //! Each chunk can be processed independently by any pod.
 
-use crate::mode_c_coordinator::{JobChunk, JobParams};
+use crate::mode_c_coordinator::JobChunk;
 use std::io::{BufRead, BufReader, Cursor};
 
 /// Chunk specification for a dump import.

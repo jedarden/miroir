@@ -9,6 +9,51 @@
 //! Applied to:
 //! - §13.9 streaming dump import — chunks on NDJSON line boundaries
 //! - §13.1 reshard backfill — partitions by shard-id range
+//!
+//! ## HPA Queue Depth Metric (plan §14.4)
+//!
+//! The coordinator provides a queue depth metric for Horizontal Pod Autoscaler:
+//!
+//! ```text
+//! miroir:jobs:_queued (Redis set)
+//! SCARD miroir:jobs:_queued = miroir_background_queue_depth
+//! ```
+//!
+//! The HPA can be configured to scale on this external metric:
+//!
+//! ```yaml
+//! metrics:
+//! - type: External
+//!   external:
+//!     metric:
+//!       name: miroir_background_queue_depth
+//!     target:
+//!       type: AverageValue
+//!       averageValue: 10
+//! ```
+//!
+//! Example HPA configuration that scales up when queue depth > 10:
+//! ```yaml
+//! apiVersion: autoscaling/v2
+//! kind: HorizontalPodAutoscaler
+//! metadata:
+//!   name: miroir-worker-hpa
+//! spec:
+//!   scaleTargetRef:
+//!     apiVersion: apps/v1
+//!     kind: Deployment
+//!     name: miroir-worker
+//!   minReplicas: 2
+//!   maxReplicas: 10
+//!   metrics:
+//!   - type: External
+//!     external:
+//!       metric:
+//!         name: miroir_background_queue_depth
+//!       target:
+//!         type: AverageValue
+//!         averageValue: 10
+//! ```
 
 use crate::error::{MiroirError, Result};
 use crate::task_store::{JobRow, NewJob, TaskStore};
@@ -145,6 +190,7 @@ pub struct JobParams {
 }
 
 /// Mode C job coordinator.
+#[derive(Clone)]
 pub struct ModeCCoordinator {
     /// Task store for job persistence.
     task_store: Arc<dyn TaskStore>,
@@ -189,6 +235,11 @@ impl ModeCCoordinator {
     pub fn with_chunk_size_bytes(mut self, size_bytes: u64) -> Self {
         self.default_chunk_size_bytes = size_bytes;
         self
+    }
+
+    /// Get the default chunk size in bytes.
+    pub fn default_chunk_size_bytes(&self) -> u64 {
+        self.default_chunk_size_bytes
     }
 
     /// Enqueue a new job.
@@ -406,21 +457,20 @@ impl ModeCCoordinator {
     /// Reclaim expired claims.
     ///
     /// Returns the number of claims reclaimed.
+    /// Preserves job progress for idempotent resume.
     pub fn reclaim_expired_claims(&self) -> Result<usize> {
         let now = now_ms();
         let expired_jobs = self.task_store.list_expired_claims(now)?;
 
         let mut reclaimed = 0;
         for job in expired_jobs {
-            // Reset the job to queued state
-            let progress = JobProgress::default();
-            let progress_json = serde_json::to_string(&progress)
-                .map_err(|e| MiroirError::TaskStore(format!("failed to serialize progress: {}", e)))?;
+            // Preserve the existing progress for idempotent resume
+            // The job.progress field contains the last_cursor and other state
+            // needed by the next pod to resume from where the previous pod left off
+            let progress_json = job.progress.clone();
 
             // Clear claim and reset to queued
-            // Note: We need to update the job to clear claimed_by and claim_expires_at
-            // This is done via update_job_progress which also changes state to queued
-            self.task_store.update_job_progress(&job.id, JobState::Queued.as_str(), &progress_json)?;
+            self.task_store.reclaim_job_claim(&job.id, JobState::Queued.as_str(), &progress_json)?;
 
             debug!(
                 job_id = %job.id,
@@ -456,6 +506,21 @@ impl ModeCCoordinator {
     /// List all chunks for a parent job.
     pub fn list_chunks(&self, parent_job_id: &str) -> Result<Vec<JobRow>> {
         self.task_store.list_jobs_by_parent(parent_job_id)
+    }
+
+    /// List jobs by state.
+    pub fn list_jobs_by_state(&self, state: &str) -> Result<Vec<JobRow>> {
+        self.task_store.list_jobs_by_state(state)
+    }
+
+    /// Set the claim expiration time for a job (test helper).
+    ///
+    /// This allows tests to simulate time passing without actually waiting.
+    /// WARNING: This should only be used in tests!
+    #[cfg(test)]
+    pub fn set_claim_expires_at_for_test(&self, job_id: &str, expires_at: i64) -> Result<()> {
+        self.task_store.renew_job_claim(job_id, expires_at)?;
+        Ok(())
     }
 }
 
@@ -508,7 +573,7 @@ impl ClaimedJob {
 }
 
 /// Get current UNIX timestamp in milliseconds.
-fn now_ms() -> i64 {
+pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -599,6 +664,9 @@ mod tests {
 
         let job_id = coord.enqueue_job(JobType::ReshardBackfill, params).unwrap();
         let claimed = coord.claim_job().unwrap().unwrap();
+
+        // Add a small delay to ensure time advances
+        std::thread::sleep(std::time::Duration::from_millis(10));
 
         // Renew the claim
         let renewed = coord.renew_claim(&job_id).unwrap();

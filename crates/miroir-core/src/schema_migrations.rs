@@ -98,6 +98,10 @@ pub fn build_registry() -> MigrationRegistry {
             version: 4,
             sql: include_str!("../migrations/004_mode_b_operations.sql"),
         },
+        Migration {
+            version: 5,
+            sql: include_str!("../migrations/005_jobs_chunking.sql"),
+        },
     ])
 }
 

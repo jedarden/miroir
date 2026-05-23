@@ -930,16 +930,37 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut pipe = pipe();
-            pipe.hset_multiple(
-                &key,
-                &[
-                    ("id", job.id.as_str()),
-                    ("type", job.type_.as_str()),
-                    ("params", job.params.as_str()),
-                    ("state", job.state.as_str()),
-                    ("progress", job.progress.as_str()),
-                ],
-            );
+
+            // Prepare fields with owned strings for numeric values
+            let mut owned_fields: Vec<(String, String)> = Vec::new();
+
+            if let Some(chunk_index) = job.chunk_index {
+                owned_fields.push(("chunk_index".to_string(), chunk_index.to_string()));
+            }
+            if let Some(total_chunks) = job.total_chunks {
+                owned_fields.push(("total_chunks".to_string(), total_chunks.to_string()));
+            }
+            owned_fields.push(("created_at".to_string(), job.created_at.to_string()));
+
+            let mut fields = vec![
+                ("id", job.id.as_str()),
+                ("type", job.type_.as_str()),
+                ("params", job.params.as_str()),
+                ("state", job.state.as_str()),
+                ("progress", job.progress.as_str()),
+            ];
+
+            // Add chunking fields if present
+            if let Some(ref parent_job_id) = job.parent_job_id {
+                fields.push(("parent_job_id", parent_job_id.as_str()));
+            }
+
+            // Add owned fields as references
+            for (key, val) in &owned_fields {
+                fields.push((key.as_str(), val.as_str()));
+            }
+
+            pipe.hset_multiple(&key, &fields);
             pipe.sadd(&index_key, &job.id);
             if job.state == "queued" {
                 pipe.sadd(&queued_key, &job.id);
@@ -971,6 +992,10 @@ impl TaskStore for RedisTaskStore {
                     claimed_by: opt_field(&fields, "claimed_by"),
                     claim_expires_at: opt_field_i64(&fields, "claim_expires_at"),
                     progress: get_field_string(&fields, "progress")?,
+                    parent_job_id: opt_field(&fields, "parent_job_id"),
+                    chunk_index: opt_field_i64(&fields, "chunk_index"),
+                    total_chunks: opt_field_i64(&fields, "total_chunks"),
+                    created_at: opt_field_i64(&fields, "created_at"),
                 }))
             }
         })
@@ -1084,6 +1109,10 @@ impl TaskStore for RedisTaskStore {
                                 claimed_by: opt_field(&fields, "claimed_by"),
                                 claim_expires_at: opt_field_i64(&fields, "claim_expires_at"),
                                 progress: get_field_string(&fields, "progress")?,
+                                parent_job_id: opt_field(&fields, "parent_job_id"),
+                                chunk_index: opt_field_i64(&fields, "chunk_index"),
+                                total_chunks: opt_field_i64(&fields, "total_chunks"),
+                                created_at: opt_field_i64(&fields, "created_at"),
                             });
                         }
                     }
@@ -1091,6 +1120,159 @@ impl TaskStore for RedisTaskStore {
             }
 
             Ok(result)
+        })
+    }
+
+    fn count_jobs_by_state(&self, state: &str) -> Result<u64> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+        let state = state.to_string();
+
+        self.block_on(async move {
+            let mut conn = manager.lock().await;
+
+            // For queued state, use the _queued set for O(1) count
+            // This is used for HPA queue depth metric per plan §14.4
+            if state == "queued" {
+                let queued_key = format!("{}:jobs:_queued", key_prefix);
+                let count: u64 = conn.scard(&queued_key).await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
+                return Ok(count);
+            }
+
+            // For other states, iterate through _index and count by state
+            // This is O(n) but acceptable for non-queued states which are
+            // typically few (only actively running jobs)
+            let index_key = format!("{}:jobs:_index", key_prefix);
+            let ids: Vec<String> = conn.smembers(&index_key).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            let mut count = 0u64;
+            for id in ids {
+                let key = format!("{}:jobs:{}", key_prefix, id);
+                let job_state: Option<String> = conn.hget(&key, "state").await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
+                if job_state.as_deref() == Some(&state) {
+                    count += 1;
+                }
+            }
+
+            Ok(count)
+        })
+    }
+
+    fn list_expired_claims(&self, now_ms: i64) -> Result<Vec<JobRow>> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+
+        self.block_on(async move {
+            let mut result = Vec::new();
+            let mut conn = manager.lock().await;
+
+            // Use the _index set for O(cardinality) iteration
+            let index_key = format!("{}:jobs:_index", key_prefix);
+            let ids: Vec<String> = conn.smembers(&index_key).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            for id in ids {
+                let key = format!("{}:jobs:{}", key_prefix, id);
+                let fields: HashMap<String, Value> = conn.hgetall(&key).await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+                if !fields.is_empty() {
+                    if let Ok(job_state) = get_field_string(&fields, "state") {
+                        if job_state == "in_progress" {
+                            let claim_expires_at = opt_field_i64(&fields, "claim_expires_at");
+                            if let Some(expires_at) = claim_expires_at {
+                                if expires_at < now_ms {
+                                    result.push(JobRow {
+                                        id,
+                                        type_: get_field_string(&fields, "type")?,
+                                        params: get_field_string(&fields, "params")?,
+                                        state: job_state,
+                                        claimed_by: opt_field(&fields, "claimed_by"),
+                                        claim_expires_at: opt_field_i64(&fields, "claim_expires_at"),
+                                        progress: get_field_string(&fields, "progress")?,
+                                        parent_job_id: opt_field(&fields, "parent_job_id"),
+                                        chunk_index: opt_field_i64(&fields, "chunk_index"),
+                                        total_chunks: opt_field_i64(&fields, "total_chunks"),
+                                        created_at: opt_field_i64(&fields, "created_at"),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(result)
+        })
+    }
+
+    fn list_jobs_by_parent(&self, parent_job_id: &str) -> Result<Vec<JobRow>> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+        let parent_job_id = parent_job_id.to_string();
+
+        self.block_on(async move {
+            let mut result = Vec::new();
+            let mut conn = manager.lock().await;
+
+            // Use the _index set for iteration
+            let index_key = format!("{}:jobs:_index", key_prefix);
+            let ids: Vec<String> = conn.smembers(&index_key).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            for id in ids {
+                let key = format!("{}:jobs:{}", key_prefix, id);
+                let fields: HashMap<String, Value> = conn.hgetall(&key).await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+                if !fields.is_empty() {
+                    let parent = opt_field(&fields, "parent_job_id");
+                    if parent.as_ref() == Some(&parent_job_id) {
+                        result.push(JobRow {
+                            id,
+                            type_: get_field_string(&fields, "type")?,
+                            params: get_field_string(&fields, "params")?,
+                            state: get_field_string(&fields, "state")?,
+                            claimed_by: opt_field(&fields, "claimed_by"),
+                            claim_expires_at: opt_field_i64(&fields, "claim_expires_at"),
+                            progress: get_field_string(&fields, "progress")?,
+                            parent_job_id: opt_field(&fields, "parent_job_id"),
+                            chunk_index: opt_field_i64(&fields, "chunk_index"),
+                            total_chunks: opt_field_i64(&fields, "total_chunks"),
+                            created_at: opt_field_i64(&fields, "created_at"),
+                        });
+                    }
+                }
+            }
+
+            Ok(result)
+        })
+    }
+
+    fn reclaim_job_claim(&self, id: &str, state: &str, progress: &str) -> Result<bool> {
+        let pool = self.pool.clone();
+        let key_prefix = self.key_prefix.clone();
+        let id = id.to_string();
+        let state = state.to_string();
+        let progress = progress.to_string();
+        let key = format!("{}:jobs:{}", key_prefix, id);
+        let queued_key = format!("{}:jobs:_queued", key_prefix);
+
+        self.block_on(async move {
+            let mut conn = pool.manager.lock().await;
+
+            let mut pipe = pipe();
+            pipe.hset(&key, "state", &state);
+            pipe.hset(&key, "progress", &progress);
+            pipe.hdel(&key, "claimed_by");
+            pipe.hdel(&key, "claim_expires_at");
+            pipe.sadd(&queued_key, &id);
+            pool.pipeline_query::<()>(&mut pipe).await?;
+
+            Ok(true)
         })
     }
 
@@ -3549,6 +3731,10 @@ mod tests {
                     params: r#"{"index": "logs"}"#.to_string(),
                     state: "queued".to_string(),
                     progress: "{}".to_string(),
+                    parent_job_id: None,
+                    chunk_index: None,
+                    total_chunks: None,
+                    created_at: 1000,
                 })
                 .expect("Insert should succeed");
 
@@ -3598,6 +3784,10 @@ mod tests {
                     params: "{}".to_string(),
                     state: "queued".to_string(),
                     progress: "{}".to_string(),
+                    parent_job_id: None,
+                    chunk_index: None,
+                    total_chunks: None,
+                    created_at: 2000,
                 })
                 .expect("Insert job-2 should succeed");
 
@@ -4136,6 +4326,10 @@ mod tests {
                     params: "{}".to_string(),
                     state: "queued".to_string(),
                     progress: "{}".to_string(),
+                    parent_job_id: None,
+                    chunk_index: None,
+                    total_chunks: None,
+                    created_at: 3000,
                 })
                 .expect("insert_job should work");
 
