@@ -148,24 +148,24 @@ spec:
             cargo build --release --target x86_64-unknown-linux-musl \
               -p miroir-proxy -p miroir-ctl
 
-            mkdir -p /workspace/dist
+            mkdir -p /workspace/artifacts
             cp target/x86_64-unknown-linux-musl/release/miroir-proxy \
-              /workspace/dist/miroir-proxy-linux-amd64
+              /workspace/artifacts/miroir-proxy-linux-amd64
             cp target/x86_64-unknown-linux-musl/release/miroir-ctl \
-              /workspace/dist/miroir-ctl-linux-amd64
+              /workspace/artifacts/miroir-ctl-linux-amd64
 
-            sha256sum /workspace/dist/miroir-proxy-linux-amd64 \
-              > /workspace/dist/miroir-proxy-linux-amd64.sha256
-            sha256sum /workspace/dist/miroir-ctl-linux-amd64 \
-              > /workspace/dist/miroir-ctl-linux-amd64.sha256
+            sha256sum /workspace/artifacts/miroir-proxy-linux-amd64 \
+              > /workspace/artifacts/miroir-proxy-linux-amd64.sha256
+            sha256sum /workspace/artifacts/miroir-ctl-linux-amd64 \
+              > /workspace/artifacts/miroir-ctl-linux-amd64.sha256
 
             # Copy proxy binary to source dir for docker context (Dockerfile expects it there)
-            cp /workspace/dist/miroir-proxy-linux-amd64 \
+            cp /workspace/artifacts/miroir-proxy-linux-amd64 \
               /workspace/src/miroir-proxy-linux-amd64
 
             echo "=== build checksums ==="
-            cat /workspace/dist/miroir-proxy-linux-amd64.sha256
-            cat /workspace/dist/miroir-ctl-linux-amd64.sha256
+            cat /workspace/artifacts/miroir-proxy-linux-amd64.sha256
+            cat /workspace/artifacts/miroir-ctl-linux-amd64.sha256
         volumeMounts:
           - name: workspace
             mountPath: /workspace
@@ -264,10 +264,10 @@ spec:
               --notes "${NOTES}" \
               ${PRERELEASE_FLAG} \
               --target "{{workflow.parameters.revision}}" \
-              /workspace/dist/miroir-proxy-linux-amd64 \
-              /workspace/dist/miroir-proxy-linux-amd64.sha256 \
-              /workspace/dist/miroir-ctl-linux-amd64 \
-              /workspace/dist/miroir-ctl-linux-amd64.sha256
+              /workspace/artifacts/miroir-proxy-linux-amd64 \
+              /workspace/artifacts/miroir-proxy-linux-amd64.sha256 \
+              /workspace/artifacts/miroir-ctl-linux-amd64 \
+              /workspace/artifacts/miroir-ctl-linux-amd64.sha256
 
             echo "Release ${TAG} created successfully."
         env:
