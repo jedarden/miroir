@@ -261,7 +261,7 @@ pub struct Metrics {
     request_queue_depth: Gauge,
     background_queue_depth: GaugeVec,
     peer_pod_count: Gauge,
-    leader: Gauge,
+    leader: GaugeVec,
     owned_shards_count: Gauge,
 
     // ── Admin session sealing metrics (always present) ──
@@ -823,8 +823,9 @@ impl Metrics {
         let peer_pod_count = Gauge::with_opts(
             Opts::new("miroir_peer_pod_count", "Number of peer miroir pods discovered")
         ).expect("create peer_pod_count");
-        let leader = Gauge::with_opts(
-            Opts::new("miroir_leader", "Whether this pod holds the leader lease (1=yes, 0=no)")
+        let leader = GaugeVec::new(
+            Opts::new("miroir_leader", "Whether this pod holds the leader lease (1=yes, 0=no)"),
+            &["scope"],
         ).expect("create leader");
         let owned_shards_count = Gauge::with_opts(
             Opts::new("miroir_owned_shards_count", "Number of shards owned by this pod")
@@ -1583,8 +1584,8 @@ impl Metrics {
         self.peer_pod_count.set(count as f64);
     }
 
-    pub fn set_leader(&self, is_leader: bool) {
-        self.leader.set(if is_leader { 1.0 } else { 0.0 });
+    pub fn set_leader(&self, scope: &str, is_leader: bool) {
+        self.leader.with_label_values(&[scope]).set(if is_leader { 1.0 } else { 0.0 });
     }
 
     pub fn set_owned_shards_count(&self, count: u64) {
@@ -1739,7 +1740,7 @@ mod tests {
         metrics.set_background_queue_depth("rebalance", 5);
         metrics.set_background_queue_depth("replication", 3);
         metrics.set_peer_pod_count(3);
-        metrics.set_leader(true);
+        metrics.set_leader("test-scope", true);
         metrics.set_owned_shards_count(12);
 
         let encoded = metrics.encode_metrics();

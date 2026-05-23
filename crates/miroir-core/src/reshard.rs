@@ -2,12 +2,20 @@
 //!
 //! Implements the plan §13.1 shadow-index resharding mechanics and §15 OP#3
 //! empirical validation of the 2× transient load caveat.
+//!
+//! Leader coordination (plan §14.5 Mode B):
+//! - Acquires per-index leader lease (scope: "reshard:<index>")
+//! - Persists phase state to mode_b_operations table for recovery
+//! - New leaders resume from last committed phase boundary
 
+use crate::mode_b_coordinator::{ModeBOpLeader, PhaseState};
 use crate::router::{assign_shard_in_group, shard_for_key};
 use crate::topology::{Group, NodeId};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
+use tracing::{info, warn, error};
 
 // ---------------------------------------------------------------------------
 // Schedule window guard
@@ -839,6 +847,192 @@ pub struct ReshardRegistry {
     operations: HashMap<String, ReshardOperation>,
     /// Index UID -> active operation ID (at most one per index).
     index_ops: HashMap<String, String>,
+}
+
+/// Leader-coordinated reshard coordinator (plan §14.5 Mode B).
+///
+/// Acquires a per-index leader lease (scope: "reshard:<index>") and persists
+/// phase state so that a new leader can resume from the last committed phase.
+pub struct ReshardCoordinator<E> {
+    /// Mode B operation leader with phase state persistence.
+    leader: ModeBOpLeader<ReshardExtraState>,
+    /// Phantom for the executor type.
+    _phantom: std::marker::PhantomData<E>,
+}
+
+/// Extra state for reshard operations persisted to mode_b_operations.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ReshardExtraState {
+    /// Index UID being resharded.
+    pub index_uid: String,
+    /// Old shard count.
+    pub old_shards: u32,
+    /// New shard count.
+    pub target_shards: u32,
+    /// Shadow index UID.
+    pub shadow_index: String,
+    /// Documents backfilled so far.
+    pub documents_backfilled: u64,
+    /// Total documents to backfill.
+    pub total_documents: u64,
+    /// Last error message.
+    pub last_error: Option<String>,
+}
+
+impl<E> ReshardCoordinator<E> {
+    /// Create a new reshard coordinator.
+    pub fn new(
+        leader_election: Arc<crate::leader_election::LeaderElection>,
+        task_store: Arc<dyn crate::task_store::TaskStore>,
+        index_uid: String,
+        old_shards: u32,
+        target_shards: u32,
+        pod_id: String,
+    ) -> Self {
+        let scope = format!("reshard:{}", index_uid);
+        let shadow_index = format!("{}__reshard_{}", index_uid, target_shards);
+
+        let extra_state = ReshardExtraState {
+            index_uid,
+            old_shards,
+            target_shards,
+            shadow_index,
+            documents_backfilled: 0,
+            total_documents: 0,
+            last_error: None,
+        };
+
+        let leader = ModeBOpLeader::new(
+            leader_election,
+            task_store,
+            crate::task_store::mode_b_type::RESHARD.to_string(),
+            scope,
+            pod_id,
+            extra_state,
+        );
+
+        Self {
+            leader,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Try to acquire leadership for this reshard operation.
+    ///
+    /// Returns `Ok(true)` if we are now the leader, `Ok(false)` if another
+    /// pod holds the lease, or `Err` if acquisition failed.
+    pub async fn try_acquire_leadership(&mut self) -> Result<bool, String> {
+        self.leader.try_acquire_leadership().await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Renew the leader lease.
+    ///
+    /// Returns `Ok(true)` if renewed successfully, `Ok(false)` if we lost
+    /// leadership to another pod, or `Err` if renewal failed.
+    pub async fn renew_leadership(&mut self) -> Result<bool, String> {
+        self.leader.renew_leadership().await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Check if we are currently the leader.
+    pub fn is_leader(&self) -> bool {
+        self.leader.is_leader()
+    }
+
+    /// Get the current phase.
+    pub fn phase(&self) -> &str {
+        self.leader.phase()
+    }
+
+    /// Get the extra state (mutable).
+    pub fn extra_state(&mut self) -> &mut ReshardExtraState {
+        self.leader.extra_state()
+    }
+
+    /// Get the extra state (immutable).
+    pub fn extra_state_ref(&self) -> &ReshardExtraState {
+        self.leader.extra_state_ref()
+    }
+
+    /// Advance to the next phase and persist state.
+    ///
+    /// Should be called after each phase boundary so that a new leader can
+    /// resume from the last committed phase.
+    pub async fn advance_phase(&mut self, new_phase: ReshardPhase) -> Result<(), String> {
+        let phase_name = new_phase.name().to_string();
+        self.leader.persist_phase(phase_name).await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Update backfill progress and persist.
+    pub async fn update_backfill_progress(
+        &mut self,
+        backfilled: u64,
+        total: u64,
+    ) -> Result<(), String> {
+        self.leader.extra_state().documents_backfilled = backfilled;
+        self.leader.extra_state().total_documents = total;
+        self.leader.persist_phase(self.leader.phase().to_string()).await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Mark the operation as failed and step down from leadership.
+    pub async fn fail(&mut self, error: String) -> Result<(), String> {
+        self.leader.extra_state().last_error = Some(error.clone());
+        self.leader.fail(error).await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Mark the operation as completed and step down from leadership.
+    pub async fn complete(&mut self) -> Result<(), String> {
+        self.leader.complete().await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Recover the operation state from the task store.
+    ///
+    /// Called by a new leader to read the persisted phase state and resume
+    /// from the last committed phase boundary.
+    pub async fn recover(&mut self) -> Result<Option<ReshardPhase>, String> {
+        let existing = self.leader.recover().await
+            .map_err(|e| e.to_string())?;
+
+        if let Some(ref op) = existing {
+            // Parse phase string back to ReshardPhase enum
+            let phase = match op.phase.as_str() {
+                "Idle" => ReshardPhase::Idle,
+                "Shadow Created" => ReshardPhase::ShadowCreated,
+                "Dual-Write Active" => ReshardPhase::DualWriteActive,
+                "Backfill In Progress" => ReshardPhase::BackfillInProgress,
+                "Verifying" => ReshardPhase::Verifying,
+                "Swapped" => ReshardPhase::Swapped,
+                "Cleaning Up" => ReshardPhase::CleaningUp,
+                "Complete" => ReshardPhase::Complete,
+                "Failed" => ReshardPhase::Failed,
+                _ => {
+                    warn!("unknown phase '{}', defaulting to Idle", op.phase);
+                    ReshardPhase::Idle
+                }
+            };
+
+            info!(
+                index_uid = %self.leader.extra_state_ref().index_uid,
+                phase = %op.phase,
+                "recovered reshard operation from persisted phase"
+            );
+
+            return Ok(Some(phase));
+        }
+
+        Ok(None)
+    }
+
+    /// Delete the operation state after completion.
+    pub async fn delete(&self) -> Result<bool, String> {
+        self.leader.delete().await
+            .map_err(|e| e.to_string())
+    }
 }
 
 impl ReshardRegistry {

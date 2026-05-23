@@ -2,14 +2,19 @@
 //!
 //! This module implements the propose/verify/commit flow for settings changes,
 //! replacing the sequential apply-with-rollback approach.
+//! Uses leader-only singleton coordination (plan §14.5) to ensure only one pod
+//! orchestrates the broadcast for a given index.
 
 use crate::error::{MiroirError, Result};
+use crate::leader_election::LeaderElection;
+use crate::mode_b_coordinator::ModeBOpLeader;
 use crate::task_store::TaskStore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::info;
 
 /// Current phase of a settings broadcast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,6 +301,181 @@ impl SettingsBroadcast {
 impl Default for SettingsBroadcast {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Settings broadcast coordinator with leader-only singleton coordination (plan §14.5).
+///
+/// Acquires a per-index leader lease (scope: "settings_broadcast:<index>") and persists
+/// phase state so that a new leader can resume from the last committed phase.
+pub struct SettingsBroadcastCoordinator {
+    /// Mode B operation leader with phase state persistence.
+    leader: ModeBOpLeader<SettingsBroadcastExtraState>,
+}
+
+/// Extra state for settings broadcast operations persisted to mode_b_operations.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SettingsBroadcastExtraState {
+    /// Proposed settings fingerprint.
+    pub proposed_fingerprint: Option<String>,
+    /// Per-node task UIDs from Phase 1 (propose).
+    pub node_task_uids: HashMap<String, u64>,
+    /// Per-node verification results from Phase 2 (verify).
+    pub node_hashes: HashMap<String, String>,
+    /// Settings version after commit.
+    pub settings_version: Option<u64>,
+    /// Index UID for this broadcast.
+    pub index_uid: String,
+}
+
+impl SettingsBroadcastCoordinator {
+    /// Create a new settings broadcast coordinator.
+    pub fn new(
+        leader_election: Arc<LeaderElection>,
+        task_store: Arc<dyn TaskStore>,
+        index_uid: String,
+        pod_id: String,
+    ) -> Self {
+        let scope = format!("settings_broadcast:{}", index_uid);
+
+        let extra_state = SettingsBroadcastExtraState {
+            index_uid,
+            ..Default::default()
+        };
+
+        let leader = ModeBOpLeader::new(
+            leader_election,
+            task_store,
+            crate::task_store::mode_b_type::SETTINGS_BROADCAST.to_string(),
+            scope,
+            pod_id,
+            extra_state,
+        );
+
+        Self { leader }
+    }
+
+    /// Try to acquire leadership for this settings broadcast.
+    ///
+    /// Returns `Ok(true)` if we are now the leader, `Ok(false)` if another
+    /// pod holds the lease, or `Err` if acquisition failed.
+    pub async fn try_acquire_leadership(&mut self) -> Result<bool> {
+        self.leader.try_acquire_leadership().await
+    }
+
+    /// Renew the leader lease.
+    ///
+    /// Returns `Ok(true)` if renewed successfully, `Ok(false)` if we lost
+    /// leadership to another pod, or `Err` if renewal failed.
+    pub async fn renew_leadership(&mut self) -> Result<bool> {
+        self.leader.renew_leadership().await
+    }
+
+    /// Check if we are currently the leader.
+    pub fn is_leader(&self) -> bool {
+        self.leader.is_leader()
+    }
+
+    /// Get the current phase.
+    pub fn phase(&self) -> &str {
+        self.leader.phase()
+    }
+
+    /// Get the extra state (mutable).
+    pub fn extra_state(&mut self) -> &mut SettingsBroadcastExtraState {
+        self.leader.extra_state()
+    }
+
+    /// Get the extra state (immutable).
+    pub fn extra_state_ref(&self) -> &SettingsBroadcastExtraState {
+        self.leader.extra_state_ref()
+    }
+
+    /// Advance to the next phase and persist state.
+    ///
+    /// Should be called after each phase boundary so that a new leader can
+    /// resume from the last committed phase.
+    pub async fn advance_phase(&mut self, new_phase: BroadcastPhase) -> Result<()> {
+        let phase_name = format!("{:?}", new_phase);
+        self.leader.persist_phase(phase_name.to_lowercase()).await
+    }
+
+    /// Start Phase 1: Propose.
+    pub async fn start_propose(&mut self, settings: &Value) -> Result<()> {
+        let fp = fingerprint_settings(settings);
+        self.leader.extra_state().proposed_fingerprint = Some(fp);
+        self.leader.persist_phase("propose".to_string()).await
+    }
+
+    /// Enter Phase 2: Verify with node task UIDs.
+    pub async fn enter_verify(&mut self, node_task_uids: HashMap<String, u64>) -> Result<()> {
+        self.leader.extra_state().node_task_uids = node_task_uids;
+        self.leader.persist_phase("verify".to_string()).await
+    }
+
+    /// Verify per-node settings hashes.
+    pub async fn verify_hashes(&mut self, node_hashes: HashMap<String, String>) -> Result<()> {
+        // Check all hashes match the proposed fingerprint
+        if let Some(ref expected) = self.leader.extra_state_ref().proposed_fingerprint {
+            for (node, hash) in &node_hashes {
+                if hash != expected {
+                    return Err(MiroirError::SettingsDivergence);
+                }
+            }
+        }
+
+        self.leader.extra_state().node_hashes = node_hashes;
+        self.leader.persist_phase("verify".to_string()).await
+    }
+
+    /// Enter Phase 3: Commit.
+    pub async fn commit(&mut self, new_version: u64) -> Result<()> {
+        self.leader.extra_state().settings_version = Some(new_version);
+        self.leader.persist_phase("commit".to_string()).await
+    }
+
+    /// Mark the operation as failed and step down from leadership.
+    pub async fn fail(&mut self, error: String) -> Result<()> {
+        self.leader.fail(error).await
+    }
+
+    /// Mark the operation as completed and step down from leadership.
+    pub async fn complete(&mut self) -> Result<()> {
+        self.leader.complete().await
+    }
+
+    /// Recover the operation state from the task store.
+    ///
+    /// Called by a new leader to read the persisted phase state and resume
+    /// from the last committed phase boundary.
+    pub async fn recover(&mut self) -> Result<Option<BroadcastPhase>> {
+        let existing = self.leader.recover().await?;
+
+        if let Some(ref op) = existing {
+            // Parse phase string back to BroadcastPhase enum
+            let phase = match op.phase.to_lowercase().as_str() {
+                "idle" => BroadcastPhase::Idle,
+                "propose" => BroadcastPhase::Propose,
+                "verify" => BroadcastPhase::Verify,
+                "commit" => BroadcastPhase::Commit,
+                _ => BroadcastPhase::Idle,
+            };
+
+            info!(
+                index_uid = %self.leader.extra_state_ref().index_uid,
+                phase = %op.phase,
+                "recovered settings broadcast from persisted phase"
+            );
+
+            return Ok(Some(phase));
+        }
+
+        Ok(None)
+    }
+
+    /// Delete the operation state after completion.
+    pub async fn delete(&self) -> Result<bool> {
+        self.leader.delete().await
     }
 }
 
