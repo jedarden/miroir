@@ -152,7 +152,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
     ///
     /// The canonical form excludes internal Miroir fields (_miroir_*, _rankingScore)
     /// and serializes with sorted keys for deterministic hashing.
-    fn compute_content_hash(document: &Value) -> u64 {
+    pub fn compute_content_hash(document: &Value) -> u64 {
         // Remove internal fields to get canonical content
         let mut canonical = document.clone();
         if let Some(obj) = canonical.as_object_mut() {
@@ -182,7 +182,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
     /// Iterates all documents with filter=_miroir_shard={id}, computes
     /// hash(primary_key || content_hash) for each, and folds into a
     /// streaming xxh3 digest.
-    async fn fingerprint_shard(
+    pub async fn fingerprint_shard(
         &self,
         node_id: &NodeId,
         shard_id: u32,

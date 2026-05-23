@@ -52,6 +52,7 @@ tracing-opentelemetry = { version = "0.28", optional = true }
 tower = "0.5"
 http-body-util = "0.1"
 mockito = "1"
+mockall = "0.13"
 tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["redis"] }
