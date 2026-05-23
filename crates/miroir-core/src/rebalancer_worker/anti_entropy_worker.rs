@@ -129,6 +129,63 @@ impl HttpNodeClient {
 }
 
 impl NodeClient for HttpNodeClient {
+    async fn write_documents(
+        &self,
+        _node: &NodeId,
+        address: &str,
+        request: &crate::scatter::WriteRequest,
+    ) -> Result<crate::scatter::WriteResponse, NodeError> {
+        let url = if address.ends_with('/') {
+            format!("{}indexes/{}/documents", address, request.index_uid)
+        } else {
+            format!("{}/indexes/{}/documents", address, request.index_uid)
+        };
+
+        let mut builder = self.client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.node_master_key))
+            .header("Content-Type", "application/json");
+
+        // Add origin tag as a header (not stored in document)
+        if let Some(ref origin) = request.origin {
+            builder = builder.header("X-Miroir-Origin", origin);
+        }
+
+        let response = builder
+            .json(&request.documents)
+            .send()
+            .await
+            .map_err(|e| NodeError::NetworkError(format!("write failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_else(|_| "unable to read error".to_string());
+            return Err(NodeError::HttpError { status: status.as_u16(), body });
+        }
+
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| NodeError::NetworkError(format!("parse response failed: {}", e)))?;
+
+        let success = json
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let task_uid = json
+            .get("taskUid")
+            .and_then(|v| v.as_u64());
+
+        Ok(crate::scatter::WriteResponse {
+            success,
+            task_uid,
+            message: json.get("message").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            code: json.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            error_type: json.get("type").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        })
+    }
+
     async fn fetch_documents(
         &self,
         _node: &NodeId,
@@ -278,6 +335,22 @@ pub struct AntiEntropyWorker {
     topology: Arc<RwLock<Topology>>,
     task_store: Arc<dyn TaskStore>,
     pod_id: String,
+    /// Total shards in the cluster (for Mode A scaling).
+    total_shards: u32,
+    /// This pod's replica group ID (for Mode A scaling).
+    replica_group_id: Option<u32>,
+    /// Total number of pods in Mode A scaling.
+    num_pods: Option<u32>,
+    /// RF (replication factor) for Mode A scaling.
+    rf: usize,
+    /// Metrics callback for shards scanned.
+    metrics_shards_scanned: Option<Arc<dyn Fn(u64) + Send + Sync>>,
+    /// Metrics callback for mismatches found.
+    metrics_mismatches_found: Option<Arc<dyn Fn(u64) + Send + Sync>>,
+    /// Metrics callback for docs repaired.
+    metrics_docs_repaired: Option<Arc<dyn Fn(u64) + Send + Sync>>,
+    /// Metrics callback for scan completion time.
+    metrics_scan_completed: Option<Arc<dyn Fn(u64) + Send + Sync>>,
 }
 
 impl AntiEntropyWorker {
@@ -315,7 +388,49 @@ impl AntiEntropyWorker {
             topology,
             task_store,
             pod_id,
+            total_shards: 0, // Will be set when Mode A is enabled
+            replica_group_id: None,
+            num_pods: None,
+            rf: 2, // Default RF
+            metrics_shards_scanned: None,
+            metrics_mismatches_found: None,
+            metrics_docs_repaired: None,
+            metrics_scan_completed: None,
         }
+    }
+
+    /// Set Mode A scaling parameters (plan §14.6).
+    ///
+    /// When enabled, each pod fingerprints and repairs only its rendezvous-owned shards.
+    ///
+    /// # Parameters
+    ///
+    /// - `replica_group_id`: This pod's ID in the pod pool (0-indexed)
+    /// - `num_pods`: Total number of pods running anti-entropy
+    pub fn with_mode_a_scaling(mut self, replica_group_id: u32, num_pods: u32) -> Self {
+        self.replica_group_id = Some(replica_group_id);
+        self.num_pods = Some(num_pods);
+        self
+    }
+
+    /// Set metrics callbacks.
+    pub fn with_metrics(
+        mut self,
+        shards_scanned: Arc<dyn Fn(u64) + Send + Sync>,
+        mismatches_found: Arc<dyn Fn(u64) + Send + Sync>,
+        docs_repaired: Arc<dyn Fn(u64) + Send + Sync>,
+        scan_completed: Arc<dyn Fn(u64) + Send + Sync>,
+    ) -> Self {
+        self.metrics_shards_scanned = Some(shards_scanned);
+        self.metrics_mismatches_found = Some(mismatches_found);
+        self.metrics_docs_repaired = Some(docs_repaired);
+        self.metrics_scan_completed = Some(scan_completed);
+        self
+    }
+
+    /// Set whether TTL is enabled for expired document handling (plan §13.14 interaction).
+    pub fn set_ttl_enabled(&mut self, enabled: bool) {
+        self.reconciler.set_ttl_enabled(enabled);
     }
 
     /// Start the background worker.
@@ -438,7 +553,58 @@ impl AntiEntropyWorker {
     async fn run_single_pass(&self) -> Result<(), String> {
         info!("starting anti-entropy pass");
 
-        match self.reconciler.run_pass().await {
+        // Get topology info for Mode A scaling
+        let (total_shards, rf) = {
+            let topo = self.topology.read().await;
+            (topo.shards, topo.rf())
+        };
+
+        // Create a new reconciler with Mode A scaling if configured
+        let reconciler = if let Some(rg_id) = self.replica_group_id {
+            let num_pods = self.num_pods.unwrap_or(1);
+            self.reconciler.clone().with_mode_a_scaling(rg_id, num_pods, total_shards, rf)
+        } else {
+            self.reconciler.clone()
+        };
+
+        // Configure metrics callbacks
+        let reconciler = if self.metrics_shards_scanned.is_some() {
+            reconciler.with_metrics(Arc::new({
+                let shards_scanned_cb = self.metrics_shards_scanned.clone();
+                let mismatches_found_cb = self.metrics_mismatches_found.clone();
+                let docs_repaired_cb = self.metrics_docs_repaired.clone();
+                let scan_completed_cb = self.metrics_scan_completed.clone();
+                move |name: &str, value: u64| {
+                    match name {
+                        "miroir_antientropy_shards_scanned_total" => {
+                            if let Some(ref cb) = shards_scanned_cb {
+                                cb(value);
+                            }
+                        }
+                        "miroir_antientropy_mismatches_found_total" => {
+                            if let Some(ref cb) = mismatches_found_cb {
+                                cb(value);
+                            }
+                        }
+                        "miroir_antientropy_docs_repaired_total" => {
+                            if let Some(ref cb) = docs_repaired_cb {
+                                cb(value);
+                            }
+                        }
+                        "miroir_antientropy_last_scan_completed_seconds" => {
+                            if let Some(ref cb) = scan_completed_cb {
+                                cb(value);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }))
+        } else {
+            reconciler
+        };
+
+        match reconciler.run_pass().await {
             Ok(pass) => {
                 info!(
                     shards_scanned = pass.shards_scanned,
