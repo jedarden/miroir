@@ -121,6 +121,7 @@ impl PeerDiscovery {
     /// and extracts pod names from the returned targets.
     ///
     /// Returns the updated peer set.
+    #[cfg(feature = "peer-discovery")]
     pub async fn refresh(&self) -> Result<PeerSet> {
         let srv_name = format!(
             "_miroir._tcp.{}.{}.svc.cluster.local",
@@ -179,6 +180,14 @@ impl PeerDiscovery {
         *self.peer_set.write().await = new_peer_set.clone();
 
         Ok(new_peer_set)
+    }
+
+    /// Refresh the peer set (fallback when peer-discovery feature is disabled).
+    #[cfg(not(feature = "peer-discovery"))]
+    pub async fn refresh(&self) -> Result<PeerSet> {
+        Err(MiroirError::Discovery(
+            "peer-discovery feature is disabled".to_string(),
+        ))
     }
 
     /// Get our own pod name.

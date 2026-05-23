@@ -18,6 +18,7 @@ pub mod idempotency;
 pub mod ilm;
 pub mod merger;
 pub mod migration;
+#[cfg(feature = "peer-discovery")]
 pub mod peer_discovery;
 pub mod multi_search;
 pub mod query_planner;
