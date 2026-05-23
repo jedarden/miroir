@@ -70,17 +70,30 @@ fn parse_schedule_interval(schedule: &str) -> Option<u64> {
         return None;
     }
 
-    let parts = schedule[6..].trim().split_whitespace().collect::<Vec<_>>();
-    if parts.is_empty() {
+    let rest = schedule[6..].trim();
+    if rest.is_empty() {
         return None;
     }
 
-    let num_str = parts[0];
-    let unit = parts.get(1).unwrap_or(&"");
+    // Find the first non-digit character to split number from unit
+    let mut num_end = 0;
+    for (i, c) in rest.chars().enumerate() {
+        if !c.is_ascii_digit() {
+            num_end = i;
+            break;
+        }
+    }
+
+    if num_end == 0 {
+        return None;
+    }
+
+    let num_str = &rest[..num_end];
+    let unit = &rest[num_end..];
 
     let value: u64 = num_str.parse().ok()?;
 
-    match *unit {
+    match unit {
         "s" | "sec" | "second" | "seconds" => Some(value),
         "m" | "min" | "minute" | "minutes" => Some(value * 60),
         "h" | "hour" | "hours" => Some(value * 3600),
