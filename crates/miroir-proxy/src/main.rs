@@ -162,6 +162,7 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             session_manager: state.admin.session_manager.clone(),
             alias_registry: state.admin.alias_registry.clone(),
             leader_election: state.admin.leader_election.clone(),
+            mode_c_worker: state.admin.mode_c_worker.clone(),
         }
     }
 }
@@ -403,6 +404,25 @@ async fn main() -> anyhow::Result<()> {
         });
     } else {
         info!("drift reconciler not available (no task store configured)");
+    }
+
+    // Start Mode C worker background task (plan §14.5 Mode C)
+    // Processes chunked background jobs (dump import, reshard backfill)
+    if let Some(ref mode_c_worker) = state.admin.mode_c_worker {
+        let mode_c_worker = mode_c_worker.clone();
+        tokio::spawn(async move {
+            info!("Mode C worker started");
+            match mode_c_worker.run().await {
+                Ok(()) => {
+                    info!("Mode C worker exited cleanly");
+                }
+                Err(e) => {
+                    error!("Mode C worker exited unexpectedly: {}", e);
+                }
+            }
+        });
+    } else {
+        info!("Mode C worker not available (no task store configured)");
     }
 
     // Start peer discovery refresh loop (plan §14.5)
@@ -878,7 +898,7 @@ fn update_resource_pressure_metrics(metrics: &middleware::Metrics) {
     // Peer pod count is now set by peer discovery refresh loop (plan §14.5).
     // Leader election is not yet implemented (plan §14.5 Mode B).
     // Owned shards count will be set by Mode A rendezvous (plan §14.5).
-    metrics.set_leader(true);
+    metrics.set_leader("global", true);
     metrics.set_owned_shards_count(0);
 }
 
