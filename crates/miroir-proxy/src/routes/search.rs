@@ -8,14 +8,14 @@ use miroir_core::api_error::{MeilisearchError, MiroirCode};
 use miroir_core::config::UnavailableShardPolicy;
 use miroir_core::merger::ScoreMergeStrategy;
 use miroir_core::scatter::{
-    dfs_query_then_fetch_search, plan_search_scatter, plan_search_scatter_with_version_floor, SearchRequest, NodeClient,
+    dfs_query_then_fetch_search, plan_search_scatter, plan_search_scatter_for_group, plan_search_scatter_with_version_floor, SearchRequest, NodeClient,
 };
 use miroir_core::session_pinning::WaitStrategy;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, info, info_span, instrument, warn};
+use tracing::{debug, error, info, info_span, instrument, warn};
 
 use crate::middleware::SessionId;
 use crate::routes::admin_endpoints::{AppState, parse_rate_limit};
@@ -132,15 +132,25 @@ impl std::fmt::Debug for SearchRequestBody {
 /// Returns `X-Miroir-Degraded: shards=X,Y,Z` header when any shards are unavailable.
 /// Strips `_miroir_shard` from all hits; strips `_rankingScore` unless client
 /// explicitly requested it.
+///
+/// Session pinning (plan §13.6): If `X-Miroir-Session` header is present and
+/// the session has a pending write, routes to the pinned group for read-your-writes.
 #[instrument(skip_all, fields(index = %index))]
 async fn search_handler(
     Path(index): Path<String>,
     Extension(state): Extension<Arc<AppState>>,
     headers: HeaderMap,
+    session_id: Option<Extension<SessionId>>,
     Json(body): Json<SearchRequestBody>,
 ) -> Result<Response, StatusCode> {
     let start = Instant::now();
     let client_requested_score = body.ranking_score.unwrap_or(false);
+
+    // Extract session ID from request extensions (set by session_pinning_middleware)
+    let sid = session_id.and_then(|ext| {
+        let s = ext.0;
+        if s.0.is_empty() { None } else { Some(s.0.clone()) }
+    });
 
     // Extract source IP from X-Forwarded-For or X-Real-IP (trust proxy)
     let source_ip = headers
@@ -196,11 +206,105 @@ async fn search_handler(
         }
     }
 
+    // Resolve alias to concrete index UID (plan §13.7)
+    // Aliases are resolved at routing time; resolved index is used for scatter planning
+    let (effective_index, resolved_targets) = if state.config.aliases.enabled {
+        let targets = state.alias_registry.resolve(&index).await;
+        state.metrics.inc_alias_resolution(&index);
+        if targets != vec![index.clone()] {
+            // It's an alias
+            (index.clone(), targets)
+        } else {
+            // Not an alias - use index directly
+            (index.clone(), vec![index.clone()])
+        }
+    } else {
+        // Aliases disabled - use index directly
+        (index.clone(), vec![index.clone()])
+    };
+
+    // Session pinning logic (plan §13.6): Check if session has pending write
+    let (pinned_group, strategy_label) = if let Some(ref sid) = sid {
+        if let Some(group) = state.session_manager.get_pinned_group(sid).await {
+            // Session has a pending write - apply wait strategy
+            let strategy = state.session_manager.wait_strategy();
+            match strategy {
+                WaitStrategy::Block => {
+                    // Block until write completes or timeout
+                    let max_wait = state.session_manager.max_wait_duration();
+                    let wait_start = std::time::Instant::now();
+                    match state.session_manager.wait_for_write_completion(
+                        sid,
+                        &state.task_registry,
+                        max_wait,
+                    ).await {
+                        Ok(true) => {
+                            // Write succeeded, clear pin and use normal routing
+                            let wait_duration = wait_start.elapsed().as_secs_f64();
+                            state.metrics.observe_session_wait_duration(wait_duration);
+                            state.metrics.inc_session_pin_enforced("block");
+                            (None, Some("block_success"))
+                        }
+                        Ok(false) => {
+                            // Write failed, clear pin
+                            let wait_duration = wait_start.elapsed().as_secs_f64();
+                            state.metrics.observe_session_wait_duration(wait_duration);
+                            state.metrics.inc_session_wait_timeout("block");
+                            (None, Some("block_failed"))
+                        }
+                        Err(_) => {
+                            // Timeout - still route to pinned group (best effort)
+                            let wait_duration = wait_start.elapsed().as_secs_f64();
+                            state.metrics.observe_session_wait_duration(wait_duration);
+                            state.metrics.inc_session_wait_timeout("block");
+                            (Some(group), Some("block_timeout"))
+                        }
+                    }
+                }
+                WaitStrategy::RoutePin => {
+                    // Route to pinned group without waiting
+                    state.metrics.inc_session_pin_enforced("route_pin");
+                    (Some(group), Some("route_pin"))
+                }
+            }
+        } else {
+            // No pending write - normal routing
+            (None, None)
+        }
+    } else {
+        // No session header - normal routing
+        (None, None)
+    };
+
+    // Log session pinning decision for observability
+    if let Some(label) = strategy_label {
+        debug!(
+            session_id = ?sid,
+            pinned_group = pinned_group,
+            strategy = label,
+            "session pinning applied"
+        );
+    }
+
+    // Handle multi-target alias fanout (plan §13.7, §13.11, §13.17)
+    // Multi-target aliases (ILM read_alias) require fanning out to all targets
+    // and merging results by _rankingScore
+    if resolved_targets.len() > 1 {
+        return search_multi_targets(
+            resolved_targets,
+            body,
+            state,
+            headers,
+            sid,
+            client_requested_score,
+        ).await;
+    }
+
     // Get the scoped key for this index (plan §13.21).
     // If a scoped key exists, use primary_key (or previous_key during rotation overlap).
     // If no scoped key exists yet, fall back to node_master_key for initial setup.
     let search_key = if let Some(ref redis) = state.redis_store {
-        if let Ok(Some(sk)) = redis.get_search_ui_scoped_key(&index) {
+        if let Ok(Some(sk)) = redis.get_search_ui_scoped_key(&effective_index) {
             // Refresh scoped-key beacon so the rotation leader knows this pod is serving
             // requests for this index at the current generation (plan §13.21).
             let _ = redis.observe_search_ui_scoped_key(
@@ -243,10 +347,31 @@ async fn search_handler(
             shards = state.config.shards,
             rf = state.config.replication_factor,
             min_settings_version,
+            pinned_group = ?pinned_group,
         ).entered();
 
-        // If client provided a min settings version floor, use version-filtered planning
-        if let Some(floor) = min_settings_version {
+        // Session pinning: if pinned_group is set, use group-specific planning
+        if let Some(group) = pinned_group {
+            match plan_search_scatter_for_group(
+                &topo,
+                0,
+                state.config.replication_factor as usize,
+                state.config.shards,
+                group,
+            ) {
+                Some(p) => p,
+                None => {
+                    // Pinned group not available - fall back to normal planning
+                    // This can happen if the pinned group has failed
+                    warn!(
+                        pinned_group = group,
+                        "pinned group unavailable, falling back to normal routing"
+                    );
+                    plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards)
+                }
+            }
+        } else if let Some(floor) = min_settings_version {
+            // If client provided a min settings version floor, use version-filtered planning
             // Clone the settings broadcast for version checking
             let settings_broadcast = state.settings_broadcast.clone();
             let plan_result = plan_search_scatter_with_version_floor(
@@ -295,7 +420,7 @@ async fn search_handler(
 
     // Build search request
     let search_req = SearchRequest {
-        index_uid: index.clone(),
+        index_uid: effective_index.clone(),
         query: body.q,
         offset: body.offset.unwrap_or(0),
         limit: body.limit.unwrap_or(20),
@@ -357,7 +482,7 @@ async fn search_handler(
         .header("content-type", "application/json");
 
     // Add X-Miroir-Settings-Inconsistent header if a broadcast is in flight (plan §13.5)
-    if state.settings_broadcast.is_in_flight(&index).await {
+    if state.settings_broadcast.is_in_flight(&effective_index).await {
         response = response.header("X-Miroir-Settings-Inconsistent", "true");
     }
 
@@ -392,12 +517,357 @@ async fn search_handler(
     // .with_current_span(true) on the JSON subscriber layer.
     tracing::info!(
         target: "miroir.search",
-        index = %index,
+        index = %effective_index,
         duration_ms = start.elapsed().as_millis() as u64,
         node_count = node_count,
         estimated_hits = result.estimated_total_hits,
         degraded = result.degraded,
         "search completed"
+    );
+
+    Ok(response)
+}
+
+/// Search multiple target indexes (for multi-target aliases, plan §13.7, §13.11, §13.17).
+///
+/// Fans out the search to all target indexes and merges results by _rankingScore.
+/// Used by ILM read_alias queries.
+async fn search_multi_targets(
+    targets: Vec<String>,
+    body: SearchRequestBody,
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    session_id: Option<String>,
+    client_requested_score: bool,
+) -> Result<Response, StatusCode> {
+    let start = Instant::now();
+
+    // Extract session ID if provided
+    let sid = session_id;
+
+    // Extract source IP from X-Forwarded-For or X-Real-IP (trust proxy)
+    let source_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()))
+        .unwrap_or("unknown")
+        .trim()
+        .to_string();
+
+    // Check rate limit for search UI (plan §4)
+    let (limit, window_seconds) = match parse_rate_limit(&state.config.search_ui.rate_limit.per_ip) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            warn!(error = %e, "invalid search_ui.rate_limit.per_ip config, using default");
+            (60, 60) // Default: 60 requests per minute
+        }
+    };
+
+    let backend = state.config.search_ui.rate_limit.backend.as_str();
+    if backend == "redis" {
+        if let Some(ref redis) = state.redis_store {
+            match redis.check_rate_limit_search_ui(&source_ip, limit, window_seconds) {
+                Ok((allowed, _wait_seconds)) => {
+                    if !allowed {
+                        warn!(
+                            source_ip_hash = hash_for_log(&source_ip),
+                            "search UI rate limited (redis)"
+                        );
+                        return Err(StatusCode::TOO_MANY_REQUESTS);
+                    }
+                    // Allowed, proceed
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to check search UI rate limit");
+                    // Continue anyway on error (fail-open)
+                }
+            }
+        }
+    } else if backend == "local" {
+        let (allowed, _wait_seconds) = state.local_search_ui_rate_limiter.check(
+            &source_ip,
+            limit,
+            window_seconds * 1000,
+        );
+        if !allowed {
+            warn!(
+                source_ip_hash = hash_for_log(&source_ip),
+                "search UI rate limited (local backend)"
+            );
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+    }
+
+    // Session pinning logic (plan §13.6): Check if session has pending write
+    let (pinned_group, _strategy_label) = if let Some(ref sid) = sid {
+        if let Some(group) = state.session_manager.get_pinned_group(sid).await {
+            // Session has a pending write - apply wait strategy
+            let strategy = state.session_manager.wait_strategy();
+            match strategy {
+                WaitStrategy::Block => {
+                    // Block until write completes or timeout
+                    let max_wait = state.session_manager.max_wait_duration();
+                    let wait_start = std::time::Instant::now();
+                    match state.session_manager.wait_for_write_completion(
+                        sid,
+                        &state.task_registry,
+                        max_wait,
+                    ).await {
+                        Ok(true) => {
+                            // Write succeeded, clear pin and use normal routing
+                            let wait_duration = wait_start.elapsed().as_secs_f64();
+                            state.metrics.observe_session_wait_duration(wait_duration);
+                            state.metrics.inc_session_pin_enforced("block");
+                            (None::<u32>, None::<u64>)
+                        }
+                        Ok(false) => {
+                            // Write failed, clear pin
+                            let wait_duration = wait_start.elapsed().as_secs_f64();
+                            state.metrics.observe_session_wait_duration(wait_duration);
+                            state.metrics.inc_session_wait_timeout("block");
+                            (None::<u32>, None::<u64>)
+                        }
+                        Err(_) => {
+                            // Timeout - route to pinned group (best effort)
+                            let wait_duration = wait_start.elapsed().as_secs_f64();
+                            state.metrics.observe_session_wait_duration(wait_duration);
+                            state.metrics.inc_session_wait_timeout("block");
+                            (Some(group), None::<u64>)
+                        }
+                    }
+                }
+                WaitStrategy::RoutePin => {
+                    // Route to pinned group without waiting
+                    state.metrics.inc_session_pin_enforced("route_pin");
+                    (Some(group), None::<u64>)
+                }
+            }
+        } else {
+            // No pending write - normal routing
+            (None::<u32>, None::<u64>)
+        }
+    } else {
+        // No session header - normal routing
+        (None::<u32>, None::<u64>)
+    };
+
+    // For multi-target aliases, we use the first target for settings/scoped key
+    // All targets should have compatible settings (managed by ILM)
+    let primary_target = targets.first().ok_or_else(|| {
+        error!("multi-target alias has no targets");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Get the scoped key for the primary target
+    let search_key = if let Some(ref redis) = state.redis_store {
+        if let Ok(Some(sk)) = redis.get_search_ui_scoped_key(primary_target) {
+            // Refresh scoped-key beacon
+            let _ = redis.observe_search_ui_scoped_key(
+                &state.pod_id,
+                primary_target,
+                sk.generation,
+            );
+            sk.primary_key
+        } else {
+            state.config.node_master_key.clone()
+        }
+    } else {
+        state.config.node_master_key.clone()
+    };
+
+    // Extract X-Miroir-Min-Settings-Version header
+    let min_settings_version = headers
+        .get("X-Miroir-Min-Settings-Version")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+
+    // Use live topology from shared state
+    let topo = state.topology.read().await;
+    let policy = match state.config.scatter.unavailable_shard_policy.as_str() {
+        "partial" => UnavailableShardPolicy::Partial,
+        "error" => UnavailableShardPolicy::Error,
+        "fallback" => UnavailableShardPolicy::Fallback,
+        _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    // Plan scatter for primary target (for ILM read aliases, all targets
+    // should have identical shard layout)
+    let plan = {
+        let _plan_span = tracing::info_span!(
+            "scatter_plan_multi_target",
+            primary_target = %primary_target,
+            replica_groups = state.config.replica_groups,
+            shards = state.config.shards,
+            rf = state.config.replication_factor,
+            min_settings_version,
+            pinned_group = ?pinned_group,
+            target_count = targets.len(),
+        ).entered();
+
+        if let Some(group) = pinned_group {
+            match plan_search_scatter_for_group(
+                &topo,
+                0,
+                state.config.replication_factor as usize,
+                state.config.shards,
+                group,
+            ) {
+                Some(p) => p,
+                None => {
+                    warn!(
+                        pinned_group = group,
+                        "pinned group unavailable, falling back to normal routing"
+                    );
+                    plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards)
+                }
+            }
+        } else if let Some(floor) = min_settings_version {
+            let settings_broadcast = state.settings_broadcast.clone();
+            let plan_result = plan_search_scatter_with_version_floor(
+                &topo,
+                0,
+                state.config.replication_factor as usize,
+                state.config.shards,
+                primary_target,
+                floor,
+                &move |idx, node_id| {
+                    let sb = settings_broadcast.clone();
+                    let idx = idx.to_string();
+                    let node_id = node_id.to_string();
+                    tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async {
+                            sb.node_version(&idx, &node_id).await
+                        })
+                    })
+                },
+            );
+
+            match plan_result {
+                Some(p) => p,
+                None => {
+                    let err = MeilisearchError::new(
+                        MiroirCode::SettingsVersionStale,
+                        format!(
+                            "no covering set available for settings version floor {} on index '{}'",
+                            floor, primary_target
+                        ),
+                    );
+                    return Err(StatusCode::SERVICE_UNAVAILABLE);
+                }
+            }
+        } else {
+            plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards)
+        }
+    };
+    let node_count = plan.shard_to_node.len() as u64;
+
+    // Record scatter fan-out size
+    state.metrics.record_scatter_fan_out(node_count);
+
+    // Build search request for primary target
+    let search_req = SearchRequest {
+        index_uid: primary_target.to_string(),
+        query: body.q.clone(),
+        offset: body.offset.unwrap_or(0),
+        limit: body.limit.unwrap_or(20),
+        filter: body.filter.clone(),
+        facets: body.facets.clone(),
+        ranking_score: client_requested_score,
+        body: body.rest.clone(),
+        global_idf: None,
+    };
+
+    // Create node client
+    let http_client = Arc::new(crate::client::HttpClient::new(
+        search_key,
+        state.config.scatter.node_timeout_ms,
+    ));
+    let client = ProxyNodeClient::new(http_client, state.metrics.clone());
+
+    // Use score-based merge strategy
+    let strategy = ScoreMergeStrategy::new();
+
+    // Execute search
+    let mut result = dfs_query_then_fetch_search(
+        plan,
+        &client,
+        search_req,
+        &topo,
+        policy,
+        &strategy,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "multi-target search failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Drop topology lock before building response
+    drop(topo);
+
+    // Strip internal fields from hits
+    for hit in &mut result.hits {
+        strip_internal_fields(hit, client_requested_score);
+    }
+
+    // Build response body
+    let mut response_body = serde_json::json!({
+        "hits": result.hits,
+        "estimatedTotalHits": result.estimated_total_hits,
+        "processingTimeMs": result.processing_time_ms,
+    });
+
+    // Only include facetDistribution if facets were requested
+    if let Some(facets) = &result.facet_distribution {
+        response_body["facetDistribution"] = serde_json::to_value(facets).unwrap_or(Value::Null);
+    }
+
+    // Build response with optional headers
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json");
+
+    // Add settings headers
+    if state.settings_broadcast.is_in_flight(primary_target).await {
+        response = response.header("X-Miroir-Settings-Inconsistent", "true");
+    }
+
+    let current_version = state.settings_broadcast.current_version().await;
+    if current_version > 0 {
+        response = response.header("X-Miroir-Settings-Version", current_version.to_string());
+    }
+
+    if result.degraded {
+        state.metrics.inc_scatter_partial_responses();
+    }
+
+    if result.degraded && !result.failed_shards.is_empty() {
+        let mut sorted_shards = result.failed_shards.clone();
+        sorted_shards.sort();
+        let shard_ids = sorted_shards.iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        response = response.header("X-Miroir-Degraded", format!("shards={}", shard_ids));
+    } else if result.degraded {
+        response = response.header("X-Miroir-Degraded", "partial");
+    }
+
+    let response = response
+        .body(axum::body::Body::from(serde_json::to_string(&response_body).unwrap()))
+        .unwrap();
+
+    // Structured log entry
+    tracing::info!(
+        target: "miroir.search_multi_target",
+        primary_target = %primary_target,
+        target_count = targets.len(),
+        duration_ms = start.elapsed().as_millis() as u64,
+        node_count = node_count,
+        estimated_hits = result.estimated_total_hits,
+        degraded = result.degraded,
+        "multi-target search completed"
     );
 
     Ok(response)
