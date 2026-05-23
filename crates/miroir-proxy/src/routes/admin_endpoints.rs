@@ -17,6 +17,7 @@ use miroir_core::{
     task_registry::TaskRegistryImpl,
     task_store::{RedisTaskStore, TaskStore},
     topology::{Node, NodeId, Topology},
+    mode_c_worker::{ModeCWorker, ModeCWorkerConfig},
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -331,6 +332,8 @@ pub struct AppState {
     pub alias_registry: Arc<miroir_core::alias::AliasRegistry>,
     /// Leader election service for Mode B operations (plan §14.5).
     pub leader_election: Option<Arc<LeaderElection>>,
+    /// Mode C worker for chunked background jobs (plan §14.5 Mode C).
+    pub mode_c_worker: Option<Arc<ModeCWorker>>,
 }
 
 impl AppState {
@@ -543,6 +546,22 @@ impl AppState {
             None
         };
 
+        // Create Mode C worker for chunked background jobs (plan §14.5 Mode C)
+        let mode_c_worker = if let Some(ref store) = task_store {
+            let worker_config = ModeCWorkerConfig {
+                poll_interval_ms: 1000,      // 1 second
+                heartbeat_interval_ms: 10000, // 10 seconds
+                max_concurrent_jobs: 3,
+            };
+            Some(Arc::new(ModeCWorker::new(
+                store.clone(),
+                pod_id.clone(),
+                worker_config,
+            )))
+        } else {
+            None
+        };
+
         Self {
             config: Arc::new(config),
             topology: topology_arc,
@@ -566,6 +585,7 @@ impl AppState {
             session_manager,
             alias_registry,
             leader_election,
+            mode_c_worker,
         }
     }
 

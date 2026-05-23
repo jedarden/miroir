@@ -69,6 +69,10 @@ impl TaskStore for MockTaskStore {
             claimed_by: None,
             claim_expires_at: None,
             progress: job.progress.clone(),
+            parent_job_id: job.parent_job_id.clone(),
+            chunk_index: job.chunk_index,
+            total_chunks: job.total_chunks,
+            created_at: Some(job.created_at),
         });
         Ok(())
     }
@@ -85,6 +89,30 @@ impl TaskStore for MockTaskStore {
     fn list_jobs_by_state(&self, _state: &str) -> Result<Vec<JobRow>> {
         let jobs = self.jobs.lock().unwrap();
         Ok(jobs.clone())
+    }
+
+    fn count_jobs_by_state(&self, _state: &str) -> Result<u64> {
+        Ok(0)
+    }
+
+    fn list_expired_claims(&self, _now_ms: i64) -> Result<Vec<JobRow>> {
+        Ok(Vec::new())
+    }
+
+    fn list_jobs_by_parent(&self, _parent_job_id: &str) -> Result<Vec<JobRow>> {
+        Ok(Vec::new())
+    }
+
+    fn reclaim_job_claim(&self, _id: &str, _state: &str, _progress: &str) -> Result<bool> {
+        Ok(true)
+    }
+
+    fn claim_job(&self, _id: &str, _claimed_by: &str, _claim_expires_at: i64) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn renew_job_claim(&self, _id: &str, _claim_expires_at: i64) -> Result<bool> {
+        Ok(false)
     }
 
     fn try_acquire_leader_lease(
@@ -207,12 +235,7 @@ impl TaskStore for MockTaskStore {
     fn delete_expired_idempotency_entries(&self, _now_ms: i64) -> Result<usize> {
         Ok(0)
     }
-    fn claim_job(&self, _id: &str, _claimed_by: &str, _claim_expires_at: i64) -> Result<bool> {
-        Ok(false)
-    }
-    fn renew_job_claim(&self, _id: &str, _claim_expires_at: i64) -> Result<bool> {
-        Ok(false)
-    }
+
     fn upsert_canary(&self, _canary: &crate::task_store::NewCanary) -> Result<()> {
         Ok(())
     }
@@ -453,6 +476,10 @@ async fn p4_1_a2_progress_persistence_pods_resume_migration() {
         params: progress,
         state: "running".to_string(),
         progress: "{\"total_shards\":1,\"completed\":0,\"docs_migrated\":5000}".to_string(),
+        parent_job_id: None,
+        chunk_index: None,
+        total_chunks: None,
+        created_at: now_ms(),
     };
     tokio::task::spawn_blocking({
         let task_store = task_store.clone();

@@ -103,6 +103,22 @@ impl TaskStore for MockTaskStore {
         Ok(Vec::new())
     }
 
+    fn count_jobs_by_state(&self, _state: &str) -> Result<u64> {
+        Ok(0)
+    }
+
+    fn list_expired_claims(&self, _now_ms: i64) -> Result<Vec<JobRow>> {
+        Ok(Vec::new())
+    }
+
+    fn list_jobs_by_parent(&self, _parent_job_id: &str) -> Result<Vec<JobRow>> {
+        Ok(Vec::new())
+    }
+
+    fn reclaim_job_claim(&self, _id: &str, _state: &str, _progress: &str) -> Result<bool> {
+        Ok(true)
+    }
+
     fn try_acquire_leader_lease(
         &self,
         _scope: &str,

@@ -4,6 +4,9 @@
 //! and renews claims. Large jobs are split into chunks; chunk jobs execute
 //! the actual work (dump import, reshard backfill).
 
+#[cfg(test)]
+mod acceptance_tests;
+
 use crate::error::{MiroirError, Result};
 use crate::mode_c_coordinator::{ClaimedJob, JobChunk, JobParams, JobProgress, JobType, ModeCCoordinator};
 use crate::reshard_chunking;
