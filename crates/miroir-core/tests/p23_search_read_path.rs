@@ -43,7 +43,7 @@ async fn test_unique_keyword_returns_exactly_one_hit() {
     topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
     topo.add_node(Node::new(NodeId::new("node-2".into()), "http://node-2:7700".into(), 0));
 
-    let plan = plan_search_scatter(&topo, 0, 1, 3);
+    let plan = plan_search_scatter(&topo, 0, 1, 3, None).await;
 
     let mut client = MockNodeClient::default();
 
@@ -98,7 +98,7 @@ async fn test_facet_counts_sum_correctly() {
     topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
     topo.add_node(Node::new(NodeId::new("node-2".into()), "http://node-2:7700".into(), 0));
 
-    let plan = plan_search_scatter(&topo, 0, 1, 3);
+    let plan = plan_search_scatter(&topo, 0, 1, 3, None).await;
 
     let mut client = MockNodeClient::default();
 
@@ -188,7 +188,7 @@ async fn test_paging_no_dupes_or_gaps() {
         ));
     }
 
-    let plan = plan_search_scatter(&topo, 0, 1, 10);
+    let plan = plan_search_scatter(&topo, 0, 1, 10, None).await;
 
     let mut client = MockNodeClient::default();
 
@@ -269,7 +269,7 @@ async fn test_node_down_rf2_covers_all_shards() {
     topo.add_node(Node::new(NodeId::new("node-0".into()), "http://node-0:7700".into(), 0));
     topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
 
-    let plan = plan_search_scatter(&topo, 0, 2, 16);
+    let plan = plan_search_scatter(&topo, 0, 2, 16, None).await;
 
     let mut client = MockNodeClient::default();
 
@@ -321,7 +321,7 @@ async fn test_group_down_fallback_succeeds_not_degraded() {
     topo.add_node(Node::new(NodeId::new("node-g0".into()), "http://g0:7700".into(), 0));
     topo.add_node(Node::new(NodeId::new("node-g1".into()), "http://g1:7700".into(), 1));
 
-    let plan = plan_search_scatter(&topo, 0, 1, 16); // query_seq=0 → group 0
+    let plan = plan_search_scatter(&topo, 0, 1, 16, None).await; // query_seq=0 → group 0
     assert_eq!(plan.chosen_group, 0);
 
     let mut client = MockNodeClient::default();
@@ -373,7 +373,7 @@ async fn test_group_down_fallback_succeeds_not_degraded() {
 #[tokio::test]
 async fn test_degraded_header_includes_shard_ids() {
     let topo = make_test_topology();
-    let plan = plan_search_scatter(&topo, 0, 2, 16);
+    let plan = plan_search_scatter(&topo, 0, 2, 16, None).await;
 
     let mut client = MockNodeClient::default();
 
@@ -440,7 +440,7 @@ async fn test_search_read_path_integration() {
     topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
     topo.add_node(Node::new(NodeId::new("node-2".into()), "http://node-2:7700".into(), 0));
 
-    let plan = plan_search_scatter(&topo, 0, 1, 3);
+    let plan = plan_search_scatter(&topo, 0, 1, 3, None).await;
 
     let mut client = MockNodeClient::default();
 
