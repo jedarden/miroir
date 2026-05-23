@@ -359,6 +359,20 @@ impl Default for ReplicaSelector {
     }
 }
 
+/// Convert from config's advanced::ReplicaSelectionConfig to replica_selection::ReplicaSelectionConfig.
+impl From<crate::config::advanced::ReplicaSelectionConfig> for ReplicaSelectionConfig {
+    fn from(advanced: crate::config::advanced::ReplicaSelectionConfig) -> Self {
+        Self {
+            strategy: advanced.strategy,
+            latency_weight: advanced.latency_weight,
+            inflight_weight: advanced.inflight_weight,
+            error_weight: advanced.error_weight,
+            ewma_half_life_ms: advanced.ewma_half_life_ms,
+            exploration_epsilon: advanced.exploration_epsilon,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

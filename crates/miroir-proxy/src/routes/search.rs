@@ -6,14 +6,14 @@ use axum::response::Response;
 use axum::Json;
 use miroir_core::api_error::{MeilisearchError, MiroirCode};
 use miroir_core::config::UnavailableShardPolicy;
-use miroir_core::idempotency::{QueryFingerprint, canonicalize_json};
+use miroir_core::idempotency::QueryFingerprint;
 use miroir_core::merger::ScoreMergeStrategy;
 use miroir_core::replica_selection::SelectionObserver;
 use miroir_core::scatter::{
     dfs_query_then_fetch_search, plan_search_scatter, plan_search_scatter_for_group, plan_search_scatter_with_version_floor, SearchRequest, NodeClient,
 };
 use miroir_core::session_pinning::WaitStrategy;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -119,7 +119,7 @@ where
 }
 
 /// Search request body.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct SearchRequestBody {
     q: Option<String>,
     offset: Option<usize>,
@@ -315,8 +315,12 @@ async fn search_handler(
     if state.config.query_coalescing.enabled && resolved_targets.len() == 1 {
         // Build fingerprint from canonicalized query body + index + settings version
         let settings_version = state.settings_broadcast.current_version().await;
-        let query_body = serde_json::to_value(&body).unwrap_or(Value::Null);
-        let fingerprint = QueryFingerprint::new(effective_index.clone(), &query_body, settings_version);
+        let query_json = serde_json::to_string(&body).unwrap_or_default();
+        let fingerprint = QueryFingerprint {
+            index: effective_index.clone(),
+            query_json,
+            settings_version,
+        };
 
         // Try to coalesce with an existing in-flight query
         if let Some(mut rx) = state.query_coalescer.try_coalesce(fingerprint.clone()).await {
@@ -526,6 +530,7 @@ async fn search_handler(
     state.metrics.record_scatter_fan_out(node_count);
 
     // Build search request
+    let rest_body = body.rest.clone(); // Clone before body is partially moved
     let search_req = SearchRequest {
         index_uid: effective_index.clone(),
         query: body.q,
@@ -534,7 +539,7 @@ async fn search_handler(
         filter: body.filter,
         facets: body.facets,
         ranking_score: client_requested_score,
-        body: body.rest,
+        body: rest_body,
         global_idf: None,
     };
 
@@ -543,7 +548,7 @@ async fn search_handler(
         search_key,
         state.config.scatter.node_timeout_ms,
     ));
-    let client = ProxyNodeClient::new(http_client, state.metrics.clone());
+    let client = ProxyNodeClient::new(http_client, state.metrics.clone(), None);
 
     // Use score-based merge strategy (OP#4: requires global IDF)
     let strategy = ScoreMergeStrategy::new();
@@ -552,8 +557,12 @@ async fn search_handler(
     // Only register if coalescing is enabled and this is a single-target query
     let (tx, fingerprint) = if state.config.query_coalescing.enabled && resolved_targets.len() == 1 {
         let settings_version = state.settings_broadcast.current_version().await;
-        let query_body = serde_json::to_value(&body).unwrap_or(Value::Null);
-        let fp = QueryFingerprint::new(effective_index.clone(), &query_body, settings_version);
+        let query_json = serde_json::to_string(&body).unwrap_or_default();
+        let fp = QueryFingerprint {
+            index: effective_index.clone(),
+            query_json,
+            settings_version,
+        };
 
         match state.query_coalescer.register(fp.clone()).await {
             Ok(broadcast_tx) => {
@@ -860,6 +869,7 @@ async fn search_multi_targets(
                 state.config.replication_factor as usize,
                 state.config.shards,
                 group,
+                None,
             ) {
                 Some(p) => p,
                 None => {
@@ -867,7 +877,7 @@ async fn search_multi_targets(
                         pinned_group = group,
                         "pinned group unavailable, falling back to normal routing"
                     );
-                    plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards)
+                    plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, None).await
                 }
             }
         } else if let Some(floor) = min_settings_version {
@@ -931,7 +941,7 @@ async fn search_multi_targets(
         search_key,
         state.config.scatter.node_timeout_ms,
     ));
-    let client = ProxyNodeClient::new(http_client, state.metrics.clone());
+    let client = ProxyNodeClient::new(http_client, state.metrics.clone(), None);
 
     // Use score-based merge strategy
     let strategy = ScoreMergeStrategy::new();
