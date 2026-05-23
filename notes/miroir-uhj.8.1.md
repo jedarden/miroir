@@ -69,3 +69,10 @@ No new implementation was required. The fingerprint step was already complete.
 
 - P5.8.b: Diff step - Compare fingerprints across replicas, identify divergent documents
 - P5.8.c: Repair step - Apply authoritative version to divergent replicas
+
+## Retrospective
+
+- **What worked:** The fingerprint step implementation was already complete in `anti_entropy.rs`. The `fingerprint_shard()` method correctly implements per-replica xxh3 digest with pagination, canonical content hashing, and self-throttling.
+- **What didn't:** Initial test run showed integer overflow in test mocks for pagination tests. Fixed by adding bounds check for `offset >= total_docs` case.
+- **Surprise:** The implementation was more complete than expected - all throttle knobs (schedule, shards_per_pass, max_read_concurrency, fingerprint_batch_size) were already wired through AntiEntropyConfig.
+- **Reusable pattern:** MockAll-based test patterns for NodeClient work well for testing anti-entropy logic without needing real Meilisearch instances. The `compute_content_hash` function's deterministic key sorting (BTreeMap) is a good pattern for canonical JSON hashing.
