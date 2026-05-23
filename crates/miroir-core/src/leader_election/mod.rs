@@ -167,7 +167,7 @@ pub struct LeaderElection {
 
 /// State of an active lease.
 #[derive(Debug, Clone)]
-struct LeaseState {
+pub struct LeaseState {
     /// Scope of the lease.
     scope: String,
     /// When this lease was acquired.
