@@ -656,4 +656,240 @@ mod tests {
             assert!(c2.contains(r2), "query_seq=2 should select third replica");
         }
     }
+
+    // ── write_targets_with_migration tests ─────────────────────────────────────
+
+    /// Test write_targets_with_migration without migration (same as write_targets).
+    #[test]
+    fn test_write_targets_with_migration_no_migration() {
+        let mut topo = Topology::new(64, 2, 2);
+        for i in 0u32..6 {
+            let rg = if i < 3 { 0 } else { 1 };
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        let shard_id = 7;
+        let targets_no_migration = write_targets(shard_id, &topo);
+        let targets_with_migration = write_targets_with_migration(shard_id, &topo, None);
+
+        assert_eq!(targets_no_migration, targets_with_migration);
+    }
+
+    /// Test write_targets_with_migration with active dual-write for a shard.
+    #[test]
+    fn test_write_targets_with_migration_dual_write_includes_new_node() {
+        use crate::migration::{MigrationConfig, MigrationCoordinator, MigrationId, MigrationPhase, ShardMigrationState, ShardId as MigShardId, MigrationState, NodeId as MigNodeId};
+        use std::collections::HashMap;
+
+        let mut topo = Topology::new(64, 2, 2);
+        // Group 0: nodes 0-2, Group 1: nodes 3-5
+        for i in 0u32..6 {
+            let rg = if i < 3 { 0 } else { 1 };
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        // Create a migration coordinator with an active dual-write migration
+        let config = MigrationConfig::default();
+        let mut coordinator = MigrationCoordinator::new(config);
+
+        // Start a migration for shard 7, adding node-6 as a new node in group 0
+        let new_node_id = MigNodeId("node-6".to_string());
+        let shard_id = MigShardId(7);
+
+        // Create a migration state
+        let mut affected_shards = HashMap::new();
+        affected_shards.insert(shard_id, ShardMigrationState::Migrating {
+            docs_copied: 1000,
+            pages_remaining: 5,
+        });
+
+        let mut old_owners = HashMap::new();
+        old_owners.insert(shard_id, MigNodeId("node-0".to_string()));
+
+        let migration_state = MigrationState {
+            id: MigrationId(1),
+            new_node: new_node_id.clone(),
+            replica_group: 0,
+            phase: MigrationPhase::DualWriteMigrating,
+            affected_shards,
+            old_owners,
+            started_at: None,
+            completed_at: None,
+        };
+
+        // Manually insert the migration state
+        coordinator.test_insert_migration(migration_state);
+
+        // Get write targets with migration
+        let targets = write_targets_with_migration(7, &topo, Some(&coordinator));
+
+        // Should include standard RF nodes plus the new node
+        let expected_count = 2 * 2 + 1; // RG=2, RF=2, plus 1 new node = 5
+        assert_eq!(targets.len(), expected_count, "Should include standard targets plus new node");
+
+        // Verify the new node is included
+        assert!(targets.contains(&NodeId::new("node-6".to_string())), "Should include new node during dual-write");
+    }
+
+    /// Test write_targets_with_migration with dual-write for non-affected shard.
+    #[test]
+    fn test_write_targets_with_migration_dual_write_non_affected_shard() {
+        use crate::migration::{MigrationConfig, MigrationCoordinator, MigrationId, MigrationPhase, ShardMigrationState, ShardId as MigShardId, MigrationState, NodeId as MigNodeId};
+        use std::collections::HashMap;
+
+        let mut topo = Topology::new(64, 2, 2);
+        for i in 0u32..6 {
+            let rg = if i < 3 { 0 } else { 1 };
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        // Create a migration coordinator with an active dual-write migration for shard 5
+        let config = MigrationConfig::default();
+        let mut coordinator = MigrationCoordinator::new(config);
+
+        let new_node_id = MigNodeId("node-6".to_string());
+        let shard_id = MigShardId(5); // Different shard
+
+        let mut affected_shards = HashMap::new();
+        affected_shards.insert(shard_id, ShardMigrationState::Migrating {
+            docs_copied: 1000,
+            pages_remaining: 5,
+        });
+
+        let mut old_owners = HashMap::new();
+        old_owners.insert(shard_id, MigNodeId("node-0".to_string()));
+
+        let migration_state = MigrationState {
+            id: MigrationId(1),
+            new_node: new_node_id,
+            replica_group: 0,
+            phase: MigrationPhase::DualWriteMigrating,
+            affected_shards,
+            old_owners,
+            started_at: None,
+            completed_at: None,
+        };
+
+        coordinator.test_insert_migration(migration_state);
+
+        // Get write targets for shard 7 (not affected by migration)
+        let targets = write_targets_with_migration(7, &topo, Some(&coordinator));
+
+        // Should be standard RF count only (RG=2, RF=2 = 4)
+        assert_eq!(targets.len(), 4, "Non-affected shard should have standard target count");
+    }
+
+    /// Test write_targets_with_migration with completed migration (no dual-write).
+    #[test]
+    fn test_write_targets_with_migration_completed_migration() {
+        use crate::migration::{MigrationConfig, MigrationCoordinator, MigrationId, MigrationPhase, ShardMigrationState, ShardId as MigShardId, MigrationState, NodeId as MigNodeId};
+        use std::collections::HashMap;
+
+        let mut topo = Topology::new(64, 2, 2);
+        for i in 0u32..6 {
+            let rg = if i < 3 { 0 } else { 1 };
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        // Create a migration coordinator with a completed migration
+        let config = MigrationConfig::default();
+        let mut coordinator = MigrationCoordinator::new(config);
+
+        let new_node_id = MigNodeId("node-6".to_string());
+        let shard_id = MigShardId(7);
+
+        let mut affected_shards = HashMap::new();
+        affected_shards.insert(shard_id, ShardMigrationState::Active);
+
+        let migration_state = MigrationState {
+            id: MigrationId(1),
+            new_node: new_node_id,
+            replica_group: 0,
+            phase: MigrationPhase::Complete,
+            affected_shards,
+            old_owners: HashMap::new(),
+            started_at: None,
+            completed_at: None,
+        };
+
+        coordinator.test_insert_migration(migration_state);
+
+        // Get write targets - should not include dual-write since phase is Complete
+        let targets = write_targets_with_migration(7, &topo, Some(&coordinator));
+
+        // Should be standard RF count only (no dual-write)
+        assert_eq!(targets.len(), 4, "Completed migration should not add dual-write targets");
+    }
+
+    /// Test write_targets_with_migration prevents duplicate new_node.
+    #[test]
+    fn test_write_targets_with_migration_no_duplicate_new_node() {
+        use crate::migration::{MigrationConfig, MigrationCoordinator, MigrationId, MigrationPhase, ShardMigrationState, ShardId as MigShardId, MigrationState, NodeId as MigNodeId};
+        use std::collections::HashMap;
+
+        let mut topo = Topology::new(64, 2, 2);
+        // Add node-6 to the topology first
+        for i in 0u32..7 {
+            let rg = if i < 4 { 0 } else { 1 };
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        // Create a migration coordinator
+        let config = MigrationConfig::default();
+        let mut coordinator = MigrationCoordinator::new(config);
+
+        // Migration adding node-6 which is already in standard targets
+        let new_node_id = MigNodeId("node-6".to_string());
+        let shard_id = MigShardId(7);
+
+        let mut affected_shards = HashMap::new();
+        affected_shards.insert(shard_id, ShardMigrationState::Migrating {
+            docs_copied: 500,
+            pages_remaining: 2,
+        });
+
+        let mut old_owners = HashMap::new();
+        old_owners.insert(shard_id, MigNodeId("node-0".to_string()));
+
+        let migration_state = MigrationState {
+            id: MigrationId(1),
+            new_node: new_node_id,
+            replica_group: 0,
+            phase: MigrationPhase::DualWriteMigrating,
+            affected_shards,
+            old_owners,
+            started_at: None,
+            completed_at: None,
+        };
+
+        coordinator.test_insert_migration(migration_state);
+
+        let targets = write_targets_with_migration(7, &topo, Some(&coordinator));
+
+        // Count occurrences of node-6
+        let node_6_count = targets.iter().filter(|n| n.as_str() == "node-6").count();
+
+        // Should not duplicate node-6 if it's already in standard targets
+        assert_eq!(node_6_count, 1, "Should not duplicate new_node if already in targets");
+    }
 }
