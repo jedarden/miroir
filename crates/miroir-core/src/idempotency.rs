@@ -161,6 +161,7 @@ pub struct PendingQuery {
 }
 
 /// Query coalescing cache.
+#[derive(Clone)]
 pub struct QueryCoalescer {
     /// Fingerprint -> pending query state.
     pending: Arc<RwLock<HashMap<QueryFingerprint, PendingQuery>>>,

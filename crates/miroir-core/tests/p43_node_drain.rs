@@ -239,7 +239,7 @@ async fn p43_drain_node_searches_still_succeed_zero_degraded() {
     }
 
     // Execute a search
-    let plan = miroir_core::scatter::plan_search_scatter(&topo, 0, rf, shards);
+    let plan = miroir_core::scatter::plan_search_scatter(&topo, 0, rf, shards, None).await;
     let req = SearchRequest {
         index_uid: "test".to_string(),
         query: Some("test".to_string()),
