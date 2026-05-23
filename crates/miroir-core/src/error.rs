@@ -101,4 +101,8 @@ pub enum MiroirError {
     /// Discovery error.
     #[error("discovery error: {0}")]
     Discovery(String),
+
+    /// Anti-entropy error.
+    #[error("anti-entropy error: {0}")]
+    AntiEntropy(String),
 }
