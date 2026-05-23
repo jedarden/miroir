@@ -632,6 +632,14 @@ impl AntiEntropyWorker {
                     warn!(errors = ?pass.errors, "anti-entropy pass had errors");
                 }
 
+                // Emit worker-level metrics if callbacks are configured
+                if let Some(ref callback) = self.metrics_shards_scanned {
+                    callback(pass.shards_scanned as u64);
+                }
+                if let Some(ref callback) = self.metrics_scan_completed {
+                    callback(pass.completed_at / 1000);
+                }
+
                 Ok(())
             }
             Err(e) => {

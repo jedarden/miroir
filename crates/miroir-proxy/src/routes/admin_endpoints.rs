@@ -517,13 +517,35 @@ impl AppState {
                 let ae_worker_config = miroir_core::rebalancer_worker::AntiEntropyWorkerConfig::from_schedule(
                     &config.anti_entropy.schedule
                 );
-                Some(Arc::new(miroir_core::rebalancer_worker::AntiEntropyWorker::new(
+                let metrics_for_ae_1 = metrics.clone();
+                let metrics_for_ae_2 = metrics.clone();
+                let metrics_for_ae_3 = metrics.clone();
+                let metrics_for_ae_4 = metrics.clone();
+                let mut ae_worker = miroir_core::rebalancer_worker::AntiEntropyWorker::new(
                     ae_worker_config,
                     topology_arc.clone(),
                     store.clone(),
                     config.node_master_key.clone(),
                     pod_id.clone(),
-                )))
+                );
+                // Wire up metrics callbacks
+                ae_worker = ae_worker.with_metrics(
+                    Arc::new(move |count: u64| {
+                        metrics_for_ae_1.inc_antientropy_shards_scanned(count);
+                    }),
+                    Arc::new(move |count: u64| {
+                        metrics_for_ae_2.inc_antientropy_mismatches_found(count);
+                    }),
+                    Arc::new(move |count: u64| {
+                        metrics_for_ae_3.inc_antientropy_docs_repaired(count);
+                    }),
+                    Arc::new(move |timestamp: u64| {
+                        metrics_for_ae_4.set_antientropy_last_scan_completed(timestamp);
+                    }),
+                );
+                // Set TTL enabled flag from config
+                ae_worker.set_ttl_enabled(config.anti_entropy.ttl_enabled);
+                Some(Arc::new(ae_worker))
             } else {
                 None
             }
