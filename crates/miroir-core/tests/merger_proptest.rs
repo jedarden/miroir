@@ -35,6 +35,8 @@ fn make_shard_response(
 }
 
 proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1024))]
+
     /// Property: Determinism - same inputs produce same outputs.
     ///
     /// For any set of shard responses, merge returns identical results.

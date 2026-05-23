@@ -11,6 +11,7 @@ use proptest::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1024))]
     /// Property: Determinism - same inputs produce same outputs across runs.
     ///
     /// For any (shard_id, nodes, rf), assign_shard_in_group returns identical results.
