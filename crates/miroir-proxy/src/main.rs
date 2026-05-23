@@ -5,6 +5,7 @@ use axum::{
 };
 use miroir_core::{
     config::MiroirConfig,
+    peer_discovery::PeerDiscovery,
     rebalancer_worker::{RebalancerWorker, RebalancerWorkerConfig, TopologyChangeEvent},
     task_pruner,
     topology::{NodeStatus, Topology},
@@ -45,6 +46,7 @@ struct UnifiedState {
     pod_id: String,
     redis_store: Option<miroir_core::task_store::RedisTaskStore>,
     query_capture: Arc<QueryCapture>,
+    peer_discovery: Option<Arc<PeerDiscovery>>,
 }
 
 impl UnifiedState {
@@ -74,6 +76,19 @@ impl UnifiedState {
         metrics.admin_session_key_generated().set(if seal_key.is_generated() { 1.0 } else { 0.0 });
 
         let pod_id = std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string());
+        let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+
+        // Create peer discovery instance (plan §14.5)
+        // Only enabled when running in Kubernetes (POD_NAME is set to a real pod name)
+        let peer_discovery = if pod_id != "unknown" {
+            Some(Arc::new(PeerDiscovery::new(
+                pod_id.clone(),
+                namespace,
+                config.peer_discovery.service_name.clone(),
+            )))
+        } else {
+            None
+        };
 
         // Create Redis task store if backend is redis (must happen before AppState
         // so redis_store and pod_id are available to admin endpoints).
@@ -116,6 +131,7 @@ impl UnifiedState {
             pod_id,
             redis_store,
             query_capture: Arc::new(QueryCapture::new(1000)),
+            peer_discovery,
         }
     }
 }
@@ -198,6 +214,7 @@ impl FromRef<UnifiedState> for routes::multi_search::MultiSearchState {
             topology: state.admin.topology.clone(),
             node_master_key: state.admin.config.master_key.clone(),
             metrics: state.metrics.clone(),
+            alias_registry: state.admin.alias_registry.clone(),
         }
     }
 }
@@ -385,6 +402,39 @@ async fn main() -> anyhow::Result<()> {
         });
     } else {
         info!("drift reconciler not available (no task store configured)");
+    }
+
+    // Start peer discovery refresh loop (plan §14.5)
+    // Periodically performs SRV lookups to discover peer pods
+    if let Some(ref peer_discovery) = state.peer_discovery {
+        let peer_discovery = peer_discovery.clone();
+        let metrics = state.metrics.clone();
+        let refresh_interval_s = config.peer_discovery.refresh_interval_s;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(refresh_interval_s));
+            info!(
+                interval_s = refresh_interval_s,
+                "peer discovery refresh loop started"
+            );
+            loop {
+                interval.tick().await;
+                match peer_discovery.refresh().await {
+                    Ok(peer_set) => {
+                        let count = peer_set.len() as u64;
+                        info!(
+                            peer_count = count,
+                            "peer discovery refresh completed"
+                        );
+                        metrics.set_peer_pod_count(count);
+                    }
+                    Err(e) => {
+                        error!(error = %e, "peer discovery refresh failed");
+                    }
+                }
+            }
+        });
+    } else {
+        info!("peer discovery disabled (not running in Kubernetes)");
     }
 
     // Start task registry TTL pruner background task (plan §4, Phase 3)
@@ -824,10 +874,9 @@ fn update_resource_pressure_metrics(metrics: &middleware::Metrics) {
     }
 
     // ── Peer pod count and leader status ──
-    // In the current single-pod or HA-proxy model, peer count = configured nodes
-    // that are healthy. Leader is always true for the active pod (no election yet).
-    // These will be refined when peer discovery (§14.3) lands.
-    metrics.set_peer_pod_count(1);
+    // Peer pod count is now set by peer discovery refresh loop (plan §14.5).
+    // Leader election is not yet implemented (plan §14.5 Mode B).
+    // Owned shards count will be set by Mode A rendezvous (plan §14.5).
     metrics.set_leader(true);
     metrics.set_owned_shards_count(0);
 }

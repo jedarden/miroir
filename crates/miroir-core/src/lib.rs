@@ -18,6 +18,7 @@ pub mod idempotency;
 pub mod ilm;
 pub mod merger;
 pub mod migration;
+pub mod peer_discovery;
 pub mod multi_search;
 pub mod query_planner;
 pub mod rebalancer;

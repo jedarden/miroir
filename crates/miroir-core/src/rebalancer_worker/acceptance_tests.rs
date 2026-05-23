@@ -507,6 +507,117 @@ async fn p4_1_a3_metrics_monotonically_increase() {
     assert!(duration > 0.0, "duration should be positive");
 }
 
+/// P4.1-A4: Two workers running simultaneously produce 0 duplicate migrations.
+///
+/// This is a comprehensive integration test that simulates two pods
+/// both running the rebalancer worker simultaneously and verifies that
+/// only one actually processes topology change events (no duplicate migrations).
+#[tokio::test]
+async fn p4_1_a4_two_workers_no_duplicate_migrations() {
+    use tokio::sync::mpsc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let topo = Arc::new(RwLock::new(test_topology()));
+    let task_store = Arc::new(MockTaskStore::new()) as Arc<dyn TaskStore>;
+    let config = RebalancerWorkerConfig {
+        lease_ttl_secs: 5,
+        lease_renewal_interval_ms: 100,
+        event_channel_capacity: 10,
+        ..Default::default()
+    };
+    let migration_config = MigrationConfig::default();
+    let coordinator = Arc::new(RwLock::new(MigrationCoordinator::new(migration_config)));
+    let metrics = Arc::new(RwLock::new(RebalancerMetrics::default()));
+
+    // Counter to track how many times migrations were processed
+    let migrations_processed = Arc::new(AtomicU32::new(0));
+
+    // Create two workers with different pod IDs
+    let worker1 = RebalancerWorker::new(
+        config.clone(),
+        topo.clone(),
+        task_store.clone(),
+        Arc::new(Rebalancer::new(
+            crate::rebalancer::RebalancerConfig::default(),
+            topo.clone(),
+            MigrationConfig::default(),
+        )),
+        coordinator.clone(),
+        metrics.clone(),
+        "pod-1".to_string(),
+    );
+
+    let worker2 = RebalancerWorker::new(
+        config.clone(),
+        topo.clone(),
+        task_store.clone(),
+        Arc::new(Rebalancer::new(
+            crate::rebalancer::RebalancerConfig::default(),
+            topo.clone(),
+            MigrationConfig::default(),
+        )),
+        coordinator.clone(),
+        metrics.clone(),
+        "pod-2".to_string(),
+    );
+
+    // Simulate pod-1 acquiring the lease first
+    let scope = "rebalance:test-duplicate-index";
+    let now = now_ms();
+    let expires_at = now + 5000; // 5 seconds from now
+
+    let pod1_acquired = tokio::task::spawn_blocking({
+        let task_store = task_store.clone();
+        let scope = scope.to_string();
+        let holder = "pod-1".to_string();
+        move || {
+            task_store.try_acquire_leader_lease(&scope, &holder, expires_at, now)
+        }
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(pod1_acquired, "pod-1 should acquire the lease first");
+
+    // Pod-2 tries to acquire - should fail
+    let pod2_acquired = tokio::task::spawn_blocking({
+        let task_store = task_store.clone();
+        let scope = scope.to_string();
+        let holder = "pod-2".to_string();
+        move || {
+            task_store.try_acquire_leader_lease(&scope, &holder, expires_at, now)
+        }
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!pod2_acquired, "pod-2 should not acquire lease while pod-1 holds it");
+
+    // Now simulate a scenario where both pods try to process the same topology event
+    // Only pod-1 (the lease holder) should actually process it
+    let event_tx_1 = worker1.event_sender();
+    let event_tx_2 = worker2.event_sender();
+
+    // Send the same event through both workers
+    let event = TopologyChangeEvent::NodeAdded {
+        node_id: "node-new".to_string(),
+        replica_group: 0,
+        index_uid: "test-duplicate-index".to_string(),
+    };
+
+    // Both workers receive the event
+    event_tx_1.send(event.clone()).await.unwrap();
+    event_tx_2.send(event).await.unwrap();
+
+    // Give time for processing
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Verify that only one migration was created (not two duplicates)
+    let coordinator_read = coordinator.read().await;
+    let migration_count = coordinator_read.get_all_migrations().len();
+    assert_eq!(migration_count, 1, "only one migration should be created, not duplicates");
+}
+
 /// Helper to get current time in milliseconds.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()

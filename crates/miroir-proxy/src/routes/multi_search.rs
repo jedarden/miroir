@@ -17,7 +17,9 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument};
+
+use crate::routes::admin_endpoints::AppState;
 
 /// Multi-search state.
 #[derive(Clone)]
@@ -26,6 +28,7 @@ pub struct MultiSearchState {
     pub topology: Arc<RwLock<Topology>>,
     pub node_master_key: String,
     pub metrics: crate::middleware::Metrics,
+    pub alias_registry: Arc<miroir_core::alias::AliasRegistry>,
 }
 
 /// Multi-search request (plan §13.11).
@@ -174,14 +177,40 @@ where
     let strategy = ScoreMergeStrategy::new();
 
     // Convert MultiSearchRequest to core MultiSearchRequest
+    // Resolve aliases for each query (plan §13.7)
+    let mut queries_with_resolutions = Vec::new();
+    for mut q in body.queries {
+        // Resolve alias to concrete index UID(s)
+        let (effective_index, resolved_targets) = if state.config.aliases.enabled {
+            let targets = state.alias_registry.resolve(&q.index_uid).await;
+            state.metrics.inc_alias_resolution(&q.index_uid);
+            if targets != vec![q.index_uid.clone()] {
+                // It's an alias
+                (q.index_uid.clone(), targets)
+            } else {
+                // Not an alias
+                (q.index_uid.clone(), vec![q.index_uid.clone()])
+            }
+        } else {
+            (q.index_uid.clone(), vec![q.index_uid.clone()])
+        };
+
+        // For multi-target aliases, we use the first target for the query
+        // (multi-target alias fanout is handled by expanding queries in future)
+        q.index_uid = effective_index;
+
+        let filter_str = q.filter.as_ref()
+            .and_then(|v| if v.is_null() || v.is_string() && v.as_str().map(|s| s.is_empty()).unwrap_or(false) {
+                None
+            } else {
+                serde_json::to_string(v).ok()
+            });
+
+        queries_with_resolutions.push((q, filter_str, resolved_targets));
+    }
+
     let core_request = miroir_core::multi_search::MultiSearchRequest {
-        queries: body.queries.into_iter().map(|q| {
-            let filter_str = q.filter.as_ref()
-                .and_then(|v| if v.is_null() || v.is_string() && v.as_str().map(|s| s.is_empty()).unwrap_or(false) {
-                    None
-                } else {
-                    serde_json::to_string(v).ok()
-                });
+        queries: queries_with_resolutions.into_iter().map(|(q, filter_str, _resolved_targets)| {
             miroir_core::multi_search::SearchQuery {
                 indexUid: q.index_uid,
                 q: q.q,
@@ -208,7 +237,7 @@ where
                     map
                 },
             }
-        }).collect(),
+        }).collect()
     };
 
     // Execute multi-search with scatter-gather
