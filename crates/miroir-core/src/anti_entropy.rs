@@ -22,13 +22,18 @@ use crate::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, NodeClient};
 use crate::topology::{NodeId, Topology};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::Hasher;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 use twox_hash::XxHash64;
+
+/// Number of buckets for granular diff (plan §13.8 step 2).
+///
+/// Each bucket isolates divergence to ~1/256 (≈0.4%) of the PK space.
+pub const BUCKET_COUNT: usize = 256;
 
 /// Anti-entropy configuration (plan §13.8).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +46,10 @@ pub struct AntiEntropyConfig {
     pub fingerprint_batch_size: u32,
     pub auto_repair: bool,
     pub updated_at_field: String,
+    /// TTL expires_at field name (plan §13.14 interaction).
+    pub expires_at_field: String,
+    /// Whether TTL is enabled (plan §13.14 interaction).
+    pub ttl_enabled: bool,
 }
 
 impl Default for AntiEntropyConfig {
@@ -54,6 +63,8 @@ impl Default for AntiEntropyConfig {
             fingerprint_batch_size: 1000,
             auto_repair: true,
             updated_at_field: "_miroir_updated_at".to_string(),
+            expires_at_field: "_miroir_expires_at".to_string(),
+            ttl_enabled: false,
         }
     }
 }
@@ -159,6 +170,16 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         }
     }
 
+    /// Compute bucket ID for a primary key (plan §13.8 step 2).
+    ///
+    /// Uses pk-hash modulo BUCKET_COUNT to isolate divergence to ~0.4% of PK space.
+    /// This is reused by §13.1 reshard verify with PK-keyed bucketing.
+    pub fn bucket_for_primary_key(primary_key: &str) -> usize {
+        let mut hasher = XxHash64::with_seed(0);
+        hasher.write(primary_key.as_bytes());
+        (hasher.finish() as usize) % BUCKET_COUNT
+    }
+
     /// Compute the canonical content hash of a document.
     ///
     /// The canonical form excludes internal Miroir fields (_miroir_*, _rankingScore)
@@ -188,11 +209,28 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         hasher.finish()
     }
 
+    /// Check if a document is expired (plan §13.14 interaction).
+    ///
+    /// Returns true if the document has an expires_at field that is in the past.
+    /// Expired documents are treated as logically deleted by anti-entropy
+    /// to prevent zombie resurrection.
+    fn is_document_expired(document: &Value) -> bool {
+        if let Some(expires_at) = document.get("_miroir_expires_at").and_then(|v| v.as_u64()) {
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            expires_at <= now_ms
+        } else {
+            false
+        }
+    }
+
     /// Fingerprint a single shard on a node (plan §13.8 step 1).
     ///
     /// Iterates all documents with filter=_miroir_shard={id}, computes
     /// hash(primary_key || content_hash) for each, and folds into a
-    /// streaming xxh3 digest.
+    /// streaming xxh3 digest. Also computes per-bucket hashes for diff.
     pub async fn fingerprint_shard(
         &self,
         node_id: &NodeId,
@@ -204,6 +242,11 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         let mut offset = 0u32;
         let mut document_count = 0u64;
         let mut hasher = XxHash64::with_seed(shard_id as u64); // Shard-seeded digest
+
+        // Per-bucket hashers for granular diff (plan §13.8 step 2)
+        let mut bucket_hashers: Vec<XxHash64> = (0..BUCKET_COUNT)
+            .map(|_| XxHash64::with_seed(shard_id as u64))
+            .collect();
 
         // Paginated iteration through documents
         loop {
@@ -226,6 +269,17 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
             }
 
             for doc in &response.results {
+                // Skip expired documents (plan §13.14 interaction)
+                // Treats them as logically deleted to prevent zombie resurrection
+                if self.config.ttl_enabled && Self::is_document_expired(doc) {
+                    debug!(
+                        shard_id,
+                        primary_key = doc.get("id").or(doc.get("_id")).and_then(|v| v.as_str()).unwrap_or(""),
+                        "Skipping expired document in anti-entropy fingerprint"
+                    );
+                    continue;
+                }
+
                 // Extract primary key
                 let primary_key = doc
                     .get("id")
@@ -245,6 +299,10 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
                 // Fold into shard digest
                 hasher.write_u64(doc_hash);
                 document_count += 1;
+
+                // Fold into bucket digest for granular diff
+                let bucket_id = Self::bucket_for_primary_key(primary_key);
+                bucket_hashers[bucket_id].write_u64(doc_hash);
             }
 
             offset += batch_size as u32;
@@ -256,6 +314,12 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
 
         let merkle_root = format!("xxh3:{}", hasher.finish());
 
+        // Extract per-bucket hashes
+        let bucket_hashes: Vec<String> = bucket_hashers
+            .into_iter()
+            .map(|h| format!("xxh3:{}", h.finish()))
+            .collect();
+
         debug!(
             "Fingerprinted shard {} on node {}: {} documents, root {}",
             shard_id, node_id, document_count, merkle_root
@@ -266,7 +330,158 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
             node_id: node_id.to_string(),
             merkle_root,
             document_count,
-            bucket_hashes: Vec::new(), // Computed on-demand during diff
+            bucket_hashes,
+        })
+    }
+
+    /// Find divergent buckets between two fingerprints (plan §13.8 step 2).
+    ///
+    /// Returns bucket IDs where the per-bucket hashes differ.
+    /// Each bucket isolates divergence to ~0.4% of the PK space.
+    pub fn diff_fingerprints(
+        &self,
+        fp_a: &ShardFingerprint,
+        fp_b: &ShardFingerprint,
+    ) -> Vec<usize> {
+        let mut divergent = Vec::new();
+
+        if fp_a.bucket_hashes.len() != BUCKET_COUNT || fp_b.bucket_hashes.len() != BUCKET_COUNT {
+            // Fallback: if bucket hashes aren't computed, treat all buckets as divergent
+            warn!(
+                "Bucket hashes not computed, treating all {} buckets as divergent",
+                BUCKET_COUNT
+            );
+            return (0..BUCKET_COUNT).collect();
+        }
+
+        for (bucket_id, (hash_a, hash_b)) in fp_a
+            .bucket_hashes
+            .iter()
+            .zip(fp_b.bucket_hashes.iter())
+            .enumerate()
+        {
+            if hash_a != hash_b {
+                divergent.push(bucket_id);
+            }
+        }
+
+        divergent
+    }
+
+    /// Fetch all primary keys in a specific bucket (plan §13.8 step 2).
+    ///
+    /// Returns a map of primary key to content hash for all documents
+    /// in the given bucket on the specified replica.
+    pub async fn fetch_bucket_pks(
+        &self,
+        node_id: &NodeId,
+        shard_id: u32,
+        bucket_id: usize,
+        index_uid: &str,
+        address: &str,
+    ) -> Result<HashMap<String, u64>> {
+        let batch_size = self.config.fingerprint_batch_size as usize;
+        let mut offset = 0u32;
+        let mut bucket_pks = HashMap::new();
+
+        loop {
+            let filter = serde_json::json!({ "_miroir_shard": shard_id });
+            let request = FetchDocumentsRequest {
+                index_uid: index_uid.to_string(),
+                filter,
+                limit: batch_size as u32,
+                offset,
+            };
+
+            let response: FetchDocumentsResponse = self
+                .node_client
+                .fetch_documents(node_id, address, &request)
+                .await
+                .map_err(|e| MiroirError::Topology(format!("fetch failed: {:?}", e)))?;
+
+            if response.results.is_empty() {
+                break;
+            }
+
+            for doc in &response.results {
+                // Skip expired documents (plan §13.14 interaction)
+                if self.config.ttl_enabled && Self::is_document_expired(doc) {
+                    continue;
+                }
+
+                let primary_key = doc
+                    .get("id")
+                    .or(doc.get("_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                // Check if this document belongs to the target bucket
+                let doc_bucket = Self::bucket_for_primary_key(primary_key);
+                if doc_bucket == bucket_id {
+                    let content_hash = Self::compute_content_hash(doc);
+                    bucket_pks.insert(primary_key.to_string(), content_hash);
+                }
+            }
+
+            offset += batch_size as u32;
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+
+        Ok(bucket_pks)
+    }
+
+    /// Compare replicas within a divergent bucket to find specific PK differences.
+    ///
+    /// Returns a ReplicaDiff listing:
+    /// - PKs only in replica A
+    /// - PKs only in replica B
+    /// - PKs with different content hashes
+    pub async fn compare_bucket_replicas(
+        &self,
+        shard_id: u32,
+        bucket_id: usize,
+        node_a: &NodeId,
+        address_a: &str,
+        node_b: &NodeId,
+        address_b: &str,
+        index_uid: &str,
+    ) -> Result<ReplicaDiff> {
+        let pks_a = self
+            .fetch_bucket_pks(node_a, shard_id, bucket_id, index_uid, address_a)
+            .await?;
+        let pks_b = self
+            .fetch_bucket_pks(node_b, shard_id, bucket_id, index_uid, address_b)
+            .await?;
+
+        let mut a_only = Vec::new();
+        let mut b_only = Vec::new();
+        let mut mismatched = Vec::new();
+
+        // Find PKs only in A or with mismatched content
+        for (pk, hash_a) in &pks_a {
+            match pks_b.get(pk) {
+                Some(hash_b) if hash_b != hash_a => {
+                    mismatched.push(pk.clone());
+                }
+                None => {
+                    a_only.push(pk.clone());
+                }
+                _ => {}
+            }
+        }
+
+        // Find PKs only in B
+        for pk in pks_b.keys() {
+            if !pks_a.contains_key(pk) {
+                b_only.push(pk.clone());
+            }
+        }
+
+        Ok(ReplicaDiff {
+            shard_id,
+            a_only_pks: a_only,
+            b_only_pks: b_only,
+            mismatched_pks: mismatched,
         })
     }
 
@@ -374,7 +589,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
                     .fingerprint_shard(&node_id, shard_id, &self.config.index_uid, &address)
                     .await
                 {
-                    Ok(fp) => fingerprints.push((node_id, fp)),
+                    Ok(fp) => fingerprints.push((node_id.clone(), address, fp)),
                     Err(e) => {
                         warn!(
                             "Failed to fingerprint shard {} on node {}: {}",
@@ -392,10 +607,10 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         }
 
         // Compare fingerprints
-        let reference = &fingerprints[0].1;
+        let (ref_node_id, ref_address, reference) = &fingerprints[0];
         let mut drift_detected = false;
 
-        for (node_id, fp) in &fingerprints[1..] {
+        for (node_id, address, fp) in &fingerprints[1..] {
             if fp.merkle_root != reference.merkle_root {
                 drift_detected = true;
                 debug!(
@@ -405,7 +620,18 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
 
                 if self.config.auto_repair {
                     // Perform detailed diff and repair
-                    if let Err(e) = self.repair_shard(shard_id, reference, fp).await {
+                    if let Err(e) = self
+                        .repair_shard(
+                            shard_id,
+                            ref_node_id,
+                            ref_address,
+                            reference,
+                            node_id,
+                            address,
+                            fp,
+                        )
+                        .await
+                    {
                         error!(
                             "Failed to repair shard {} on node {}: {}",
                             shard_id, node_id, e
@@ -418,28 +644,221 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         Ok(drift_detected)
     }
 
-    /// Repair a shard by comparing replicas and applying fixes.
+    /// Repair a shard by comparing replicas and applying fixes (plan §13.8 step 3).
     async fn repair_shard(
         &self,
         shard_id: u32,
-        reference: &ShardFingerprint,
-        target: &ShardFingerprint,
+        reference_node: &NodeId,
+        reference_address: &str,
+        reference_fp: &ShardFingerprint,
+        target_node: &NodeId,
+        target_address: &str,
+        target_fp: &ShardFingerprint,
     ) -> Result<()> {
-        // In a real implementation, this would:
-        // 1. Compute per-bucket hashes to locate divergent documents
-        // 2. Enumerate divergent primary keys
-        // 3. For each divergent PK:
-        //    a. Check if any replica has _miroir_expires_at <= now (TTL interaction)
-        //    b. If expired: delete from all replicas
-        //    c. Otherwise: pick authoritative version (highest _miroir_updated_at)
-        //    d. Write authoritative version to divergent replicas
-
         debug!(
-            "Repairing shard {} on node {}",
-            shard_id, target.node_id
+            "Repairing shard {} on node {} (reference: node {})",
+            shard_id, target_node, reference_node
         );
 
+        // Step 1: Find divergent buckets using per-bucket hashes (plan §13.8 step 2)
+        let divergent_buckets = self.diff_fingerprints(reference_fp, target_fp);
+
+        if divergent_buckets.is_empty() {
+            // No bucket-level divergence (shouldn't happen if merkle roots differ)
+            warn!(
+                "Shard {} merkle roots differ but no bucket divergence found",
+                shard_id
+            );
+            return Ok(());
+        }
+
+        debug!(
+            "Shard {} has {} divergent buckets out of {}",
+            shard_id,
+            divergent_buckets.len(),
+            BUCKET_COUNT
+        );
+
+        // Step 2: For each divergent bucket, enumerate divergent PKs
+        for bucket_id in divergent_buckets {
+            match self
+                .compare_bucket_replicas(
+                    shard_id,
+                    bucket_id,
+                    reference_node,
+                    reference_address,
+                    target_node,
+                    target_address,
+                    &self.config.index_uid,
+                )
+                .await
+            {
+                Ok(diff) => {
+                    let total_divergent =
+                        diff.a_only_pks.len() + diff.b_only_pks.len() + diff.mismatched_pks.len();
+
+                    if total_divergent > 0 {
+                        debug!(
+                            "Bucket {} in shard {}: {} divergent PKs ({} A-only, {} B-only, {} mismatched)",
+                            bucket_id,
+                            shard_id,
+                            total_divergent,
+                            diff.a_only_pks.len(),
+                            diff.b_only_pks.len(),
+                            diff.mismatched_pks.len()
+                        );
+
+                        // Step 3: For each divergent PK, apply repair (plan §13.8 step 3)
+                        // TODO: Implement actual repair writes
+                        // For now, just log the divergence
+                        for pk in &diff.a_only_pks {
+                            debug!("PK {} only exists on reference node {}", pk, reference_node);
+                        }
+                        for pk in &diff.b_only_pks {
+                            debug!("PK {} only exists on target node {}", pk, target_node);
+                        }
+                        for pk in &diff.mismatched_pks {
+                            debug!("PK {} has mismatched content", pk);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to compare bucket {} in shard {}: {}",
+                        bucket_id, shard_id, e
+                    );
+                }
+            }
+        }
+
         Ok(())
+    }
+
+    /// Cross-index bucket comparison for reshard verification (plan §13.1 step 4).
+    ///
+    /// Compares two indexes with potentially different shard counts (e.g., live vs shadow
+    /// during resharding). Uses PK-keyed bucketing (pk-hash % 256) which is independent
+    /// of the shard count, enabling cross-S comparison.
+    ///
+    /// Returns a ReplicaDiff listing divergent PKs across all buckets.
+    /// This reuses §13.8's bucketed-Merkle machinery but operates across indexes
+    /// rather than within a single shard.
+    pub async fn compare_index_buckets(
+        &self,
+        node_a: &NodeId,
+        address_a: &str,
+        index_a: &str,
+        shard_count_a: u32,
+        node_b: &NodeId,
+        address_b: &str,
+        index_b: &str,
+        shard_count_b: u32,
+    ) -> Result<ReplicaDiff> {
+        let mut all_a_only = Vec::new();
+        let mut all_b_only = Vec::new();
+        let mut all_mismatched = Vec::new();
+
+        // Fetch all PKs and their content hashes from both indexes, bucketed by PK
+        let bucket_pks_a = self.fetch_all_index_pks_bucketed(node_a, address_a, index_a, shard_count_a).await?;
+        let bucket_pks_b = self.fetch_all_index_pks_bucketed(node_b, address_b, index_b, shard_count_b).await?;
+
+        // Compare each bucket
+        for bucket_id in 0..BUCKET_COUNT {
+            let pks_a = &bucket_pks_a[bucket_id];
+            let pks_b = &bucket_pks_b[bucket_id];
+
+            // Find PKs only in A or with mismatched content
+            for (pk, hash_a) in pks_a {
+                match pks_b.get(pk) {
+                    Some(hash_b) if hash_b != hash_a => {
+                        all_mismatched.push(pk.clone());
+                    }
+                    None => {
+                        all_a_only.push(pk.clone());
+                    }
+                    _ => {}
+                }
+            }
+
+            // Find PKs only in B
+            for pk in pks_b.keys() {
+                if !pks_a.contains_key(pk) {
+                    all_b_only.push(pk.clone());
+                }
+            }
+        }
+
+        Ok(ReplicaDiff {
+            shard_id: 0, // Not applicable for cross-index comparison
+            a_only_pks: all_a_only,
+            b_only_pks: all_b_only,
+            mismatched_pks: all_mismatched,
+        })
+    }
+
+    /// Fetch all primary keys from an index, organized by PK-keyed bucket.
+    ///
+    /// This function scans all shards of the index and organizes documents
+    /// by their PK-hash bucket (0..255), independent of shard assignment.
+    /// Used for cross-index comparison during reshard verification.
+    async fn fetch_all_index_pks_bucketed(
+        &self,
+        node_id: &NodeId,
+        address: &str,
+        index_uid: &str,
+        shard_count: u32,
+    ) -> Result<Vec<HashMap<String, u64>>> {
+        let batch_size = self.config.fingerprint_batch_size as usize;
+        let mut bucket_pks: Vec<HashMap<String, u64>> = (0..BUCKET_COUNT)
+            .map(|_| HashMap::new())
+            .collect();
+
+        // Iterate through all shards in the index
+        for shard_id in 0..shard_count {
+            let mut offset = 0u32;
+
+            loop {
+                let filter = serde_json::json!({ "_miroir_shard": shard_id });
+                let request = FetchDocumentsRequest {
+                    index_uid: index_uid.to_string(),
+                    filter,
+                    limit: batch_size as u32,
+                    offset,
+                };
+
+                let response: FetchDocumentsResponse = self
+                    .node_client
+                    .fetch_documents(node_id, address, &request)
+                    .await
+                    .map_err(|e| MiroirError::Topology(format!("fetch failed: {:?}", e)))?;
+
+                if response.results.is_empty() {
+                    break;
+                }
+
+                for doc in &response.results {
+                    let primary_key = doc
+                        .get("id")
+                        .or(doc.get("_id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    if primary_key.is_empty() {
+                        continue;
+                    }
+
+                    let content_hash = Self::compute_content_hash(doc);
+                    let bucket_id = Self::bucket_for_primary_key(primary_key);
+
+                    bucket_pks[bucket_id].insert(primary_key.to_string(), content_hash);
+                }
+
+                offset += batch_size as u32;
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            }
+        }
+
+        Ok(bucket_pks)
     }
 
     /// Get pass history.
