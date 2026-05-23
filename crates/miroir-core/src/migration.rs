@@ -659,6 +659,12 @@ impl MigrationCoordinator {
     pub fn config(&self) -> &MigrationConfig {
         &self.config
     }
+
+    #[cfg(test)]
+    /// Test helper: insert a migration state directly.
+    pub fn test_insert_migration(&mut self, state: MigrationState) {
+        self.migrations.insert(state.id, state);
+    }
 }
 
 #[cfg(test)]

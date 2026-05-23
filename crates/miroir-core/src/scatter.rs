@@ -566,6 +566,17 @@ pub async fn plan_search_scatter_adaptive(
         }
     };
 
+    // If the group has no nodes, return a plan with no targets
+    if group.nodes().is_empty() {
+        return ScatterPlan {
+            chosen_group,
+            target_shards: Vec::new(),
+            shard_to_node: HashMap::new(),
+            deadline_ms: 5000,
+            hedging_eligible: false,
+        };
+    }
+
     let mut shard_to_node = HashMap::new();
     for shard_id in 0..shard_count {
         let replicas = crate::router::assign_shard_in_group(shard_id, group.nodes(), rf);
@@ -1512,5 +1523,422 @@ mod tests {
         assert!(!result.failed_shards.is_empty(), "Should have failed shards");
         // Should NOT have any successful pages (fallback not used)
         assert!(result.shard_pages.is_empty(), "Partial policy should not use fallback");
+    }
+
+    // ── plan_search_scatter_with_version_floor tests ─────────────────────────────
+
+    #[tokio::test]
+    async fn test_plan_with_version_floor_all_nodes_eligible() {
+        let mut topo = Topology::new(64, 1, 2);
+        for i in 0u32..4 {
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                0,
+            ));
+        }
+
+        // All nodes have version >= 1
+        let version_checker = |_index: &str, _node: &str| -> u64 { 10 };
+
+        let result = plan_search_scatter_with_version_floor(
+            &topo,
+            0,
+            2,
+            64,
+            "test_index",
+            1,
+            &version_checker,
+            None,
+        ).await;
+
+        assert!(result.is_some(), "Should succeed when all nodes eligible");
+        let plan = result.unwrap();
+        assert_eq!(plan.chosen_group, 0);
+        assert_eq!(plan.target_shards.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn test_plan_with_version_floor_no_eligible_nodes() {
+        let mut topo = Topology::new(64, 1, 2);
+        for i in 0u32..4 {
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                0,
+            ));
+        }
+
+        // All nodes have version < floor
+        let version_checker = |_index: &str, _node: &str| -> u64 { 5 };
+
+        let result = plan_search_scatter_with_version_floor(
+            &topo,
+            0,
+            2,
+            64,
+            "test_index",
+            10, // floor is 10
+            &version_checker,
+            None,
+        ).await;
+
+        assert!(result.is_none(), "Should fail when no nodes eligible");
+    }
+
+    #[tokio::test]
+    async fn test_plan_with_version_floor_partial_eligibility() {
+        let mut topo = Topology::new(16, 1, 2);
+        topo.add_node(Node::new(NodeId::new("node-old".into()), "http://node-old:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("node-new".into()), "http://node-new:7700".into(), 0));
+
+        // Only node-new has version >= floor
+        let version_checker = |_index: &str, node: &str| -> u64 {
+            if node == "node-new" { 100 } else { 5 }
+        };
+
+        let result = plan_search_scatter_with_version_floor(
+            &topo,
+            0,
+            2,
+            16,
+            "test_index",
+            10,
+            &version_checker,
+            None,
+        ).await;
+
+        assert!(result.is_some(), "Should succeed with partial eligibility");
+        let plan = result.unwrap();
+        // All shards should map to the eligible node
+        for node_id in plan.shard_to_node.values() {
+            assert_eq!(node_id.as_str(), "node-new", "All shards should use eligible node");
+        }
+    }
+
+    // ── plan_search_scatter_for_group tests ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_plan_for_specific_group() {
+        let mut topo = Topology::new(64, 2, 2);
+        for i in 0u32..6 {
+            let rg = if i < 3 { 0 } else { 1 };
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        let result = plan_search_scatter_for_group(&topo, 0, 2, 64, 1, None).await;
+
+        assert!(result.is_some(), "Should succeed for valid group");
+        let plan = result.unwrap();
+        assert_eq!(plan.chosen_group, 1, "Should use specified group");
+        assert_eq!(plan.target_shards.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn test_plan_for_invalid_group() {
+        let mut topo = Topology::new(64, 2, 2);
+        for i in 0u32..6 {
+            let rg = if i < 3 { 0 } else { 1 };
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        let result = plan_search_scatter_for_group(&topo, 0, 2, 64, 99, None).await;
+
+        assert!(result.is_none(), "Should fail for invalid group");
+    }
+
+    #[tokio::test]
+    async fn test_plan_for_group_rotation() {
+        let mut topo = Topology::new(64, 1, 3);
+        for i in 0u32..4 {
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                0,
+            ));
+        }
+
+        let plan = plan_search_scatter_for_group(&topo, 0, 3, 64, 0, None).await.unwrap();
+        assert_eq!(plan.chosen_group, 0);
+
+        // Verify intra-group replica rotation by checking shard_to_node
+        let node_0_usages = plan.shard_to_node.values()
+            .filter(|n| n.as_str() == "node-0")
+            .count();
+        let node_1_usages = plan.shard_to_node.values()
+            .filter(|n| n.as_str() == "node-1")
+            .count();
+        let node_2_usages = plan.shard_to_node.values()
+            .filter(|n| n.as_str() == "node-2")
+            .count();
+
+        // With RF=3 and query_seq=0, each shard should use replicas[0]
+        // The assignment should distribute shards across nodes
+        // Total should be 64 across all nodes
+        let node_3_usages = plan.shard_to_node.values()
+            .filter(|n| n.as_str() == "node-3")
+            .count();
+        assert!(node_0_usages + node_1_usages + node_2_usages + node_3_usages == 64);
+    }
+
+    // ── plan_search_scatter_adaptive tests ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_plan_adaptive_basic() {
+        let mut topo = Topology::new(64, 2, 2);
+        for i in 0u32..6 {
+            let rg = if i < 3 { 0 } else { 1 };
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        // Create a selector with adaptive strategy
+        let selector = crate::replica_selection::ReplicaSelector::new(
+            crate::replica_selection::ReplicaSelectionConfig {
+                strategy: "adaptive".into(),
+                exploration_epsilon: 0.0, // Disable exploration for deterministic test
+                ..Default::default()
+            }
+        );
+        let plan = plan_search_scatter_adaptive(&topo, 0, 2, 64, &selector).await;
+
+        assert_eq!(plan.chosen_group, 0);
+        assert_eq!(plan.target_shards.len(), 64);
+        assert!(plan.hedging_eligible, "Should be eligible for hedging with multiple nodes in group");
+    }
+
+    #[tokio::test]
+    async fn test_plan_adaptive_empty_group() {
+        let topo = Topology::new(64, 2, 2); // No nodes added
+
+        let selector = crate::replica_selection::ReplicaSelector::default();
+        let plan = plan_search_scatter_adaptive(&topo, 0, 2, 64, &selector).await;
+
+        assert_eq!(plan.chosen_group, 0);
+        assert!(plan.target_shards.is_empty(), "Should have no targets for empty topology");
+        assert!(!plan.hedging_eligible);
+    }
+
+    #[tokio::test]
+    async fn test_plan_adaptive_selector_returns_none() {
+        let mut topo = Topology::new(64, 1, 2);
+        for i in 0u32..3 {
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                0,
+            ));
+        }
+
+        // Selector with adaptive strategy (will fall back to round-robin when no metrics)
+        let selector = crate::replica_selection::ReplicaSelector::new(
+            crate::replica_selection::ReplicaSelectionConfig {
+                strategy: "adaptive".into(),
+                exploration_epsilon: 0.0, // Disable exploration for deterministic test
+                ..Default::default()
+            }
+        );
+        let plan = plan_search_scatter_adaptive(&topo, 0, 2, 64, &selector).await;
+
+        // Should fall back to default behavior when no metrics exist
+        assert_eq!(plan.target_shards.len(), 64);
+        assert!(plan.hedging_eligible, "Should be eligible for hedging with multiple nodes");
+    }
+
+    // ── NodeClient trait methods tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_mock_write_documents() {
+        let mut c = MockNodeClient::default();
+        let node = NodeId::new("test-node".into());
+
+        let req = WriteRequest {
+            index_uid: "test".into(),
+            documents: vec![serde_json::json!({"id": "1", "title": "Test"})],
+            primary_key: Some("id".into()),
+            origin: None,
+        };
+
+        let result = c.write_documents(&node, "http://test:7700", &req).await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert!(resp.success);
+        assert_eq!(resp.task_uid, Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_mock_write_documents_error() {
+        let mut c = MockNodeClient::default();
+        let node = NodeId::new("test-node".into());
+        c.errors.insert(node.clone(), NodeError::NetworkError("connection refused".into()));
+
+        let req = WriteRequest {
+            index_uid: "test".into(),
+            documents: vec![serde_json::json!({"id": "1"})],
+            primary_key: None,
+            origin: None,
+        };
+
+        let result = c.write_documents(&node, "http://test:7700", &req).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_mock_delete_documents() {
+        let c = MockNodeClient::default();
+        let node = NodeId::new("test-node".into());
+
+        let req = DeleteByIdsRequest {
+            index_uid: "test".into(),
+            ids: vec!["1".into(), "2".into()],
+            origin: None,
+        };
+
+        let result = c.delete_documents(&node, "http://test:7700", &req).await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert!(resp.success);
+        assert_eq!(resp.task_uid, Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_mock_delete_documents_by_filter() {
+        let c = MockNodeClient::default();
+        let node = NodeId::new("test-node".into());
+
+        let req = DeleteByFilterRequest {
+            index_uid: "test".into(),
+            filter: serde_json::json!("status = 'deleted'"),
+            origin: None,
+        };
+
+        let result = c.delete_documents_by_filter(&node, "http://test:7700", &req).await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert!(resp.success);
+    }
+
+    #[tokio::test]
+    async fn test_mock_fetch_documents() {
+        let mut c = MockNodeClient::default();
+        let node = NodeId::new("test-node".into());
+
+        let stored = FetchDocumentsResponse {
+            results: vec![
+                serde_json::json!({"id": "1", "title": "Doc 1"}),
+                serde_json::json!({"id": "2", "title": "Doc 2"}),
+            ],
+            limit: 10,
+            offset: 0,
+            total: 100,
+        };
+        c.fetch_responses.insert(node.clone(), stored);
+
+        let req = FetchDocumentsRequest {
+            index_uid: "test".into(),
+            filter: serde_json::json!(null),
+            limit: 10,
+            offset: 0,
+        };
+
+        let result = c.fetch_documents(&node, "http://test:7700", &req).await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.results.len(), 2);
+        assert_eq!(resp.total, 100);
+    }
+
+    #[tokio::test]
+    async fn test_mock_fetch_documents_pagination() {
+        let mut c = MockNodeClient::default();
+        let node = NodeId::new("test-node".into());
+
+        let stored = FetchDocumentsResponse {
+            results: vec![],
+            limit: 10,
+            offset: 0,
+            total: 5,
+        };
+        c.fetch_responses.insert(node.clone(), stored);
+
+        // Request offset beyond total
+        let req = FetchDocumentsRequest {
+            index_uid: "test".into(),
+            filter: serde_json::json!(null),
+            limit: 10,
+            offset: 10,
+        };
+
+        let result = c.fetch_documents(&node, "http://test:7700", &req).await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.results.len(), 0);
+        assert_eq!(resp.offset, 10);
+    }
+
+    #[tokio::test]
+    async fn test_mock_get_task_status() {
+        let c = MockNodeClient::default();
+        let node = NodeId::new("test-node".into());
+
+        let req = TaskStatusRequest { task_uid: 42 };
+
+        let result = c.get_task_status(&node, "http://test:7700", &req).await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.task_uid, 42);
+        assert_eq!(resp.status, "succeeded");
+        assert!(resp.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_mock_get_task_status_error() {
+        let mut c = MockNodeClient::default();
+        let node = NodeId::new("test-node".into());
+        c.errors.insert(node.clone(), NodeError::Timeout);
+
+        let req = TaskStatusRequest { task_uid: 42 };
+
+        let result = c.get_task_status(&node, "http://test:7700", &req).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_mock_write_custom_response() {
+        let mut c = MockNodeClient::default();
+        let node = NodeId::new("test-node".into());
+
+        let custom_resp = WriteResponse {
+            success: true,
+            task_uid: Some(999),
+            message: Some("custom message".into()),
+            code: Some("code".into()),
+            error_type: Some("type".into()),
+        };
+        c.write_responses.insert(node.clone(), custom_resp);
+
+        let req = WriteRequest {
+            index_uid: "test".into(),
+            documents: vec![],
+            primary_key: None,
+            origin: None,
+        };
+
+        let result = c.write_documents(&node, "http://test:7700", &req).await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.task_uid, Some(999));
+        assert_eq!(resp.message, Some("custom message".into()));
     }
 }

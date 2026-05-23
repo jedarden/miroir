@@ -320,12 +320,12 @@ impl Topology {
 
     /// Get a group by ID.
     pub fn group(&self, id: u32) -> Option<&Group> {
-        self.groups.get(id as usize)
+        self.groups.get(id as usize).filter(|g| g.node_count() > 0)
     }
 
     /// Iterate over all groups in ascending order by ID.
     pub fn groups(&self) -> impl Iterator<Item = &Group> {
-        self.groups.iter()
+        self.groups.iter().filter(|g| g.node_count() > 0)
     }
 
     /// Get the replication factor.
@@ -927,5 +927,141 @@ nodes:
             topo.add_node(node);
         }
         topo
+    }
+
+    // ── Node removal tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn remove_node_removes_from_topology() {
+        let mut topo = make_test_topology();
+        let initial_count = topo.nodes.len();
+        let node_id = NodeId::new("meili-0".into());
+
+        assert!(topo.node(&node_id).is_some(), "Node should exist before removal");
+
+        let removed = topo.remove_node(&node_id);
+
+        assert!(removed, "remove_node should return true");
+        assert_eq!(topo.nodes.len(), initial_count - 1, "Node count should decrease");
+        assert!(topo.node(&node_id).is_none(), "Node should not exist after removal");
+    }
+
+    #[test]
+    fn remove_node_nonexistent_returns_false() {
+        let mut topo = make_test_topology();
+        let initial_count = topo.nodes.len();
+        let nonexistent_id = NodeId::new("nonexistent".into());
+
+        let removed = topo.remove_node(&nonexistent_id);
+
+        assert!(!removed, "remove_node should return false for nonexistent node");
+        assert_eq!(topo.nodes.len(), initial_count, "Node count should not change");
+    }
+
+    #[test]
+    fn remove_node_rebuilds_group() {
+        let mut topo = make_test_topology();
+        let node_id = NodeId::new("meili-0".into());
+
+        let g0_before = topo.group(0).unwrap().node_count();
+        topo.remove_node(&node_id);
+
+        let g0_after = topo.group(0).unwrap().node_count();
+        assert_eq!(g0_after, g0_before - 1, "Group 0 node count should decrease");
+    }
+
+    #[test]
+    fn remove_node_updates_indices() {
+        let mut topo = Topology::new(64, 1, 1);
+        topo.add_node(Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("n1".into()), "http://n1:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("n2".into()), "http://n2:7700".into(), 0));
+
+        // Remove middle node
+        topo.remove_node(&NodeId::new("n1".into()));
+
+        // Verify remaining nodes are still accessible
+        assert!(topo.node(&NodeId::new("n0".into())).is_some());
+        assert!(topo.node(&NodeId::new("n1".into())).is_none());
+        assert!(topo.node(&NodeId::new("n2".into())).is_some());
+    }
+
+    #[test]
+    fn remove_group_removes_all_nodes_in_group() {
+        let mut topo = make_test_topology();
+        let initial_count = topo.nodes.len();
+        let group_0_initial_nodes = topo.group(0).unwrap().node_count();
+
+        let removed = topo.remove_group(0);
+
+        assert!(removed, "remove_group should return true");
+        assert_eq!(topo.nodes.len(), initial_count - group_0_initial_nodes);
+        assert!(topo.group(0).is_none(), "Group 0 should not exist after removal");
+        assert!(topo.group(1).is_some(), "Group 1 should still exist");
+    }
+
+    #[test]
+    fn remove_group_nonexistent_returns_false() {
+        let mut topo = make_test_topology();
+        let initial_count = topo.nodes.len();
+
+        let removed = topo.remove_group(99);
+
+        assert!(!removed, "remove_group should return false for nonexistent group");
+        assert_eq!(topo.nodes.len(), initial_count, "Node count should not change");
+    }
+
+    #[test]
+    fn remove_group_empty_group_returns_false() {
+        let mut topo = Topology::new(64, 2, 1);
+        // Only add nodes to group 0
+        topo.add_node(Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0));
+
+        // Group 1 exists but has no nodes
+        let removed = topo.remove_group(1);
+
+        assert!(!removed, "remove_group should return false for empty group");
+    }
+
+    #[test]
+    fn remove_group_removes_all_nodes() {
+        let mut topo = Topology::new(64, 2, 1);
+        // Add 3 nodes to group 0, 2 nodes to group 1
+        topo.add_node(Node::new(NodeId::new("g0-n0".into()), "http://g0-n0:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("g0-n1".into()), "http://g0-n1:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("g0-n2".into()), "http://g0-n2:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("g1-n0".into()), "http://g1-n0:7700".into(), 1));
+        topo.add_node(Node::new(NodeId::new("g1-n1".into()), "http://g1-n1:7700".into(), 1));
+
+        assert_eq!(topo.nodes.len(), 5);
+
+        topo.remove_group(0);
+
+        assert_eq!(topo.nodes.len(), 2, "Only group 1 nodes should remain");
+        assert!(topo.node(&NodeId::new("g0-n0".into())).is_none());
+        assert!(topo.node(&NodeId::new("g0-n1".into())).is_none());
+        assert!(topo.node(&NodeId::new("g0-n2".into())).is_none());
+        assert!(topo.node(&NodeId::new("g1-n0".into())).is_some());
+        assert!(topo.node(&NodeId::new("g1-n1".into())).is_some());
+    }
+
+    #[test]
+    fn remove_node_then_remove_group() {
+        let mut topo = Topology::new(64, 2, 1);
+        topo.add_node(Node::new(NodeId::new("g0-n0".into()), "http://g0-n0:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("g0-n1".into()), "http://g0-n1:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("g1-n0".into()), "http://g1-n0:7700".into(), 1));
+
+        // Remove one node from group 0
+        topo.remove_node(&NodeId::new("g0-n0".into()));
+        assert_eq!(topo.group(0).unwrap().node_count(), 1);
+
+        // Remove group 0 entirely
+        topo.remove_group(0);
+
+        // Should remove the remaining node in group 0
+        assert!(topo.group(0).is_none());
+        assert!(topo.node(&NodeId::new("g0-n1".into())).is_none());
+        assert!(topo.group(1).is_some());
     }
 }
