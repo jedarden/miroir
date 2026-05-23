@@ -1,6 +1,7 @@
 //! Scatter orchestration: fan-out logic and covering set builder.
 
 use crate::config::UnavailableShardPolicy;
+use crate::replica_selection::ReplicaSelector;
 use tracing::{instrument, info_span, Instrument};
 use crate::merger::{MergeInput, MergedSearchResult, MergeStrategy, ShardHitPage};
 use crate::router::{covering_set, covering_set_with_version_floor, query_group};
@@ -505,6 +506,61 @@ pub fn plan_search_scatter_for_group(
         deadline_ms: 5000,
         hedging_eligible: group.node_count() > 1,
     })
+}
+
+/// Plan search scatter using adaptive replica selection (plan §13.3).
+///
+/// Uses EWMA-based scoring to select the best replica for each shard,
+/// falling back to round-robin for shards with no metrics data.
+#[instrument(skip_all, fields(query_seq, rf, shard_count))]
+pub async fn plan_search_scatter_adaptive(
+    topology: &Topology,
+    query_seq: u64,
+    rf: usize,
+    shard_count: u32,
+    replica_selector: &ReplicaSelector,
+) -> ScatterPlan {
+    let chosen_group = query_group(query_seq, topology.replica_group_count());
+
+    let group = match topology.group(chosen_group) {
+        Some(g) => g,
+        None => {
+            return ScatterPlan {
+                chosen_group,
+                target_shards: Vec::new(),
+                shard_to_node: HashMap::new(),
+                deadline_ms: 0,
+                hedging_eligible: false,
+            };
+        }
+    };
+
+    let mut shard_to_node = HashMap::new();
+    for shard_id in 0..shard_count {
+        let replicas = crate::router::assign_shard_in_group(shard_id, group.nodes(), rf);
+        if replicas.is_empty() {
+            continue;
+        }
+
+        // Use adaptive selection to pick the best replica
+        let selected = match replica_selector.select(&replicas, chosen_group).await {
+            Some(node) => node,
+            None => {
+                // Fallback to round-robin if selector returns None
+                replicas[(query_seq as usize) % replicas.len()].clone()
+            }
+        };
+
+        shard_to_node.insert(shard_id, selected);
+    }
+
+    ScatterPlan {
+        chosen_group,
+        target_shards: (0..shard_count).collect(),
+        shard_to_node,
+        deadline_ms: 5000,
+        hedging_eligible: group.node_count() > 1,
+    }
 }
 
 #[instrument(skip_all, fields(node_count))]
