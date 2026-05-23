@@ -8,7 +8,7 @@
 
 use crate::anti_entropy::{AntiEntropyConfig, AntiEntropyReconciler};
 use crate::scatter::{
-    FetchDocumentsRequest, FetchDocumentsResponse, MockNodeClient, NodeClient, NodeError,
+    FetchDocumentsRequest, FetchDocumentsResponse, NodeClient, NodeError,
     PreflightRequest, PreflightResponse, SearchRequest,
 };
 use crate::task_store::TaskStore;
