@@ -631,10 +631,10 @@ impl AppState {
         };
 
         Self {
-            config: Arc::new(config),
+            config: Arc::new(config.clone()),
             topology: topology_arc,
             ready: Arc::new(RwLock::new(false)),
-            metrics,
+            metrics: metrics.clone(),
             version_state,
             task_registry: Arc::new(task_registry),
             redis_store,

@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, info_span, instrument, warn};
 
-use crate::middleware::SessionId;
+use crate::middleware::{SessionId, OptionalSessionId};
 use crate::routes::admin_endpoints::{AppState, parse_rate_limit};
 
 /// Metrics observer for replica selection events.
@@ -164,15 +164,14 @@ async fn search_handler(
     Path(index): Path<String>,
     Extension(state): Extension<Arc<AppState>>,
     headers: HeaderMap,
-    session_id: Option<Extension<SessionId>>,
+    OptionalSessionId(session_id): OptionalSessionId,
     Json(body): Json<SearchRequestBody>,
 ) -> Result<Response, StatusCode> {
     let start = Instant::now();
     let client_requested_score = body.ranking_score.unwrap_or(false);
 
     // Extract session ID from request extensions (set by session_pinning_middleware)
-    let sid = session_id.and_then(|ext| {
-        let s = ext.0;
+    let sid = session_id.and_then(|s| {
         if s.0.is_empty() { None } else { Some(s.0.clone()) }
     });
 
@@ -477,7 +476,7 @@ async fn search_handler(
                         pinned_group = group,
                         "pinned group unavailable, falling back to normal routing"
                     );
-                    plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, replica_selector_ref).await
+                    Some(plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, replica_selector_ref).await)
                 }
             }
         } else if let Some(floor) = min_settings_version {
@@ -521,7 +520,7 @@ async fn search_handler(
             }
         } else {
             // No version floor requested, use normal planning
-            plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, replica_selector_ref).await
+            Some(plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, replica_selector_ref).await)
         }
     };
     let node_count = plan.shard_to_node.len() as u64;
@@ -877,7 +876,7 @@ async fn search_multi_targets(
                         pinned_group = group,
                         "pinned group unavailable, falling back to normal routing"
                     );
-                    plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, None).await
+                    Some(plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, None).await)
                 }
             }
         } else if let Some(floor) = min_settings_version {
@@ -899,7 +898,8 @@ async fn search_multi_targets(
                         })
                     })
                 },
-            );
+                None,
+            ).await;
 
             match plan_result {
                 Some(p) => p,
@@ -915,7 +915,7 @@ async fn search_multi_targets(
                 }
             }
         } else {
-            plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards)
+            plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, None).await
         }
     };
     let node_count = plan.shard_to_node.len() as u64;
