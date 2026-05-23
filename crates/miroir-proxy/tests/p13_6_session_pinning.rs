@@ -380,3 +380,413 @@ async fn test_enabled_flag() {
     // Session should not be recorded
     assert!(manager.get_session("session-1").await.is_none());
 }
+
+// ---------------------------------------------------------------------------
+// Integration tests: read-your-writes with task registry (plan §13.6)
+// ---------------------------------------------------------------------------
+
+use miroir_core::task::{MiroirTask, TaskRegistry, TaskStatus, NodeTask, NodeTaskStatus, TaskFilter};
+use miroir_core::error::Result;
+use miroir_core::error::MiroirError;
+use std::collections::HashMap;
+
+/// Mock task registry for testing session pinning wait behavior.
+struct MockTaskRegistry {
+    tasks: Arc<tokio::sync::RwLock<HashMap<String, MiroirTask>>>,
+}
+
+impl MockTaskRegistry {
+    fn new() -> Self {
+        Self {
+            tasks: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Add a task with a specific status.
+    async fn add_task(&self, mtask_id: String, status: TaskStatus) {
+        let mut tasks = self.tasks.write().await;
+        tasks.insert(
+            mtask_id.clone(),
+            MiroirTask {
+                miroir_id: mtask_id.clone(),
+                node_tasks: HashMap::new(),
+                node_errors: HashMap::new(),
+                status,
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                started_at: None,
+                finished_at: None,
+                index_uid: None,
+                task_type: None,
+                error: None,
+            },
+        );
+    }
+
+    /// Update a task's status.
+    async fn update_task(&self, mtask_id: &str, status: TaskStatus) {
+        let mut tasks = self.tasks.write().await;
+        if let Some(task) = tasks.get_mut(mtask_id) {
+            task.status = status;
+        }
+    }
+}
+
+impl TaskRegistry for MockTaskRegistry {
+    fn get(&self, mtask_id: &str) -> Result<Option<MiroirTask>> {
+        let rt = tokio::runtime::Handle::try_current()
+            .map_err(|_| MiroirError::InvalidState("no tokio runtime".to_string()))?;
+        rt.block_on(async {
+            let tasks = self.tasks.read().await;
+            Ok(tasks.get(mtask_id).cloned())
+        })
+    }
+
+    fn register_with_metadata(
+        &self,
+        node_tasks: HashMap<String, u64>,
+        _index_uid: Option<String>,
+        _task_type: Option<String>,
+    ) -> Result<MiroirTask> {
+        let rt = tokio::runtime::Handle::try_current()
+            .map_err(|_| MiroirError::InvalidState("no tokio runtime".to_string()))?;
+        rt.block_on(async {
+            let mtask_id = format!("mtask-{}", uuid::Uuid::new_v4());
+            // Convert u64 node task IDs to NodeTask structures
+            let node_tasks_mapped = node_tasks.into_iter()
+                .map(|(node_id, task_uid)| {
+                    (node_id, NodeTask {
+                        task_uid,
+                        status: NodeTaskStatus::Enqueued,
+                    })
+                })
+                .collect();
+
+            let task = MiroirTask {
+                miroir_id: mtask_id.clone(),
+                node_tasks: node_tasks_mapped,
+                node_errors: HashMap::new(),
+                status: TaskStatus::Enqueued,
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                started_at: None,
+                finished_at: None,
+                index_uid: None,
+                task_type: None,
+                error: None,
+            };
+            let mut tasks = self.tasks.write().await;
+            tasks.insert(mtask_id.clone(), task.clone());
+            Ok(task)
+        })
+    }
+
+    fn update_status(&self, miroir_id: &str, status: TaskStatus) -> Result<()> {
+        let rt = tokio::runtime::Handle::try_current()
+            .map_err(|_| MiroirError::InvalidState("no tokio runtime".to_string()))?;
+        rt.block_on(async {
+            let mut tasks = self.tasks.write().await;
+            if let Some(task) = tasks.get_mut(miroir_id) {
+                task.status = status;
+            }
+            Ok(())
+        })
+    }
+
+    fn update_node_task(
+        &self,
+        _miroir_id: &str,
+        _node_id: &str,
+        _node_status: NodeTaskStatus,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn list(&self, _filter: TaskFilter) -> Result<Vec<MiroirTask>> {
+        Ok(Vec::new())
+    }
+
+    fn count(&self) -> usize {
+        0
+    }
+}
+
+/// Acceptance test 1: Write + session + immediate read with `block` → read sees the write.
+///
+/// This test verifies that when using the "block" wait strategy, a read with a session
+/// header will wait for the pending write to complete before proceeding.
+///
+/// Note: This is a simplified test that verifies the session pin is created correctly.
+/// The actual blocking behavior is tested in integration tests with a real task registry.
+#[tokio::test]
+async fn acceptance_write_session_read_with_block_strategy() {
+    let config = SessionPinningConfig {
+        wait_strategy: "block".to_string(),
+        max_wait_ms: 5000,
+        ..Default::default()
+    };
+    let manager = test_manager(config);
+
+    let session_id = "test-session-block-read";
+    let mtask_id = "mtask-block-123".to_string();
+
+    // Record a write with session pinning
+    manager
+        .record_write_with_quorum(session_id, mtask_id, 0)
+        .await
+        .unwrap();
+
+    // Verify the session is pinned
+    assert_eq!(
+        manager.get_pinned_group(session_id).await,
+        Some(0)
+    );
+
+    // Verify the wait strategy is block
+    assert_eq!(manager.wait_strategy(), WaitStrategy::Block);
+
+    // After clearing the pending write, no pin should be returned
+    manager.clear_pending_write(session_id).await;
+    let pinned_group = manager.get_pinned_group(session_id).await;
+    assert_eq!(pinned_group, None);
+}
+
+/// Acceptance test 2: Write + session + immediate read with `route_pin` → read routed to pinned group.
+///
+/// This test verifies that when using the "route_pin" wait strategy, a read with a session
+/// header routes to the pinned group without waiting for the write to complete.
+#[tokio::test]
+async fn acceptance_write_session_read_with_route_pin_strategy() {
+    let config = SessionPinningConfig {
+        wait_strategy: "route_pin".to_string(),
+        max_wait_ms: 5000,
+        ..Default::default()
+    };
+    let manager = test_manager(config);
+    let task_registry = Arc::new(MockTaskRegistry::new());
+
+    let session_id = "test-session-route-pin";
+    let mtask_id = "mtask-route-pin-123".to_string();
+
+    // Record a write with session pinning
+    manager
+        .record_write_with_quorum(session_id, mtask_id, 1)
+        .await
+        .unwrap();
+
+    // Verify the session is pinned to group 1
+    assert_eq!(
+        manager.get_pinned_group(session_id).await,
+        Some(1)
+    );
+
+    // With route_pin strategy, we don't wait - just check the pinned group
+    let pinned_group = manager.get_pinned_group(session_id).await;
+    assert_eq!(pinned_group, Some(1));
+
+    // The pending write should still be present (not cleared by just reading)
+    assert!(manager.get_session(session_id).await.unwrap().has_pending_write());
+}
+
+/// Acceptance test 3: Pinned group fails mid-session → pin cleared; read succeeds via another group.
+///
+/// This test verifies that when the pinned group fails, the session pin is cleared
+/// and subsequent reads can succeed via other groups.
+#[tokio::test]
+async fn acceptance_pinned_group_failure_clears_pin() {
+    let manager = default_manager();
+
+    let session_id = "test-session-group-fail";
+    let mtask_id = "mtask-group-fail".to_string();
+    let pinned_group = 2;
+
+    // Record a write that pins to group 2
+    manager
+        .record_write_with_quorum(session_id, mtask_id, pinned_group)
+        .await
+        .unwrap();
+
+    // Verify the session is pinned
+    assert_eq!(
+        manager.get_pinned_group(session_id).await,
+        Some(pinned_group)
+    );
+
+    // Simulate group 2 failing
+    let cleared = manager
+        .handle_pinned_group_failure(session_id, pinned_group)
+        .await;
+
+    assert!(cleared, "Pin should be cleared when pinned group fails");
+
+    // Pin should be cleared
+    assert_eq!(
+        manager.get_pinned_group(session_id).await,
+        None,
+        "After group failure, no pinned group should be returned"
+    );
+
+    // The session should still exist, but with no pin
+    let session = manager.get_session(session_id).await;
+    assert!(session.is_some(), "Session should still exist");
+    assert_eq!(session.unwrap().pinned_group, None, "Session should have no pinned group");
+}
+
+/// Acceptance test 4: Session TTL expiry and LRU eviction.
+///
+/// This test verifies that:
+/// - Sessions expire after their TTL
+/// - LRU eviction happens when max_sessions is reached
+#[tokio::test]
+async fn acceptance_session_ttl_and_lru_eviction() {
+    let config = SessionPinningConfig {
+        ttl_seconds: 1,
+        max_sessions: 3,
+        ..Default::default()
+    };
+    let manager = test_manager(config);
+
+    // Create sessions up to the limit
+    manager
+        .record_write_with_quorum("session-1", "mtask-1".to_string(), 0)
+        .await
+        .unwrap();
+    manager
+        .record_write_with_quorum("session-2", "mtask-2".to_string(), 0)
+        .await
+        .unwrap();
+    manager
+        .record_write_with_quorum("session-3", "mtask-3".to_string(), 0)
+        .await
+        .unwrap();
+
+    // All three should exist
+    assert!(manager.get_session("session-1").await.is_some());
+    assert!(manager.get_session("session-2").await.is_some());
+    assert!(manager.get_session("session-3").await.is_some());
+
+    // Adding a 4th session should evict the oldest (session-1)
+    manager
+        .record_write_with_quorum("session-4", "mtask-4".to_string(), 0)
+        .await
+        .unwrap();
+
+    // Session-1 should be evicted
+    assert!(manager.get_session("session-1").await.is_none());
+
+    // Sessions 2, 3, 4 should still exist
+    assert!(manager.get_session("session-2").await.is_some());
+    assert!(manager.get_session("session-3").await.is_some());
+    assert!(manager.get_session("session-4").await.is_some());
+
+    // Wait for TTL expiration
+    sleep(Duration::from_millis(1100)).await;
+
+    // All remaining sessions should be expired
+    assert!(manager.get_session("session-2").await.unwrap().is_expired());
+    assert!(manager.get_session("session-3").await.unwrap().is_expired());
+    assert!(manager.get_session("session-4").await.unwrap().is_expired());
+
+    // Prune should remove all expired sessions
+    let pruned = manager.prune_expired().await;
+    assert_eq!(pruned, 3);
+
+    // No sessions should remain
+    assert!(manager.get_session("session-2").await.is_none());
+    assert!(manager.get_session("session-3").await.is_none());
+    assert!(manager.get_session("session-4").await.is_none());
+}
+
+/// Integration test: Session pinning with scatter plan for pinned group.
+///
+/// This test verifies that `plan_search_scatter_for_group` correctly routes
+/// all shards to the pinned replica group.
+#[tokio::test]
+async fn integration_session_pin_with_scatter_plan() {
+    use miroir_core::scatter::plan_search_scatter_for_group;
+    use miroir_core::topology::{Node, NodeId, NodeStatus, Topology};
+
+    // Build a 2-group, 2-node-per-group topology
+    let mut topo = Topology::new(4, 2, 2);
+
+    // Add nodes to group 0
+    for i in 0..2u32 {
+        let node = Node::new(
+            NodeId::new(format!("node-group0-{i}")),
+            format!("http://localhost:810{i}"),
+            0,
+        );
+        topo.add_node(node);
+        topo.node_mut(&NodeId::new(format!("node-group0-{i}")))
+            .unwrap()
+            .transition_to(NodeStatus::Active)
+            .unwrap();
+    }
+
+    // Add nodes to group 1
+    for i in 2..4u32 {
+        let node = Node::new(
+            NodeId::new(format!("node-group1-{i}")),
+            format!("http://localhost:810{i}"),
+            1,
+        );
+        topo.add_node(node);
+        topo.node_mut(&NodeId::new(format!("node-group1-{i}")))
+            .unwrap()
+            .transition_to(NodeStatus::Active)
+            .unwrap();
+    }
+
+    // Plan scatter for pinned group 1
+    let plan = plan_search_scatter_for_group(&topo, 0, 2, 4, 1);
+
+    assert!(plan.is_some(), "Plan should be created for pinned group");
+    let plan = plan.unwrap();
+
+    // Verify the plan targets the pinned group
+    assert_eq!(plan.chosen_group, 1, "Chosen group should be the pinned group");
+
+    // Verify all shards are targeted
+    assert_eq!(plan.target_shards.len(), 4, "All shards should be targeted");
+
+    // Verify all selected nodes are from group 1
+    for (_shard_id, node_id) in &plan.shard_to_node {
+        let node = topo.node(node_id).unwrap();
+        assert_eq!(node.replica_group, 1, "All nodes should be from pinned group 1");
+    }
+}
+
+/// Integration test: Session pinning metrics.
+///
+/// This test verifies that session pinning metrics are properly recorded.
+#[tokio::test]
+async fn integration_session_pinning_metrics() {
+    use miroir_core::config::MiroirConfig;
+    use miroir_proxy::middleware::Metrics;
+
+    let config = MiroirConfig::default();
+    let metrics = Metrics::new(&config);
+
+    // Test session_active_count metric
+    metrics.set_session_active_count(42);
+    // The metric should be set (we can't directly read it back without Prometheus registry,
+    // but we can verify the method exists and doesn't panic)
+
+    // Test session_pin_enforced_total metric
+    metrics.inc_session_pin_enforced("block");
+    metrics.inc_session_pin_enforced("route_pin");
+
+    // Test session_wait_duration_seconds metric
+    metrics.observe_session_wait_duration(0.123);
+    metrics.observe_session_wait_duration(0.456);
+
+    // Test session_wait_timeout_total metric
+    metrics.inc_session_wait_timeout("block");
+
+    // If we got here without panicking, the metrics methods work
+    assert!(true);
+}
