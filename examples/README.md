@@ -170,3 +170,30 @@ For production deployments on Kubernetes, use the [Miroir Helm chart](https://gi
 ## CI/CD
 
 The Docker Compose stack is exercised by CI smoke tests on every PR. See [k8s/argo-workflows/miroir-ci-docker-compose-smoke.yaml](../k8s/argo-workflows/miroir-ci-docker-compose-smoke.yaml) for the test workflow.
+
+## Integration Tests
+
+This Docker Compose setup doubles as the integration test harness. Comprehensive integration tests are located in `crates/miroir-proxy/tests/docker_compose_integration.rs` with documentation in `crates/miroir-proxy/tests/README_integration.md`.
+
+Run integration tests:
+
+```bash
+# Start the stack
+docker compose -f examples/docker-compose-dev.yml up -d
+
+# Run all integration tests
+cargo test -p miroir-proxy --test docker_compose_integration -- --test-threads=1
+
+# Clean up
+docker compose -f examples/docker-compose-dev.yml down -v
+```
+
+Integration test coverage includes:
+- Document round-trip (1000 documents)
+- Search coverage across all 16 shards
+- Facet aggregation
+- Offset/limit pagination
+- Settings broadcast
+- Task polling
+- Health checks
+- Node failure with RF=2 (requires `docker-compose-dev-rf2.yml`)
