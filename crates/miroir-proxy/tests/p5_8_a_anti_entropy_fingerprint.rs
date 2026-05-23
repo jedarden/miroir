@@ -156,6 +156,15 @@ async fn test_fingerprint_shard_pagination() {
     let mut mock_client = MockTestNodeClient::new();
     mock_client.expect_fetch_documents().returning(move |_, _, req| {
         let start = req.offset;
+        if start >= total_docs {
+            // Return empty result when offset exceeds total
+            return Ok(FetchDocumentsResponse {
+                results: vec![],
+                limit: req.limit,
+                offset: req.offset,
+                total: total_docs as u64,
+            });
+        }
         let end = std::cmp::min(req.offset + req.limit, total_docs);
         let count = end - start;
 
@@ -568,6 +577,15 @@ async fn test_fingerprint_config_batch_size() {
     let mut mock_client = MockTestNodeClient::new();
     mock_client.expect_fetch_documents().returning(move |_, _, req| {
         let start = req.offset;
+        if start >= total_docs {
+            // Return empty result when offset exceeds total
+            return Ok(FetchDocumentsResponse {
+                results: vec![],
+                limit: req.limit,
+                offset: req.offset,
+                total: total_docs as u64,
+            });
+        }
         let end = std::cmp::min(req.offset + req.limit, total_docs);
         let count = end - start;
 
