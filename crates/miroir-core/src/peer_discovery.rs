@@ -115,10 +115,12 @@ impl PeerDiscovery {
         self.peer_set.read().await.len()
     }
 
-    /// Refresh the peer set by performing an SRV lookup.
+    /// Refresh the peer set by performing an SRV lookup (plan §14.5).
     ///
     /// This resolves `_miroir._tcp.<service>.<namespace>.svc.cluster.local`
-    /// and extracts pod names from the returned targets.
+    /// and extracts pod names from the returned targets. Uses the system
+    /// DNS resolver configuration from /etc/resolv.conf for maximum
+    /// compatibility across different Kubernetes distributions.
     ///
     /// Returns the updated peer set.
     #[cfg(feature = "peer-discovery")]
@@ -129,27 +131,14 @@ impl PeerDiscovery {
         );
 
         // Perform SRV lookup using blocking task
-        // Use trust-dns-resolver with a config that works in Kubernetes
-        // In Kubernetes, we use the cluster DNS server (typically at 10.96.0.10:53)
+        // Use trust-dns-resolver with system configuration (reads /etc/resolv.conf)
+        // This works across all Kubernetes clusters without hardcoded DNS IPs
         use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
         use trust_dns_resolver::Resolver;
-        use trust_dns_resolver::config::NameServerConfig;
-        use std::net::{IpAddr, Ipv4Addr};
 
         let lookup = tokio::task::spawn_blocking(move || {
-            // Create a resolver config pointing to Kubernetes DNS
-            let ns = NameServerConfig {
-                socket_addr: (IpAddr::V4(Ipv4Addr::new(10, 96, 0, 10)), 53).into(),
-                protocol: trust_dns_resolver::config::Protocol::Udp,
-                tls_dns_name: None,
-            };
-            let config = ResolverConfig::from_parts::<Vec<NameServerConfig>>(
-                None,
-                vec![],
-                vec![ns].into(),
-            );
-
-            let resolver = Resolver::new(config, ResolverOpts::default())
+            // Use system resolver config from /etc/resolv.conf (plan §14.5)
+            let resolver = Resolver::new(ResolverConfig::default(), ResolverOpts::default())
                 .map_err(|e| MiroirError::Discovery(format!("failed to create DNS resolver: {}", e)))?;
 
             resolver.srv_lookup(&srv_name)
