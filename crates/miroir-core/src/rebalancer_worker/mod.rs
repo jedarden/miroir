@@ -1193,6 +1193,10 @@ impl RebalancerWorker {
                     .count(),
                 job.total_docs_migrated
             ),
+            parent_job_id: None,
+            chunk_index: None,
+            total_chunks: None,
+            created_at: now_ms(),
         };
 
         tokio::task::spawn_blocking({

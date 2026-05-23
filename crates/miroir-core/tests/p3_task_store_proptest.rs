@@ -399,6 +399,10 @@ proptest! {
             params: r#"{"test": "param"}"#.to_string(),
             state: state.clone(),
             progress: r#"{"status": "starting"}"#.to_string(),
+            parent_job_id: None,
+            chunk_index: None,
+            total_chunks: None,
+            created_at: 1714500000000,
         };
 
         store.insert_job(&job).unwrap();
@@ -423,6 +427,10 @@ proptest! {
             params: "{}".to_string(),
             state: "queued".to_string(),
             progress: "{}".to_string(),
+            parent_job_id: None,
+            chunk_index: None,
+            total_chunks: None,
+            created_at: 1714500000000,
         };
 
         store.insert_job(&job).unwrap();
