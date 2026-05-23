@@ -4,9 +4,9 @@ use std::time::Instant;
 
 use axum::{
     extract::{Request, State},
-    http::{HeaderMap, HeaderValue},
+    http::{HeaderMap, HeaderValue, StatusCode},
     middleware::Next,
-    response::Response,
+    response::{Response, IntoResponse},
     Router,
     routing::get,
 };
@@ -1274,14 +1274,21 @@ pub fn metrics_router() -> Router<Metrics> {
 }
 
 /// Handler that returns Prometheus metrics in text exposition format.
-async fn metrics_handler(State(metrics): State<Metrics>) -> String {
-    match metrics.encode_metrics() {
+async fn metrics_handler(State(metrics): State<Metrics>) -> Response {
+    let body = match metrics.encode_metrics() {
         Ok(metrics) => metrics,
         Err(e) => {
             tracing::error!(error = %e, "failed to encode metrics");
             format!("# ERROR: failed to encode metrics: {}\n", e)
         }
-    }
+    };
+
+    let mut response = Response::new(axum::body::Body::from(body));
+    response.headers_mut().insert(
+        "content-type",
+        HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+    );
+    response
 }
 
 /// Accessor methods for metrics that can be used by other parts of the application.
