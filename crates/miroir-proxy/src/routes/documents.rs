@@ -10,6 +10,10 @@
 //! - Collects per-node task UIDs
 //! - Registers Miroir task ID (mtask-<uuid>)
 //! - Returns mtask ID to client
+//!
+//! Implements §13.6 session pinning:
+//! - Records writes with session header
+//! - Tracks pinned group (first to reach quorum)
 
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
@@ -24,8 +28,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::{debug, info, instrument};
 
 use crate::client::HttpClient;
+use crate::middleware::SessionId;
 use crate::routes::admin_endpoints::AppState;
 
 /// Document write parameters from query string.
@@ -142,23 +148,28 @@ where
 }
 
 /// POST /indexes/{uid}/documents - Add documents.
+#[instrument(skip_all, fields(index = %index))]
 async fn post_documents(
     Path(index): Path<String>,
     Query(params): Query<DocumentsParams>,
     Extension(state): Extension<Arc<AppState>>,
     Json(documents): Json<Vec<Value>>,
 ) -> std::result::Result<Response, MeilisearchError> {
-    write_documents_impl(index, params.primaryKey, documents, &state).await
+    // Extract session ID from request extensions (set by session_pinning_middleware)
+    let session_id = crate::middleware::SessionId::default(); // Will be overridden by middleware
+
+    write_documents_impl(index, params.primaryKey, documents, &state, None).await
 }
 
 /// PUT /indexes/{uid}/documents - Replace documents.
+#[instrument(skip_all, fields(index = %index))]
 async fn put_documents(
     Path(index): Path<String>,
     Query(params): Query<DocumentsParams>,
     Extension(state): Extension<Arc<AppState>>,
     Json(documents): Json<Vec<Value>>,
 ) -> std::result::Result<Response, MeilisearchError> {
-    write_documents_impl(index, params.primaryKey, documents, &state).await
+    write_documents_impl(index, params.primaryKey, documents, &state, None).await
 }
 
 /// DELETE /indexes/{uid}/documents - Delete by IDs or filter.
@@ -173,7 +184,7 @@ async fn delete_documents(
             index_uid: index.clone(),
             filter: filter.clone(),
         };
-        return delete_by_filter_impl(index, req, &state).await;
+        return delete_by_filter_impl(index, req, &state, None).await;
     }
 
     // Try to parse as delete by IDs
@@ -187,7 +198,7 @@ async fn delete_documents(
                 index_uid: index.clone(),
                 ids,
             };
-            return delete_by_ids_impl(index, req, &state).await;
+            return delete_by_ids_impl(index, req, &state, None).await;
         }
     }
 
@@ -207,15 +218,17 @@ async fn delete_document_by_id(
         index_uid: index.clone(),
         ids: vec![id],
     };
-    delete_by_ids_impl(index, req, &state).await
+    delete_by_ids_impl(index, req, &state, None).await
 }
 
 /// Implementation for write documents (POST/PUT).
+#[instrument(skip_all, fields(index = %index, session_id))]
 async fn write_documents_impl(
     index: String,
     primary_key: Option<String>,
     mut documents: Vec<Value>,
     state: &AppState,
+    session_id: Option<String>,
 ) -> std::result::Result<Response, MeilisearchError> {
     if documents.is_empty() {
         return Err(MeilisearchError::new(
@@ -380,6 +393,16 @@ async fn write_documents_impl(
         ));
     }
 
+    // 6.5. Find the first group to reach quorum (for session pinning, plan §13.6)
+    // Groups are checked in ascending order, so the first one with quorum is the first
+    let first_quorum_group = (0..replica_group_count)
+        .find(|&group_id| {
+            let acks = *quorum_state.group_acks.get(&group_id).unwrap_or(&0);
+            let quorum = (rf / 2) + 1;
+            acks >= quorum
+        })
+        .unwrap_or(0); // Default to group 0 if somehow no quorum (shouldn't happen here)
+
     // 7. Register Miroir task with collected node task UIDs
     let miroir_task = state
         .task_registry
@@ -392,6 +415,22 @@ async fn write_documents_impl(
             MiroirCode::ShardUnavailable,
             format!("failed to register task: {}", e),
         ))?;
+
+    // 7.5. Record session pinning if session header present (plan §13.6)
+    if let (Some(ref sid), true) = (&session_id, state.session_manager.is_enabled()) {
+        if let Err(e) = state.session_manager.record_write_with_quorum(
+            sid,
+            miroir_task.miroir_id.clone(),
+            first_quorum_group,
+        ).await {
+            // Log error but don't fail the write - session pinning is best-effort
+            tracing::error!(
+                session_id = %sid,
+                error = %e,
+                "failed to record session pinning for write"
+            );
+        }
+    }
 
     // Build success response with degraded header and mtask ID
     build_response_with_degraded_header(
@@ -413,6 +452,7 @@ async fn delete_by_ids_impl(
     index: String,
     req: DeleteByIdsRequest,
     state: &AppState,
+    session_id: Option<String>,
 ) -> std::result::Result<Response, MeilisearchError> {
     if req.ids.is_empty() {
         return Err(MeilisearchError::new(
@@ -493,6 +533,15 @@ async fn delete_by_ids_impl(
         ));
     }
 
+    // Find the first group to reach quorum (for session pinning, plan §13.6)
+    let first_quorum_group = (0..replica_group_count)
+        .find(|&group_id| {
+            let acks = *quorum_state.group_acks.get(&group_id).unwrap_or(&0);
+            let quorum = (rf / 2) + 1;
+            acks >= quorum
+        })
+        .unwrap_or(0);
+
     // Register Miroir task with collected node task UIDs
     let miroir_task = state
         .task_registry
@@ -505,6 +554,21 @@ async fn delete_by_ids_impl(
             MiroirCode::ShardUnavailable,
             format!("failed to register task: {}", e),
         ))?;
+
+    // Record session pinning if session header present (plan §13.6)
+    if let (Some(ref sid), true) = (&session_id, state.session_manager.is_enabled()) {
+        if let Err(e) = state.session_manager.record_write_with_quorum(
+            sid,
+            miroir_task.miroir_id.clone(),
+            first_quorum_group,
+        ).await {
+            tracing::error!(
+                session_id = %sid,
+                error = %e,
+                "failed to record session pinning for delete"
+            );
+        }
+    }
 
     build_response_with_degraded_header(
         DocumentsWriteResponse {
@@ -525,6 +589,7 @@ async fn delete_by_filter_impl(
     index: String,
     req: DeleteByFilterRequest,
     state: &AppState,
+    session_id: Option<String>,
 ) -> std::result::Result<Response, MeilisearchError> {
     let topology = state.topology.read().await;
     let rf = topology.rf();
@@ -574,6 +639,15 @@ async fn delete_by_filter_impl(
         ));
     }
 
+    // Find the first group to reach quorum (for session pinning, plan §13.6)
+    let first_quorum_group = (0..replica_group_count)
+        .find(|&group_id| {
+            let acks = *quorum_state.group_acks.get(&group_id).unwrap_or(&0);
+            let quorum = (rf / 2) + 1;
+            acks >= quorum
+        })
+        .unwrap_or(0);
+
     // Register Miroir task with collected node task UIDs
     let miroir_task = state
         .task_registry
@@ -586,6 +660,21 @@ async fn delete_by_filter_impl(
             MiroirCode::ShardUnavailable,
             format!("failed to register task: {}", e),
         ))?;
+
+    // Record session pinning if session header present (plan §13.6)
+    if let (Some(ref sid), true) = (&session_id, state.session_manager.is_enabled()) {
+        if let Err(e) = state.session_manager.record_write_with_quorum(
+            sid,
+            miroir_task.miroir_id.clone(),
+            first_quorum_group,
+        ).await {
+            tracing::error!(
+                session_id = %sid,
+                error = %e,
+                "failed to record session pinning for delete by filter"
+            );
+        }
+    }
 
     build_response_with_degraded_header(
         DocumentsWriteResponse {

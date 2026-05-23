@@ -10,12 +10,14 @@ use miroir_core::merger::ScoreMergeStrategy;
 use miroir_core::scatter::{
     dfs_query_then_fetch_search, plan_search_scatter, plan_search_scatter_with_version_floor, SearchRequest, NodeClient,
 };
+use miroir_core::session_pinning::WaitStrategy;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, info_span, instrument, warn};
+use tracing::{debug, info, info_span, instrument, warn};
 
+use crate::middleware::SessionId;
 use crate::routes::admin_endpoints::{AppState, parse_rate_limit};
 
 /// Hash a value for logging (obfuscates sensitive data like IPs).
