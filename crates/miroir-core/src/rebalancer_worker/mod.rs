@@ -457,7 +457,7 @@ impl RebalancerWorker {
     }
 
     /// Handle a topology change event.
-    async fn handle_topology_event(&self, event: TopologyChangeEvent) -> Result<(), String> {
+    pub async fn handle_topology_event(&self, event: TopologyChangeEvent) -> Result<(), String> {
         info!(event = ?event, "handling topology change event");
 
         match event {
