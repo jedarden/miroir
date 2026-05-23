@@ -58,6 +58,18 @@ impl Default for SessionPinningConfig {
     }
 }
 
+impl From<crate::config::advanced::SessionPinningConfig> for SessionPinningConfig {
+    fn from(config: crate::config::advanced::SessionPinningConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            ttl_seconds: config.ttl_seconds,
+            max_sessions: config.max_sessions,
+            wait_strategy: config.wait_strategy,
+            max_wait_ms: config.max_wait_ms,
+        }
+    }
+}
+
 /// Session state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {

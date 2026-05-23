@@ -59,6 +59,31 @@ impl RequestId {
     }
 }
 
+/// Session ID wrapper type for read-your-writes session pinning (plan §13.6).
+///
+/// Extracted from the `X-Miroir-Session` header and stored in request extensions.
+/// Handlers can access it via `Request.extensions().get::<SessionId>()`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SessionId(pub String);
+
+impl SessionId {
+    /// Get the inner session ID string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Parse a SessionId from a string.
+    ///
+    /// Accepts any non-empty string (client-provided UUID or identifier).
+    pub fn parse(s: String) -> Option<Self> {
+        if !s.is_empty() && s.len() <= 256 {
+            Some(Self(s))
+        } else {
+            None
+        }
+    }
+}
+
 pub async fn request_id_middleware(
     mut req: Request,
     next: Next,
@@ -88,6 +113,29 @@ pub async fn request_id_middleware(
     }
 
     response
+}
+
+/// Session pinning middleware (plan §13.6).
+///
+/// Extracts the `X-Miroir-Session` header and stores it in request extensions
+/// for handlers to access via `Request.extensions().get::<SessionId>()`.
+pub async fn session_pinning_middleware(
+    mut req: Request,
+    next: Next,
+) -> Response {
+    // Extract session ID from header if present
+    let session_id = req
+        .headers()
+        .get("x-miroir-session")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| SessionId::parse(s.to_string()));
+
+    // Store in request extensions for handler access
+    if let Some(sid) = session_id {
+        req.extensions_mut().insert(sid);
+    }
+
+    next.run(req).await
 }
 
 
@@ -223,6 +271,12 @@ pub struct Metrics {
     // ── §13.7 Alias metrics (always present) ──
     alias_resolutions_total: CounterVec,
     alias_flips_total: CounterVec,
+
+    // ── §13.6 Session pinning metrics (always present) ──
+    session_active_count: Gauge,
+    session_pin_enforced_total: CounterVec,
+    session_wait_duration_seconds: Histogram,
+    session_wait_timeout_total: CounterVec,
 }
 
 impl Clone for Metrics {
@@ -302,6 +356,10 @@ impl Clone for Metrics {
             settings_version: self.settings_version.clone(),
             alias_resolutions_total: self.alias_resolutions_total.clone(),
             alias_flips_total: self.alias_flips_total.clone(),
+            session_active_count: self.session_active_count.clone(),
+            session_pin_enforced_total: self.session_pin_enforced_total.clone(),
+            session_wait_duration_seconds: self.session_wait_duration_seconds.clone(),
+            session_wait_timeout_total: self.session_wait_timeout_total.clone(),
         }
     }
 }
@@ -818,6 +876,31 @@ impl Metrics {
         reg!(alias_resolutions_total);
         reg!(alias_flips_total);
 
+        // ── §13.6 Session pinning metrics (always present) ──
+        let session_active_count = Gauge::new(
+            "miroir_session_active_count",
+            "Number of active sessions",
+        ).expect("create session_active_count");
+        let session_pin_enforced_total = CounterVec::new(
+            Opts::new("miroir_session_pin_enforced_total", "Number of times session pin was enforced"),
+            &["strategy"],
+        ).expect("create session_pin_enforced_total");
+        let session_wait_duration_seconds = Histogram::with_opts(
+            HistogramOpts::new(
+                "miroir_session_wait_duration_seconds",
+                "Duration of session pin wait operations",
+            )
+            .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]),
+        ).expect("create session_wait_duration_seconds");
+        let session_wait_timeout_total = CounterVec::new(
+            Opts::new("miroir_session_wait_timeout_total", "Number of session pin wait timeouts"),
+            &["strategy"],
+        ).expect("create session_wait_timeout_total");
+        reg!(session_active_count);
+        reg!(session_pin_enforced_total);
+        reg!(session_wait_duration_seconds);
+        reg!(session_wait_timeout_total);
+
         Self {
             registry,
             request_duration,
@@ -893,6 +976,10 @@ impl Metrics {
             settings_version,
             alias_resolutions_total,
             alias_flips_total,
+            session_active_count,
+            session_pin_enforced_total,
+            session_wait_duration_seconds,
+            session_wait_timeout_total,
         }
     }
 
@@ -1522,6 +1609,24 @@ impl Metrics {
 
     pub fn inc_alias_flip(&self, alias: &str) {
         self.alias_flips_total.with_label_values(&[alias]).inc();
+    }
+
+    // ── §13.6 Session pinning metrics ──
+
+    pub fn set_session_active_count(&self, count: u64) {
+        self.session_active_count.set(count as f64);
+    }
+
+    pub fn inc_session_pin_enforced(&self, strategy: &str) {
+        self.session_pin_enforced_total.with_label_values(&[strategy]).inc();
+    }
+
+    pub fn observe_session_wait_duration(&self, duration_seconds: f64) {
+        self.session_wait_duration_seconds.observe(duration_seconds);
+    }
+
+    pub fn inc_session_wait_timeout(&self, strategy: &str) {
+        self.session_wait_timeout_total.with_label_values(&[strategy]).inc();
     }
 
     pub fn registry(&self) -> &Registry {
