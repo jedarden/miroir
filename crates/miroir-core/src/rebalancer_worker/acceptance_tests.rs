@@ -647,22 +647,20 @@ async fn p4_1_a4_two_workers_no_duplicate_migrations() {
 
     // Now simulate a scenario where both pods try to process the same topology event
     // Only pod-1 (the lease holder) should actually process it
-    let event_tx_1 = worker1.event_sender();
-    let event_tx_2 = worker2.event_sender();
-
-    // Send the same event through both workers
     let event = TopologyChangeEvent::NodeAdded {
         node_id: "node-new".to_string(),
         replica_group: 0,
         index_uid: "test-duplicate-index".to_string(),
     };
 
-    // Both workers receive the event
-    event_tx_1.send(event.clone()).await.unwrap();
-    event_tx_2.send(event).await.unwrap();
+    // Both workers try to handle the event directly
+    // Worker 1 should succeed (holds the lease)
+    let result1 = worker1.handle_topology_event(event.clone()).await;
+    assert!(result1.is_ok(), "worker1 should handle the event successfully");
 
-    // Give time for processing
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // Worker 2 should also handle the event but check for existing job
+    let result2 = worker2.handle_topology_event(event).await;
+    assert!(result2.is_ok(), "worker2 should handle the event (no-op if job exists)");
 
     // Verify that only one migration was created (not two duplicates)
     let coordinator_read = coordinator.read().await;
