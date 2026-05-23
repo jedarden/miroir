@@ -1,0 +1,7 @@
+# Proptest configuration for miroir-core property tests
+# Sets default to 1024 test cases per property as specified in plan §8
+
+[proptest]
+# Default number of test cases per property
+# Plan §8 requires 1024 cases for thorough property-based testing
+cases = 1024
