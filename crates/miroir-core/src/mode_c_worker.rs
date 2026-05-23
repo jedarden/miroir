@@ -4,9 +4,9 @@
 //! and renews claims. Large jobs are split into chunks; chunk jobs execute
 //! the actual work (dump import, reshard backfill).
 
-use crate::dump_chunking;
 use crate::error::{MiroirError, Result};
-use crate::mode_c_coordinator::{ClaimedJob, JobChunk, JobParams, JobProgress, JobState, JobType, ModeCCoordinator};
+use crate::mode_c_coordinator::{ClaimedJob, JobChunk, JobParams, JobProgress, JobType, ModeCCoordinator};
+use crate::dump_chunking;
 use crate::reshard_chunking;
 use crate::task_store::TaskStore;
 use std::sync::Arc;
@@ -231,22 +231,29 @@ impl ModeCWorker {
         job_type: &JobType,
         params: &JobParams,
     ) -> Result<()> {
-        const DEFAULT_CHUNK_SIZE_BYTES: u64 = 268_435_456; // 256 MiB
+        let chunk_size_bytes = self.coordinator.default_chunk_size_bytes();
 
         let chunks = match job_type {
             JobType::DumpImport => {
-                // For dump import, we'd need to fetch the dump data first
-                // to split on NDJSON line boundaries.
-                // For now, create placeholder chunks based on size.
-                // TODO: Fetch dump data and use dump_chunking::split_dump_into_chunks
-                let total_chunks = (params.source_size_bytes.unwrap_or(1) / DEFAULT_CHUNK_SIZE_BYTES + 1) as u32;
-                let chunk_size = DEFAULT_CHUNK_SIZE_BYTES;
+                // For dump import, split on byte offset boundaries
+                // In a full implementation, we would:
+                // 1. Fetch the dump data from params.source_url
+                // 2. Use dump_chunking::split_dump_into_chunks to split on NDJSON line boundaries
+                // For now, we create size-based chunks that will be aligned to line boundaries
+                // during actual processing by the worker that processes each chunk
+                let source_size = params.source_size_bytes.unwrap_or(0);
+                if source_size == 0 {
+                    return Err(MiroirError::InvalidRequest("source_size_bytes is required for dump import chunking".into()));
+                }
+
+                // Calculate number of chunks (ceiling division)
+                let total_chunks = ((source_size + chunk_size_bytes - 1) / chunk_size_bytes) as u32;
 
                 (0..total_chunks)
                     .map(|i| {
                         let i = i as u64;
-                        let start = i * chunk_size;
-                        let end = std::cmp::min(start + chunk_size, params.source_size_bytes.unwrap_or(0));
+                        let start = i * chunk_size_bytes;
+                        let end = std::cmp::min(start + chunk_size_bytes, source_size);
                         JobChunk {
                             index: i as u32,
                             total: total_chunks,
@@ -286,13 +293,6 @@ impl ModeCWorker {
     ) -> Result<()> {
         info!("Processing dump import job {}", job_id);
 
-        // TODO: Implement actual dump import processing
-        // This would involve:
-        // 1. Fetching the dump data from params.source_url
-        // 2. Parsing NDJSON and routing to target shards
-        // 3. Updating progress periodically
-        // 4. Completing the job
-
         // If this is a chunk job, process the chunk
         if let Some(chunk) = &params.chunk {
             info!(
@@ -303,24 +303,32 @@ impl ModeCWorker {
                 chunk.end
             );
 
-            // Simulate chunk processing
+            // Parse chunk boundaries
             let start_offset: u64 = chunk.start.parse()
                 .map_err(|_| MiroirError::InvalidRequest("invalid chunk start offset".into()))?;
             let end_offset: u64 = chunk.end.parse()
                 .map_err(|_| MiroirError::InvalidRequest("invalid chunk end offset".into()))?;
 
+            // TODO: Full dump import processing
+            // 1. Fetch dump data from params.source_url with Range header
+            // 2. Parse NDJSON lines (align to line boundaries)
+            // 3. Route each document to target shard based on primary_key
+            // 4. Update progress periodically (heartbeat)
+            // 5. Handle idempotent resume from last_cursor
+
+            // For now, simulate processing with progress tracking
             let progress = JobProgress {
                 bytes_processed: end_offset - start_offset,
-                docs_routed: 1000,
+                docs_routed: 0, // Will be calculated during actual processing
                 last_cursor: chunk.end.clone(),
                 error: None,
             };
 
             coordinator.complete_job(job_id, &progress)?;
         } else {
-            // Parent job was already split, mark as complete
+            // Parent job was already split, mark as delegated
             let progress = JobProgress {
-                bytes_processed: params.source_size_bytes.unwrap_or(0),
+                bytes_processed: 0,
                 docs_routed: 0,
                 last_cursor: "delegated".to_string(),
                 error: None,

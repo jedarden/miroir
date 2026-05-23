@@ -496,9 +496,19 @@ impl TaskStore for SqliteTaskStore {
     fn insert_job(&self, job: &NewJob) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO jobs (id, type, params, state, claimed_by, claim_expires_at, progress)
-             VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5)",
-            params![job.id, job.type_, job.params, job.state, job.progress,],
+            "INSERT INTO jobs (id, type, params, state, claimed_by, claim_expires_at, progress, parent_job_id, chunk_index, total_chunks, created_at)
+             VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                job.id,
+                job.type_,
+                job.params,
+                job.state,
+                job.progress,
+                job.parent_job_id,
+                job.chunk_index,
+                job.total_chunks,
+                job.created_at,
+            ],
         )?;
         Ok(())
     }
@@ -507,7 +517,7 @@ impl TaskStore for SqliteTaskStore {
         let conn = self.conn.lock().unwrap();
         Ok(conn
             .query_row(
-                "SELECT id, type, params, state, claimed_by, claim_expires_at, progress
+                "SELECT id, type, params, state, claimed_by, claim_expires_at, progress, parent_job_id, chunk_index, total_chunks, created_at
                  FROM jobs WHERE id = ?1",
                 params![id],
                 |row| {
@@ -519,6 +529,10 @@ impl TaskStore for SqliteTaskStore {
                         claimed_by: row.get(4)?,
                         claim_expires_at: row.get(5)?,
                         progress: row.get(6)?,
+                        parent_job_id: row.get(7)?,
+                        chunk_index: row.get(8)?,
+                        total_chunks: row.get(9)?,
+                        created_at: row.get(10)?,
                     })
                 },
             )
@@ -557,7 +571,7 @@ impl TaskStore for SqliteTaskStore {
     fn list_jobs_by_state(&self, state: &str) -> Result<Vec<JobRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, type, params, state, claimed_by, claim_expires_at, progress
+            "SELECT id, type, params, state, claimed_by, claim_expires_at, progress, parent_job_id, chunk_index, total_chunks, created_at
              FROM jobs WHERE state = ?1",
         )?;
         let rows = stmt.query_map(params![state], |row| {
@@ -569,6 +583,10 @@ impl TaskStore for SqliteTaskStore {
                 claimed_by: row.get(4)?,
                 claim_expires_at: row.get(5)?,
                 progress: row.get(6)?,
+                parent_job_id: row.get(7)?,
+                chunk_index: row.get(8)?,
+                total_chunks: row.get(9)?,
+                created_at: row.get(10)?,
             })
         })?;
         let mut result = Vec::new();
@@ -576,6 +594,82 @@ impl TaskStore for SqliteTaskStore {
             result.push(row?);
         }
         Ok(result)
+    }
+
+    fn count_jobs_by_state(&self, state: &str) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM jobs WHERE state = ?1",
+            params![state],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
+    fn list_expired_claims(&self, now_ms: i64) -> Result<Vec<JobRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, type, params, state, claimed_by, claim_expires_at, progress, parent_job_id, chunk_index, total_chunks, created_at
+             FROM jobs WHERE state = 'in_progress' AND claim_expires_at < ?1",
+        )?;
+        let rows = stmt.query_map(params![now_ms], |row| {
+            Ok(JobRow {
+                id: row.get(0)?,
+                type_: row.get(1)?,
+                params: row.get(2)?,
+                state: row.get(3)?,
+                claimed_by: row.get(4)?,
+                claim_expires_at: row.get(5)?,
+                progress: row.get(6)?,
+                parent_job_id: row.get(7)?,
+                chunk_index: row.get(8)?,
+                total_chunks: row.get(9)?,
+                created_at: row.get(10)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    fn list_jobs_by_parent(&self, parent_job_id: &str) -> Result<Vec<JobRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, type, params, state, claimed_by, claim_expires_at, progress, parent_job_id, chunk_index, total_chunks, created_at
+             FROM jobs WHERE parent_job_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![parent_job_id], |row| {
+            Ok(JobRow {
+                id: row.get(0)?,
+                type_: row.get(1)?,
+                params: row.get(2)?,
+                state: row.get(3)?,
+                claimed_by: row.get(4)?,
+                claim_expires_at: row.get(5)?,
+                progress: row.get(6)?,
+                parent_job_id: row.get(7)?,
+                chunk_index: row.get(8)?,
+                total_chunks: row.get(9)?,
+                created_at: row.get(10)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    fn reclaim_job_claim(&self, id: &str, state: &str, progress: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE jobs SET state = ?1, progress = ?2, claimed_by = NULL, claim_expires_at = NULL
+             WHERE id = ?3",
+            params![state, progress, id],
+        )?;
+        Ok(rows > 0)
     }
 
     // --- Table 7: leader_lease ---
@@ -1638,6 +1732,10 @@ mod tests {
                 params: r#"{"index": "logs"}"#.to_string(),
                 state: "queued".to_string(),
                 progress: "{}".to_string(),
+                parent_job_id: None,
+                chunk_index: None,
+                total_chunks: None,
+                created_at: 1000,
             })
             .unwrap();
 
@@ -1680,6 +1778,10 @@ mod tests {
                     params: "{}".to_string(),
                     state: "queued".to_string(),
                     progress: "{}".to_string(),
+                    parent_job_id: None,
+                    chunk_index: None,
+                    total_chunks: None,
+                    created_at: 1000 + (i as i64),
                 })
                 .unwrap();
         }
@@ -2671,6 +2773,10 @@ mod tests {
                 params: "{}".to_string(),
                 state: "queued".to_string(),
                 progress: "{}".to_string(),
+                parent_job_id: None,
+                chunk_index: None,
+                total_chunks: None,
+                created_at: 1000,
             }).unwrap();
 
             // Table 7: leader_lease

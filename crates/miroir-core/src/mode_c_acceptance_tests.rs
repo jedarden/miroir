@@ -304,6 +304,92 @@ fn test_acceptance_two_concurrent_dumps_interleave() {
 }
 
 #[test]
+fn test_acceptance_three_pods_claim_chunks_in_parallel() {
+    // Acceptance: 3 pods claim 3 of 4 chunks in parallel; queue drains
+    // Tests that multiple pods can claim chunks from the same parent job
+    let store = Arc::new(SqliteTaskStore::open_in_memory().unwrap());
+    store.migrate().unwrap();
+
+    // Enqueue a 1GB dump import job
+    let params = dump_import_params(1_073_741_824); // 1 GiB
+    let job_id = {
+        let coord = test_coordinator_with_store("pod-1", store.clone());
+        coord.enqueue_job(JobType::DumpImport, params).unwrap()
+    };
+
+    // Pod 1 claims the job and splits it into 4 chunks
+    let coord1 = test_coordinator_with_store("pod-1", store.clone());
+    let claimed = coord1.claim_job().unwrap().expect("pod-1 should claim job");
+    assert_eq!(claimed.id, job_id);
+
+    let chunk_size = 268_435_456; // 256 MiB
+    let total_chunks = 4;
+
+    let chunks: Vec<_> = (0..total_chunks)
+        .map(|i| {
+            let i = i as u64;
+            let start = i * chunk_size;
+            let end = std::cmp::min(start + chunk_size, 1_073_741_824u64);
+            crate::mode_c_coordinator::JobChunk {
+                index: i as u32,
+                total: total_chunks,
+                start: start.to_string(),
+                end: end.to_string(),
+                size_bytes: end - start,
+            }
+        })
+        .collect();
+
+    coord1.split_job_into_chunks(&claimed, chunks).unwrap();
+
+    // Verify 4 chunks are queued
+    let child_jobs = coord1.list_chunks(&job_id).unwrap();
+    assert_eq!(child_jobs.len(), 4);
+    assert_eq!(coord1.queue_depth().unwrap(), 4);
+
+    // Create 3 coordinators representing 3 different pods
+    let coord2 = test_coordinator_with_store("pod-2", store.clone());
+    let coord3 = test_coordinator_with_store("pod-3", store.clone());
+
+    // Pod 1 claims a chunk
+    let claimed1 = coord1.claim_job().unwrap().expect("pod-1 should claim a chunk");
+    assert!(claimed1.parent_job_id.is_some()); // It's a chunk job
+    assert_eq!(coord1.queue_depth().unwrap(), 3);
+
+    // Pod 2 claims a chunk
+    let claimed2 = coord2.claim_job().unwrap().expect("pod-2 should claim a chunk");
+    assert!(claimed2.parent_job_id.is_some());
+    assert_ne!(claimed1.id, claimed2.id); // Different chunks
+    assert_eq!(coord2.queue_depth().unwrap(), 2);
+
+    // Pod 3 claims a chunk
+    let claimed3 = coord3.claim_job().unwrap().expect("pod-3 should claim a chunk");
+    assert!(claimed3.parent_job_id.is_some());
+    assert_ne!(claimed2.id, claimed3.id); // Different chunks
+    assert_ne!(claimed1.id, claimed3.id); // Different chunks
+    assert_eq!(coord3.queue_depth().unwrap(), 1);
+
+    // 1 chunk remains queued
+    assert_eq!(coord1.queue_depth().unwrap(), 1);
+
+    // Pods complete their chunks
+    let progress = JobProgress::default();
+    coord1.complete_job(&claimed1.id, &progress).unwrap();
+    coord2.complete_job(&claimed2.id, &progress).unwrap();
+    coord3.complete_job(&claimed3.id, &progress).unwrap();
+
+    // Queue depth should be 1 (remaining chunk)
+    assert_eq!(coord1.queue_depth().unwrap(), 1);
+
+    // Pod 1 claims and completes the final chunk
+    let claimed4 = coord1.claim_job().unwrap().expect("pod-1 should claim final chunk");
+    coord1.complete_job(&claimed4.id, &progress).unwrap();
+
+    // Queue is now drained
+    assert_eq!(coord1.queue_depth().unwrap(), 0);
+}
+
+#[test]
 fn test_acceptance_reshard_backfill_chunking() {
     // Acceptance: Reshard backfill with 64 old shards splits into chunks
     let coord = test_coordinator("pod-reshard");

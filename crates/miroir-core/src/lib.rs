@@ -10,6 +10,7 @@ pub mod cdc;
 pub mod config;
 pub mod drift_reconciler;
 pub mod dump;
+pub mod dump_chunking;
 pub mod dump_import;
 pub mod error;
 pub mod explainer;
@@ -18,6 +19,12 @@ pub mod idempotency;
 pub mod ilm;
 pub mod leader_election;
 pub mod mode_b_coordinator;
+pub mod mode_c_coordinator;
+pub mod mode_c_worker;
+#[cfg(test)]
+mod mode_b_acceptance_tests;
+#[cfg(test)]
+mod mode_c_acceptance_tests;
 pub mod merger;
 pub mod migration;
 #[cfg(feature = "peer-discovery")]
@@ -28,6 +35,7 @@ pub mod rebalancer;
 pub mod rebalancer_worker;
 pub mod replica_selection;
 pub mod reshard;
+pub mod reshard_chunking;
 pub mod router;
 pub mod schema_migrations;
 pub mod scoped_key_rotation;

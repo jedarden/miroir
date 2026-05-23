@@ -121,6 +121,18 @@ pub trait TaskStore: Send + Sync {
     /// List jobs by state.
     fn list_jobs_by_state(&self, state: &str) -> Result<Vec<JobRow>>;
 
+    /// Count jobs by state (for HPA queue depth metric).
+    fn count_jobs_by_state(&self, state: &str) -> Result<u64>;
+
+    /// List jobs with expired claims (for reclamation).
+    fn list_expired_claims(&self, now_ms: i64) -> Result<Vec<JobRow>>;
+
+    /// List all chunks for a parent job.
+    fn list_jobs_by_parent(&self, parent_job_id: &str) -> Result<Vec<JobRow>>;
+
+    /// Reclaim an expired job claim (reset to queued and clear claim fields).
+    fn reclaim_job_claim(&self, id: &str, state: &str, progress: &str) -> Result<bool>;
+
     // --- Table 7: leader_lease ---
 
     /// Try to acquire a leader lease (CAS: only if expired or held by us).
@@ -343,6 +355,10 @@ pub struct NewJob {
     pub params: String,
     pub state: String,
     pub progress: String,
+    pub parent_job_id: Option<String>,
+    pub chunk_index: Option<i64>,
+    pub total_chunks: Option<i64>,
+    pub created_at: i64,
 }
 
 /// Job row from the DB (table 6).
@@ -355,6 +371,10 @@ pub struct JobRow {
     pub claimed_by: Option<String>,
     pub claim_expires_at: Option<i64>,
     pub progress: String,
+    pub parent_job_id: Option<String>,
+    pub chunk_index: Option<i64>,
+    pub total_chunks: Option<i64>,
+    pub created_at: Option<i64>,
 }
 
 /// Leader lease row (table 7).
