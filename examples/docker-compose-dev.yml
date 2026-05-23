@@ -4,7 +4,7 @@
 services:
   # Meilisearch node 0 (shard replica group 0)
   meili-0:
-    image: getmeilisearch/meilisearch:v1.12
+    image: getmeili/meilisearch:v1.37.0
     container_name: miroir-meili-0
     environment:
       - MEILI_ENV=development
@@ -22,7 +22,7 @@ services:
 
   # Meilisearch node 1 (shard replica group 0)
   meili-1:
-    image: getmeilisearch/meilisearch:v1.12
+    image: getmeili/meilisearch:v1.37.0
     container_name: miroir-meili-1
     environment:
       - MEILI_ENV=development
@@ -40,7 +40,7 @@ services:
 
   # Meilisearch node 2 (shard replica group 0)
   meili-2:
-    image: getmeilisearch/meilisearch:v1.12
+    image: getmeili/meilisearch:v1.37.0
     container_name: miroir-meili-2
     environment:
       - MEILI_ENV=development

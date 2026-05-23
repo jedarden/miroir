@@ -1,0 +1,172 @@
+# Miroir development stack — 6 Meilisearch nodes + 1 Miroir orchestrator (RF=2, RG=2)
+# For testing node failure and high availability scenarios
+# Quick start: docker compose -f examples/docker-compose-dev-rf2.yml up -d
+
+services:
+  # Meilisearch node 0 (shard replica group 0)
+  meili-0:
+    image: getmeili/meilisearch:v1.37.0
+    container_name: miroir-meili-0
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=dev-node-key
+      - MEILI_NO_ANALYTICS=true
+    ports:
+      - "7701:7700"
+    volumes:
+      - meili-0-data-rf2:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Meilisearch node 1 (shard replica group 0)
+  meili-1:
+    image: getmeili/meilisearch:v1.37.0
+    container_name: miroir-meili-1
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=dev-node-key
+      - MEILI_NO_ANALYTICS=true
+    ports:
+      - "7702:7700"
+    volumes:
+      - meili-1-data-rf2:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Meilisearch node 2 (shard replica group 0)
+  meili-2:
+    image: getmeili/meilisearch:v1.37.0
+    container_name: miroir-meili-2
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=dev-node-key
+      - MEILI_NO_ANALYTICS=true
+    ports:
+      - "7703:7700"
+    volumes:
+      - meili-2-data-rf2:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Meilisearch node 3 (shard replica group 1)
+  meili-3:
+    image: getmeili/meilisearch:v1.37.0
+    container_name: miroir-meili-3
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=dev-node-key
+      - MEILI_NO_ANALYTICS=true
+    ports:
+      - "7704:7700"
+    volumes:
+      - meili-3-data-rf2:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Meilisearch node 4 (shard replica group 1)
+  meili-4:
+    image: getmeili/meilisearch:v1.37.0
+    container_name: miroir-meili-4
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=dev-node-key
+      - MEILI_NO_ANALYTICS=true
+    ports:
+      - "7705:7700"
+    volumes:
+      - meili-4-data-rf2:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Meilisearch node 5 (shard replica group 1)
+  meili-5:
+    image: getmeili/meilisearch:v1.37.0
+    container_name: miroir-meili-5
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=dev-node-key
+      - MEILI_NO_ANALYTICS=true
+    ports:
+      - "7706:7700"
+    volumes:
+      - meili-5-data-rf2:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Redis task store for multi-replica deployments
+  redis:
+    image: redis:7-alpine
+    container_name: miroir-redis-rf2
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data-rf2:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Miroir orchestrator
+  miroir:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: miroir-dev-rf2:latest
+    container_name: miroir-orchestrator-rf2
+    environment:
+      - MIROIR_MASTER_KEY=dev-key
+      - MIROIR_NODE_MASTER_KEY=dev-node-key
+    ports:
+      - "7710:7700"
+    volumes:
+      - ../examples/dev-config-rf2.yaml:/etc/miroir/config.yaml:ro
+      - miroir-data-rf2:/data
+    depends_on:
+      meili-0:
+        condition: service_healthy
+      meili-1:
+        condition: service_healthy
+      meili-2:
+        condition: service_healthy
+      meili-3:
+        condition: service_healthy
+      meili-4:
+        condition: service_healthy
+      meili-5:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+volumes:
+  meili-0-data-rf2:
+  meili-1-data-rf2:
+  meili-2-data-rf2:
+  meili-3-data-rf2:
+  meili-4-data-rf2:
+  meili-5-data-rf2:
+  miroir-data-rf2:
+  redis-data-rf2:
