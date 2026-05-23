@@ -1,12 +1,57 @@
 //! CDC (Change Data Capture) — plan §13.13.
 //!
 //! Publishes document change events to configured sinks (webhook, NATS, Kafka, internal queue).
+//!
+//! # Origin Tag-Based Event Suppression
+//!
+//! The `_miroir_origin` tag is an **internal orchestrator-side marker** used to suppress
+//! internal write events from CDC by default. It is:
+//! - Never stored on documents
+//! - Never returned to clients
+//! - Never transmitted outside the orchestrator process
+//!
+//! ## Suppression Rules (plan §13.13)
+//!
+//! | Origin Tag | Write Type | Default Behavior | Opt-In Via |
+//! |------------|------------|-------------------|------------|
+//! | `None` | Client write | **Always emitted** | N/A |
+//! | `ANTIENTROPY` | Anti-entropy repair | Suppressed | `emit_internal_writes` |
+//! | `RESHARD_BACKFILL` | Reshard backfill | Suppressed | `emit_internal_writes` |
+//! | `ROLLOVER` | ILM rollover | Suppressed | `emit_internal_writes` |
+//! | `TTL_EXPIRE` | TTL expiration delete | Suppressed | `emit_ttl_deletes` |
+//!
+//! ## Usage
+//!
+//! Set the origin tag when constructing `WriteRequest`:
+//! ```ignore
+//! // Client write (always emitted to CDC)
+//! WriteRequest { origin: None, .. }
+//!
+//! // Anti-entropy repair write (suppressed by default)
+//! WriteRequest { origin: Some(ORIGIN_ANTIENTROPY.to_string()), .. }
+//! ```
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info};
+
+/// Origin tag for anti-entropy repair writes (plan §13.8).
+/// These writes are suppressed from CDC unless `emit_internal_writes` is true.
+pub const ORIGIN_ANTIENTROPY: &str = "antientropy";
+
+/// Origin tag for reshard backfill writes (plan §13.1 steps 2-3).
+/// These writes are suppressed from CDC unless `emit_internal_writes` is true.
+pub const ORIGIN_RESHARD_BACKFILL: &str = "reshard_backfill";
+
+/// Origin tag for ILM rollover writes (plan §13.17).
+/// These writes are suppressed from CDC unless `emit_internal_writes` is true.
+pub const ORIGIN_ROLLOVER: &str = "rollover";
+
+/// Origin tag for TTL expiration deletes (plan §13.14).
+/// These deletes are suppressed from CDC unless `emit_ttl_deletes` is true.
+pub const ORIGIN_TTL_EXPIRE: &str = "ttl_expire";
 
 /// Callback type for incrementing the CDC events suppressed metric.
 /// Called with the origin tag when an event is suppressed.
@@ -195,11 +240,11 @@ impl CdcManager {
         // Filter based on origin tag (plan §13.13: CDC event suppression)
         if let Some(ref origin) = event.origin {
             let should_suppress = match origin.as_str() {
-                "antientropy" | "reshard_backfill" | "rollover" => {
+                ORIGIN_ANTIENTROPY | ORIGIN_RESHARD_BACKFILL | ORIGIN_ROLLOVER => {
                     // Internal writes: suppressed unless emit_internal_writes is true
                     !self.config.emit_internal_writes
                 }
-                "ttl_expire" => {
+                ORIGIN_TTL_EXPIRE => {
                     // TTL deletes: suppressed unless emit_ttl_deletes is true
                     !self.config.emit_ttl_deletes
                 }
