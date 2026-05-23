@@ -326,6 +326,8 @@ pub struct AppState {
     pub settings_broadcast: Arc<miroir_core::settings::SettingsBroadcast>,
     /// Settings drift reconciler worker (§13.5).
     pub drift_reconciler: Option<Arc<miroir_core::rebalancer_worker::DriftReconciler>>,
+    /// Anti-entropy worker (plan §13.8).
+    pub anti_entropy_worker: Option<Arc<miroir_core::rebalancer_worker::AntiEntropyWorker>>,
     /// Session pinning manager (§13.6).
     pub session_manager: Arc<miroir_core::session_pinning::SessionManager>,
     /// Alias registry (§13.7).
@@ -509,6 +511,26 @@ impl AppState {
             None
         };
 
+        // Create anti-entropy worker (plan §13.8) if task store is available
+        let anti_entropy_worker = if config.anti_entropy.enabled {
+            if let Some(ref store) = task_store {
+                let ae_worker_config = miroir_core::rebalancer_worker::AntiEntropyWorkerConfig::from_schedule(
+                    &config.anti_entropy.schedule
+                );
+                Some(Arc::new(miroir_core::rebalancer_worker::AntiEntropyWorker::new(
+                    ae_worker_config,
+                    topology_arc.clone(),
+                    store.clone(),
+                    config.node_master_key.clone(),
+                    pod_id.clone(),
+                )))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Create session pinning manager (§13.6)
         let session_manager = Arc::new(miroir_core::session_pinning::SessionManager::new(
             miroir_core::session_pinning::SessionPinningConfig::from(
@@ -582,6 +604,7 @@ impl AppState {
             previous_docs_migrated: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             settings_broadcast,
             drift_reconciler,
+            anti_entropy_worker,
             session_manager,
             alias_registry,
             leader_election,

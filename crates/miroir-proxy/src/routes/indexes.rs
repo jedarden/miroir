@@ -963,12 +963,22 @@ async fn two_phase_settings_broadcast(
                         format!("max repair retries ({}) exceeded", max_retries),
                     ).await.ok();
 
-                    // TODO: Raise MiroirSettingsDivergence alert
-                    // TODO: Freeze writes if configured
+                    // Freeze writes on this index if configured
+                    if config.settings_broadcast.freeze_writes_on_unrepairable {
+                        state.metrics.freeze_index_writes(index);
+                        tracing::error!(
+                            index = %index,
+                            retries = max_retries,
+                            "settings divergence unrepairable - freezing writes on index"
+                        );
+                    }
+
+                    // Raise MiroirSettingsDivergence alert
+                    state.metrics.raise_settings_divergence_alert(index);
 
                     return Err(MeilisearchError::new(
                         MiroirCode::NoQuorum,
-                        format!("settings divergence detected after {} retries", max_retries),
+                        format!("settings divergence detected after {} retries - writes frozen on index", max_retries),
                     ));
                 }
 
@@ -976,20 +986,52 @@ async fn two_phase_settings_broadcast(
                 let backoff_ms = 1000 * (1u64 << (retry_count - 1).min(5));
                 tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
 
-                // Re-issue PATCH to mismatched nodes
-                let status = state.settings_broadcast.get_status(index).await;
-                if let Some(status) = &status {
-                    if let Some(ref error) = status.error {
-                        tracing::warn!(
-                            index = %index,
-                            retry = retry_count,
-                            error,
-                            "settings hash mismatch, retrying"
-                        );
+                // Identify mismatched nodes and reissue PATCH to them
+                let mismatched_nodes: Vec<_> = node_hashes.iter()
+                    .filter(|(_, hash)| hash.as_str() != expected_fingerprint)
+                    .map(|(node, _)| node.clone())
+                    .collect();
+
+                tracing::warn!(
+                    index = %index,
+                    retry = retry_count,
+                    mismatched_nodes = ?mismatched_nodes,
+                    "settings hash mismatch detected - reissuing PATCH to mismatched nodes"
+                );
+
+                // Reissue PATCH to mismatched nodes (repair)
+                let mut repair_errors: Vec<String> = Vec::new();
+                for address in &mismatched_nodes {
+                    match client.patch_raw(address, &full_path, body).await {
+                        Ok((status, text)) if status >= 200 && status < 300 => {
+                            tracing::info!(
+                                node = %address,
+                                index = %index,
+                                retry = retry_count,
+                                "successfully reissued settings PATCH"
+                            );
+                        }
+                        Ok((status, text)) => {
+                            repair_errors.push(format!("{}: HTTP {} — {}", address, status, text));
+                        }
+                        Err(e) => {
+                            repair_errors.push(format!("{}: {}", address, e));
+                        }
                     }
                 }
 
-                // Re-run verify phase
+                if !repair_errors.is_empty() {
+                    state.settings_broadcast.abort(
+                        index,
+                        format!("repair reissue failed: {}", repair_errors.join("; ")),
+                    ).await.ok();
+                    return Err(MeilisearchError::new(
+                        MiroirCode::NoQuorum,
+                        format!("repair reissue failed: {}", repair_errors.join("; ")),
+                    ));
+                }
+
+                // Re-run verify phase after repair
                 let (new_hashes, new_errors) = run_verify().await;
                 if !new_errors.is_empty() {
                     state.settings_broadcast.abort(
