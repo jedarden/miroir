@@ -221,6 +221,26 @@ pub trait TaskStore: Send + Sync {
 
     /// Delete expired and revoked sessions (lazy eviction + pruner).
     fn delete_expired_admin_sessions(&self, now_ms: i64) -> Result<usize>;
+
+    // --- Table 15: mode_b_operations ---
+
+    /// Create or update a Mode B operation state.
+    fn upsert_mode_b_operation(&self, operation: &ModeBOperation) -> Result<()>;
+
+    /// Get a Mode B operation by ID.
+    fn get_mode_b_operation(&self, operation_id: &str) -> Result<Option<ModeBOperation>>;
+
+    /// Get the active Mode B operation for a scope (if any).
+    fn get_mode_b_operation_by_scope(&self, scope: &str) -> Result<Option<ModeBOperation>>;
+
+    /// List Mode B operations by type and/or status.
+    fn list_mode_b_operations(&self, filter: &ModeBOperationFilter) -> Result<Vec<ModeBOperation>>;
+
+    /// Delete a Mode B operation.
+    fn delete_mode_b_operation(&self, operation_id: &str) -> Result<bool>;
+
+    /// Delete old completed Mode B operations.
+    fn prune_mode_b_operations(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize>;
 }
 
 // --- Row types ---
@@ -502,4 +522,54 @@ pub struct NewAdminSession {
     pub expires_at: i64,
     pub user_agent: Option<String>,
     pub source_ip: Option<String>,
+}
+
+/// Mode B operation state (table 15).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ModeBOperation {
+    pub operation_id: String,
+    pub operation_type: String,
+    pub scope: String,
+    pub phase: String,
+    pub phase_started_at: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub state_json: String,
+    pub error: Option<String>,
+    pub status: String,
+    // Reshard-specific fields (nullable for other operation types)
+    pub index_uid: Option<String>,
+    pub old_shards: Option<i64>,
+    pub target_shards: Option<i64>,
+    pub shadow_index: Option<String>,
+    pub documents_backfilled: Option<i64>,
+    pub total_documents: Option<i64>,
+}
+
+/// Filter for listing Mode B operations.
+#[derive(Debug, Clone, Default)]
+pub struct ModeBOperationFilter {
+    pub operation_type: Option<String>,
+    pub scope: Option<String>,
+    pub status: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+/// Mode B operation status values.
+pub mod mode_b_status {
+    pub const RUNNING: &str = "running";
+    pub const PAUSED: &str = "paused";
+    pub const COMPLETED: &str = "completed";
+    pub const FAILED: &str = "failed";
+}
+
+/// Mode B operation type values.
+pub mod mode_b_type {
+    pub const RESHARD: &str = "reshard";
+    pub const REBALANCE: &str = "rebalance";
+    pub const ALIAS_FLIP: &str = "alias_flip";
+    pub const SETTINGS_BROADCAST: &str = "settings_broadcast";
+    pub const ILM: &str = "ilm";
+    pub const SCOPED_KEY_ROTATION: &str = "scoped_key_rotation";
 }

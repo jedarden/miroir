@@ -8,6 +8,7 @@ use axum::{
 };
 use miroir_core::{
     config::MiroirConfig,
+    leader_election::{LeaderElection, LeaderElectionMetricsCallback},
     migration::{MigrationConfig, MigrationCoordinator},
     rebalancer::{MigrationExecutor, Rebalancer, RebalancerConfig, RebalancerMetrics},
     rebalancer_worker::{RebalancerMetricsCallback, RebalancerWorker, RebalancerWorkerConfig, TopologyChangeEvent},
@@ -328,6 +329,8 @@ pub struct AppState {
     pub session_manager: Arc<miroir_core::session_pinning::SessionManager>,
     /// Alias registry (§13.7).
     pub alias_registry: Arc<miroir_core::alias::AliasRegistry>,
+    /// Leader election service for Mode B operations (plan §14.5).
+    pub leader_election: Option<Arc<LeaderElection>>,
 }
 
 impl AppState {
@@ -514,6 +517,32 @@ impl AppState {
         // Note: Aliases are loaded asynchronously in background, not during initialization
         let alias_registry = Arc::new(miroir_core::alias::AliasRegistry::new());
 
+        // Create leader election service (plan §14.5) if task store is available
+        let leader_election = if let Some(ref store) = task_store {
+            // Create metrics callback for leader election
+            let metrics_for_leader = metrics.clone();
+            let metrics_callback: LeaderElectionMetricsCallback = Arc::new(
+                move |metric_name: &str, labels: &std::collections::HashMap<String, String>, value: f64| {
+                    if metric_name == "miroir_leader" {
+                        if let Some(scope) = labels.get("scope") {
+                            metrics_for_leader.set_leader(scope, value > 0.0);
+                        }
+                    }
+                }
+            );
+
+            let leader_config = config.leader_election.clone();
+            let mut leader = LeaderElection::new(
+                store.clone(),
+                pod_id.clone(),
+                leader_config,
+            );
+            leader = leader.with_metrics_callback(metrics_callback);
+            Some(Arc::new(leader))
+        } else {
+            None
+        };
+
         Self {
             config: Arc::new(config),
             topology: topology_arc,
@@ -536,6 +565,7 @@ impl AppState {
             drift_reconciler,
             session_manager,
             alias_registry,
+            leader_election,
         }
     }
 

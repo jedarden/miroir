@@ -623,9 +623,10 @@ impl TaskStore for SqliteTaskStore {
 
     fn renew_leader_lease(&self, scope: &str, holder: &str, expires_at: i64) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
+        // Only renew if we still hold the lease AND it's not expired
         let rows = conn.execute(
-            "UPDATE leader_lease SET expires_at = ?1 WHERE scope = ?2 AND holder = ?3",
-            params![expires_at, scope, holder],
+            "UPDATE leader_lease SET expires_at = ?1 WHERE scope = ?2 AND holder = ?3 AND expires_at > ?4",
+            params![expires_at, scope, holder, now_ms()],
         )?;
         Ok(rows > 0)
     }
@@ -1104,6 +1105,212 @@ impl TaskStore for SqliteTaskStore {
         )?;
         Ok(rows)
     }
+
+    // --- Table 15: mode_b_operations ---
+
+    fn upsert_mode_b_operation(&self, operation: &ModeBOperation) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO mode_b_operations (
+                operation_id, operation_type, scope, phase, phase_started_at,
+                created_at, updated_at, state_json, error, status,
+                index_uid, old_shards, target_shards, shadow_index,
+                documents_backfilled, total_documents
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            ON CONFLICT(operation_id) DO UPDATE SET
+                phase = ?4,
+                phase_started_at = ?5,
+                updated_at = ?7,
+                state_json = ?8,
+                error = ?9,
+                status = ?10,
+                index_uid = ?11,
+                old_shards = ?12,
+                target_shards = ?13,
+                shadow_index = ?14,
+                documents_backfilled = ?15,
+                total_documents = ?16",
+            params![
+                &operation.operation_id,
+                &operation.operation_type,
+                &operation.scope,
+                &operation.phase,
+                operation.phase_started_at,
+                operation.created_at,
+                operation.updated_at,
+                &operation.state_json,
+                &operation.error,
+                &operation.status,
+                &operation.index_uid,
+                operation.old_shards,
+                operation.target_shards,
+                &operation.shadow_index,
+                operation.documents_backfilled,
+                operation.total_documents,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn get_mode_b_operation(&self, operation_id: &str) -> Result<Option<ModeBOperation>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT operation_id, operation_type, scope, phase, phase_started_at,
+                        created_at, updated_at, state_json, error, status,
+                        index_uid, old_shards, target_shards, shadow_index,
+                        documents_backfilled, total_documents
+                 FROM mode_b_operations WHERE operation_id = ?1",
+                params![operation_id],
+                |row| {
+                    Ok(ModeBOperation {
+                        operation_id: row.get(0)?,
+                        operation_type: row.get(1)?,
+                        scope: row.get(2)?,
+                        phase: row.get(3)?,
+                        phase_started_at: row.get(4)?,
+                        created_at: row.get(5)?,
+                        updated_at: row.get(6)?,
+                        state_json: row.get(7)?,
+                        error: row.get(8)?,
+                        status: row.get(9)?,
+                        index_uid: row.get(10)?,
+                        old_shards: row.get(11)?,
+                        target_shards: row.get(12)?,
+                        shadow_index: row.get(13)?,
+                        documents_backfilled: row.get(14)?,
+                        total_documents: row.get(15)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    fn get_mode_b_operation_by_scope(&self, scope: &str) -> Result<Option<ModeBOperation>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT operation_id, operation_type, scope, phase, phase_started_at,
+                        created_at, updated_at, state_json, error, status,
+                        index_uid, old_shards, target_shards, shadow_index,
+                        documents_backfilled, total_documents
+                 FROM mode_b_operations WHERE scope = ?1
+                 ORDER BY updated_at DESC LIMIT 1",
+                params![scope],
+                |row| {
+                    Ok(ModeBOperation {
+                        operation_id: row.get(0)?,
+                        operation_type: row.get(1)?,
+                        scope: row.get(2)?,
+                        phase: row.get(3)?,
+                        phase_started_at: row.get(4)?,
+                        created_at: row.get(5)?,
+                        updated_at: row.get(6)?,
+                        state_json: row.get(7)?,
+                        error: row.get(8)?,
+                        status: row.get(9)?,
+                        index_uid: row.get(10)?,
+                        old_shards: row.get(11)?,
+                        target_shards: row.get(12)?,
+                        shadow_index: row.get(13)?,
+                        documents_backfilled: row.get(14)?,
+                        total_documents: row.get(15)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    fn list_mode_b_operations(&self, filter: &ModeBOperationFilter) -> Result<Vec<ModeBOperation>> {
+        let conn = self.conn.lock().unwrap();
+        let mut query = "SELECT operation_id, operation_type, scope, phase, phase_started_at,
+                        created_at, updated_at, state_json, error, status,
+                        index_uid, old_shards, target_shards, shadow_index,
+                        documents_backfilled, total_documents
+                 FROM mode_b_operations".to_string();
+        let mut wheres = Vec::new();
+        let mut params = Vec::new();
+
+        if let Some(op_type) = &filter.operation_type {
+            wheres.push("operation_type = ?");
+            params.push(op_type.as_str());
+        }
+        if let Some(scope) = &filter.scope {
+            wheres.push("scope = ?");
+            params.push(scope.as_str());
+        }
+        if let Some(status) = &filter.status {
+            wheres.push("status = ?");
+            params.push(status.as_str());
+        }
+
+        if !wheres.is_empty() {
+            query.push_str(" WHERE ");
+            query.push_str(&wheres.join(" AND "));
+        }
+
+        query.push_str(" ORDER BY updated_at DESC");
+
+        if let Some(limit) = filter.limit {
+            query.push_str(&format!(" LIMIT {}", limit));
+        }
+        if let Some(offset) = filter.offset {
+            query.push_str(&format!(" OFFSET {}", offset));
+        }
+
+        let mut stmt = conn.prepare(&query)?;
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+
+        let mut results = Vec::new();
+        let rows = stmt.query_map(param_refs.as_slice(), |row| {
+            Ok(ModeBOperation {
+                operation_id: row.get(0)?,
+                operation_type: row.get(1)?,
+                scope: row.get(2)?,
+                phase: row.get(3)?,
+                phase_started_at: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                state_json: row.get(7)?,
+                error: row.get(8)?,
+                status: row.get(9)?,
+                index_uid: row.get(10)?,
+                old_shards: row.get(11)?,
+                target_shards: row.get(12)?,
+                shadow_index: row.get(13)?,
+                documents_backfilled: row.get(14)?,
+                total_documents: row.get(15)?,
+            })
+        })?;
+
+        for row in rows {
+            results.push(row?);
+        }
+
+        Ok(results)
+    }
+
+    fn delete_mode_b_operation(&self, operation_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "DELETE FROM mode_b_operations WHERE operation_id = ?1",
+            params![operation_id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    fn prune_mode_b_operations(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "DELETE FROM mode_b_operations WHERE rowid IN (
+                SELECT rowid FROM mode_b_operations
+                WHERE updated_at < ?1 AND status IN ('completed', 'failed')
+                LIMIT ?2
+            )",
+            params![cutoff_ms, batch_size],
+        )?;
+        Ok(rows)
+    }
 }
 
 fn now_ms() -> i64 {
@@ -1493,36 +1700,45 @@ mod tests {
     fn leader_lease_acquire_renew_steal() {
         let store = test_store();
 
-        // First acquisition (now=0, expires=10000)
+        // Use realistic timestamps based on current time
+        let now = now_ms();
+        let t0 = now;
+        let t1 = now + 15_000;  // +15s (first lease expiration)
+        let t2 = now + 6_000;   // +6s (renew before expiration)
+        let t3 = now + 20_000;  // +20s (after lease expired)
+        let t4 = now + 30_000;  // +30s (new lease expiration)
+        let t5 = now + 35_000;  // +35s (renewal)
+
+        // First acquisition (now=t0, expires=t1)
         assert!(store
-            .try_acquire_leader_lease("reshard:idx-1", "pod-a", 10000, 0)
+            .try_acquire_leader_lease("reshard:idx-1", "pod-a", t1, t0)
             .unwrap());
 
-        // Same holder can re-acquire (now=5000, extends to 15000)
+        // Same holder can re-acquire before expiration (now=t2 < t1)
         assert!(store
-            .try_acquire_leader_lease("reshard:idx-1", "pod-a", 15000, 5000)
+            .try_acquire_leader_lease("reshard:idx-1", "pod-a", t1, t2)
             .unwrap());
 
-        // Different holder, lease not expired — fails (now=6000, lease=15000)
+        // Different holder, lease not expired — fails (now=t2, lease=t1)
         assert!(!store
-            .try_acquire_leader_lease("reshard:idx-1", "pod-b", 20000, 6000)
+            .try_acquire_leader_lease("reshard:idx-1", "pod-b", t4, t2)
             .unwrap());
 
-        // Lease expired — different holder can steal (now=20000, lease=15000)
+        // Lease expired — different holder can steal (now=t3 > t1)
         assert!(store
-            .try_acquire_leader_lease("reshard:idx-1", "pod-b", 30000, 20000)
+            .try_acquire_leader_lease("reshard:idx-1", "pod-b", t4, t3)
             .unwrap());
 
         // Renew by current holder
-        assert!(store.renew_leader_lease("reshard:idx-1", "pod-b", 35000).unwrap());
+        assert!(store.renew_leader_lease("reshard:idx-1", "pod-b", t5).unwrap());
 
         // Wrong holder cannot renew
-        assert!(!store.renew_leader_lease("reshard:idx-1", "pod-a", 35000).unwrap());
+        assert!(!store.renew_leader_lease("reshard:idx-1", "pod-a", t5).unwrap());
 
         // Get lease
         let lease = store.get_leader_lease("reshard:idx-1").unwrap().unwrap();
         assert_eq!(lease.holder, "pod-b");
-        assert_eq!(lease.expires_at, 35000);
+        assert_eq!(lease.expires_at, t5);
     }
 
     // --- Migration idempotency ---
