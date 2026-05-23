@@ -154,6 +154,7 @@ async fn post_documents(
     Query(params): Query<DocumentsParams>,
     Extension(state): Extension<Arc<AppState>>,
     session_id: Option<Extension<crate::middleware::SessionId>>,
+    headers: axum::http::HeaderMap,
     Json(documents): Json<Vec<Value>>,
 ) -> std::result::Result<Response, MeilisearchError> {
     // Extract session ID from request extensions (set by session_pinning_middleware)
@@ -162,7 +163,13 @@ async fn post_documents(
         if s.0.is_empty() { None } else { Some(s.0.clone()) }
     });
 
-    write_documents_impl(index, params.primaryKey, documents, &state, sid).await
+    // Extract idempotency key (plan §13.10)
+    let idempotency_key = headers
+        .get("Idempotency-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    write_documents_impl(index, params.primaryKey, documents, &state, sid, idempotency_key).await
 }
 
 /// PUT /indexes/{uid}/documents - Replace documents.
@@ -172,13 +179,21 @@ async fn put_documents(
     Query(params): Query<DocumentsParams>,
     Extension(state): Extension<Arc<AppState>>,
     session_id: Option<Extension<crate::middleware::SessionId>>,
+    headers: axum::http::HeaderMap,
     Json(documents): Json<Vec<Value>>,
 ) -> std::result::Result<Response, MeilisearchError> {
     let sid = session_id.and_then(|ext| {
         let s = ext.0;
         if s.0.is_empty() { None } else { Some(s.0.clone()) }
     });
-    write_documents_impl(index, params.primaryKey, documents, &state, sid).await
+
+    // Extract idempotency key (plan §13.10)
+    let idempotency_key = headers
+        .get("Idempotency-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    write_documents_impl(index, params.primaryKey, documents, &state, sid, idempotency_key).await
 }
 
 /// DELETE /indexes/{uid}/documents - Delete by IDs or filter.
@@ -186,12 +201,19 @@ async fn delete_documents(
     Path(index): Path<String>,
     Extension(state): Extension<Arc<AppState>>,
     session_id: Option<Extension<crate::middleware::SessionId>>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
 ) -> std::result::Result<Response, MeilisearchError> {
     let sid = session_id.and_then(|ext| {
         let s = ext.0;
         if s.0.is_empty() { None } else { Some(s.0.clone()) }
     });
+
+    // Extract idempotency key (plan §13.10)
+    let idempotency_key = headers
+        .get("Idempotency-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
 
     // Try to parse as delete by filter first
     if let Some(filter) = body.get("filter") {
@@ -200,7 +222,7 @@ async fn delete_documents(
             filter: filter.clone(),
             origin: None, // Client write
         };
-        return delete_by_filter_impl(index, req, &state, sid).await;
+        return delete_by_filter_impl(index, req, &state, sid, idempotency_key).await;
     }
 
     // Try to parse as delete by IDs
@@ -215,7 +237,7 @@ async fn delete_documents(
                 ids,
                 origin: None, // Client write
             };
-            return delete_by_ids_impl(index, req, &state, sid).await;
+            return delete_by_ids_impl(index, req, &state, sid, idempotency_key).await;
         }
     }
 
@@ -231,17 +253,25 @@ async fn delete_document_by_id(
     Path((index, id)): Path<(String, String)>,
     Extension(state): Extension<Arc<AppState>>,
     session_id: Option<Extension<crate::middleware::SessionId>>,
+    headers: axum::http::HeaderMap,
 ) -> std::result::Result<Response, MeilisearchError> {
     let sid = session_id.and_then(|ext| {
         let s = ext.0;
         if s.0.is_empty() { None } else { Some(s.0.clone()) }
     });
+
+    // Extract idempotency key (plan §13.10)
+    let idempotency_key = headers
+        .get("Idempotency-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
     let req = DeleteByIdsRequest {
         index_uid: index.clone(),
         ids: vec![id],
         origin: None, // Client write
     };
-    delete_by_ids_impl(index, req, &state, sid).await
+    delete_by_ids_impl(index, req, &state, sid, idempotency_key).await
 }
 
 /// Implementation for write documents (POST/PUT).
@@ -252,12 +282,59 @@ async fn write_documents_impl(
     mut documents: Vec<Value>,
     state: &AppState,
     session_id: Option<String>,
+    idempotency_key: Option<String>,
 ) -> std::result::Result<Response, MeilisearchError> {
     if documents.is_empty() {
         return Err(MeilisearchError::new(
             MiroirCode::PrimaryKeyRequired,
             "cannot write empty document batch",
         ));
+    }
+
+    // 0.5. Check idempotency cache (plan §13.10)
+    if state.config.idempotency.enabled {
+        if let Some(ref key) = idempotency_key {
+            // Compute SHA256 hash of the request body
+            use sha2::{Digest, Sha256};
+            let body_hash = format!("{:x}", Sha256::digest(serde_json::to_string(&documents).unwrap_or_default()));
+
+            // Check cache
+            match state.idempotency_cache.check(key, &body_hash).await {
+                Ok(Some(cached_mtask_id)) => {
+                    // Idempotency hit: return cached mtask ID
+                    state.metrics.inc_idempotency_hit("dedup");
+                    return build_response_with_degraded_header(
+                        DocumentsWriteResponse {
+                            taskUid: Some(cached_mtask_id),
+                            indexUid: Some(index.clone()),
+                            status: Some("enqueued".to_string()),
+                            error: None,
+                            error_type: None,
+                            code: None,
+                            link: None,
+                        },
+                        0, // No degraded groups for cached response
+                    );
+                }
+                Ok(None) => {
+                    // Cache miss - proceed with processing
+                    state.metrics.inc_idempotency_hit("miss");
+                }
+                Err(miroir_core::error::MiroirError::IdempotencyKeyReused) => {
+                    // Key exists but body hash differs
+                    state.metrics.inc_idempotency_hit("conflict");
+                    return Err(MeilisearchError::new(
+                        MiroirCode::IdempotencyKeyReused,
+                        "idempotency key was already used with a different request body",
+                    ));
+                }
+                Err(e) => {
+                    // Other error - log but proceed (best-effort caching)
+                    tracing::warn!(error = %e, "idempotency cache check failed, proceeding with write");
+                    state.metrics.inc_idempotency_hit("miss");
+                }
+            }
+        }
     }
 
     // 1. Resolve alias to concrete index UID (plan §13.7)
@@ -502,6 +579,21 @@ async fn write_documents_impl(
         }
     }
 
+    // 7.6. Insert into idempotency cache if key was provided (plan §13.10)
+    if state.config.idempotency.enabled {
+        if let Some(ref key) = idempotency_key {
+            use sha2::{Digest, Sha256};
+            let body_hash = format!("{:x}", Sha256::digest(serde_json::to_string(&documents).unwrap_or_default()));
+            state.idempotency_cache.insert(
+                key.clone(),
+                body_hash,
+                miroir_task.miroir_id.clone(),
+            ).await;
+            // Update cache size metric
+            state.metrics.set_idempotency_cache_size(state.idempotency_cache.size().await as u64);
+        }
+    }
+
     // Build success response with degraded header and mtask ID
     build_response_with_degraded_header(
         DocumentsWriteResponse {
@@ -523,12 +615,53 @@ async fn delete_by_ids_impl(
     req: DeleteByIdsRequest,
     state: &AppState,
     session_id: Option<String>,
+    idempotency_key: Option<String>,
 ) -> std::result::Result<Response, MeilisearchError> {
     if req.ids.is_empty() {
         return Err(MeilisearchError::new(
             MiroirCode::PrimaryKeyRequired,
             "cannot delete empty ID list",
         ));
+    }
+
+    // 0.5. Check idempotency cache (plan §13.10)
+    if state.config.idempotency.enabled {
+        if let Some(ref key) = idempotency_key {
+            use sha2::{Digest, Sha256};
+            let body_hash = format!("{:x}", Sha256::digest(serde_json::to_string(&req).unwrap_or_default()));
+
+            match state.idempotency_cache.check(key, &body_hash).await {
+                Ok(Some(cached_mtask_id)) => {
+                    state.metrics.inc_idempotency_hit("dedup");
+                    return build_response_with_degraded_header(
+                        DocumentsWriteResponse {
+                            taskUid: Some(cached_mtask_id),
+                            indexUid: Some(index.clone()),
+                            status: Some("enqueued".to_string()),
+                            error: None,
+                            error_type: None,
+                            code: None,
+                            link: None,
+                        },
+                        0,
+                    );
+                }
+                Ok(None) => {
+                    state.metrics.inc_idempotency_hit("miss");
+                }
+                Err(miroir_core::error::MiroirError::IdempotencyKeyReused) => {
+                    state.metrics.inc_idempotency_hit("conflict");
+                    return Err(MeilisearchError::new(
+                        MiroirCode::IdempotencyKeyReused,
+                        "idempotency key was already used with a different request body",
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "idempotency cache check failed, proceeding with delete");
+                    state.metrics.inc_idempotency_hit("miss");
+                }
+            }
+        }
     }
 
     // Resolve alias to concrete index UID (plan §13.7)
@@ -665,6 +798,20 @@ async fn delete_by_ids_impl(
         }
     }
 
+    // Insert into idempotency cache if key was provided (plan §13.10)
+    if state.config.idempotency.enabled {
+        if let Some(ref key) = idempotency_key {
+            use sha2::{Digest, Sha256};
+            let body_hash = format!("{:x}", Sha256::digest(serde_json::to_string(&req).unwrap_or_default()));
+            state.idempotency_cache.insert(
+                key.clone(),
+                body_hash,
+                miroir_task.miroir_id.clone(),
+            ).await;
+            state.metrics.set_idempotency_cache_size(state.idempotency_cache.size().await as u64);
+        }
+    }
+
     build_response_with_degraded_header(
         DocumentsWriteResponse {
             taskUid: Some(miroir_task.miroir_id),
@@ -685,7 +832,48 @@ async fn delete_by_filter_impl(
     req: DeleteByFilterRequest,
     state: &AppState,
     session_id: Option<String>,
+    idempotency_key: Option<String>,
 ) -> std::result::Result<Response, MeilisearchError> {
+    // 0.5. Check idempotency cache (plan §13.10)
+    if state.config.idempotency.enabled {
+        if let Some(ref key) = idempotency_key {
+            use sha2::{Digest, Sha256};
+            let body_hash = format!("{:x}", Sha256::digest(serde_json::to_string(&req).unwrap_or_default()));
+
+            match state.idempotency_cache.check(key, &body_hash).await {
+                Ok(Some(cached_mtask_id)) => {
+                    state.metrics.inc_idempotency_hit("dedup");
+                    return build_response_with_degraded_header(
+                        DocumentsWriteResponse {
+                            taskUid: Some(cached_mtask_id),
+                            indexUid: Some(index.clone()),
+                            status: Some("enqueued".to_string()),
+                            error: None,
+                            error_type: None,
+                            code: None,
+                            link: None,
+                        },
+                        0,
+                    );
+                }
+                Ok(None) => {
+                    state.metrics.inc_idempotency_hit("miss");
+                }
+                Err(miroir_core::error::MiroirError::IdempotencyKeyReused) => {
+                    state.metrics.inc_idempotency_hit("conflict");
+                    return Err(MeilisearchError::new(
+                        MiroirCode::IdempotencyKeyReused,
+                        "idempotency key was already used with a different request body",
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "idempotency cache check failed, proceeding with delete by filter");
+                    state.metrics.inc_idempotency_hit("miss");
+                }
+            }
+        }
+    }
+
     let topology = state.topology.read().await;
     let rf = topology.rf();
     let replica_group_count = topology.replica_group_count();

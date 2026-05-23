@@ -656,11 +656,12 @@ impl AppState {
             leader_election,
             mode_c_worker,
             replica_selector: {
-                let config = config.replica_selection.clone();
+                let advanced_config = config.replica_selection.clone();
+                let selector_config = miroir_core::replica_selection::ReplicaSelectionConfig::from(advanced_config);
                 let observer = Arc::new(ReplicaSelectionMetricsObserver {
                     metrics: metrics.clone(),
                 });
-                Arc::new(ReplicaSelector::new_with_observer(config, observer))
+                Arc::new(ReplicaSelector::new_with_observer(selector_config, observer))
             },
             idempotency_cache: Arc::new(miroir_core::idempotency::IdempotencyCache::new(
                 config.idempotency.max_cached_keys as usize,

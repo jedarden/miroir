@@ -113,6 +113,45 @@ pub struct QueryFingerprint {
     pub settings_version: u64,
 }
 
+impl QueryFingerprint {
+    /// Create a new query fingerprint from index, query body, and settings version.
+    ///
+    /// Canonicalizes the JSON to ensure different key orders produce the same fingerprint.
+    pub fn new(index: String, query_body: &serde_json::Value, settings_version: u64) -> Self {
+        // Canonicalize JSON: sort keys recursively to ensure consistent fingerprint
+        let query_json = canonical_json(query_body);
+
+        Self {
+            index,
+            query_json,
+            settings_version,
+        }
+    }
+}
+
+/// Canonicalize a JSON value by sorting all object keys recursively.
+fn canonical_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut sorted_map = serde_json::Map::new();
+            let mut sorted_keys: Vec<&String> = map.keys().collect();
+            sorted_keys.sort();
+
+            for key in sorted_keys {
+                let canonical_value = canonical_json(&map[key]);
+                sorted_map.insert(key.clone(), serde_json::from_str(&canonical_value).unwrap());
+            }
+
+            serde_json::to_string(&sorted_map).unwrap_or_else(|_| value.to_string())
+        }
+        serde_json::Value::Array(arr) => {
+            let canonical_arr: Vec<String> = arr.iter().map(canonical_json).collect();
+            serde_json::to_string(&canonical_arr).unwrap_or_else(|_| value.to_string())
+        }
+        _ => value.to_string(),
+    }
+}
+
 /// Pending query state for coalescing.
 pub struct PendingQuery {
     /// Response broadcast channel.
