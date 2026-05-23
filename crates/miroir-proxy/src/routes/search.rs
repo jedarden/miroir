@@ -1,7 +1,7 @@
 //! Search route handler with DFS (Distributed Frequency Search) support.
 
-use axum::extract::{Extension, Path};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Extension, Path, HeaderMap};
+use axum::http::StatusCode;
 use axum::response::Response;
 use axum::body::Body;
 use axum::Json;
