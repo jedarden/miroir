@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Verification script for P6.2 Peer Discovery
 # Tests that peer discovery is properly configured and the miroir_peer_pod_count metric exists
 
