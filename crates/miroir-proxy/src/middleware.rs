@@ -1219,6 +1219,16 @@ async fn metrics_handler(State(metrics): State<Metrics>) -> String {
 
 /// Accessor methods for metrics that can be used by other parts of the application.
 impl Metrics {
+    // ── Request metrics ──
+
+    pub fn record_request_duration(&self, method: &str, path_template: &str, status: u16, duration_secs: f64) {
+        self.request_duration.with_label_values(&[method, path_template, &status.to_string()]).observe(duration_secs);
+    }
+
+    pub fn inc_requests_total(&self, method: &str, path_template: &str, status: u16) {
+        self.requests_total.with_label_values(&[method, path_template, &status.to_string()]).inc();
+    }
+
     // ── Scatter-gather ──
 
     pub fn record_scatter_fan_out(&self, size: u64) {
