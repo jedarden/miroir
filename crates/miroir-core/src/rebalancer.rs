@@ -11,14 +11,18 @@
 //! and provides admin API endpoints for topology operations.
 
 use crate::migration::{MigrationCoordinator, MigrationId, MigrationConfig, MigrationError, NodeId as MigrationNodeId, ShardId};
+use crate::task_store::TaskStore;
 use crate::topology::{Node, NodeId as TopologyNodeId, NodeStatus, Topology};
 use crate::router::{assign_shard_in_group, score};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
+
+/// Callback type for recording rebalancer metrics.
+pub type RebalancerMetricsCallback = Arc<dyn Fn(&str, f64) + Send + Sync>;
 
 /// Convert a topology NodeId to a migration NodeId.
 fn topo_to_migration_node_id(id: &TopologyNodeId) -> MigrationNodeId {
@@ -330,6 +334,14 @@ pub struct Rebalancer {
     migration_executor: Option<Arc<dyn MigrationExecutor>>,
     /// Metrics for rebalancer operations.
     pub metrics: Arc<RwLock<RebalancerMetrics>>,
+    /// Task store for leader lease (P4.1 background worker).
+    task_store: Option<Arc<dyn TaskStore>>,
+    /// This pod's ID for leader election.
+    pod_id: Option<String>,
+    /// Leader lease scope prefix.
+    leader_scope: String,
+    /// Callback for recording Prometheus metrics.
+    metrics_callback: Option<RebalancerMetricsCallback>,
 }
 
 impl Rebalancer {
@@ -350,13 +362,213 @@ impl Rebalancer {
             active_migrations: Arc::new(RwLock::new(HashMap::new())),
             migration_executor: None,
             metrics: Arc::new(RwLock::new(RebalancerMetrics::default())),
+            task_store: None,
+            pod_id: None,
+            leader_scope: "rebalance:global".to_string(),
+            metrics_callback: None,
         }
+    }
+
+    /// Set the task store for leader lease (P4.1 background worker).
+    pub fn with_task_store(mut self, task_store: Arc<dyn TaskStore>) -> Self {
+        self.task_store = Some(task_store);
+        self
+    }
+
+    /// Set the pod ID for leader election.
+    pub fn with_pod_id(mut self, pod_id: String) -> Self {
+        self.pod_id = Some(pod_id);
+        self
+    }
+
+    /// Set the leader lease scope.
+    pub fn with_leader_scope(mut self, scope: String) -> Self {
+        self.leader_scope = scope;
+        self
+    }
+
+    /// Set the metrics callback for Prometheus emission.
+    pub fn with_metrics_callback(mut self, callback: RebalancerMetricsCallback) -> Self {
+        self.metrics_callback = Some(callback);
+        self
     }
 
     /// Set the migration executor (provides HTTP client for actual migrations).
     pub fn with_migration_executor(mut self, executor: Arc<dyn MigrationExecutor>) -> Self {
         self.migration_executor = Some(executor);
         self
+    }
+
+    /// Emit a metric via the metrics callback (if configured).
+    fn emit_metric(&self, name: &str, value: f64) {
+        if let Some(ref callback) = self.metrics_callback {
+            callback(name, value);
+        }
+    }
+
+    /// Run the background rebalancer worker (P4.1).
+    ///
+    /// This method runs in a loop, periodically checking for topology changes
+    /// and triggering rebalancing as needed. Uses leader lease to ensure only
+    /// one pod runs the rebalancer at a time.
+    #[instrument(skip_all, fields(pod_id = ?self.pod_id))]
+    pub async fn run_background(&self) -> Result<(), RebalancerError> {
+        let Some(ref task_store) = self.task_store else {
+            return Err(RebalancerError::InvalidState(
+                "task_store required for background worker".into(),
+            ));
+        };
+
+        let Some(ref pod_id) = self.pod_id else {
+            return Err(RebalancerError::InvalidState(
+                "pod_id required for background worker".into(),
+            ));
+        };
+
+        let check_interval = Duration::from_millis(5000); // Check every 5 seconds
+        let mut interval = tokio::time::interval(check_interval);
+        let mut leader_lease_interval = tokio::time::interval(Duration::from_secs(3));
+
+        info!(
+            config = ?self.config,
+            "rebalancer background worker started"
+        );
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if self.is_leader(task_store, pod_id).await {
+                        if let Err(e) = self.check_and_rebalance().await {
+                            error!(error = %e, "background rebalance check failed");
+                        }
+                    }
+                }
+                _ = leader_lease_interval.tick() => {
+                    if self.is_leader(task_store, pod_id).await {
+                        self.renew_leader_lease(task_store, pod_id).await;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check if this pod is the leader for rebalancing.
+    async fn is_leader(&self, task_store: &Arc<dyn TaskStore>, pod_id: &str) -> bool {
+        let now = now_ms() as i64;
+        let lease_ttl = now + 15000; // 15 second TTL
+
+        task_store
+            .try_acquire_leader_lease(&self.leader_scope, pod_id, lease_ttl, now)
+            .unwrap_or(false)
+    }
+
+    /// Renew the leader lease.
+    async fn renew_leader_lease(&self, task_store: &Arc<dyn TaskStore>, pod_id: &str) {
+        let now = now_ms() as i64;
+        let lease_ttl = now + 15000; // 15 second TTL
+
+        let _ = task_store
+            .renew_leader_lease(&self.leader_scope, pod_id, lease_ttl);
+    }
+
+    /// Check for topology changes and trigger rebalancing if needed.
+    async fn check_and_rebalance(&self) -> Result<(), RebalancerError> {
+        debug!("checking for topology changes");
+
+        let topology = self.topology.read().await;
+
+        // Check for nodes in Joining state
+        let joining_nodes: Vec<_> = topology
+            .nodes()
+            .filter(|n| n.status == NodeStatus::Joining)
+            .map(|n| (n.id.clone(), n.replica_group, n.address.clone()))
+            .collect();
+
+        // Check for nodes in Draining state
+        let draining_nodes: Vec<_> = topology
+            .nodes()
+            .filter(|n| n.status == NodeStatus::Draining)
+            .map(|n| (n.id.clone(), n.replica_group))
+            .collect();
+
+        // Check for nodes in Failed state
+        let failed_nodes: Vec<_> = topology
+            .nodes()
+            .filter(|n| n.status == NodeStatus::Failed)
+            .map(|n| (n.id.clone(), n.replica_group))
+            .collect();
+
+        // Drop topology read lock before starting operations
+        drop(topology);
+
+        // Trigger rebalance for joining nodes
+        for (node_id, replica_group, address) in joining_nodes {
+            info!(node_id = %node_id, replica_group, "detected joining node");
+
+            // Check if there's already an operation in progress for this node
+            let ops = self.operations.read().await;
+            let already_in_progress = ops.values().any(|o| {
+                o.target_node.as_ref() == Some(&node_id.as_str().to_string())
+                    && o.status == TopologyOperationStatus::InProgress
+            });
+            drop(ops);
+
+            if !already_in_progress {
+                let request = AddNodeRequest {
+                    id: node_id.as_str().to_string(),
+                    address,
+                    replica_group,
+                };
+                if let Err(e) = self.add_node(request).await {
+                    warn!(error = %e, "failed to start rebalance for joining node");
+                }
+            }
+        }
+
+        // Trigger rebalance for draining nodes
+        for (node_id, replica_group) in draining_nodes {
+            info!(node_id = %node_id, replica_group, "detected draining node");
+
+            let ops = self.operations.read().await;
+            let already_in_progress = ops.values().any(|o| {
+                o.target_node.as_ref() == Some(&node_id.as_str().to_string())
+                    && matches!(
+                        o.op_type,
+                        TopologyOperationType::DrainNode | TopologyOperationType::RemoveNode
+                    )
+                    && o.status == TopologyOperationStatus::InProgress
+            });
+            drop(ops);
+
+            if !already_in_progress {
+                let request = DrainNodeRequest {
+                    node_id: node_id.as_str().to_string(),
+                };
+                if let Err(e) = self.drain_node(request).await {
+                    warn!(error = %e, "failed to start rebalance for draining node");
+                }
+            }
+        }
+
+        // Handle failed nodes
+        for (node_id, replica_group) in failed_nodes {
+            info!(node_id = %node_id, replica_group, "detected failed node");
+
+            let ops = self.operations.read().await;
+            let already_handled = ops.values().any(|o| {
+                o.target_node.as_ref() == Some(&node_id.as_str().to_string())
+                    && o.op_type == TopologyOperationType::NodeFailure
+            });
+            drop(ops);
+
+            if !already_handled {
+                if let Err(e) = self.handle_node_failure(node_id.as_str()).await {
+                    warn!(error = %e, "failed to handle node failure");
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Get current rebalance status.

@@ -5,6 +5,7 @@
 
 use crate::error::{MiroirError, Result};
 use crate::task::{TaskRegistry, TaskStatus};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -106,8 +107,8 @@ impl SessionState {
 pub struct SessionManager {
     /// Configuration.
     config: SessionPinningConfig,
-    /// Session ID -> Session state.
-    sessions: Arc<RwLock<HashMap<String, SessionState>>>,
+    /// Session ID -> Session state (IndexMap maintains insertion order for LRU).
+    sessions: Arc<RwLock<IndexMap<String, SessionState>>>,
     /// Per-index pending writes (session_id -> mtask_id).
     pending_writes: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
 }
@@ -117,7 +118,7 @@ impl SessionManager {
     pub fn new(config: SessionPinningConfig) -> Self {
         Self {
             config,
-            sessions: Arc::new(RwLock::new(HashMap::new())),
+            sessions: Arc::new(RwLock::new(IndexMap::new())),
             pending_writes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -197,10 +198,10 @@ impl SessionManager {
     /// Wait for a pending write to complete (block strategy).
     ///
     /// Polls the task registry until the write succeeds or times out.
-    pub async fn wait_for_write_completion(
+    pub async fn wait_for_write_completion<T: TaskRegistry + ?Sized>(
         &self,
         session_id: &str,
-        task_registry: &Arc<dyn TaskRegistry>,
+        task_registry: &Arc<T>,
         max_wait: Duration,
     ) -> Result<bool> {
         let session = {
