@@ -2129,6 +2129,7 @@ dependencies = [
  "chrono",
  "config",
  "dashmap",
+ "futures-util",
  "hex",
  "hmac",
  "http",
