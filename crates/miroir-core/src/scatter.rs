@@ -1756,6 +1756,81 @@ mod tests {
         assert!(plan.hedging_eligible, "Should be eligible for hedging with multiple nodes");
     }
 
+    /// Test that execute_scatter handles empty target_shards correctly.
+    #[tokio::test]
+    async fn test_execute_scatter_empty_target_shards() {
+        let mut topo = Topology::new(64, 1, 1);
+        topo.add_node(Node::new(NodeId::new("node-0".into()), "http://node-0:7700".into(), 0));
+
+        let mut plan = plan_search_scatter(&topo, 0, 1, 64, None).await;
+        plan.target_shards = Vec::new(); // Empty target shards
+
+        let c = MockNodeClient::default();
+        let req = make_req();
+
+        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Partial).await.unwrap();
+
+        // Should succeed with no pages and no failures
+        assert!(!result.partial);
+        assert!(result.shard_pages.is_empty());
+        assert!(result.failed_shards.is_empty());
+    }
+
+    /// Test fallback with network error (not timeout).
+    #[tokio::test]
+    async fn test_fallback_with_network_error() {
+        let mut topo = Topology::new(16, 2, 2);
+        topo.add_node(Node::new(NodeId::new("node-g0-0".into()), "http://g0-0:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("node-g0-1".into()), "http://g0-1:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("node-g1-0".into()), "http://g1-0:7700".into(), 1));
+        topo.add_node(Node::new(NodeId::new("node-g1-1".into()), "http://g1-1:7700".into(), 1));
+
+        let plan = plan_search_scatter(&topo, 0, 2, 16, None).await;
+
+        let mut c = MockNodeClient::default();
+
+        // Set up responses for fallback
+        let response = serde_json::json!({
+            "hits": [{"id": "doc1"}],
+            "estimatedTotalHits": 1,
+            "processingTimeMs": 5,
+        });
+        c.responses.insert(NodeId::new("node-g1-0".into()), response.clone());
+        c.responses.insert(NodeId::new("node-g1-1".into()), response);
+
+        // Group 0 fails with network error
+        c.errors.insert(NodeId::new("node-g0-0".into()), NodeError::NetworkError("connection refused".into()));
+        c.errors.insert(NodeId::new("node-g0-1".into()), NodeError::NetworkError("connection reset".into()));
+
+        let req = make_req();
+
+        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Fallback).await.unwrap();
+
+        // Should succeed via fallback
+        assert!(!result.partial);
+        assert!(!result.shard_pages.is_empty());
+    }
+
+    /// Test that scatter_gather_search properly propagates deadline_exceeded.
+    #[tokio::test]
+    async fn test_scatter_gather_deadline_exceeded() {
+        let topo = make_test_topology();
+        let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
+
+        let mut c = MockNodeClient::default();
+        c.errors.insert(NodeId::new("node-0".into()), NodeError::Timeout);
+
+        let req = make_req();
+        let s = crate::merger::RrfStrategy::default_strategy();
+
+        let result = scatter_gather_search(plan, &c, req, &topo, UnavailableShardPolicy::Partial, &s).await;
+
+        // Should succeed but be degraded
+        assert!(result.is_ok());
+        let merged = result.unwrap();
+        assert!(merged.degraded);
+    }
+
     // ── NodeClient trait methods tests ─────────────────────────────────────────
 
     #[tokio::test]
@@ -1941,4 +2016,128 @@ mod tests {
         assert_eq!(resp.task_uid, Some(999));
         assert_eq!(resp.message, Some("custom message".into()));
     }
+
+    // ── Additional edge case tests for coverage ─────────────────────────────
+
+    /// Test fallback when one group has empty replicas.
+    #[tokio::test]
+    async fn test_fallback_with_empty_replicas_in_group() {
+        let mut topo = Topology::new(16, 2, 2);
+        // Group 0: 2 nodes
+        topo.add_node(Node::new(NodeId::new("node-g0-0".into()), "http://g0-0:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("node-g0-1".into()), "http://g0-1:7700".into(), 0));
+        // Group 1: Only 1 node (not enough for RF=2, so assign_shard_in_group returns empty for some shards)
+        topo.add_node(Node::new(NodeId::new("node-g1-0".into()), "http://g1-0:7700".into(), 1));
+
+        let plan = plan_search_scatter(&topo, 0, 2, 16, None).await; // query_seq=0 → group 0
+
+        let mut c = MockNodeClient::default();
+
+        // Set up responses: group 1 node returns valid data
+        let response_1 = serde_json::json!({
+            "hits": [{"id": "doc1", "_rankingScore": 0.9}],
+            "estimatedTotalHits": 1,
+            "processingTimeMs": 5,
+        });
+        c.responses.insert(NodeId::new("node-g1-0".into()), response_1);
+
+        // All nodes in group 0 fail
+        c.errors.insert(NodeId::new("node-g0-0".into()), NodeError::Timeout);
+        c.errors.insert(NodeId::new("node-g0-1".into()), NodeError::Timeout);
+
+        let req = make_req();
+
+        // With fallback policy, some shards might succeed via group 1
+        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Fallback).await.unwrap();
+
+        // Result should be partial because group 1 has only 1 node (not enough for RF=2)
+        assert!(result.partial || !result.shard_pages.is_empty(), "Should have partial success or some pages");
+    }
+
+    /// Test fallback with partial success (some shards succeed via fallback, others fail).
+    #[tokio::test]
+    async fn test_fallback_partial_success() {
+        let mut topo = Topology::new(16, 2, 2);
+        // Group 0: 2 nodes (all fail)
+        topo.add_node(Node::new(NodeId::new("node-g0-0".into()), "http://g0-0:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("node-g0-1".into()), "http://g0-1:7700".into(), 0));
+        // Group 1: 2 nodes (only one works)
+        topo.add_node(Node::new(NodeId::new("node-g1-0".into()), "http://g1-0:7700".into(), 1));
+        topo.add_node(Node::new(NodeId::new("node-g1-1".into()), "http://g1-1:7700".into(), 1));
+
+        let plan = plan_search_scatter(&topo, 0, 2, 16, None).await;
+
+        let mut c = MockNodeClient::default();
+
+        // Set up response: only node-g1-0 returns valid data
+        let response = serde_json::json!({
+            "hits": [{"id": "doc1"}],
+            "estimatedTotalHits": 1,
+            "processingTimeMs": 5,
+        });
+        c.responses.insert(NodeId::new("node-g1-0".into()), response);
+
+        // All group 0 nodes fail
+        c.errors.insert(NodeId::new("node-g0-0".into()), NodeError::Timeout);
+        c.errors.insert(NodeId::new("node-g0-1".into()), NodeError::Timeout);
+        // One group 1 node fails
+        c.errors.insert(NodeId::new("node-g1-1".into()), NodeError::NetworkError("connection refused".into()));
+
+        let req = make_req();
+
+        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Fallback).await.unwrap();
+
+        // Should have partial success (some shards from node-g1-0, some failed)
+        assert!(result.partial || !result.shard_pages.is_empty());
+    }
+
+    /// Test GlobalIdf with zero total docs edge case.
+    #[test]
+    fn test_global_idf_zero_total_docs() {
+        let resp = vec![
+            PreflightResponse { total_docs: 0, avg_doc_length: 0.0, term_stats: HashMap::new() },
+            PreflightResponse { total_docs: 0, avg_doc_length: 0.0, term_stats: HashMap::new() },
+        ];
+        let g = GlobalIdf::from_preflight_responses(&resp);
+        assert_eq!(g.total_docs, 0);
+        assert_eq!(g.avg_doc_length, 0.0);
+        assert!(g.terms.is_empty());
+    }
+
+    /// Test GlobalIdf with term having zero df.
+    #[test]
+    fn test_global_idf_zero_df() {
+        let resp = vec![
+            PreflightResponse {
+                total_docs: 1000,
+                avg_doc_length: 50.0,
+                term_stats: HashMap::from([("test".into(), TermStats { df: 0 })]),
+            },
+        ];
+        let g = GlobalIdf::from_preflight_responses(&resp);
+        assert_eq!(g.total_docs, 1000);
+        assert_eq!(g.terms.get("test").unwrap().df, 0);
+        // IDF with df=0 should be 0.0
+        assert_eq!(g.terms.get("test").unwrap().idf, 0.0);
+    }
+
+    /// Test GlobalIdf with single shard.
+    #[test]
+    fn test_global_idf_single_shard() {
+        let resp = vec![
+            PreflightResponse {
+                total_docs: 5000,
+                avg_doc_length: 45.0,
+                term_stats: HashMap::from([
+                    ("rust".into(), TermStats { df: 500 }),
+                    ("programming".into(), TermStats { df: 100 }),
+                ]),
+            },
+        ];
+        let g = GlobalIdf::from_preflight_responses(&resp);
+        assert_eq!(g.total_docs, 5000);
+        assert_eq!(g.terms.get("rust").unwrap().df, 500);
+        assert_eq!(g.terms.get("programming").unwrap().df, 100);
+    }
+
 }

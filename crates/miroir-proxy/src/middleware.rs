@@ -2,6 +2,7 @@
 
 use std::time::Instant;
 
+use async_trait::async_trait;
 use axum::{
     extract::{FromRequestParts, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
@@ -12,7 +13,6 @@ use axum::{
     Extension,
 };
 use axum::http::request::Parts;
-use async_trait::async_trait;
 
 use miroir_core::config::MiroirConfig;
 use prometheus::{
@@ -94,11 +94,10 @@ impl SessionId {
     }
 }
 
-/// Optional session ID extractor for handlers.
+/// Optional session ID extractor.
 ///
-/// This extractor allows handlers to optionally receive the session ID from
-/// request extensions without requiring it to be present.
-#[derive(Clone, Debug)]
+/// This extractor safely handles cases where the session ID may not be present
+/// in the request extensions. It returns None instead of failing the request.
 pub struct OptionalSessionId(pub Option<SessionId>);
 
 #[async_trait]
@@ -112,12 +111,9 @@ where
         parts: &mut Parts,
         _state: &S,
     ) -> Result<Self, Self::Rejection> {
-        Ok(OptionalSessionId(
-            parts.extensions.get::<SessionId>().cloned(),
-        ))
+        Ok(OptionalSessionId(parts.extensions.get::<SessionId>().cloned()))
     }
 }
-
 
 pub async fn request_id_middleware(
     mut req: Request,

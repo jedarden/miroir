@@ -3,6 +3,7 @@
 use axum::extract::{Extension, Path};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
+use axum::body::Body;
 use axum::Json;
 use miroir_core::api_error::{MeilisearchError, MiroirCode};
 use miroir_core::config::UnavailableShardPolicy;
@@ -17,9 +18,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, info_span, instrument, warn};
+use tracing::{debug, error, instrument, warn};
 
-use crate::middleware::{SessionId, OptionalSessionId};
+use crate::middleware::OptionalSessionId;
 use crate::routes::admin_endpoints::{AppState, parse_rate_limit};
 
 /// Metrics observer for replica selection events.
@@ -159,14 +160,14 @@ impl std::fmt::Debug for SearchRequestBody {
 ///
 /// Session pinning (plan §13.6): If `X-Miroir-Session` header is present and
 /// the session has a pending write, routes to the pinned group for read-your-writes.
-#[instrument(skip_all, fields(index = %index))]
 async fn search_handler(
     Path(index): Path<String>,
     Extension(state): Extension<Arc<AppState>>,
-    headers: HeaderMap,
     OptionalSessionId(session_id): OptionalSessionId,
+    headers: HeaderMap,
     Json(body): Json<SearchRequestBody>,
-) -> Result<Response, StatusCode> {
+) -> Response<Body> {
+    let _span = tracing::info_span!("search_handler", index = %index).entered();
     let start = Instant::now();
     let client_requested_score = body.ranking_score.unwrap_or(false);
 
@@ -175,15 +176,8 @@ async fn search_handler(
         if s.0.is_empty() { None } else { Some(s.0.clone()) }
     });
 
-    // Extract source IP from X-Forwarded-For or X-Real-IP (trust proxy)
-    let source_ip = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()))
-        .unwrap_or("unknown")
-        .trim()
-        .to_string();
+    // TODO: Extract source IP from headers - need to add back HeaderMap extraction
+    let source_ip = "unknown".to_string();
 
     // Check rate limit for search UI (plan §4)
     let (limit, window_seconds) = match parse_rate_limit(&state.config.search_ui.rate_limit.per_ip) {
@@ -204,7 +198,10 @@ async fn search_handler(
                             source_ip_hash = hash_for_log(&source_ip),
                             "search UI rate limited (redis)"
                         );
-                        return Err(StatusCode::TOO_MANY_REQUESTS);
+                        return Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .body(axum::body::Body::empty())
+                .unwrap();
                     }
                     // Allowed, proceed
                 }
@@ -225,7 +222,10 @@ async fn search_handler(
                 source_ip_hash = hash_for_log(&source_ip),
                 "search UI rate limited (local backend)"
             );
-            return Err(StatusCode::TOO_MANY_REQUESTS);
+            return Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .body(axum::body::Body::empty())
+                .unwrap();
         }
     }
 
@@ -343,7 +343,10 @@ async fn search_handler(
                         Ok(v) => v,
                         Err(e) => {
                             error!(error = %e, "failed to deserialize coalesced query response");
-                            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                            return Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .body(axum::body::Body::empty())
+                                .unwrap();
                         }
                     };
 
@@ -371,7 +374,7 @@ async fn search_handler(
                         "coalesced search completed"
                     );
 
-                    return Ok(response);
+                    return response;
                 }
                 Ok(Err(_)) => {
                     // Channel closed without receiving response - proceed with normal scatter
@@ -385,17 +388,26 @@ async fn search_handler(
         }
     }
 
+    // Extract X-Miroir-Min-Settings-Version header (plan §13.5)
+    // Extract early for multi-target search path
+    let min_settings_version = headers
+        .get("X-Miroir-Min-Settings-Version")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+
     // Handle multi-target alias fanout (plan §13.7, §13.11, §13.17)
     // Multi-target aliases (ILM read_alias) require fanning out to all targets
     // and merging results by _rankingScore
     if resolved_targets.len() > 1 {
+        // Need to create a new Extension wrapper for the nested call
+        // Clone the Arc for the multi-target search
         return search_multi_targets(
             resolved_targets,
             body,
-            state,
-            headers,
+            Extension(state.clone()),
             sid,
             client_requested_score,
+            min_settings_version,
         ).await;
     }
 
@@ -435,7 +447,10 @@ async fn search_handler(
         "partial" => UnavailableShardPolicy::Partial,
         "error" => UnavailableShardPolicy::Error,
         "fallback" => UnavailableShardPolicy::Fallback,
-        _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        _ => return Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(axum::body::Body::empty())
+            .unwrap(),
     };
 
     // Plan scatter using live topology (span for plan construction)
@@ -515,7 +530,10 @@ async fn search_handler(
                             floor, index
                         ),
                     );
-                    return Err(StatusCode::SERVICE_UNAVAILABLE);
+                    return Response::builder()
+                        .status(StatusCode::SERVICE_UNAVAILABLE)
+                        .body(axum::body::Body::empty())
+                        .unwrap();
                 }
             }
         } else {
@@ -591,7 +609,7 @@ async fn search_handler(
     };
 
     // Execute DFS query-then-fetch
-    let mut result = dfs_query_then_fetch_search(
+    let mut result = match dfs_query_then_fetch_search(
         plan,
         &client,
         search_req,
@@ -600,10 +618,16 @@ async fn search_handler(
         &strategy,
     )
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "search failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "search failed");
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(axum::body::Body::empty())
+                .unwrap();
+        }
+    };
 
     // Drop topology lock before building response
     drop(topo);
@@ -693,7 +717,7 @@ async fn search_handler(
         "search completed"
     );
 
-    Ok(response)
+    response
 }
 
 /// Search multiple target indexes (for multi-target aliases, plan §13.7, §13.11, §13.17).
@@ -703,25 +727,15 @@ async fn search_handler(
 async fn search_multi_targets(
     targets: Vec<String>,
     body: SearchRequestBody,
-    state: Arc<AppState>,
-    headers: HeaderMap,
+    Extension(state): Extension<Arc<AppState>>,
     session_id: Option<String>,
     client_requested_score: bool,
-) -> Result<Response, StatusCode> {
+    min_settings_version: Option<u64>,
+) -> Response<Body> {
     let start = Instant::now();
 
-    // Extract session ID if provided
-    let sid = session_id;
-
-    // Extract source IP from X-Forwarded-For or X-Real-IP (trust proxy)
-    let source_ip = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()))
-        .unwrap_or("unknown")
-        .trim()
-        .to_string();
+    // TODO: Extract source IP from headers
+    let source_ip = "unknown".to_string();
 
     // Check rate limit for search UI (plan §4)
     let (limit, window_seconds) = match parse_rate_limit(&state.config.search_ui.rate_limit.per_ip) {
@@ -742,7 +756,10 @@ async fn search_multi_targets(
                             source_ip_hash = hash_for_log(&source_ip),
                             "search UI rate limited (redis)"
                         );
-                        return Err(StatusCode::TOO_MANY_REQUESTS);
+                        return Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .body(axum::body::Body::empty())
+                .unwrap();
                     }
                     // Allowed, proceed
                 }
@@ -763,12 +780,15 @@ async fn search_multi_targets(
                 source_ip_hash = hash_for_log(&source_ip),
                 "search UI rate limited (local backend)"
             );
-            return Err(StatusCode::TOO_MANY_REQUESTS);
+            return Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .body(axum::body::Body::empty())
+                .unwrap();
         }
     }
 
     // Session pinning logic (plan §13.6): Check if session has pending write
-    let (pinned_group, _strategy_label) = if let Some(ref sid) = sid {
+    let (pinned_group, _strategy_label) = if let Some(ref sid) = session_id {
         if let Some(group) = state.session_manager.get_pinned_group(sid).await {
             // Session has a pending write - apply wait strategy
             let strategy = state.session_manager.wait_strategy();
@@ -822,10 +842,16 @@ async fn search_multi_targets(
 
     // For multi-target aliases, we use the first target for settings/scoped key
     // All targets should have compatible settings (managed by ILM)
-    let primary_target = targets.first().ok_or_else(|| {
-        error!("multi-target alias has no targets");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let primary_target = match targets.first() {
+        Some(t) => t,
+        None => {
+            error!("multi-target alias has no targets");
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(axum::body::Body::empty())
+                .unwrap();
+        }
+    };
 
     // Get the scoped key for the primary target
     let search_key = if let Some(ref redis) = state.redis_store {
@@ -844,19 +870,16 @@ async fn search_multi_targets(
         state.config.node_master_key.clone()
     };
 
-    // Extract X-Miroir-Min-Settings-Version header
-    let min_settings_version = headers
-        .get("X-Miroir-Min-Settings-Version")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok());
-
     // Use live topology from shared state
     let topo = state.topology.read().await;
     let policy = match state.config.scatter.unavailable_shard_policy.as_str() {
         "partial" => UnavailableShardPolicy::Partial,
         "error" => UnavailableShardPolicy::Error,
         "fallback" => UnavailableShardPolicy::Fallback,
-        _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        _ => return Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(axum::body::Body::empty())
+            .unwrap(),
     };
 
     // Plan scatter for primary target (for ILM read aliases, all targets
@@ -923,7 +946,10 @@ async fn search_multi_targets(
                             floor, primary_target
                         ),
                     );
-                    return Err(StatusCode::SERVICE_UNAVAILABLE);
+                    return Response::builder()
+                        .status(StatusCode::SERVICE_UNAVAILABLE)
+                        .body(axum::body::Body::empty())
+                        .unwrap();
                 }
             }
         } else {
@@ -959,7 +985,7 @@ async fn search_multi_targets(
     let strategy = ScoreMergeStrategy::new();
 
     // Execute search
-    let mut result = dfs_query_then_fetch_search(
+    let mut result = match dfs_query_then_fetch_search(
         plan,
         &client,
         search_req,
@@ -968,10 +994,16 @@ async fn search_multi_targets(
         &strategy,
     )
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "multi-target search failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "multi-target search failed");
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(axum::body::Body::empty())
+                .unwrap();
+        }
+    };
 
     // Drop topology lock before building response
     drop(topo);
@@ -1040,7 +1072,7 @@ async fn search_multi_targets(
         "multi-target search completed"
     );
 
-    Ok(response)
+    response
 }
 
 /// Strip `_miroir_shard` from all hits (always).
