@@ -19,7 +19,7 @@ use crate::cdc::ORIGIN_ANTIENTROPY;
 use crate::error::{MiroirError, Result};
 use crate::migration::{MigrationConfig, MigrationError};
 use crate::router::assign_shard_in_group;
-use crate::scatter::{DeleteByIdsRequest, FetchDocumentsRequest, FetchDocumentsResponse, NodeClient, WriteRequest};
+use crate::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, NodeClient, WriteRequest};
 use crate::topology::{NodeId, Topology};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
