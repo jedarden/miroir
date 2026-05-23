@@ -29,6 +29,7 @@ pub struct MultiSearchState {
     pub node_master_key: String,
     pub metrics: crate::middleware::Metrics,
     pub alias_registry: Arc<miroir_core::alias::AliasRegistry>,
+    pub replica_selector: Arc<miroir_core::replica_selection::ReplicaSelector>,
 }
 
 /// Multi-search request (plan §13.11).
@@ -248,9 +249,18 @@ where
             let config = state.config.clone();
             let strategy = strategy.clone();
             let policy = policy;
+            let replica_selector = state.replica_selector.clone();
 
             async move {
                 let start = Instant::now();
+
+                // Determine if we should use adaptive selection
+                let use_adaptive = config.replica_selection.strategy == "adaptive";
+                let replica_selector_ref = if use_adaptive {
+                    Some(replica_selector.as_ref())
+                } else {
+                    None
+                };
 
                 // Plan scatter for this query
                 let plan = plan_search_scatter(
@@ -258,7 +268,8 @@ where
                     0,
                     config.replication_factor as usize,
                     config.shards,
-                );
+                    replica_selector_ref,
+                ).await;
 
                 // Build search request
                 let filter_value = query.filter.as_ref()

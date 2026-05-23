@@ -6,7 +6,9 @@ use axum::response::Response;
 use axum::Json;
 use miroir_core::api_error::{MeilisearchError, MiroirCode};
 use miroir_core::config::UnavailableShardPolicy;
+use miroir_core::idempotency::{QueryFingerprint, canonicalize_json};
 use miroir_core::merger::ScoreMergeStrategy;
+use miroir_core::replica_selection::SelectionObserver;
 use miroir_core::scatter::{
     dfs_query_then_fetch_search, plan_search_scatter, plan_search_scatter_for_group, plan_search_scatter_with_version_floor, SearchRequest, NodeClient,
 };
@@ -14,11 +16,28 @@ use miroir_core::session_pinning::WaitStrategy;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, info_span, instrument, warn};
 
 use crate::middleware::SessionId;
 use crate::routes::admin_endpoints::{AppState, parse_rate_limit};
+
+/// Metrics observer for replica selection events.
+///
+/// Reports selection scores and exploration events to Prometheus.
+struct MetricsObserver {
+    metrics: crate::middleware::Metrics,
+}
+
+impl SelectionObserver for MetricsObserver {
+    fn report_selection(&self, node_id: &str, score: f64) {
+        self.metrics.set_replica_selection_score(node_id, score);
+    }
+
+    fn report_exploration(&self) {
+        self.metrics.inc_replica_selection_exploration();
+    }
+}
 
 /// Hash a value for logging (obfuscates sensitive data like IPs).
 fn hash_for_log(value: &str) -> String {
@@ -35,11 +54,16 @@ fn hash_for_log(value: &str) -> String {
 pub struct ProxyNodeClient {
     client: Arc<crate::client::HttpClient>,
     metrics: crate::middleware::Metrics,
+    replica_selector: Option<Arc<miroir_core::replica_selection::ReplicaSelector>>,
 }
 
 impl ProxyNodeClient {
-    pub fn new(client: Arc<crate::client::HttpClient>, metrics: crate::middleware::Metrics) -> Self {
-        Self { client, metrics }
+    pub fn new(
+        client: Arc<crate::client::HttpClient>,
+        metrics: crate::middleware::Metrics,
+        replica_selector: Option<Arc<miroir_core::replica_selection::ReplicaSelector>>,
+    ) -> Self {
+        Self { client, metrics, replica_selector }
     }
 }
 
@@ -286,6 +310,78 @@ async fn search_handler(
         );
     }
 
+    // Query coalescing (plan §13.10): Check for identical in-flight queries
+    // Skip for multi-target aliases (each target is different)
+    if state.config.query_coalescing.enabled && resolved_targets.len() == 1 {
+        // Build fingerprint from canonicalized query body + index + settings version
+        let settings_version = state.settings_broadcast.current_version().await;
+        let query_body = serde_json::to_value(&body).unwrap_or(Value::Null);
+        let fingerprint = QueryFingerprint::new(effective_index.clone(), &query_body, settings_version);
+
+        // Try to coalesce with an existing in-flight query
+        if let Some(mut rx) = state.query_coalescer.try_coalesce(fingerprint.clone()).await {
+            // Successfully subscribed to an in-flight query - wait for its result
+            state.metrics.inc_query_coalesce_hits();
+            debug!(
+                index = %effective_index,
+                "query coalesced: waiting for in-flight query result"
+            );
+
+            // Wait for the response (with timeout matching the scatter timeout)
+            let timeout = Duration::from_millis(state.config.scatter.node_timeout_ms);
+            let response_bytes = tokio::time::timeout(timeout, async move {
+                rx.recv().await
+            }).await;
+
+            match response_bytes {
+                Ok(Ok(response_bytes)) => {
+                    // Received response from coalesced query
+                    let response_body: Value = match serde_json::from_slice(&response_bytes) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            error!(error = %e, "failed to deserialize coalesced query response");
+                            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                        }
+                    };
+
+                    // Build response with appropriate headers
+                    let mut response = Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json");
+
+                    // Add settings headers
+                    if state.settings_broadcast.is_in_flight(&effective_index).await {
+                        response = response.header("X-Miroir-Settings-Inconsistent", "true");
+                    }
+                    if settings_version > 0 {
+                        response = response.header("X-Miroir-Settings-Version", settings_version.to_string());
+                    }
+
+                    let response = response
+                        .body(axum::body::Body::from(serde_json::to_string(&response_body).unwrap()))
+                        .unwrap();
+
+                    tracing::info!(
+                        target: "miroir.search_coalesced",
+                        index = %effective_index,
+                        duration_ms = start.elapsed().as_millis() as u64,
+                        "coalesced search completed"
+                    );
+
+                    return Ok(response);
+                }
+                Ok(Err(_)) => {
+                    // Channel closed without receiving response - proceed with normal scatter
+                    debug!("coalesced query channel closed, proceeding with normal scatter");
+                }
+                Err(_) => {
+                    // Timeout waiting for coalesced query - proceed with normal scatter
+                    debug!("timeout waiting for coalesced query, proceeding with normal scatter");
+                }
+            }
+        }
+    }
+
     // Handle multi-target alias fanout (plan §13.7, §13.11, §13.17)
     // Multi-target aliases (ILM read_alias) require fanning out to all targets
     // and merging results by _rankingScore
@@ -348,7 +444,16 @@ async fn search_handler(
             rf = state.config.replication_factor,
             min_settings_version,
             pinned_group = ?pinned_group,
+            strategy = %state.config.replica_selection.strategy,
         ).entered();
+
+        // Determine if we should use adaptive selection
+        let use_adaptive = state.config.replica_selection.strategy == "adaptive";
+        let replica_selector_ref = if use_adaptive {
+            Some(state.replica_selector.as_ref())
+        } else {
+            None
+        };
 
         // Session pinning: if pinned_group is set, use group-specific planning
         if let Some(group) = pinned_group {
@@ -358,7 +463,8 @@ async fn search_handler(
                 state.config.replication_factor as usize,
                 state.config.shards,
                 group,
-            ) {
+                replica_selector_ref,
+            ).await {
                 Some(p) => p,
                 None => {
                     // Pinned group not available - fall back to normal planning
@@ -367,7 +473,7 @@ async fn search_handler(
                         pinned_group = group,
                         "pinned group unavailable, falling back to normal routing"
                     );
-                    plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards)
+                    plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, replica_selector_ref).await
                 }
             }
         } else if let Some(floor) = min_settings_version {
@@ -392,7 +498,8 @@ async fn search_handler(
                         })
                     })
                 },
-            );
+                replica_selector_ref,
+            ).await;
 
             match plan_result {
                 Some(p) => p,
@@ -410,7 +517,7 @@ async fn search_handler(
             }
         } else {
             // No version floor requested, use normal planning
-            plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards)
+            plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, replica_selector_ref).await
         }
     };
     let node_count = plan.shard_to_node.len() as u64;
@@ -441,6 +548,28 @@ async fn search_handler(
     // Use score-based merge strategy (OP#4: requires global IDF)
     let strategy = ScoreMergeStrategy::new();
 
+    // Register for query coalescing (plan §13.10) - after try_coalesce, before scatter
+    // Only register if coalescing is enabled and this is a single-target query
+    let (tx, fingerprint) = if state.config.query_coalescing.enabled && resolved_targets.len() == 1 {
+        let settings_version = state.settings_broadcast.current_version().await;
+        let query_body = serde_json::to_value(&body).unwrap_or(Value::Null);
+        let fp = QueryFingerprint::new(effective_index.clone(), &query_body, settings_version);
+
+        match state.query_coalescer.register(fp.clone()).await {
+            Ok(broadcast_tx) => {
+                state.metrics.inc_query_coalesce_subscribers(1); // First subscriber = the query itself
+                (Some(broadcast_tx), Some(fp))
+            }
+            Err(_) => {
+                // Failed to register (too many pending queries) - proceed without coalescing
+                debug!("too many pending queries, proceeding without coalescing registration");
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+
     // Execute DFS query-then-fetch
     let mut result = dfs_query_then_fetch_search(
         plan,
@@ -465,15 +594,34 @@ async fn search_handler(
     }
 
     // Build response body
-    let mut body = serde_json::json!({
+    let response_body = serde_json::json!({
         "hits": result.hits,
         "estimatedTotalHits": result.estimated_total_hits,
         "processingTimeMs": result.processing_time_ms,
     });
 
     // Only include facetDistribution if facets were requested
+    let mut body = response_body.clone();
     if let Some(facets) = &result.facet_distribution {
         body["facetDistribution"] = serde_json::to_value(facets).unwrap_or(Value::Null);
+    }
+
+    // Broadcast result to coalesced queries (plan §13.10)
+    if let (Some(broadcast_tx), Some(fp)) = (tx, fingerprint) {
+        let response_bytes = serde_json::to_vec(&body).unwrap_or_default();
+        let subscriber_count = broadcast_tx.receiver_count();
+        if subscriber_count > 1 {
+            // There are other queries waiting for this result - broadcast to them
+            state.metrics.inc_query_coalesce_subscribers(subscriber_count as u64 - 1);
+            let _ = broadcast_tx.send(response_bytes.clone());
+            debug!(
+                index = %effective_index,
+                subscribers = subscriber_count - 1,
+                "broadcast search result to coalesced queries"
+            );
+        }
+        // Unregister the query after broadcasting
+        state.query_coalescer.unregister(&fp).await;
     }
 
     // Build response with optional headers
