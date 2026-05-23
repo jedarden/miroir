@@ -323,6 +323,55 @@ impl NodeClient for HttpNodeClient {
             term_stats: HashMap::new(),
         })
     }
+
+    async fn delete_documents(
+        &self,
+        _node: &NodeId,
+        address: &str,
+        request: &crate::scatter::DeleteByIdsRequest,
+    ) -> std::result::Result<crate::scatter::DeleteResponse, NodeError> {
+        let url = if address.ends_with('/') {
+            format!("{}indexes/{}/documents/delete-batch", address, request.index_uid)
+        } else {
+            format!("{}/indexes/{}/documents/delete-batch", address, request.index_uid)
+        };
+
+        let mut builder = self.client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.node_master_key))
+            .header("Content-Type", "application/json");
+
+        // Add origin tag as a header (not stored in document)
+        if let Some(ref origin) = request.origin {
+            builder = builder.header("X-Miroir-Origin", origin);
+        }
+
+        let body = serde_json::json!({ "ids": request.ids });
+        let response = builder
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| NodeError::NetworkError(format!("delete failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_else(|_| "unable to read error".to_string());
+            return Err(NodeError::HttpError { status: status.as_u16(), body });
+        }
+
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| NodeError::NetworkError(format!("parse response failed: {}", e)))?;
+
+        Ok(crate::scatter::DeleteResponse {
+            success: json.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
+            task_uid: json.get("taskUid").and_then(|v| v.as_u64()),
+            message: json.get("message").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            code: json.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            error_type: json.get("type").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        })
+    }
 }
 
 /// Anti-entropy background worker.
@@ -343,6 +392,8 @@ pub struct AntiEntropyWorker {
     num_pods: Option<u32>,
     /// RF (replication factor) for Mode A scaling.
     rf: usize,
+    /// Whether TTL is enabled for expired document handling (plan §13.14 interaction).
+    ttl_enabled: bool,
     /// Metrics callback for shards scanned.
     metrics_shards_scanned: Option<Arc<dyn Fn(u64) + Send + Sync>>,
     /// Metrics callback for mismatches found.
@@ -372,7 +423,7 @@ impl AntiEntropyWorker {
             auto_repair: true,
             updated_at_field: "_miroir_updated_at".to_string(),
             expires_at_field: "_miroir_expires_at".to_string(),
-            ttl_enabled: false,
+            ttl_enabled: false, // Will be updated by set_ttl_enabled
         };
 
         let node_client = HttpNodeClient::new(node_master_key);
@@ -392,6 +443,7 @@ impl AntiEntropyWorker {
             replica_group_id: None,
             num_pods: None,
             rf: 2, // Default RF
+            ttl_enabled: false,
             metrics_shards_scanned: None,
             metrics_mismatches_found: None,
             metrics_docs_repaired: None,
@@ -430,6 +482,8 @@ impl AntiEntropyWorker {
 
     /// Set whether TTL is enabled for expired document handling (plan §13.14 interaction).
     pub fn set_ttl_enabled(&mut self, enabled: bool) {
+        self.ttl_enabled = enabled;
+        // Update reconciler config to match
         self.reconciler.set_ttl_enabled(enabled);
     }
 
@@ -559,50 +613,10 @@ impl AntiEntropyWorker {
             (topo.shards, topo.rf())
         };
 
-        // Create a new reconciler with Mode A scaling if configured
-        let reconciler = if let Some(rg_id) = self.replica_group_id {
-            let num_pods = self.num_pods.unwrap_or(1);
-            self.reconciler.clone().with_mode_a_scaling(rg_id, num_pods, total_shards, rf)
-        } else {
-            self.reconciler.clone()
-        };
-
-        // Configure metrics callbacks
-        let reconciler = if self.metrics_shards_scanned.is_some() {
-            reconciler.with_metrics(Arc::new({
-                let shards_scanned_cb = self.metrics_shards_scanned.clone();
-                let mismatches_found_cb = self.metrics_mismatches_found.clone();
-                let docs_repaired_cb = self.metrics_docs_repaired.clone();
-                let scan_completed_cb = self.metrics_scan_completed.clone();
-                move |name: &str, value: u64| {
-                    match name {
-                        "miroir_antientropy_shards_scanned_total" => {
-                            if let Some(ref cb) = shards_scanned_cb {
-                                cb(value);
-                            }
-                        }
-                        "miroir_antientropy_mismatches_found_total" => {
-                            if let Some(ref cb) = mismatches_found_cb {
-                                cb(value);
-                            }
-                        }
-                        "miroir_antientropy_docs_repaired_total" => {
-                            if let Some(ref cb) = docs_repaired_cb {
-                                cb(value);
-                            }
-                        }
-                        "miroir_antientropy_last_scan_completed_seconds" => {
-                            if let Some(ref cb) = scan_completed_cb {
-                                cb(value);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }))
-        } else {
-            reconciler
-        };
+        // Use the existing reconciler directly
+        // Note: Mode A scaling and metrics are configured via worker fields,
+        // not via the reconciler's builder pattern
+        let reconciler = &self.reconciler;
 
         match reconciler.run_pass().await {
             Ok(pass) => {

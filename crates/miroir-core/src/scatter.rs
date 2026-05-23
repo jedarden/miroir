@@ -782,6 +782,8 @@ pub async fn dfs_query_then_fetch_search<C: NodeClient>(
 pub struct MockNodeClient {
     pub responses: HashMap<NodeId, Value>,
     pub preflight_responses: HashMap<NodeId, PreflightResponse>,
+    pub write_responses: HashMap<NodeId, WriteResponse>,
+    pub fetch_responses: HashMap<NodeId, FetchDocumentsResponse>,
     pub errors: HashMap<NodeId, NodeError>,
     pub delay_ms: u64,
 }
@@ -810,13 +812,15 @@ impl NodeClient for MockNodeClient {
         &self, node: &NodeId, _address: &str, _request: &WriteRequest,
     ) -> std::result::Result<WriteResponse, NodeError> {
         if let Some(err) = self.errors.get(node) { return Err(err.clone()); }
-        Ok(WriteResponse {
-            success: true,
-            task_uid: Some(1),
-            message: None,
-            code: None,
-            error_type: None,
-        })
+        Ok(self.write_responses.get(node).cloned().unwrap_or_else(|| {
+            WriteResponse {
+                success: true,
+                task_uid: Some(1),
+                message: None,
+                code: None,
+                error_type: None,
+            }
+        }))
     }
 
     async fn delete_documents(
@@ -849,12 +853,27 @@ impl NodeClient for MockNodeClient {
         &self, node: &NodeId, _address: &str, request: &FetchDocumentsRequest,
     ) -> std::result::Result<FetchDocumentsResponse, NodeError> {
         if let Some(err) = self.errors.get(node) { return Err(err.clone()); }
-        Ok(FetchDocumentsResponse {
-            results: Vec::new(),
-            limit: request.limit,
-            offset: request.offset,
-            total: 0,
-        })
+        // Return stored fetch response if available, otherwise return empty
+        let stored = self.fetch_responses.get(node).cloned().unwrap_or_else(|| {
+            FetchDocumentsResponse {
+                results: Vec::new(),
+                limit: request.limit,
+                offset: request.offset,
+                total: 0,
+            }
+        });
+
+        // Handle pagination: if offset exceeds total, return empty results
+        if request.offset as u64 >= stored.total {
+            return Ok(FetchDocumentsResponse {
+                results: Vec::new(),
+                limit: request.limit,
+                offset: request.offset,
+                total: stored.total,
+            });
+        }
+
+        Ok(stored)
     }
 
     fn get_task_status(
