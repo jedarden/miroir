@@ -285,6 +285,12 @@ pub struct Metrics {
     session_pin_enforced_total: CounterVec,
     session_wait_duration_seconds: Histogram,
     session_wait_timeout_total: CounterVec,
+
+    // ── §13.8 Anti-entropy metrics (always present) ──
+    antientropy_shards_scanned_total: Counter,
+    antientropy_mismatches_found_total: Counter,
+    antientropy_docs_repaired_total: Counter,
+    antientropy_last_scan_completed_seconds: Gauge,
 }
 
 impl Clone for Metrics {
@@ -370,6 +376,10 @@ impl Clone for Metrics {
             session_pin_enforced_total: self.session_pin_enforced_total.clone(),
             session_wait_duration_seconds: self.session_wait_duration_seconds.clone(),
             session_wait_timeout_total: self.session_wait_timeout_total.clone(),
+            antientropy_shards_scanned_total: self.antientropy_shards_scanned_total.clone(),
+            antientropy_mismatches_found_total: self.antientropy_mismatches_found_total.clone(),
+            antientropy_docs_repaired_total: self.antientropy_docs_repaired_total.clone(),
+            antientropy_last_scan_completed_seconds: self.antientropy_last_scan_completed_seconds.clone(),
         }
     }
 }
@@ -921,6 +931,24 @@ impl Metrics {
         reg!(session_wait_duration_seconds);
         reg!(session_wait_timeout_total);
 
+        // ── §13.8 Anti-entropy metrics ──
+        let antientropy_shards_scanned_total = Counter::with_opts(
+            Opts::new("miroir_antientropy_shards_scanned_total", "Total number of shards scanned by anti-entropy")
+        ).expect("create antientropy_shards_scanned_total");
+        let antientropy_mismatches_found_total = Counter::with_opts(
+            Opts::new("miroir_antientropy_mismatches_found_total", "Total number of mismatches found by anti-entropy")
+        ).expect("create antientropy_mismatches_found_total");
+        let antientropy_docs_repaired_total = Counter::with_opts(
+            Opts::new("miroir_antientropy_docs_repaired_total", "Total number of documents repaired by anti-entropy")
+        ).expect("create antientropy_docs_repaired_total");
+        let antientropy_last_scan_completed_seconds = Gauge::with_opts(
+            Opts::new("miroir_antientropy_last_scan_completed_seconds", "UNIX timestamp of last anti-entropy scan completion")
+        ).expect("create antientropy_last_scan_completed_seconds");
+        reg!(antientropy_shards_scanned_total);
+        reg!(antientropy_mismatches_found_total);
+        reg!(antientropy_docs_repaired_total);
+        reg!(antientropy_last_scan_completed_seconds);
+
         Self {
             registry,
             request_duration,
@@ -1002,6 +1030,10 @@ impl Metrics {
             session_pin_enforced_total,
             session_wait_duration_seconds,
             session_wait_timeout_total,
+            antientropy_shards_scanned_total,
+            antientropy_mismatches_found_total,
+            antientropy_docs_repaired_total,
+            antientropy_last_scan_completed_seconds,
         }
     }
 
