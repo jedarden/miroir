@@ -178,7 +178,7 @@ resharding:
   retain_old_index_hours: {{ .Values.miroir.resharding.retain_old_index_hours | default 48 }}
   allowed_windows: {{ .Values.miroir.resharding.allowed_windows | default list | toJson }}
 peer_discovery:
-  service_name: {{ .Values.miroir.peer_discovery.service_name | default .Release.Name }}-headless
+  service_name: {{ .Values.miroir.peer_discovery.service_name | default (printf "%s-headless" (include "miroir.fullname" .)) }}
   refresh_interval_s: {{ .Values.miroir.peer_discovery.refresh_interval_s | default 15 }}
 leader_election:
   enabled: {{ .Values.miroir.leader_election.enabled | default true }}
