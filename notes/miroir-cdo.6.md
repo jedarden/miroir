@@ -71,3 +71,15 @@ test result: ok. 12 passed; 0 failed; 0 ignored
 ## External Dependencies
 
 Phase 8 CI configuration (`cargo bench --no-run`) must be added to the external Argo WorkflowTemplates in `jedarden/declarative-config`.
+
+---
+
+## Final Verification (2026-05-23)
+
+All acceptance criteria verified:
+
+1. ✅ `cargo bench -p miroir-core` runs all criterion benches and reports timing
+2. ✅ `cargo test -p miroir-core` runs property tests with 1024 cases per property (proptest.toml)
+3. ✅ `cargo bench --no-run` compiles benches successfully
+
+Originally implemented in commit `513e97d`.
