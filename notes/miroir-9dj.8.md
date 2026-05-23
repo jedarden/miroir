@@ -1,55 +1,58 @@
-# P2.8 Middleware: structured logging + prometheus metrics + request IDs
+# P2.8 Middleware: Structured Logging + Prometheus Metrics + Request IDs - Verification
 
-## Verification Summary
+## Summary
 
-The middleware implementation in `crates/miroir-proxy/src/middleware.rs` is complete and meets all acceptance criteria:
+This task verified that the P2.8 middleware implementation was already complete in the codebase.
 
-### 1. Request ID Generation
-- `RequestId::new()` generates UUIDv7-based 8-character hex IDs
-- Uses `DefaultHasher` to hash full UUIDv7 for uniqueness even within same millisecond
-- Implemented in `request_id_middleware` - adds `X-Request-Id` header to all responses
+## Acceptance Criteria Verification
 
-### 2. Structured JSON Logging (Plan §10)
-- `telemetry_middleware` creates tracing span with: `request_id`, `pod_id`, `method`, `path_template`
-- Log format matches plan §10: `timestamp`, `level`, `message`, `duration_ms`, `status`, `method`, `path_template`
-- Logs go to stdout via `tracing-subscriber` with `fmt::layer().json()`
-- All JSON log lines parse correctly with `jq`
+### ✓ 1. `curl localhost:9090/metrics` returns all listed metrics
 
-### 3. Prometheus Metrics
+**Verified by**: `middleware.rs` lines 404-435 define all required metrics:
+- `miroir_request_duration_seconds{method, path_template, status}` (HistogramVec)
+- `miroir_requests_total{method, path_template, status}` (CounterVec)
+- `miroir_requests_in_flight` (Gauge)
+- `miroir_scatter_fan_out_size` (Histogram)
+- `miroir_scatter_partial_responses_total` (Counter)
+- `miroir_scatter_retries_total` (Counter)
+- `miroir_node_healthy` (GaugeVec)
+- `miroir_node_request_duration_seconds` (HistogramVec)
+- `miroir_node_errors_total` (CounterVec)
 
-**Request metrics:**
-- `miroir_request_duration_seconds{method, path_template, status}` - histogram
-- `miroir_requests_total{method, path_template, status}` - counter
-- `miroir_requests_in_flight` - gauge with Drop guard
+**Metrics server**: `main.rs` lines 684, 701-703 set up metrics router on port 9090.
 
-**Scatter metrics:**
-- `miroir_scatter_fan_out_size` - histogram
-- `miroir_scatter_partial_responses_total` - counter
-- `miroir_scatter_retries_total` - counter
+### ✓ 2. `jq` parses every log line without error
 
-**Node metrics:**
-- `miroir_node_healthy{node_id}` - gauge
-- `miroir_node_request_duration_seconds{node_id, operation}` - histogram
-- `miroir_node_errors_total{node_id, error_type}` - counter
+**Verified by**: `p7_5_structured_logging.rs` tests:
+- `test_json_logs_parseable_by_jq` - confirms JSON parseability
+- `test_request_id_format_in_logs` - confirms request_id in logs
+- All 17 P7.5 tests pass
 
-### 4. Metrics Server on :9090
-- `metrics_router()` creates axum router with `/metrics` endpoint
-- Returns Prometheus text exposition format
-- Separate listener from main API (bound to cluster network, no auth)
+**Implementation**: `main.rs` lines 258-281 configure tracing-subscriber with JSON formatter.
 
-### 5. High-Cardinality Defense
-- `extract_path_template()` uses `MatchedPath` extractor
-- Returns route template (e.g., `/indexes/{uid}/search`) not actual path
-- Prevents high-cardinality labels from OOMing Prometheus
+### ✓ 3. Request ID appears in response header and log entry
+
+**Verified by**: `p7_5_structured_logging.rs` tests:
+- `test_request_id_response_header` - confirms X-Request-Id header
+- `test_request_id_appears_in_all_log_lines_within_request` - confirms trace correlation
+
+**Implementation**: `middleware.rs`:
+- `request_id_middleware` (lines 93-122) generates UUIDv7-based 8-char hex IDs
+- `telemetry_middleware` (lines 1167-1269) adds request_id to logs and headers
+
+### ✓ 4. High-cardinality defense: path_template never contains UUID/UID
+
+**Verified by**: `middleware.rs` lines 1149-1160 (`extract_path_template`):
+Uses `axum::extract::MatchedPath` which provides route templates like `/indexes/{uid}/search` instead of actual paths like `/indexes/products/search`.
 
 ## Test Results
 
-- 13 middleware unit tests: PASSED
-- 17 structured logging integration tests: PASSED
+All tests pass:
+- 13 middleware unit tests - All pass
+- 17 P7.5 structured logging tests - All pass
+- 5 P7.1 core metrics tests - All pass
+- 135 total miroir-proxy unit tests - All pass
 
-## Files Verified
+## Implementation Already Complete
 
-- `crates/miroir-proxy/src/middleware.rs` - Complete implementation
-- `crates/miroir-proxy/src/main.rs` - Middleware stack wiring
-- `crates/miroir-proxy/Cargo.toml` - Dependencies (prometheus, uuid, tracing-subscriber)
-- `crates/miroir-proxy/tests/p7_5_structured_logging.rs` - Integration tests
+The P2.8 middleware was already implemented. No code changes were required - this was a verification task.
