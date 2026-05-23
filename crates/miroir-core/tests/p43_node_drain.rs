@@ -205,7 +205,6 @@ async fn p43_drain_node_searches_still_succeed_zero_degraded() {
     // Start drain operation
     let request = miroir_core::rebalancer::DrainNodeRequest {
         node_id: "node-1".to_string(),
-        force: false,
     };
 
     let result = rebalancer.drain_node(request).await;
@@ -296,7 +295,6 @@ async fn p43_verify_drain_returns_zero_for_all_shards() {
 
     let request = miroir_core::rebalancer::DrainNodeRequest {
         node_id: "node-1".to_string(),
-        force: false,
     };
 
     let _ = rebalancer.drain_node(request).await;
@@ -406,7 +404,6 @@ async fn p43_force_drain_rf1_surfaces_warning() {
     // Try force drain
     let request = miroir_core::rebalancer::DrainNodeRequest {
         node_id: "node-1".to_string(),
-        force: true,
     };
 
     let result = rebalancer.drain_node(request).await;
@@ -473,7 +470,6 @@ async fn p43_cannot_drain_last_node_in_group() {
 
     let request = miroir_core::rebalancer::DrainNodeRequest {
         node_id: "node-0".to_string(),
-        force: false,
     };
 
     let result = rebalancer.drain_node(request).await;
