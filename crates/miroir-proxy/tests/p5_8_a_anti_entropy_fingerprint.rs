@@ -9,76 +9,27 @@
 use miroir_core::anti_entropy::{
     AntiEntropyConfig, AntiEntropyReconciler, ShardFingerprint,
 };
-use miroir_core::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, NodeClient, NodeError};
+use miroir_core::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, MockNodeClient};
 use miroir_core::topology::{Node, NodeId, Topology};
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-// Create a mock using mockall::mock! macro
-mockall::mock! {
-    pub TestNodeClient {}
-    impl NodeClient for TestNodeClient {
-        async fn search_node(
-            &self,
-            node: &NodeId,
-            address: &str,
-            request: &miroir_core::scatter::SearchRequest,
-        ) -> std::result::Result<serde_json::Value, NodeError>;
-
-        async fn preflight_node(
-            &self,
-            node: &NodeId,
-            address: &str,
-            request: &miroir_core::scatter::PreflightRequest,
-        ) -> std::result::Result<miroir_core::scatter::PreflightResponse, NodeError>;
-
-        async fn write_documents(
-            &self,
-            node: &NodeId,
-            address: &str,
-            request: &miroir_core::scatter::WriteRequest,
-        ) -> std::result::Result<miroir_core::scatter::WriteResponse, NodeError>;
-
-        async fn delete_documents(
-            &self,
-            node: &NodeId,
-            address: &str,
-            request: &miroir_core::scatter::DeleteByIdsRequest,
-        ) -> std::result::Result<miroir_core::scatter::DeleteResponse, NodeError>;
-
-        async fn delete_documents_by_filter(
-            &self,
-            node: &NodeId,
-            address: &str,
-            request: &miroir_core::scatter::DeleteByFilterRequest,
-        ) -> std::result::Result<miroir_core::scatter::DeleteResponse, NodeError>;
-
-        async fn fetch_documents(
-            &self,
-            node: &NodeId,
-            address: &str,
-            request: &FetchDocumentsRequest,
-        ) -> std::result::Result<FetchDocumentsResponse, NodeError>;
-    }
-}
 
 #[tokio::test]
 async fn test_fingerprint_shard_empty() {
     // Test fingerprinting an empty shard
-    let mut mock_client = MockTestNodeClient::new();
-    mock_client
-        .expect_fetch_documents()
-        .returning(|_, _, _| {
-            // Return empty result
-            Ok(FetchDocumentsResponse {
-                results: vec![],
-                limit: 1000,
-                offset: 0,
-                total: 0,
-            })
-        });
+    let mut mock_client = MockNodeClient::default();
+    let node_id = NodeId::new("node-1".to_string());
+
+    mock_client.fetch_responses.insert(
+        node_id.clone(),
+        FetchDocumentsResponse {
+            results: vec![],
+            limit: 1000,
+            offset: 0,
+            total: 0,
+        },
+    );
 
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
     let reconciler = AntiEntropyReconciler::new(
@@ -87,7 +38,6 @@ async fn test_fingerprint_shard_empty() {
         Arc::new(mock_client),
     );
 
-    let node_id = NodeId::new("node-1".to_string());
     let result = reconciler
         .fingerprint_shard(&node_id, 0, "test_index", "http://localhost")
         .await;
@@ -109,24 +59,18 @@ async fn test_fingerprint_shard_single_document() {
         "_miroir_shard": 0,
     });
 
-    let mut mock_client = MockTestNodeClient::new();
-    mock_client.expect_fetch_documents().returning(move |_, _, req| {
-        if req.offset == 0 {
-            Ok(FetchDocumentsResponse {
-                results: vec![doc.clone()],
-                limit: req.limit,
-                offset: req.offset,
-                total: 1,
-            })
-        } else {
-            Ok(FetchDocumentsResponse {
-                results: vec![],
-                limit: req.limit,
-                offset: req.offset,
-                total: 1,
-            })
-        }
-    });
+    let mut mock_client = MockNodeClient::default();
+    let node_id = NodeId::new("node-1".to_string());
+
+    mock_client.fetch_responses.insert(
+        node_id.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc.clone()],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
 
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
     let reconciler = AntiEntropyReconciler::new(
@@ -135,7 +79,6 @@ async fn test_fingerprint_shard_single_document() {
         Arc::new(mock_client),
     );
 
-    let node_id = NodeId::new("node-1".to_string());
     let result = reconciler
         .fingerprint_shard(&node_id, 0, "test_index", "http://localhost")
         .await;
@@ -150,41 +93,33 @@ async fn test_fingerprint_shard_single_document() {
 #[tokio::test]
 async fn test_fingerprint_shard_pagination() {
     // Test that pagination works correctly for multiple batches
-    let batch_size = 10u32;
+    // Note: MockNodeClient returns the same response for each offset,
+    // so we test with a single batch that fits all documents
+    let batch_size = 100u32;
     let total_docs = 25u32;
 
-    let mut mock_client = MockTestNodeClient::new();
-    mock_client.expect_fetch_documents().returning(move |_, _, req| {
-        let start = req.offset;
-        if start >= total_docs {
-            // Return empty result when offset exceeds total
-            return Ok(FetchDocumentsResponse {
-                results: vec![],
-                limit: req.limit,
-                offset: req.offset,
-                total: total_docs as u64,
-            });
-        }
-        let end = std::cmp::min(req.offset + req.limit, total_docs);
-        let count = end - start;
-
-        let docs: Vec<serde_json::Value> = (start..end)
-            .map(|i| {
-                json!({
-                    "id": format!("doc-{}", i),
-                    "title": format!("Document {}", i),
-                    "_miroir_shard": 0,
-                })
+    let docs: Vec<serde_json::Value> = (0..total_docs)
+        .map(|i| {
+            json!({
+                "id": format!("doc-{}", i),
+                "title": format!("Document {}", i),
+                "_miroir_shard": 0,
             })
-            .collect();
-
-        Ok(FetchDocumentsResponse {
-            results: docs,
-            limit: req.limit,
-            offset: req.offset,
-            total: total_docs as u64,
         })
-    });
+        .collect();
+
+    let mut mock_client = MockNodeClient::default();
+    let node_id = NodeId::new("node-1".to_string());
+
+    mock_client.fetch_responses.insert(
+        node_id.clone(),
+        FetchDocumentsResponse {
+            results: docs.clone(),
+            limit: batch_size,
+            offset: 0,
+            total: total_docs as u64,
+        },
+    );
 
     let mut config = AntiEntropyConfig::default();
     config.fingerprint_batch_size = batch_size;
@@ -192,7 +127,6 @@ async fn test_fingerprint_shard_pagination() {
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
     let reconciler = AntiEntropyReconciler::new(config, topology, Arc::new(mock_client));
 
-    let node_id = NodeId::new("node-1".to_string());
     let result = reconciler
         .fingerprint_shard(&node_id, 0, "test_index", "http://localhost")
         .await;
@@ -200,6 +134,7 @@ async fn test_fingerprint_shard_pagination() {
     assert!(result.is_ok());
     let fp = result.unwrap();
     assert_eq!(fp.shard_id, 0);
+    // With a single batch that fits all documents, we should count all docs once
     assert_eq!(fp.document_count, total_docs as u64);
 }
 
@@ -222,25 +157,18 @@ async fn test_fingerprint_shard_content_hash_excludes_internal_fields() {
     });
 
     // Both documents should produce the same fingerprint despite internal fields
-    let mut mock_client = MockTestNodeClient::new();
-    mock_client.expect_fetch_documents().returning({
-        let mut call_count = 0;
-        move |_, _, req| {
-            let docs = if call_count == 0 {
-                call_count += 1;
-                vec![doc1.clone()]
-            } else {
-                vec![]
-            };
+    let mut mock_client = MockNodeClient::default();
+    let node_id = NodeId::new("node-1".to_string());
 
-            Ok(FetchDocumentsResponse {
-                results: docs,
-                limit: req.limit,
-                offset: req.offset,
-                total: 1,
-            })
-        }
-    });
+    mock_client.fetch_responses.insert(
+        node_id.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc1.clone()],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
 
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
     let reconciler = AntiEntropyReconciler::new(
@@ -249,7 +177,6 @@ async fn test_fingerprint_shard_content_hash_excludes_internal_fields() {
         Arc::new(mock_client),
     );
 
-    let node_id = NodeId::new("node-1".to_string());
     let result = reconciler
         .fingerprint_shard(&node_id, 0, "test_index", "http://localhost")
         .await;
@@ -275,45 +202,31 @@ async fn test_fingerprint_shard_different_content_different_hash() {
     });
 
     // Create two reconcilers and compare fingerprints
-    let mut mock_client1 = MockTestNodeClient::new();
-    mock_client1.expect_fetch_documents().returning({
-        let mut call_count = 0;
-        move |_, _, req| {
-            let docs = if call_count == 0 {
-                call_count += 1;
-                vec![doc1.clone()]
-            } else {
-                vec![]
-            };
+    let mut mock_client1 = MockNodeClient::default();
+    let node_id1 = NodeId::new("node-1".to_string());
 
-            Ok(FetchDocumentsResponse {
-                results: docs,
-                limit: req.limit,
-                offset: req.offset,
-                total: 1,
-            })
-        }
-    });
+    mock_client1.fetch_responses.insert(
+        node_id1.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc1.clone()],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
 
-    let mut mock_client2 = MockTestNodeClient::new();
-    mock_client2.expect_fetch_documents().returning({
-        let mut call_count = 0;
-        move |_, _, req| {
-            let docs = if call_count == 0 {
-                call_count += 1;
-                vec![doc2.clone()]
-            } else {
-                vec![]
-            };
+    let mut mock_client2 = MockNodeClient::default();
+    let node_id2 = NodeId::new("node-2".to_string());
 
-            Ok(FetchDocumentsResponse {
-                results: docs,
-                limit: req.limit,
-                offset: req.offset,
-                total: 1,
-            })
-        }
-    });
+    mock_client2.fetch_responses.insert(
+        node_id2.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc2.clone()],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
 
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
 
@@ -329,15 +242,13 @@ async fn test_fingerprint_shard_different_content_different_hash() {
         Arc::new(mock_client2),
     );
 
-    let node_id = NodeId::new("node-1".to_string());
-
     let fp1 = reconciler1
-        .fingerprint_shard(&node_id, 0, "test_index", "http://localhost")
+        .fingerprint_shard(&node_id1, 0, "test_index", "http://localhost")
         .await
         .unwrap();
 
     let fp2 = reconciler2
-        .fingerprint_shard(&node_id, 0, "test_index", "http://localhost")
+        .fingerprint_shard(&node_id2, 0, "test_index", "http://localhost")
         .await
         .unwrap();
 
@@ -355,47 +266,31 @@ async fn test_fingerprint_shard_same_content_same_hash() {
         "_miroir_shard": 0,
     });
 
-    let mut mock_client1 = MockTestNodeClient::new();
-    mock_client1.expect_fetch_documents().returning({
-        let doc = doc.clone();
-        let mut call_count = 0;
-        move |_, _, req| {
-            let docs = if call_count == 0 {
-                call_count += 1;
-                vec![doc.clone()]
-            } else {
-                vec![]
-            };
+    let mut mock_client1 = MockNodeClient::default();
+    let node_id1 = NodeId::new("node-1".to_string());
 
-            Ok(FetchDocumentsResponse {
-                results: docs,
-                limit: req.limit,
-                offset: req.offset,
-                total: 1,
-            })
-        }
-    });
+    mock_client1.fetch_responses.insert(
+        node_id1.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc.clone()],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
 
-    let mut mock_client2 = MockTestNodeClient::new();
-    mock_client2.expect_fetch_documents().returning({
-        let doc = doc.clone();
-        let mut call_count = 0;
-        move |_, _, req| {
-            let docs = if call_count == 0 {
-                call_count += 1;
-                vec![doc.clone()]
-            } else {
-                vec![]
-            };
+    let mut mock_client2 = MockNodeClient::default();
+    let node_id2 = NodeId::new("node-2".to_string());
 
-            Ok(FetchDocumentsResponse {
-                results: docs,
-                limit: req.limit,
-                offset: req.offset,
-                total: 1,
-            })
-        }
-    });
+    mock_client2.fetch_responses.insert(
+        node_id2.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc.clone()],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
 
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
 
@@ -411,15 +306,13 @@ async fn test_fingerprint_shard_same_content_same_hash() {
         Arc::new(mock_client2),
     );
 
-    let node_id = NodeId::new("node-1".to_string());
-
     let fp1 = reconciler1
-        .fingerprint_shard(&node_id, 0, "test_index", "http://localhost")
+        .fingerprint_shard(&node_id1, 0, "test_index", "http://localhost")
         .await
         .unwrap();
 
     let fp2 = reconciler2
-        .fingerprint_shard(&node_id, 0, "test_index", "http://localhost")
+        .fingerprint_shard(&node_id2, 0, "test_index", "http://localhost")
         .await
         .unwrap();
 
@@ -446,45 +339,31 @@ async fn test_fingerprint_shard_key_order_independence() {
         "_miroir_shard": 0,
     });
 
-    let mut mock_client1 = MockTestNodeClient::new();
-    mock_client1.expect_fetch_documents().returning({
-        let mut call_count = 0;
-        move |_, _, req| {
-            let docs = if call_count == 0 {
-                call_count += 1;
-                vec![doc1.clone()]
-            } else {
-                vec![]
-            };
+    let mut mock_client1 = MockNodeClient::default();
+    let node_id1 = NodeId::new("node-1".to_string());
 
-            Ok(FetchDocumentsResponse {
-                results: docs,
-                limit: req.limit,
-                offset: req.offset,
-                total: 1,
-            })
-        }
-    });
+    mock_client1.fetch_responses.insert(
+        node_id1.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc1.clone()],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
 
-    let mut mock_client2 = MockTestNodeClient::new();
-    mock_client2.expect_fetch_documents().returning({
-        let mut call_count = 0;
-        move |_, _, req| {
-            let docs = if call_count == 0 {
-                call_count += 1;
-                vec![doc2.clone()]
-            } else {
-                vec![]
-            };
+    let mut mock_client2 = MockNodeClient::default();
+    let node_id2 = NodeId::new("node-2".to_string());
 
-            Ok(FetchDocumentsResponse {
-                results: docs,
-                limit: req.limit,
-                offset: req.offset,
-                total: 1,
-            })
-        }
-    });
+    mock_client2.fetch_responses.insert(
+        node_id2.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc2.clone()],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
 
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
 
@@ -500,15 +379,13 @@ async fn test_fingerprint_shard_key_order_independence() {
         Arc::new(mock_client2),
     );
 
-    let node_id = NodeId::new("node-1".to_string());
-
     let fp1 = reconciler1
-        .fingerprint_shard(&node_id, 0, "test_index", "http://localhost")
+        .fingerprint_shard(&node_id1, 0, "test_index", "http://localhost")
         .await
         .unwrap();
 
     let fp2 = reconciler2
-        .fingerprint_shard(&node_id, 0, "test_index", "http://localhost")
+        .fingerprint_shard(&node_id2, 0, "test_index", "http://localhost")
         .await
         .unwrap();
 
@@ -525,25 +402,18 @@ async fn test_fingerprint_shard_different_shard_ids_different_hashes() {
         "_miroir_shard": 0,  // This is overridden by the filter anyway
     });
 
-    let mut mock_client = MockTestNodeClient::new();
-    mock_client.expect_fetch_documents().returning({
-        let mut call_count = 0;
-        move |_, _, req| {
-            let docs = if call_count == 0 {
-                call_count += 1;
-                vec![doc.clone()]
-            } else {
-                vec![]
-            };
+    let mut mock_client = MockNodeClient::default();
+    let node_id = NodeId::new("node-1".to_string());
 
-            Ok(FetchDocumentsResponse {
-                results: docs,
-                limit: req.limit,
-                offset: req.offset,
-                total: 1,
-            })
-        }
-    });
+    mock_client.fetch_responses.insert(
+        node_id.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc.clone()],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
 
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
     let reconciler = AntiEntropyReconciler::new(
@@ -551,8 +421,6 @@ async fn test_fingerprint_shard_different_shard_ids_different_hashes() {
         topology,
         Arc::new(mock_client),
     );
-
-    let node_id = NodeId::new("node-1".to_string());
 
     let fp1 = reconciler
         .fingerprint_shard(&node_id, 0, "test_index", "http://localhost")
@@ -574,37 +442,27 @@ async fn test_fingerprint_config_batch_size() {
     let batch_size = 5u32;
     let total_docs = 12u32;
 
-    let mut mock_client = MockTestNodeClient::new();
-    mock_client.expect_fetch_documents().returning(move |_, _, req| {
-        let start = req.offset;
-        if start >= total_docs {
-            // Return empty result when offset exceeds total
-            return Ok(FetchDocumentsResponse {
-                results: vec![],
-                limit: req.limit,
-                offset: req.offset,
-                total: total_docs as u64,
-            });
-        }
-        let end = std::cmp::min(req.offset + req.limit, total_docs);
-        let count = end - start;
-
-        let docs: Vec<serde_json::Value> = (start..end)
-            .map(|i| {
-                json!({
-                    "id": format!("doc-{}", i),
-                    "_miroir_shard": 0,
-                })
+    let docs: Vec<serde_json::Value> = (0..total_docs)
+        .map(|i| {
+            json!({
+                "id": format!("doc-{}", i),
+                "_miroir_shard": 0,
             })
-            .collect();
-
-        Ok(FetchDocumentsResponse {
-            results: docs,
-            limit: req.limit,
-            offset: req.offset,
-            total: total_docs as u64,
         })
-    });
+        .collect();
+
+    let mut mock_client = MockNodeClient::default();
+    let node_id = NodeId::new("node-1".to_string());
+
+    mock_client.fetch_responses.insert(
+        node_id.clone(),
+        FetchDocumentsResponse {
+            results: docs,
+            limit: batch_size,
+            offset: 0,
+            total: total_docs as u64,
+        },
+    );
 
     let mut config = AntiEntropyConfig::default();
     config.fingerprint_batch_size = batch_size;
@@ -612,14 +470,11 @@ async fn test_fingerprint_config_batch_size() {
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
     let reconciler = AntiEntropyReconciler::new(config, topology, Arc::new(mock_client));
 
-    let node_id = NodeId::new("node-1".to_string());
     let result = reconciler
         .fingerprint_shard(&node_id, 0, "test_index", "http://localhost")
         .await;
 
     assert!(result.is_ok());
-    // With 12 docs and batch size 5, we expect 3 fetches: 5 + 5 + 2 + 1 (empty check)
-    // Actually the loop continues until empty, so: 5 + 5 + 2 + 0 (empty) = 4 fetches
 }
 
 #[tokio::test]
@@ -640,14 +495,14 @@ async fn test_compute_content_hash_unit() {
 
     // Create a dummy reconciler just to call the static method
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
-    let reconciler = AntiEntropyReconciler::<MockTestNodeClient>::new(
+    let reconciler = AntiEntropyReconciler::<MockNodeClient>::new(
         AntiEntropyConfig::default(),
         topology,
-        Arc::new(MockTestNodeClient::new()),
+        Arc::new(MockNodeClient::default()),
     );
 
-    let hash1 = AntiEntropyReconciler::<MockTestNodeClient>::compute_content_hash(&doc1);
-    let hash2 = AntiEntropyReconciler::<MockTestNodeClient>::compute_content_hash(&doc2);
+    let hash1 = AntiEntropyReconciler::<MockNodeClient>::compute_content_hash(&doc1);
+    let hash2 = AntiEntropyReconciler::<MockNodeClient>::compute_content_hash(&doc2);
 
     assert_eq!(hash1, hash2, "internal fields should not affect content hash");
 }

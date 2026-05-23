@@ -1609,6 +1609,24 @@ impl Metrics {
         }
     }
 
+    // ── §13.8 Anti-entropy ──
+
+    pub fn inc_antientropy_shards_scanned(&self, count: u64) {
+        self.antientropy_shards_scanned_total.inc_by(count as f64);
+    }
+
+    pub fn inc_antientropy_mismatches_found(&self, count: u64) {
+        self.antientropy_mismatches_found_total.inc_by(count as f64);
+    }
+
+    pub fn inc_antientropy_docs_repaired(&self, count: u64) {
+        self.antientropy_docs_repaired_total.inc_by(count as f64);
+    }
+
+    pub fn set_antientropy_last_scan_completed(&self, timestamp: u64) {
+        self.antientropy_last_scan_completed_seconds.set(timestamp as f64);
+    }
+
     // ── §14.9 Resource-pressure ──
 
     pub fn set_memory_pressure(&self, level: u32) {

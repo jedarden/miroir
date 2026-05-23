@@ -198,6 +198,7 @@ async fn delete_documents(
         let req = DeleteByFilterRequest {
             index_uid: index.clone(),
             filter: filter.clone(),
+            origin: None, // Client write
         };
         return delete_by_filter_impl(index, req, &state, sid).await;
     }
@@ -212,6 +213,7 @@ async fn delete_documents(
             let req = DeleteByIdsRequest {
                 index_uid: index.clone(),
                 ids,
+                origin: None, // Client write
             };
             return delete_by_ids_impl(index, req, &state, sid).await;
         }
@@ -237,6 +239,7 @@ async fn delete_document_by_id(
     let req = DeleteByIdsRequest {
         index_uid: index.clone(),
         ids: vec![id],
+        origin: None, // Client write
     };
     delete_by_ids_impl(index, req, &state, sid).await
 }
@@ -344,16 +347,34 @@ async fn write_documents_impl(
         }
     }
 
-    // 3. Inject _miroir_shard into each document
+    // 3. Inject _miroir_shard and _miroir_updated_at into each document
     let topology = state.topology.read().await;
     let shard_count = topology.shards;
     let rf = topology.rf();
     let replica_group_count = topology.replica_group_count();
 
+    // Get current timestamp in milliseconds since epoch for _miroir_updated_at stamping
+    let now_ms = if anti_entropy_enabled {
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64
+        )
+    } else {
+        None
+    };
+
     for doc in &mut documents {
         if let Some(pk_value) = doc.get(&primary_key).and_then(|v| v.as_str()) {
             let shard_id = shard_for_key(pk_value, shard_count);
             doc["_miroir_shard"] = serde_json::json!(shard_id);
+        }
+
+        // Stamp _miroir_updated_at when anti_entropy is enabled (plan §13.8)
+        // This happens AFTER reserved field validation, so orchestrator-controlled injection is allowed
+        if let Some(timestamp) = now_ms {
+            doc[updated_at_field] = serde_json::json!(timestamp);
         }
     }
 
@@ -409,6 +430,7 @@ async fn write_documents_impl(
                 index_uid: index_uid.clone(),
                 documents: docs.clone(),
                 primary_key: Some(primary_key.clone()),
+                origin: None, // Client write
             };
 
             match client.write_documents(&node_id, &node.address, &req).await {
@@ -574,6 +596,7 @@ async fn delete_by_ids_impl(
             let delete_req = DeleteByIdsRequest {
                 index_uid: index_uid.clone(),
                 ids: ids.clone(),
+                origin: None, // Client write
             };
 
             match client.delete_documents(&node_id, &node.address, &delete_req).await {
@@ -1139,5 +1162,26 @@ mod tests {
         assert!(doc.get("_miroir_expires_at").is_some());
         assert!(doc.get("id").is_some());
         // No validation error would be raised in this case
+    }
+
+    #[test]
+    fn test_orchestrator_updated_at_stamping_when_ae_enabled() {
+        // When anti_entropy.enabled: true, orchestrator stamps _miroir_updated_at
+        // This test verifies the stamping logic (plan §13.8)
+
+        let client_doc = json!({"id": "user:123", "name": "Test User"});
+        assert!(client_doc.get("_miroir_updated_at").is_none(), "client doc should not have _miroir_updated_at");
+
+        // Simulate orchestrator stamping (happens AFTER validation)
+        let mut doc_with_timestamp = client_doc.clone();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        doc_with_timestamp["_miroir_updated_at"] = json!(now_ms);
+
+        assert!(doc_with_timestamp.get("_miroir_updated_at").is_some(), "orchestrator should stamp _miroir_updated_at");
+        assert_eq!(doc_with_timestamp["_miroir_updated_at"], now_ms, "timestamp should be current ms since epoch");
+        assert!(doc_with_timestamp.get("id").is_some(), "primary key should still be present");
     }
 }

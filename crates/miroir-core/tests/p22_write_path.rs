@@ -116,6 +116,7 @@ async fn test_mock_client_write_documents() {
         index_uid: "test".to_string(),
         documents: vec![json!({"id": "doc1", "name": "Test"})],
         primary_key: Some("id".to_string()),
+        origin: None,
     };
 
     // Mock response
@@ -138,6 +139,7 @@ async fn test_mock_client_delete_by_ids() {
     let req = DeleteByIdsRequest {
         index_uid: "test".to_string(),
         ids: vec!["doc1".to_string(), "doc2".to_string()],
+        origin: None,
     };
 
     let resp = client.delete_documents(&node_id, "http://localhost:7700", &req).await.unwrap();
