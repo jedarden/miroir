@@ -111,7 +111,7 @@ impl HttpClient {
 }
 
 /// Wait for a task to complete by polling the task endpoint
-async fn wait_for_task(client: &HttpClient, index_uid: &str, task_uid: u64, timeout_secs: u64) -> Result<serde_json::Value, String> {
+async fn wait_for_task(client: &HttpClient, _index_uid: &str, task_uid: u64, timeout_secs: u64) -> Result<serde_json::Value, String> {
     let start = std::time::Instant::now();
     let timeout = Duration::from_secs(timeout_secs);
 
@@ -136,12 +136,13 @@ async fn wait_for_task(client: &HttpClient, index_uid: &str, task_uid: u64, time
 
 /// Generate test documents with unique keywords for shard coverage testing
 fn generate_test_documents(count: usize) -> Vec<serde_json::Value> {
+    let colors = ["red", "green", "blue"];
     (0..count).map(|i| {
         json!({
             "id": i,
             "title": format!("Document {}", i),
             "keyword": format!("keyword_{}", i % 16), // 16 unique keywords for 16 shards
-            "color": ["red", "green", "blue"][i % 3], // For facet testing
+            "color": colors[i % 3], // For facet testing
             "score": i % 100,
             "shard_hint": format!("shard_{}", i % 16), // Help verify shard distribution
         })
@@ -317,10 +318,11 @@ async fn test_facet_aggregation() {
     wait_for_task(&client, "facet_test", task_uid, 30).await.unwrap();
 
     // Index exactly 100 documents with known color distribution
+    let colors = ["red", "green", "blue"];
     let docs: Vec<serde_json::Value> = (0..100).map(|i| {
         json!({
             "id": i,
-            "color": ["red", "green", "blue"][i % 3],
+            "color": colors[i % 3],
         })
     }).collect();
 
@@ -577,8 +579,6 @@ async fn test_health_check() {
 /// Test 8: Direct Meilisearch node access (for debugging)
 #[tokio::test]
 async fn test_direct_meilisearch_access() {
-    let client = HttpClient::new();
-
     // Access Meilisearch node 0 directly
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))

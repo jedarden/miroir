@@ -21,19 +21,19 @@ docker compose -f examples/docker-compose-dev.yml ps
 Run all integration tests:
 
 ```bash
-cargo test --test integration -- --test-threads=1
+cargo test -p miroir-proxy --test docker_compose_integration -- --test-threads=1
 ```
 
 Run a specific test:
 
 ```bash
-cargo test --test integration test_document_round_trip -- --exact
+cargo test -p miroir-proxy --test docker_compose_integration test_document_round_trip -- --exact
 ```
 
 Run tests with output:
 
 ```bash
-cargo test --test integration -- --test-threads=1 --nocapture
+cargo test -p miroir-proxy --test docker_compose_integration -- --test-threads=1 --nocapture
 ```
 
 ## Test Coverage
@@ -59,7 +59,7 @@ The `test_node_failure_rf2` test requires the RF=2 docker-compose stack:
 docker compose -f examples/docker-compose-dev-rf2.yml up -d
 
 # Run the node failure test
-cargo test --test integration test_node_failure_rf2 -- --ignored
+cargo test -p miroir-proxy --test docker_compose_integration test_node_failure_rf2 -- --ignored
 
 # Clean up
 docker compose -f examples/docker-compose-dev-rf2.yml down -v
