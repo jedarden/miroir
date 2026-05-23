@@ -164,6 +164,7 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             alias_registry: state.admin.alias_registry.clone(),
             leader_election: state.admin.leader_election.clone(),
             mode_c_worker: state.admin.mode_c_worker.clone(),
+            replica_selector: state.admin.replica_selector.clone(),
         }
     }
 }

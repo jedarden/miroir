@@ -375,9 +375,13 @@ impl SessionManager {
     }
 
     /// Update the session active count metric.
+    ///
+    /// Note: This must be called from an async context since it uses
+    /// try_read() to avoid blocking the runtime.
     pub fn update_metrics(&self, active_count_fn: impl FnOnce(usize)) {
-        let count = self.sessions.blocking_read().len();
-        active_count_fn(count);
+        if let Ok(guard) = self.sessions.try_read() {
+            active_count_fn(guard.len());
+        }
     }
 
     /// Check if session pinning is enabled.
