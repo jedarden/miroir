@@ -3,6 +3,17 @@
 //! Manages rolling time-series indexes with automatic rollover and retention.
 //! Uses leader-only singleton coordination (plan §14.5) to ensure only one pod
 //! performs rollovers for a given policy.
+//!
+//! # CDC Origin Tag (plan §13.13)
+//!
+//! Rollover writes must be tagged with `origin="rollover"` so they are suppressed
+//! from CDC by default (unless `emit_internal_writes` is true).
+//!
+//! When constructing `WriteRequest` for rollover operations, set:
+//! ```ignore
+//! use miroir_core::cdc::ORIGIN_ROLLOVER;
+//! WriteRequest { ..., origin: Some(ORIGIN_ROLLOVER.to_string()) }
+//! ```
 
 use crate::leader_election::LeaderElection;
 use crate::mode_b_coordinator::ModeBOpLeader;

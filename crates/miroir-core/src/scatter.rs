@@ -113,6 +113,16 @@ pub struct WriteRequest {
     pub index_uid: String,
     pub documents: Vec<Value>,
     pub primary_key: Option<String>,
+    /// Internal origin tag for CDC event suppression (plan §13.13).
+    /// - None = client write (always emitted to CDC)
+    /// - Some("antientropy") = anti-entropy repair write (suppressed unless emit_internal_writes)
+    /// - Some("reshard_backfill") = reshard backfill write (suppressed unless emit_internal_writes)
+    /// - Some("rollover") = ILM rollover write (suppressed unless emit_internal_writes)
+    /// - Some("ttl_expire") = TTL expiration delete (suppressed unless emit_ttl_deletes)
+    ///
+    /// This field is NEVER stored on documents and never returned to clients.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// Response from a single node's document write operation.
@@ -130,6 +140,9 @@ pub struct WriteResponse {
 pub struct DeleteByIdsRequest {
     pub index_uid: String,
     pub ids: Vec<String>,
+    /// Internal origin tag for CDC event suppression (plan §13.13).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// Request to delete all documents matching a filter.
@@ -137,6 +150,9 @@ pub struct DeleteByIdsRequest {
 pub struct DeleteByFilterRequest {
     pub index_uid: String,
     pub filter: Value,
+    /// Internal origin tag for CDC event suppression (plan §13.13).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// Response from a delete operation.

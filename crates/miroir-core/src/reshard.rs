@@ -861,6 +861,17 @@ pub struct ReshardCoordinator<E> {
 }
 
 /// Extra state for reshard operations persisted to mode_b_operations.
+///
+/// # CDC Origin Tag (plan §13.13)
+///
+/// Backfill writes during phase 3 must be tagged with `origin="reshard_backfill"`
+/// so they are suppressed from CDC by default (unless `emit_internal_writes` is true).
+///
+/// When constructing `WriteRequest` for backfill writes, set:
+/// ```ignore
+/// use miroir_core::cdc::ORIGIN_RESHARD_BACKFILL;
+/// WriteRequest { ..., origin: Some(ORIGIN_RESHARD_BACKFILL.to_string()) }
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ReshardExtraState {
     /// Index UID being resharded.

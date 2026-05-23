@@ -3,6 +3,17 @@
 //! Detects and repairs replica drift using the fingerprint → diff → repair pipeline.
 //! Resolves Open Problem #1 (dual-write safety) by continuously reconciling
 //! replicas and catching any missed writes.
+//!
+//! # CDC Origin Tag (plan §13.13)
+//!
+//! Repair writes must be tagged with `origin="antientropy"` so they are suppressed
+//! from CDC by default (unless `emit_internal_writes` is true).
+//!
+//! When constructing `WriteRequest` for repair writes, set:
+//! ```ignore
+//! use miroir_core::cdc::ORIGIN_ANTIENTROPY;
+//! WriteRequest { ..., origin: Some(ORIGIN_ANTIENTROPY.to_string()) }
+//! ```
 
 use crate::error::{MiroirError, Result};
 use crate::migration::{MigrationConfig, MigrationError};

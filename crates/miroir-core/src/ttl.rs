@@ -2,6 +2,17 @@
 //!
 //! Background sweeper deletes documents whose `_miroir_expires_at` field
 //! is in the past.
+//!
+//! # CDC Origin Tag (plan §13.13)
+//!
+//! TTL expiration deletes must be tagged with `origin="ttl_expire"` so they are
+//! suppressed from CDC by default (unless `emit_ttl_deletes` is true).
+//!
+//! When constructing delete requests for expired documents, set:
+//! ```ignore
+//! use miroir_core::cdc::ORIGIN_TTL_EXPIRE;
+//! WriteRequest { ..., origin: Some(ORIGIN_TTL_EXPIRE.to_string()) }
+//! ```
 
 use crate::error::{MiroirError, Result};
 use serde::{Deserialize, Serialize};
