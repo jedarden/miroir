@@ -860,6 +860,42 @@ impl Default for SearchUiAnalyticsConfig {
 }
 
 // ---------------------------------------------------------------------------
+// 13.22  Rebalancer (P4.1 background worker)
+// ---------------------------------------------------------------------------
+
+/// Rebalancer configuration (plan §4 Phase 4.1).
+///
+/// The rebalancer is a background Tokio task that orchestrates shard migration
+/// during topology changes (node add/drain/fail/recover). Uses leader lease to
+/// ensure only one pod runs the rebalancer at a time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RebalancerConfig {
+    /// Enable or disable the rebalancer background worker.
+    pub enabled: bool,
+    /// Maximum concurrent shard migrations (plan §14.2 memory budget).
+    pub max_concurrent_migrations: usize,
+    /// Check interval for topology changes (milliseconds).
+    pub check_interval_ms: u64,
+    /// Leader lease TTL (milliseconds) — must be longer than check_interval.
+    pub leader_lease_ttl_ms: u64,
+    /// Batch size for document migration pagination.
+    pub migration_batch_size: u32,
+}
+
+impl Default for RebalancerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_concurrent_migrations: 4,
+            check_interval_ms: 5000,
+            leader_lease_ttl_ms: 15000,
+            migration_batch_size: 1000,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // §10 OpenTelemetry tracing
 // ---------------------------------------------------------------------------
 
