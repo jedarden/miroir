@@ -94,6 +94,10 @@ pub fn build_registry() -> MigrationRegistry {
             version: 3,
             sql: include_str!("../migrations/003_task_registry_fields.sql"),
         },
+        Migration {
+            version: 4,
+            sql: include_str!("../migrations/004_mode_b_operations.sql"),
+        },
     ])
 }
 

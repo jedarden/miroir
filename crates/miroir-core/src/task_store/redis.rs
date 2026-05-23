@@ -1838,6 +1838,306 @@ impl TaskStore for RedisTaskStore {
         // In Redis mode, sessions are garbage-collected automatically.
         Ok(0)
     }
+
+    // --- Table 15: mode_b_operations ---
+
+    fn upsert_mode_b_operation(&self, operation: &ModeBOperation) -> Result<()> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+        let op = operation.clone();
+
+        self.block_on(async move {
+            let mut conn = manager.lock().await;
+            let key = format!("{}:mode_b_ops:{}", key_prefix, op.operation_id);
+
+            // Store as Redis hash
+            let mut items: Vec<(&str, String)> = vec![
+                ("operation_id", op.operation_id.clone()),
+                ("operation_type", op.operation_type.clone()),
+                ("scope", op.scope.clone()),
+                ("phase", op.phase.clone()),
+                ("phase_started_at", op.phase_started_at.to_string()),
+                ("created_at", op.created_at.to_string()),
+                ("updated_at", op.updated_at.to_string()),
+                ("state_json", op.state_json.clone()),
+                ("status", op.status.clone()),
+            ];
+            if let Some(ref error) = op.error {
+                items.push(("error", error.clone()));
+            }
+            if let Some(ref index_uid) = op.index_uid {
+                items.push(("index_uid", index_uid.clone()));
+            }
+            if let Some(old_shards) = op.old_shards {
+                items.push(("old_shards", old_shards.to_string()));
+            }
+            if let Some(target_shards) = op.target_shards {
+                items.push(("target_shards", target_shards.to_string()));
+            }
+            if let Some(ref shadow_index) = op.shadow_index {
+                items.push(("shadow_index", shadow_index.clone()));
+            }
+            if let Some(documents_backfilled) = op.documents_backfilled {
+                items.push(("documents_backfilled", documents_backfilled.to_string()));
+            }
+            if let Some(total_documents) = op.total_documents {
+                items.push(("total_documents", total_documents.to_string()));
+            }
+
+            // Store the hash
+            conn.hset_multiple(&key, &items).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            // Add to scope index
+            let scope_key = format!("{}:mode_b_ops_scope:{}", key_prefix, op.scope);
+            conn.set(&scope_key, &op.operation_id).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            Ok(())
+        })
+    }
+
+    fn get_mode_b_operation(&self, operation_id: &str) -> Result<Option<ModeBOperation>> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+        let id = operation_id.to_string();
+
+        self.block_on(async move {
+            let mut conn = manager.lock().await;
+            let key = format!("{}:mode_b_ops:{}", key_prefix, id);
+
+            // Check if key exists
+            let exists: bool = conn.exists(&key).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+            if !exists {
+                return Ok(None);
+            }
+
+            // Get all fields
+            let map: std::collections::HashMap<String, String> = conn.hgetall(&key).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            Ok(Some(ModeBOperation {
+                operation_id: map.get("operation_id").cloned().unwrap_or_default(),
+                operation_type: map.get("operation_type").cloned().unwrap_or_default(),
+                scope: map.get("scope").cloned().unwrap_or_default(),
+                phase: map.get("phase").cloned().unwrap_or_default(),
+                phase_started_at: map.get("phase_started_at")
+                    .and_then(|v| v.parse().ok()).unwrap_or(0),
+                created_at: map.get("created_at")
+                    .and_then(|v| v.parse().ok()).unwrap_or(0),
+                updated_at: map.get("updated_at")
+                    .and_then(|v| v.parse().ok()).unwrap_or(0),
+                state_json: map.get("state_json").cloned().unwrap_or_default(),
+                error: map.get("error").cloned(),
+                status: map.get("status").cloned().unwrap_or_default(),
+                index_uid: map.get("index_uid").cloned(),
+                old_shards: map.get("old_shards").and_then(|v| v.parse().ok()),
+                target_shards: map.get("target_shards").and_then(|v| v.parse().ok()),
+                shadow_index: map.get("shadow_index").cloned(),
+                documents_backfilled: map.get("documents_backfilled").and_then(|v| v.parse().ok()),
+                total_documents: map.get("total_documents").and_then(|v| v.parse().ok()),
+            }))
+        })
+    }
+
+    fn get_mode_b_operation_by_scope(&self, scope: &str) -> Result<Option<ModeBOperation>> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+        let scope = scope.to_string();
+
+        self.block_on(async move {
+            let mut conn = manager.lock().await;
+            let scope_key = format!("{}:mode_b_ops_scope:{}", key_prefix, scope);
+
+            // Get operation ID from scope index
+            let operation_id: Option<String> = conn.get(&scope_key).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            let Some(id) = operation_id else {
+                return Ok(None);
+            };
+
+            // Get the operation
+            let key = format!("{}:mode_b_ops:{}", key_prefix, id);
+            let exists: bool = conn.exists(&key).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+            if !exists {
+                return Ok(None);
+            }
+
+            // Get all fields
+            let map: std::collections::HashMap<String, String> = conn.hgetall(&key).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            Ok(Some(ModeBOperation {
+                operation_id: map.get("operation_id").cloned().unwrap_or_default(),
+                operation_type: map.get("operation_type").cloned().unwrap_or_default(),
+                scope: map.get("scope").cloned().unwrap_or_default(),
+                phase: map.get("phase").cloned().unwrap_or_default(),
+                phase_started_at: map.get("phase_started_at")
+                    .and_then(|v| v.parse().ok()).unwrap_or(0),
+                created_at: map.get("created_at")
+                    .and_then(|v| v.parse().ok()).unwrap_or(0),
+                updated_at: map.get("updated_at")
+                    .and_then(|v| v.parse().ok()).unwrap_or(0),
+                state_json: map.get("state_json").cloned().unwrap_or_default(),
+                error: map.get("error").cloned(),
+                status: map.get("status").cloned().unwrap_or_default(),
+                index_uid: map.get("index_uid").cloned(),
+                old_shards: map.get("old_shards").and_then(|v| v.parse().ok()),
+                target_shards: map.get("target_shards").and_then(|v| v.parse().ok()),
+                shadow_index: map.get("shadow_index").cloned(),
+                documents_backfilled: map.get("documents_backfilled").and_then(|v| v.parse().ok()),
+                total_documents: map.get("total_documents").and_then(|v| v.parse().ok()),
+            }))
+        })
+    }
+
+    fn list_mode_b_operations(&self, filter: &ModeBOperationFilter) -> Result<Vec<ModeBOperation>> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+        let filter = filter.clone();
+
+        self.block_on(async move {
+            let mut conn = manager.lock().await;
+
+            // Scan for mode_b_ops keys
+            let pattern = format!("{}:mode_b_ops:*", key_prefix);
+            let keys: Vec<String> = conn.keys(&pattern).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            let mut results = Vec::new();
+
+            for key in keys {
+                let map: std::collections::HashMap<String, String> = conn.hgetall(&key).await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+                let op = ModeBOperation {
+                    operation_id: map.get("operation_id").cloned().unwrap_or_default(),
+                    operation_type: map.get("operation_type").cloned().unwrap_or_default(),
+                    scope: map.get("scope").cloned().unwrap_or_default(),
+                    phase: map.get("phase").cloned().unwrap_or_default(),
+                    phase_started_at: map.get("phase_started_at")
+                        .and_then(|v| v.parse().ok()).unwrap_or(0),
+                    created_at: map.get("created_at")
+                        .and_then(|v| v.parse().ok()).unwrap_or(0),
+                    updated_at: map.get("updated_at")
+                        .and_then(|v| v.parse().ok()).unwrap_or(0),
+                    state_json: map.get("state_json").cloned().unwrap_or_default(),
+                    error: map.get("error").cloned(),
+                    status: map.get("status").cloned().unwrap_or_default(),
+                    index_uid: map.get("index_uid").cloned(),
+                    old_shards: map.get("old_shards").and_then(|v| v.parse().ok()),
+                    target_shards: map.get("target_shards").and_then(|v| v.parse().ok()),
+                    shadow_index: map.get("shadow_index").cloned(),
+                    documents_backfilled: map.get("documents_backfilled").and_then(|v| v.parse().ok()),
+                    total_documents: map.get("total_documents").and_then(|v| v.parse().ok()),
+                };
+
+                // Apply filters
+                if let Some(ref op_type) = filter.operation_type {
+                    if &op.operation_type != op_type {
+                        continue;
+                    }
+                }
+                if let Some(ref scope) = filter.scope {
+                    if &op.scope != scope {
+                        continue;
+                    }
+                }
+                if let Some(ref status) = filter.status {
+                    if &op.status != status {
+                        continue;
+                    }
+                }
+
+                results.push(op);
+            }
+
+            // Sort by updated_at descending
+            results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
+            // Apply limit and offset
+            if let Some(offset) = filter.offset {
+                if offset < results.len() {
+                    results = results.into_iter().skip(offset).collect();
+                } else {
+                    results.clear();
+                }
+            }
+            if let Some(limit) = filter.limit {
+                results.truncate(limit);
+            }
+
+            Ok(results)
+        })
+    }
+
+    fn delete_mode_b_operation(&self, operation_id: &str) -> Result<bool> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+        let id = operation_id.to_string();
+
+        self.block_on(async move {
+            let mut conn = manager.lock().await;
+            let key = format!("{}:mode_b_ops:{}", key_prefix, id);
+
+            // Get scope for cleanup
+            let scope: Option<String> = conn.hget(&key, "scope").await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            // Delete the operation
+            let _: () = conn.del(&key).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+            let deleted = true; // If we got here, deletion succeeded
+
+            // Clean up scope index
+            if let Some(s) = scope {
+                let scope_key = format!("{}:mode_b_ops_scope:{}", key_prefix, s);
+                let _: () = conn.del(&scope_key).await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
+            }
+
+            Ok(deleted)
+        })
+    }
+
+    fn prune_mode_b_operations(&self, cutoff_ms: i64, _batch_size: u32) -> Result<usize> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+
+        self.block_on(async move {
+            let mut conn = manager.lock().await;
+
+            // Scan for mode_b_ops keys
+            let pattern = format!("{}:mode_b_ops:*", key_prefix);
+            let keys: Vec<String> = conn.keys(&pattern).await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            let mut deleted = 0;
+
+            for key in keys {
+                let status: Option<String> = conn.hget(&key, "status").await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
+                let updated_at_raw: Option<String> = conn.hget(&key, "updated_at").await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
+                let updated_at: Option<i64> = updated_at_raw
+                    .and_then(|v| v.parse().ok());
+
+                if let (Some(s), Some(ts)) = (status, updated_at) {
+                    if (s == "completed" || s == "failed") && ts < cutoff_ms {
+                        // Delete the operation
+                        let _: () = conn.del(&key).await
+                            .map_err(|e| MiroirError::Redis(e.to_string()))?;
+                        deleted += 1;
+                    }
+                }
+            }
+
+            Ok(deleted)
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------

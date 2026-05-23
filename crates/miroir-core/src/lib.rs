@@ -16,6 +16,7 @@ pub mod explainer;
 pub mod hedging;
 pub mod idempotency;
 pub mod ilm;
+pub mod leader_election;
 pub mod merger;
 pub mod migration;
 #[cfg(feature = "peer-discovery")]

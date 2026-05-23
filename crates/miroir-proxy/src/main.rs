@@ -161,6 +161,7 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             drift_reconciler: state.admin.drift_reconciler.clone(),
             session_manager: state.admin.session_manager.clone(),
             alias_registry: state.admin.alias_registry.clone(),
+            leader_election: state.admin.leader_election.clone(),
         }
     }
 }
