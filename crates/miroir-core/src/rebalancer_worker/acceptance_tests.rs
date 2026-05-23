@@ -530,32 +530,22 @@ async fn p4_1_a2_progress_persistence_pods_resume_migration() {
 /// P4.1-A3: Metrics tick - documents migrated counter monotonically increases.
 #[tokio::test]
 async fn p4_1_a3_metrics_monotonically_increase() {
-    let metrics = Arc::new(RwLock::new(RebalancerMetrics::default()));
+    let mut metrics = RebalancerMetrics::default();
 
     // Start a rebalance
-    {
-        let mut m = metrics.write().await;
-        m.start_rebalance();
-    }
+    metrics.start_rebalance();
 
     // Record some documents migrated
-    {
-        let mut m = metrics.write().await;
-        m.record_documents_migrated(100);
-        m.record_documents_migrated(200);
-        m.record_documents_migrated(150);
-    }
+    metrics.record_documents_migrated(100);
+    metrics.record_documents_migrated(200);
+    metrics.record_documents_migrated(150);
 
     // Verify the counter monotonically increased
-    let m = metrics.read().await;
-    assert_eq!(m.documents_migrated_total, 450);
-    assert!(m.current_duration_secs() > 0.0);
+    assert_eq!(metrics.documents_migrated_total, 450);
+    assert!(metrics.current_duration_secs() > 0.0);
 
     // End the rebalance and verify duration was recorded
-    let duration = {
-        let mut m = metrics.write().await;
-        m.end_rebalance()
-    };
+    let duration = metrics.end_rebalance();
     assert!(duration > 0.0, "duration should be positive");
 }
 
@@ -566,9 +556,6 @@ async fn p4_1_a3_metrics_monotonically_increase() {
 /// only one actually processes topology change events (no duplicate migrations).
 #[tokio::test]
 async fn p4_1_a4_two_workers_no_duplicate_migrations() {
-    use tokio::sync::mpsc;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
     let topo = Arc::new(RwLock::new(test_topology()));
     let task_store = Arc::new(MockTaskStore::new()) as Arc<dyn TaskStore>;
     let config = RebalancerWorkerConfig {
@@ -580,9 +567,6 @@ async fn p4_1_a4_two_workers_no_duplicate_migrations() {
     let migration_config = MigrationConfig::default();
     let coordinator = Arc::new(RwLock::new(MigrationCoordinator::new(migration_config)));
     let metrics = Arc::new(RwLock::new(RebalancerMetrics::default()));
-
-    // Counter to track how many times migrations were processed
-    let migrations_processed = Arc::new(AtomicU32::new(0));
 
     // Create two workers with different pod IDs
     let worker1 = RebalancerWorker::new(
@@ -653,12 +637,12 @@ async fn p4_1_a4_two_workers_no_duplicate_migrations() {
         index_uid: "test-duplicate-index".to_string(),
     };
 
-    // Both workers try to handle the event directly
-    // Worker 1 should succeed (holds the lease)
+    // Worker 1 handles the event (holds the lease)
     let result1 = worker1.handle_topology_event(event.clone()).await;
     assert!(result1.is_ok(), "worker1 should handle the event successfully");
 
-    // Worker 2 should also handle the event but check for existing job
+    // Worker 2 tries to handle the same event - should succeed but not create duplicate
+    // because worker1 already created the job
     let result2 = worker2.handle_topology_event(event).await;
     assert!(result2.is_ok(), "worker2 should handle the event (no-op if job exists)");
 

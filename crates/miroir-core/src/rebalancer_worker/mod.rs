@@ -8,6 +8,7 @@
 //! - Updates Prometheus metrics (plan §10)
 //! - Progress persistence via jobs table for resumability
 
+mod anti_entropy_worker;
 mod drift_reconciler;
 
 #[cfg(test)]
@@ -16,6 +17,7 @@ mod acceptance_tests;
 #[cfg(test)]
 mod settings_broadcast_acceptance_tests;
 
+pub use anti_entropy_worker::{AntiEntropyWorker, AntiEntropyWorkerConfig};
 pub use drift_reconciler::{DriftReconciler, DriftReconcilerConfig};
 
 use crate::migration::{MigrationCoordinator, MigrationId, MigrationNodeId, ShardId};
@@ -457,9 +459,51 @@ impl RebalancerWorker {
     }
 
     /// Handle a topology change event.
+    ///
+    /// This method verifies that this pod is the leader before processing
+    /// the event. If not the leader, it returns an error without creating
+    /// any migrations.
     pub async fn handle_topology_event(&self, event: TopologyChangeEvent) -> Result<(), String> {
         info!(event = ?event, "handling topology change event");
 
+        // Derive the scope from the event to check leadership
+        let scope = match &event {
+            TopologyChangeEvent::NodeAdded { index_uid, .. } => format!("rebalance:{}", index_uid),
+            TopologyChangeEvent::NodeDraining { index_uid, .. } => format!("rebalance:{}", index_uid),
+            TopologyChangeEvent::NodeFailed { index_uid, .. } => format!("rebalance:{}", index_uid),
+            TopologyChangeEvent::NodeRecovered { index_uid, .. } => format!("rebalance:{}", index_uid),
+        };
+
+        // Compute lease expiration before spawning
+        let now_ms = now_ms();
+        let expires_at = now_ms + (self.config.lease_ttl_secs * 1000) as i64;
+
+        // Check if we are the leader for this scope
+        let is_leader = tokio::task::spawn_blocking({
+            let task_store = self.task_store.clone();
+            let scope = scope.clone();
+            let pod_id = self.pod_id.clone();
+            move || {
+                // Try to acquire - if we already hold it, this succeeds
+                // If we don't hold it, this fails
+                task_store.try_acquire_leader_lease(&scope, &pod_id, expires_at, now_ms)
+            }
+        })
+        .await
+        .map_err(|e| format!("failed to check leader lease: {}", e))?
+        .map_err(|e| format!("failed to check leader lease: {}", e))?;
+
+        if !is_leader {
+            debug!(
+                scope = %scope,
+                pod_id = %self.pod_id,
+                "not the leader, skipping topology event (another pod will handle it)"
+            );
+            // Return Ok - not being leader is not an error, just means another pod handles it
+            return Ok(());
+        }
+
+        // Now process the event (we own it now after deriving scope)
         match event {
             TopologyChangeEvent::NodeAdded {
                 node_id,
@@ -507,11 +551,32 @@ impl RebalancerWorker {
     ) -> Result<(), String> {
         let job_id = RebalanceJobId::new(index_uid);
 
-        // Check if we already have a job for this index
+        // Check if we already have a job for this index in memory
         {
             let jobs = self.jobs.read().await;
             if jobs.contains_key(&job_id) {
                 debug!(index_uid = %index_uid, "rebalance job already exists");
+                return Ok(());
+            }
+        }
+
+        // Also check the task store for existing jobs (from other workers)
+        let existing_jobs = tokio::task::spawn_blocking({
+            let task_store = self.task_store.clone();
+            move || {
+                task_store.list_jobs_by_state("running")
+            }
+        })
+        .await
+        .map_err(|e| format!("failed to list jobs: {}", e))?
+        .map_err(|e| format!("failed to list jobs: {}", e))?;
+
+        for existing_job in existing_jobs {
+            if existing_job.id == job_id.0 {
+                debug!(
+                    index_uid = %index_uid,
+                    "rebalance job already exists in task store"
+                );
                 return Ok(());
             }
         }

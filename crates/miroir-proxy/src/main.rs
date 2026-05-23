@@ -159,6 +159,7 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             previous_docs_migrated: state.admin.previous_docs_migrated.clone(),
             settings_broadcast: state.admin.settings_broadcast.clone(),
             drift_reconciler: state.admin.drift_reconciler.clone(),
+            anti_entropy_worker: state.admin.anti_entropy_worker.clone(),
             session_manager: state.admin.session_manager.clone(),
             alias_registry: state.admin.alias_registry.clone(),
             leader_election: state.admin.leader_election.clone(),
@@ -404,6 +405,19 @@ async fn main() -> anyhow::Result<()> {
         });
     } else {
         info!("drift reconciler not available (no task store configured)");
+    }
+
+    // Start anti-entropy worker background task (plan §13.8)
+    // Uses the anti_entropy_worker from AppState which is already configured
+    if let Some(ref anti_entropy_worker) = state.admin.anti_entropy_worker {
+        let anti_entropy_worker = anti_entropy_worker.clone();
+        tokio::spawn(async move {
+            info!("anti-entropy worker started");
+            anti_entropy_worker.run().await;
+            error!("anti-entropy worker exited unexpectedly");
+        });
+    } else {
+        info!("anti-entropy worker not available (disabled or no task store configured)");
     }
 
     // Start Mode C worker background task (plan §14.5 Mode C)

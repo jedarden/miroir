@@ -273,6 +273,8 @@ pub struct Metrics {
     settings_hash_mismatch_total: Counter,
     settings_drift_repair_total: CounterVec,
     settings_version: GaugeVec,
+    settings_divergence_alert_total: Counter,
+    frozen_indexes: GaugeVec,
 
     // ── §13.7 Alias metrics (always present) ──
     alias_resolutions_total: CounterVec,
@@ -360,6 +362,8 @@ impl Clone for Metrics {
             settings_hash_mismatch_total: self.settings_hash_mismatch_total.clone(),
             settings_drift_repair_total: self.settings_drift_repair_total.clone(),
             settings_version: self.settings_version.clone(),
+            settings_divergence_alert_total: self.settings_divergence_alert_total.clone(),
+            frozen_indexes: self.frozen_indexes.clone(),
             alias_resolutions_total: self.alias_resolutions_total.clone(),
             alias_flips_total: self.alias_flips_total.clone(),
             session_active_count: self.session_active_count.clone(),
@@ -866,10 +870,19 @@ impl Metrics {
             Opts::new("miroir_settings_version", "Current settings version per index"),
             &["index"],
         ).expect("create settings_version");
+        let settings_divergence_alert_total = Counter::with_opts(
+            Opts::new("miroir_settings_divergence_alert_total", "Settings divergence alerts raised after max repair retries exceeded"),
+        ).expect("create settings_divergence_alert_total");
+        let frozen_indexes = GaugeVec::new(
+            Opts::new("miroir_frozen_indexes", "Indexes with writes frozen due to unrepairable settings divergence (1=frozen, 0=not frozen)"),
+            &["index"],
+        ).expect("create frozen_indexes");
         reg!(settings_broadcast_phase);
         reg!(settings_hash_mismatch_total);
         reg!(settings_drift_repair_total);
         reg!(settings_version);
+        reg!(settings_divergence_alert_total);
+        reg!(frozen_indexes);
 
         // ── §13.7 Alias metrics (always present) ──
         let alias_resolutions_total = CounterVec::new(
@@ -981,6 +994,8 @@ impl Metrics {
             settings_hash_mismatch_total,
             settings_drift_repair_total,
             settings_version,
+            settings_divergence_alert_total,
+            frozen_indexes,
             alias_resolutions_total,
             alias_flips_total,
             session_active_count,
@@ -1616,6 +1631,22 @@ impl Metrics {
 
     pub fn get_settings_version(&self, index: &str) -> f64 {
         self.settings_version.with_label_values(&[index]).get()
+    }
+
+    pub fn freeze_index_writes(&self, index: &str) {
+        self.frozen_indexes.with_label_values(&[index]).set(1.0);
+    }
+
+    pub fn unfreeze_index_writes(&self, index: &str) {
+        self.frozen_indexes.with_label_values(&[index]).set(0.0);
+    }
+
+    pub fn raise_settings_divergence_alert(&self, index: &str) {
+        self.settings_divergence_alert_total.inc();
+        tracing::error!(
+            index = %index,
+            "raised settings divergence alert - writes frozen on index"
+        );
     }
 
     // ── §13.7 Alias metrics ──
