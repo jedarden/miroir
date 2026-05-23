@@ -6,12 +6,12 @@
 //! (read-only, used by ILM) aliases.
 
 use crate::error::{MiroirError, Result};
-use crate::task_store::{AliasRow, AliasHistoryEntry, TaskStore};
+use crate::task_store::TaskStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, warn, error};
+use tracing::info;
 
 /// Alias kind: single-target (writable) or multi-target (read-only, ILM-managed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,92 +248,7 @@ impl Default for AliasRegistry {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests;
 
-    #[test]
-    fn test_new_single_alias() {
-        let alias = Alias::new_single("products".into(), "products_v3".into());
-        assert_eq!(alias.name, "products");
-        assert_eq!(alias.kind, AliasKind::Single);
-        assert_eq!(alias.current_uid, Some("products_v3".into()));
-        assert_eq!(alias.generation, 0);
-    }
-
-    #[test]
-    fn test_new_multi_alias() {
-        let alias = Alias::new_multi("logs".into(), vec!["logs-20260418".into(), "logs-20260417".into()]);
-        assert_eq!(alias.name, "logs");
-        assert_eq!(alias.kind, AliasKind::Multi);
-        assert_eq!(alias.target_uids, Some(vec!["logs-20260418".into(), "logs-20260417".into()]));
-    }
-
-    #[test]
-    fn test_alias_targets_single() {
-        let alias = Alias::new_single("test".into(), "target_v1".into());
-        assert_eq!(alias.targets().unwrap(), vec!["target_v1"]);
-    }
-
-    #[test]
-    fn test_alias_targets_multi() {
-        let alias = Alias::new_multi("test".into(), vec!["a".into(), "b".into()]);
-        assert_eq!(alias.targets().unwrap(), vec!["a", "b"]);
-    }
-
-    #[test]
-    fn test_alias_flip() {
-        let mut alias = Alias::new_single("products".into(), "products_v3".into());
-        assert_eq!(alias.generation, 0);
-        alias.flip("products_v4".into()).unwrap();
-        assert_eq!(alias.current_uid, Some("products_v4".into()));
-        assert_eq!(alias.generation, 1);
-    }
-
-    #[test]
-    fn test_alias_flip_multi_fails() {
-        let mut alias = Alias::new_multi("logs".into(), vec!["a".into()]);
-        assert!(alias.flip("b".into()).is_err());
-    }
-
-    #[tokio::test]
-    async fn test_registry_resolve_unknown() {
-        let registry = AliasRegistry::new();
-        assert_eq!(registry.resolve("concrete_index").await, vec!["concrete_index"]);
-    }
-
-    #[tokio::test]
-    async fn test_registry_resolve_alias() {
-        let registry = AliasRegistry::new();
-        let alias = Alias::new_single("products".into(), "products_v3".into());
-        registry.upsert(alias).await.unwrap();
-        assert_eq!(registry.resolve("products").await, vec!["products_v3"]);
-    }
-
-    #[tokio::test]
-    async fn test_registry_flip() {
-        let registry = AliasRegistry::new();
-        let alias = Alias::new_single("products".into(), "products_v3".into());
-        registry.upsert(alias).await.unwrap();
-        registry.flip("products", "products_v4".into()).await.unwrap();
-        assert_eq!(registry.resolve("products").await, vec!["products_v4"]);
-    }
-
-    #[tokio::test]
-    async fn test_registry_delete() {
-        let registry = AliasRegistry::new();
-        let alias = Alias::new_single("products".into(), "products_v3".into());
-        registry.upsert(alias).await.unwrap();
-        assert!(registry.delete("products").await.unwrap());
-        assert!(!registry.delete("products").await.unwrap());
-        assert!(!registry.is_alias("products").await);
-    }
-
-    #[tokio::test]
-    async fn test_multi_alias_update() {
-        let registry = AliasRegistry::new();
-        let alias = Alias::new_multi("logs".into(), vec!["logs-1".into()]);
-        registry.upsert(alias).await.unwrap();
-        registry.update_multi("logs", vec!["logs-1".into(), "logs-2".into()]).await.unwrap();
-        assert_eq!(registry.resolve("logs").await, vec!["logs-1", "logs-2"]);
-    }
-}
+#[cfg(test)]
+mod acceptance_tests;

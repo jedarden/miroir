@@ -42,10 +42,10 @@ where
             post(admin_endpoints::rotate_scoped_key_handler),
         )
         // Alias management (plan §13.7)
-        .route("/aliases", post(aliases::create_alias::<S>))
         .route("/aliases", get(aliases::list_aliases::<S>))
+        .route("/aliases/{name}", post(aliases::create_alias::<S>))
         .route("/aliases/{name}", get(aliases::get_alias::<S>))
-        .route("/aliases/{name}", post(aliases::update_alias::<S>))
+        .route("/aliases/{name}", put(aliases::update_alias::<S>))
         .route("/aliases/{name}", delete(aliases::delete_alias::<S>))
         // Canary management (plan §13.18)
         .route("/canaries", post(canary::create_canary::<S>))

@@ -97,4 +97,8 @@ pub enum MiroirError {
         tenant: String,
         reason: String,
     },
+
+    /// Discovery error.
+    #[error("discovery error: {0}")]
+    Discovery(String),
 }
