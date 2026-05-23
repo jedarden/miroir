@@ -169,10 +169,10 @@ impl QueryPlanner {
                     warnings: vec![],
                 }
             }
-            Err(_) => {
+            Err(e) => {
                 QueryPlan {
                     narrowed: false,
-                    reason: "filter not narrowable".to_string(),
+                    reason: format!("filter not narrowable: {}", e),
                     target_shards: vec![],
                     warnings: vec![],
                 }
@@ -189,6 +189,15 @@ impl QueryPlanner {
         // 2. "{pk_field}" IN ["literal1", "literal2", ...]
 
         let filter = filter.trim();
+
+        // Check for non-narrowable patterns FIRST (before trying to match)
+        if filter.contains(" OR ") {
+            return Err(MiroirError::InvalidState("contains OR at top level".to_string()));
+        }
+
+        if filter.contains(&format!("{} != ", pk_field)) || filter.contains(&format!("{}<>", pk_field)) {
+            return Err(MiroirError::InvalidState("PK negation is not narrowable".to_string()));
+        }
 
         // Try equality: pk = "literal"
         let eq_pattern = format!(r#"{}\s*=\s*["']([^"']+)["']"#, pk_field);
@@ -209,15 +218,6 @@ impl QueryPlanner {
                     return Ok(PkConstraint::In(literals));
                 }
             }
-        }
-
-        // Check for non-narrowable patterns
-        if filter.contains(" OR ") {
-            return Err(MiroirError::InvalidState("contains OR at top level".to_string()));
-        }
-
-        if filter.contains(&format!("{} != ", pk_field)) || filter.contains(&format!("{}<>", pk_field)) {
-            return Err(MiroirError::InvalidState("PK negation is not narrowable".to_string()));
         }
 
         Err(MiroirError::InvalidState("no PK constraint found".to_string()))

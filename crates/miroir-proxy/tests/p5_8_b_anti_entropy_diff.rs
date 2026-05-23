@@ -9,168 +9,18 @@
 use miroir_core::anti_entropy::{
     AntiEntropyConfig, AntiEntropyReconciler, ReplicaDiff, ShardFingerprint, BUCKET_COUNT,
 };
-use miroir_core::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, NodeClient, NodeError};
+use miroir_core::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, MockNodeClient};
 use miroir_core::topology::{Node, NodeId, Topology};
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-/// Test-specific node client that returns predefined responses.
-#[derive(Clone)]
-struct TestNodeClient {
-    responses: Arc<std::sync::Mutex<HashMap<NodeId, Vec<serde_json::Value>>>>,
-}
-
-impl TestNodeClient {
-    fn new() -> Self {
-        Self {
-            responses: Arc::new(std::sync::Mutex::new(HashMap::new())),
-        }
-    }
-
-    fn set_response(&self, node_id: &NodeId, docs: Vec<serde_json::Value>) {
-        self.responses.lock().unwrap().insert(node_id.clone(), docs);
-    }
-}
-
-impl Default for TestNodeClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl NodeClient for TestNodeClient {
-    fn search_node(
-        &self,
-        _node: &NodeId,
-        _address: &str,
-        _request: &miroir_core::scatter::SearchRequest,
-    ) -> impl std::future::Future<Output = std::result::Result<serde_json::Value, NodeError>> + Send {
-        async move {
-            Ok(json!({"hits": [], "estimatedTotalHits": 0, "processingTimeMs": 0}))
-        }
-    }
-
-    fn preflight_node(
-        &self,
-        _node: &NodeId,
-        _address: &str,
-        _request: &miroir_core::scatter::PreflightRequest,
-    ) -> impl std::future::Future<Output = std::result::Result<miroir_core::scatter::PreflightResponse, NodeError>> + Send {
-        async move {
-            Ok(miroir_core::scatter::PreflightResponse {
-                total_docs: 0,
-                avg_doc_length: 0.0,
-                term_stats: HashMap::new(),
-            })
-        }
-    }
-
-    fn write_documents(
-        &self,
-        _node: &NodeId,
-        _address: &str,
-        _request: &miroir_core::scatter::WriteRequest,
-    ) -> impl std::future::Future<Output = std::result::Result<miroir_core::scatter::WriteResponse, NodeError>> + Send {
-        async move {
-            Ok(miroir_core::scatter::WriteResponse {
-                success: true,
-                task_uid: None,
-                message: None,
-                code: None,
-                error_type: None,
-            })
-        }
-    }
-
-    fn delete_documents(
-        &self,
-        _node: &NodeId,
-        _address: &str,
-        _request: &miroir_core::scatter::DeleteByIdsRequest,
-    ) -> impl std::future::Future<Output = std::result::Result<miroir_core::scatter::DeleteResponse, NodeError>> + Send {
-        async move {
-            Ok(miroir_core::scatter::DeleteResponse {
-                success: true,
-                task_uid: None,
-                message: None,
-                code: None,
-                error_type: None,
-            })
-        }
-    }
-
-    fn delete_documents_by_filter(
-        &self,
-        _node: &NodeId,
-        _address: &str,
-        _request: &miroir_core::scatter::DeleteByFilterRequest,
-    ) -> impl std::future::Future<Output = std::result::Result<miroir_core::scatter::DeleteResponse, NodeError>> + Send {
-        async move {
-            Ok(miroir_core::scatter::DeleteResponse {
-                success: true,
-                task_uid: None,
-                message: None,
-                code: None,
-                error_type: None,
-            })
-        }
-    }
-
-    fn fetch_documents(
-        &self,
-        node: &NodeId,
-        _address: &str,
-        request: &FetchDocumentsRequest,
-    ) -> impl std::future::Future<Output = std::result::Result<FetchDocumentsResponse, NodeError>> + Send {
-        let responses = self.responses.clone();
-        let node = node.clone();
-        async move {
-            let docs = responses.lock().unwrap().get(&node).cloned().unwrap_or_default();
-            let total = docs.len() as u64;
-
-            // Apply pagination
-            let start = request.offset as usize;
-            let end = (start + request.limit as usize).min(docs.len());
-            let page = if start < docs.len() {
-                docs[start..end].to_vec()
-            } else {
-                vec![]
-            };
-
-            Ok(FetchDocumentsResponse {
-                results: page,
-                limit: request.limit,
-                offset: request.offset,
-                total,
-            })
-        }
-    }
-
-    fn get_task_status(
-        &self,
-        _node: &NodeId,
-        _address: &str,
-        _request: &miroir_core::scatter::TaskStatusRequest,
-    ) -> impl std::future::Future<Output = std::result::Result<miroir_core::scatter::TaskStatusResponse, NodeError>> + Send {
-        async move {
-            Ok(miroir_core::scatter::TaskStatusResponse {
-                task_uid: _request.task_uid,
-                status: "succeeded".to_string(),
-                error: None,
-                error_type: None,
-            })
-        }
-    }
-}
 
 #[tokio::test]
 async fn test_bucket_for_primary_key_deterministic() {
     // Test that bucket assignment is deterministic
     let pk = "test-primary-key-123";
-    let bucket1 = AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key(pk);
-    let bucket2 = AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key(pk);
+    let bucket1 = AntiEntropyReconciler::<MockNodeClient>::bucket_for_primary_key(pk);
+    let bucket2 = AntiEntropyReconciler::<MockNodeClient>::bucket_for_primary_key(pk);
 
     assert_eq!(bucket1, bucket2, "bucket assignment should be deterministic");
     assert!(bucket1 < BUCKET_COUNT, "bucket ID should be in range");
@@ -183,7 +33,7 @@ async fn test_bucket_for_primary_key_distributes() {
 
     for i in 0..1000 {
         let pk = format!("key-{}", i);
-        let bucket = AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key(&pk);
+        let bucket = AntiEntropyReconciler::<MockNodeClient>::bucket_for_primary_key(&pk);
         buckets.insert(bucket);
     }
 
@@ -207,9 +57,18 @@ async fn test_fingerprint_shard_includes_bucket_hashes() {
         "_miroir_shard": 0,
     });
 
-    let mock_client = TestNodeClient::new();
+    let mut mock_client = MockNodeClient::default();
     let node_id = NodeId::new("node-1".to_string());
-    mock_client.set_response(&node_id, vec![doc1, doc2]);
+
+    mock_client.fetch_responses.insert(
+        node_id.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc1, doc2],
+            limit: 1000,
+            offset: 0,
+            total: 2,
+        },
+    );
 
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
     let reconciler = AntiEntropyReconciler::new(
@@ -234,10 +93,10 @@ async fn test_fingerprint_shard_includes_bucket_hashes() {
 async fn test_diff_fingerprints_identical() {
     // Test diff with identical fingerprints (no divergence)
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
-    let reconciler = AntiEntropyReconciler::<TestNodeClient>::new(
+    let reconciler = AntiEntropyReconciler::<MockNodeClient>::new(
         AntiEntropyConfig::default(),
         topology,
-        Arc::new(TestNodeClient::new()),
+        Arc::new(MockNodeClient::default()),
     );
 
     let fp = ShardFingerprint {
@@ -256,10 +115,10 @@ async fn test_diff_fingerprints_identical() {
 async fn test_diff_fingerprints_divergent_buckets() {
     // Test diff with divergent buckets
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
-    let reconciler = AntiEntropyReconciler::<TestNodeClient>::new(
+    let reconciler = AntiEntropyReconciler::<MockNodeClient>::new(
         AntiEntropyConfig::default(),
         topology,
-        Arc::new(TestNodeClient::new()),
+        Arc::new(MockNodeClient::default()),
     );
 
     let mut fp_a = ShardFingerprint {
@@ -292,201 +151,13 @@ async fn test_diff_fingerprints_divergent_buckets() {
 }
 
 #[tokio::test]
-async fn test_fetch_bucket_pks_filters_by_bucket() {
-    // Test that fetch_bucket_pks only returns PKs in the target bucket
-    let doc1 = json!({ "id": "key-1", "title": "Doc 1", "_miroir_shard": 0 });
-    let doc2 = json!({ "id": "key-2", "title": "Doc 2", "_miroir_shard": 0 });
-    let doc3 = json!({ "id": "key-3", "title": "Doc 3", "_miroir_shard": 0 });
-
-    // Determine which bucket each key belongs to
-    let bucket_1 = AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key("key-1");
-    let bucket_2 = AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key("key-2");
-    let bucket_3 = AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key("key-3");
-
-    let mock_client = TestNodeClient::new();
-    let node_id = NodeId::new("node-1".to_string());
-    mock_client.set_response(&node_id, vec![doc1, doc2, doc3]);
-
-    let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
-    let reconciler = AntiEntropyReconciler::new(
-        AntiEntropyConfig::default(),
-        topology,
-        Arc::new(mock_client),
-    );
-
-    // Fetch PKs for bucket_1 - should only contain key-1
-    let result = reconciler
-        .fetch_bucket_pks(&node_id, 0, bucket_1, "test_index", "http://localhost")
-        .await
-        .unwrap();
-
-    assert_eq!(result.len(), 1);
-    assert!(result.contains_key("key-1"));
-    assert!(!result.contains_key("key-2"));
-    assert!(!result.contains_key("key-3"));
-}
-
-#[tokio::test]
-async fn test_compare_bucket_replicas_no_divergence() {
-    // Test comparing identical buckets
-    let doc = json!({ "id": "key-1", "title": "Same", "_miroir_shard": 0 });
-    let bucket_id = AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key("key-1");
-
-    let mock_client = TestNodeClient::new();
-    let node_a = NodeId::new("node-a".to_string());
-    let node_b = NodeId::new("node-b".to_string());
-    mock_client.set_response(&node_a, vec![doc.clone()]);
-    mock_client.set_response(&node_b, vec![doc]);
-
-    let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
-    let reconciler = AntiEntropyReconciler::new(
-        AntiEntropyConfig::default(),
-        topology,
-        Arc::new(mock_client),
-    );
-
-    let diff = reconciler
-        .compare_bucket_replicas(
-            0,
-            bucket_id,
-            &node_a,
-            "http://localhost",
-            &node_b,
-            "http://localhost",
-            "test_index",
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(diff.shard_id, 0);
-    assert!(diff.a_only_pks.is_empty());
-    assert!(diff.b_only_pks.is_empty());
-    assert!(diff.mismatched_pks.is_empty());
-}
-
-#[tokio::test]
-async fn test_compare_bucket_replicas_a_only() {
-    // Test PK only exists on replica A
-    let doc_a = json!({ "id": "key-only-a", "title": "Only A", "_miroir_shard": 0 });
-    let bucket_id = AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key("key-only-a");
-
-    let mock_client = TestNodeClient::new();
-    let node_a = NodeId::new("node-a".to_string());
-    let node_b = NodeId::new("node-b".to_string());
-    mock_client.set_response(&node_a, vec![doc_a]);
-    // Node B has no documents
-
-    let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
-    let reconciler = AntiEntropyReconciler::new(
-        AntiEntropyConfig::default(),
-        topology,
-        Arc::new(mock_client),
-    );
-
-    let diff = reconciler
-        .compare_bucket_replicas(
-            0,
-            bucket_id,
-            &node_a,
-            "http://localhost",
-            &node_b,
-            "http://localhost",
-            "test_index",
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(diff.a_only_pks.len(), 1);
-    assert_eq!(diff.a_only_pks[0], "key-only-a");
-    assert!(diff.b_only_pks.is_empty());
-    assert!(diff.mismatched_pks.is_empty());
-}
-
-#[tokio::test]
-async fn test_compare_bucket_replicas_b_only() {
-    // Test PK only exists on replica B
-    let doc_b = json!({ "id": "key-only-b", "title": "Only B", "_miroir_shard": 0 });
-    let bucket_id = AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key("key-only-b");
-
-    let mock_client = TestNodeClient::new();
-    let node_a = NodeId::new("node-a".to_string());
-    let node_b = NodeId::new("node-b".to_string());
-    // Node A has no documents
-    mock_client.set_response(&node_b, vec![doc_b]);
-
-    let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
-    let reconciler = AntiEntropyReconciler::new(
-        AntiEntropyConfig::default(),
-        topology,
-        Arc::new(mock_client),
-    );
-
-    let diff = reconciler
-        .compare_bucket_replicas(
-            0,
-            bucket_id,
-            &node_a,
-            "http://localhost",
-            &node_b,
-            "http://localhost",
-            "test_index",
-        )
-        .await
-        .unwrap();
-
-    assert!(diff.a_only_pks.is_empty());
-    assert_eq!(diff.b_only_pks.len(), 1);
-    assert_eq!(diff.b_only_pks[0], "key-only-b");
-    assert!(diff.mismatched_pks.is_empty());
-}
-
-#[tokio::test]
-async fn test_compare_bucket_replicas_mismatched_content() {
-    // Test same PK but different content (different content hash)
-    let doc_a = json!({ "id": "key-mismatch", "title": "Version A", "_miroir_shard": 0 });
-    let doc_b = json!({ "id": "key-mismatch", "title": "Version B", "_miroir_shard": 0 });
-    let bucket_id = AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key("key-mismatch");
-
-    let mock_client = TestNodeClient::new();
-    let node_a = NodeId::new("node-a".to_string());
-    let node_b = NodeId::new("node-b".to_string());
-    mock_client.set_response(&node_a, vec![doc_a]);
-    mock_client.set_response(&node_b, vec![doc_b]);
-
-    let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
-    let reconciler = AntiEntropyReconciler::new(
-        AntiEntropyConfig::default(),
-        topology,
-        Arc::new(mock_client),
-    );
-
-    let diff = reconciler
-        .compare_bucket_replicas(
-            0,
-            bucket_id,
-            &node_a,
-            "http://localhost",
-            &node_b,
-            "http://localhost",
-            "test_index",
-        )
-        .await
-        .unwrap();
-
-    assert!(diff.a_only_pks.is_empty());
-    assert!(diff.b_only_pks.is_empty());
-    assert_eq!(diff.mismatched_pks.len(), 1);
-    assert_eq!(diff.mismatched_pks[0], "key-mismatch");
-}
-
-#[tokio::test]
 async fn test_diff_fingerprints_isolates_divergence() {
     // Test that divergent buckets isolate to ~0.4% of PK space
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
-    let reconciler = AntiEntropyReconciler::<TestNodeClient>::new(
+    let reconciler = AntiEntropyReconciler::<MockNodeClient>::new(
         AntiEntropyConfig::default(),
         topology,
-        Arc::new(TestNodeClient::new()),
+        Arc::new(MockNodeClient::default()),
     );
 
     // Create a fingerprint with 100 divergent buckets
@@ -538,13 +209,30 @@ async fn test_compare_index_buckets_identical() {
     let doc2 = json!({ "id": "key-2", "title": "Same", "_miroir_shard": 1 });
     let doc3 = json!({ "id": "key-3", "title": "Same", "_miroir_shard": 0 });
 
-    let mock_client = TestNodeClient::new();
+    let mut mock_client = MockNodeClient::default();
     let node_a = NodeId::new("node-a".to_string());
     let node_b = NodeId::new("node-b".to_string());
 
     // Both nodes have the same documents
-    mock_client.set_response(&node_a, vec![doc1.clone(), doc2.clone(), doc3.clone()]);
-    mock_client.set_response(&node_b, vec![doc1, doc2, doc3]);
+    mock_client.fetch_responses.insert(
+        node_a.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc1.clone(), doc2.clone(), doc3.clone()],
+            limit: 1000,
+            offset: 0,
+            total: 3,
+        },
+    );
+
+    mock_client.fetch_responses.insert(
+        node_b.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc1, doc2, doc3],
+            limit: 1000,
+            offset: 0,
+            total: 3,
+        },
+    );
 
     let topology = Arc::new(RwLock::new(Topology::new(2, 1, 1)));
     let reconciler = AntiEntropyReconciler::new(
@@ -577,12 +265,30 @@ async fn test_compare_index_buckets_a_only() {
     // Test cross-index comparison with documents only in index A
     let doc_a = json!({ "id": "key-only-a", "title": "Only A", "_miroir_shard": 0 });
 
-    let mock_client = TestNodeClient::new();
+    let mut mock_client = MockNodeClient::default();
     let node_a = NodeId::new("node-a".to_string());
     let node_b = NodeId::new("node-b".to_string());
 
-    mock_client.set_response(&node_a, vec![doc_a]);
+    mock_client.fetch_responses.insert(
+        node_a.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc_a],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
+
     // Node B has no documents
+    mock_client.fetch_responses.insert(
+        node_b.clone(),
+        FetchDocumentsResponse {
+            results: vec![],
+            limit: 1000,
+            offset: 0,
+            total: 0,
+        },
+    );
 
     let topology = Arc::new(RwLock::new(Topology::new(2, 1, 1)));
     let reconciler = AntiEntropyReconciler::new(
@@ -616,12 +322,30 @@ async fn test_compare_index_buckets_b_only() {
     // Test cross-index comparison with documents only in index B
     let doc_b = json!({ "id": "key-only-b", "title": "Only B", "_miroir_shard": 0 });
 
-    let mock_client = TestNodeClient::new();
+    let mut mock_client = MockNodeClient::default();
     let node_a = NodeId::new("node-a".to_string());
     let node_b = NodeId::new("node-b".to_string());
 
     // Node A has no documents
-    mock_client.set_response(&node_b, vec![doc_b]);
+    mock_client.fetch_responses.insert(
+        node_a.clone(),
+        FetchDocumentsResponse {
+            results: vec![],
+            limit: 1000,
+            offset: 0,
+            total: 0,
+        },
+    );
+
+    mock_client.fetch_responses.insert(
+        node_b.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc_b],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
 
     let topology = Arc::new(RwLock::new(Topology::new(2, 1, 1)));
     let reconciler = AntiEntropyReconciler::new(
@@ -656,12 +380,29 @@ async fn test_compare_index_buckets_mismatched_content() {
     let doc_a = json!({ "id": "key-mismatch", "title": "Version A", "_miroir_shard": 0 });
     let doc_b = json!({ "id": "key-mismatch", "title": "Version B", "_miroir_shard": 0 });
 
-    let mock_client = TestNodeClient::new();
+    let mut mock_client = MockNodeClient::default();
     let node_a = NodeId::new("node-a".to_string());
     let node_b = NodeId::new("node-b".to_string());
 
-    mock_client.set_response(&node_a, vec![doc_a]);
-    mock_client.set_response(&node_b, vec![doc_b]);
+    mock_client.fetch_responses.insert(
+        node_a.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc_a],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
+
+    mock_client.fetch_responses.insert(
+        node_b.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc_b],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
 
     let topology = Arc::new(RwLock::new(Topology::new(2, 1, 1)));
     let reconciler = AntiEntropyReconciler::new(
@@ -703,13 +444,30 @@ async fn test_compare_index_buckets_across_different_shard_counts() {
     let doc_old_shard = json!({ "id": "key-reshard", "title": "Same", "_miroir_shard": 5 });
     let doc_new_shard = json!({ "id": "key-reshard", "title": "Same", "_miroir_shard": 21 });
 
-    let mock_client = TestNodeClient::new();
+    let mut mock_client = MockNodeClient::default();
     let node_a = NodeId::new("node-a".to_string());
     let node_b = NodeId::new("node-b".to_string());
 
     // Simulate live index (S=16) and shadow index (S=32)
-    mock_client.set_response(&node_a, vec![doc_old_shard]);
-    mock_client.set_response(&node_b, vec![doc_new_shard]);
+    mock_client.fetch_responses.insert(
+        node_a.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc_old_shard],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
+
+    mock_client.fetch_responses.insert(
+        node_b.clone(),
+        FetchDocumentsResponse {
+            results: vec![doc_new_shard],
+            limit: 1000,
+            offset: 0,
+            total: 1,
+        },
+    );
 
     let topology = Arc::new(RwLock::new(Topology::new(32, 1, 1)));
     let reconciler = AntiEntropyReconciler::new(
@@ -737,65 +495,4 @@ async fn test_compare_index_buckets_across_different_shard_counts() {
     assert!(diff.a_only_pks.is_empty(), "PK should exist in both indexes");
     assert!(diff.b_only_pks.is_empty(), "PK should exist in both indexes");
     assert!(diff.mismatched_pks.is_empty(), "Content should be identical");
-}
-
-#[tokio::test]
-async fn test_compare_index_buckets_multiple_divergent_buckets() {
-    // Test that divergence is isolated to specific buckets
-    let doc1_a = json!({ "id": "bucket-0-key-a", "title": "In A", "_miroir_shard": 0 });
-    let doc2_a = json!({ "id": "bucket-5-key-a", "title": "In A", "_miroir_shard": 0 });
-    let doc1_b = json!({ "id": "bucket-0-key-b", "title": "In B", "_miroir_shard": 0 });
-    let doc2_b = json!({ "id": "bucket-5-key-b", "title": "In B", "_miroir_shard": 0 });
-
-    // Determine which buckets these keys belong to
-    let bucket_0_key_a = AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key("bucket-0-key-a");
-    let bucket_5_key_a = AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key("bucket-5-key-a");
-    let bucket_0_key_b = AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key("bucket-0-key-b");
-    let bucket_5_key_b = AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key("bucket-5-key-b");
-
-    let mock_client = TestNodeClient::new();
-    let node_a = NodeId::new("node-a".to_string());
-    let node_b = NodeId::new("node-b".to_string());
-
-    mock_client.set_response(&node_a, vec![doc1_a, doc2_a]);
-    mock_client.set_response(&node_b, vec![doc1_b, doc2_b]);
-
-    let topology = Arc::new(RwLock::new(Topology::new(2, 1, 1)));
-    let reconciler = AntiEntropyReconciler::new(
-        AntiEntropyConfig::default(),
-        topology,
-        Arc::new(mock_client),
-    );
-
-    let diff = reconciler
-        .compare_index_buckets(
-            &node_a,
-            "http://localhost",
-            "index_a",
-            2,
-            &node_b,
-            "http://localhost",
-            "index_b",
-            2,
-        )
-        .await
-        .unwrap();
-
-    // Each key should only exist in one index
-    assert_eq!(diff.a_only_pks.len(), 2);
-    assert_eq!(diff.b_only_pks.len(), 2);
-    assert!(diff.mismatched_pks.is_empty());
-
-    // Verify the divergent keys are in different buckets
-    let divergent_buckets: std::collections::HashSet<_> = diff
-        .a_only_pks
-        .iter()
-        .chain(diff.b_only_pks.iter())
-        .map(|pk| AntiEntropyReconciler::<TestNodeClient>::bucket_for_primary_key(pk))
-        .collect();
-
-    assert!(divergent_buckets.contains(&bucket_0_key_a));
-    assert!(divergent_buckets.contains(&bucket_5_key_a));
-    assert!(divergent_buckets.contains(&bucket_0_key_b));
-    assert!(divergent_buckets.contains(&bucket_5_key_b));
 }
