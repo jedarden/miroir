@@ -459,6 +459,38 @@ pub fn plan_search_scatter_with_version_floor(
     })
 }
 
+/// Plan search scatter for a specific replica group (plan §13.6 session pinning).
+///
+/// Used when a session has a pending write and needs to read from the pinned group
+/// to ensure read-your-writes consistency.
+pub fn plan_search_scatter_for_group(
+    topology: &Topology,
+    query_seq: u64,
+    rf: usize,
+    shard_count: u32,
+    pinned_group: u32,
+) -> Option<ScatterPlan> {
+    let group = topology.group(pinned_group)?;
+
+    let mut shard_to_node = HashMap::new();
+    for shard_id in 0..shard_count {
+        let replicas = crate::router::assign_shard_in_group(shard_id, group.nodes(), rf);
+        if replicas.is_empty() {
+            continue;
+        }
+        let selected = replicas[query_seq as usize % replicas.len()].clone();
+        shard_to_node.insert(shard_id, selected);
+    }
+
+    Some(ScatterPlan {
+        chosen_group: pinned_group,
+        target_shards: (0..shard_count).collect(),
+        shard_to_node,
+        deadline_ms: 5000,
+        hedging_eligible: group.node_count() > 1,
+    })
+}
+
 #[instrument(skip_all, fields(node_count))]
 pub async fn execute_scatter<C: NodeClient>(
     plan: ScatterPlan,

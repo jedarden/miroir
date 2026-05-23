@@ -153,12 +153,16 @@ async fn post_documents(
     Path(index): Path<String>,
     Query(params): Query<DocumentsParams>,
     Extension(state): Extension<Arc<AppState>>,
+    session_id: Option<Extension<crate::middleware::SessionId>>,
     Json(documents): Json<Vec<Value>>,
 ) -> std::result::Result<Response, MeilisearchError> {
     // Extract session ID from request extensions (set by session_pinning_middleware)
-    let session_id = crate::middleware::SessionId::default(); // Will be overridden by middleware
+    let sid = session_id.and_then(|ext| {
+        let s = ext.0;
+        if s.0.is_empty() { None } else { Some(s.0.clone()) }
+    });
 
-    write_documents_impl(index, params.primaryKey, documents, &state, None).await
+    write_documents_impl(index, params.primaryKey, documents, &state, sid).await
 }
 
 /// PUT /indexes/{uid}/documents - Replace documents.
@@ -167,24 +171,35 @@ async fn put_documents(
     Path(index): Path<String>,
     Query(params): Query<DocumentsParams>,
     Extension(state): Extension<Arc<AppState>>,
+    session_id: Option<Extension<crate::middleware::SessionId>>,
     Json(documents): Json<Vec<Value>>,
 ) -> std::result::Result<Response, MeilisearchError> {
-    write_documents_impl(index, params.primaryKey, documents, &state, None).await
+    let sid = session_id.and_then(|ext| {
+        let s = ext.0;
+        if s.0.is_empty() { None } else { Some(s.0.clone()) }
+    });
+    write_documents_impl(index, params.primaryKey, documents, &state, sid).await
 }
 
 /// DELETE /indexes/{uid}/documents - Delete by IDs or filter.
 async fn delete_documents(
     Path(index): Path<String>,
     Extension(state): Extension<Arc<AppState>>,
+    session_id: Option<Extension<crate::middleware::SessionId>>,
     Json(body): Json<Value>,
 ) -> std::result::Result<Response, MeilisearchError> {
+    let sid = session_id.and_then(|ext| {
+        let s = ext.0;
+        if s.0.is_empty() { None } else { Some(s.0.clone()) }
+    });
+
     // Try to parse as delete by filter first
     if let Some(filter) = body.get("filter") {
         let req = DeleteByFilterRequest {
             index_uid: index.clone(),
             filter: filter.clone(),
         };
-        return delete_by_filter_impl(index, req, &state, None).await;
+        return delete_by_filter_impl(index, req, &state, sid).await;
     }
 
     // Try to parse as delete by IDs
@@ -198,7 +213,7 @@ async fn delete_documents(
                 index_uid: index.clone(),
                 ids,
             };
-            return delete_by_ids_impl(index, req, &state, None).await;
+            return delete_by_ids_impl(index, req, &state, sid).await;
         }
     }
 
@@ -213,12 +228,17 @@ async fn delete_documents(
 async fn delete_document_by_id(
     Path((index, id)): Path<(String, String)>,
     Extension(state): Extension<Arc<AppState>>,
+    session_id: Option<Extension<crate::middleware::SessionId>>,
 ) -> std::result::Result<Response, MeilisearchError> {
+    let sid = session_id.and_then(|ext| {
+        let s = ext.0;
+        if s.0.is_empty() { None } else { Some(s.0.clone()) }
+    });
     let req = DeleteByIdsRequest {
         index_uid: index.clone(),
         ids: vec![id],
     };
-    delete_by_ids_impl(index, req, &state, None).await
+    delete_by_ids_impl(index, req, &state, sid).await
 }
 
 /// Implementation for write documents (POST/PUT).
@@ -236,6 +256,34 @@ async fn write_documents_impl(
             "cannot write empty document batch",
         ));
     }
+
+    // 1. Resolve alias to concrete index UID (plan §13.7)
+    // Aliases are resolved before any processing; writes to multi-target aliases are rejected
+    let index_uid = if state.config.aliases.enabled {
+        // Check if the index is an alias
+        let resolved = state.alias_registry.resolve(&index).await;
+        if resolved != vec![index.clone()] {
+            // It was an alias
+            // Check if it's a multi-target alias (read-only, ILM-managed)
+            if state.alias_registry.is_multi_target_alias(&index).await {
+                return Err(MeilisearchError::new(
+                    MiroirCode::MultiAliasNotWritable,
+                    format!(
+                        "alias '{}' is a multi-target alias and is read-only (managed by ILM); writes must go to the concrete index or the write alias",
+                        index
+                    ),
+                ));
+            }
+            // Single-target alias: record resolution metric and use the target
+            state.metrics.inc_alias_resolution(&index);
+            resolved.into_iter().next().unwrap_or_else(|| index.clone())
+        } else {
+            // Not an alias, use the index name as-is
+            index.clone()
+        }
+    } else {
+        index.clone()
+    };
 
     // 1. Extract primary key from first document if not provided
     let primary_key = primary_key.or_else(|| {
@@ -358,7 +406,7 @@ async fn write_documents_impl(
             quorum_state.record_attempt(group_id, &node_id);
 
             let req = WriteRequest {
-                index_uid: index.clone(),
+                index_uid: index_uid.clone(),
                 documents: docs.clone(),
                 primary_key: Some(primary_key.clone()),
             };
@@ -408,7 +456,7 @@ async fn write_documents_impl(
         .task_registry
         .register_with_metadata(
             node_task_uids.clone(),
-            Some(index.clone()),
+            Some(index_uid.clone()),
             Some("documentAdditionOrUpdate".to_string()),
         )
         .map_err(|e| MeilisearchError::new(
@@ -436,7 +484,7 @@ async fn write_documents_impl(
     build_response_with_degraded_header(
         DocumentsWriteResponse {
             taskUid: Some(miroir_task.miroir_id),
-            indexUid: Some(index.clone()),
+            indexUid: Some(index_uid.clone()),
             status: Some("enqueued".to_string()),
             error: None,
             error_type: None,
@@ -460,6 +508,30 @@ async fn delete_by_ids_impl(
             "cannot delete empty ID list",
         ));
     }
+
+    // Resolve alias to concrete index UID (plan §13.7)
+    let index_uid = if state.config.aliases.enabled {
+        let resolved = state.alias_registry.resolve(&index).await;
+        if resolved != vec![index.clone()] {
+            // It was an alias - check if it's a multi-target alias (read-only)
+            if state.alias_registry.is_multi_target_alias(&index).await {
+                return Err(MeilisearchError::new(
+                    MiroirCode::MultiAliasNotWritable,
+                    format!(
+                        "alias '{}' is a multi-target alias and is read-only (managed by ILM); deletes must go to the concrete index or the write alias",
+                        index
+                    ),
+                ));
+            }
+            // Single-target alias: record resolution metric and use the target
+            state.metrics.inc_alias_resolution(&index);
+            resolved.into_iter().next().unwrap_or_else(|| index.clone())
+        } else {
+            index.clone()
+        }
+    } else {
+        index.clone()
+    };
 
     let topology = state.topology.read().await;
     let rf = topology.rf();
@@ -500,7 +572,7 @@ async fn delete_by_ids_impl(
             quorum_state.record_attempt(group_id, &node_id);
 
             let delete_req = DeleteByIdsRequest {
-                index_uid: index.clone(),
+                index_uid: index_uid.clone(),
                 ids: ids.clone(),
             };
 
