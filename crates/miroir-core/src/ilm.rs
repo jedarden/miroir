@@ -1,12 +1,17 @@
 //! ILM (Index Lifecycle Management) — plan §13.17.
 //!
 //! Manages rolling time-series indexes with automatic rollover and retention.
+//! Uses leader-only singleton coordination (plan §14.5) to ensure only one pod
+//! performs rollovers for a given policy.
 
+use crate::leader_election::LeaderElection;
+use crate::mode_b_coordinator::ModeBOpLeader;
+use crate::task_store::TaskStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, error};
+use tracing::{info, error, warn};
 
 /// ILM rollover policy configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +287,202 @@ impl IlmManager {
     }
 }
 
+/// ILM coordinator with leader-only singleton coordination (plan §14.5).
+///
+/// Acquires a global leader lease (scope: "ilm") and persists phase state
+/// so that a new leader can resume from the last committed phase.
+pub struct IlmCoordinator {
+    /// Mode B operation leader with phase state persistence.
+    leader: ModeBOpLeader<IlmExtraState>,
+}
+
+/// Extra state for ILM operations persisted to mode_b_operations.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IlmExtraState {
+    /// Active rollover operations (policy_name -> rollover state).
+    pub active_rollovers: HashMap<String, RolloverState>,
+    /// Last check timestamp (UNIX ms).
+    pub last_check_ms: u64,
+    /// Next check time for each policy (policy_name -> UNIX ms).
+    pub next_check_times: HashMap<String, u64>,
+}
+
+/// State of a rollover operation in progress.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RolloverState {
+    /// Policy name.
+    pub policy_name: String,
+    /// Current phase.
+    pub phase: String,
+    /// New index UID.
+    pub new_index: String,
+    /// Old index UID.
+    pub old_index: String,
+    /// Started at (UNIX ms).
+    pub started_at: u64,
+    /// Error message if failed.
+    pub error: Option<String>,
+}
+
+impl IlmCoordinator {
+    /// Create a new ILM coordinator.
+    pub fn new(
+        leader_election: Arc<LeaderElection>,
+        task_store: Arc<dyn TaskStore>,
+        pod_id: String,
+    ) -> Self {
+        let extra_state = IlmExtraState::default();
+
+        let leader = ModeBOpLeader::new(
+            leader_election,
+            task_store,
+            crate::task_store::mode_b_type::ILM.to_string(),
+            "ilm".to_string(),
+            pod_id,
+            extra_state,
+        );
+
+        Self { leader }
+    }
+
+    /// Try to acquire leadership for ILM operations.
+    ///
+    /// Returns `Ok(true)` if we are now the leader, `Ok(false)` if another
+    /// pod holds the lease, or `Err` if acquisition failed.
+    pub async fn try_acquire_leadership(&mut self) -> Result<(), IlmError> {
+        self.leader.try_acquire_leadership().await
+            .map_err(|e| IlmError::CoordinatorError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Renew the leader lease.
+    ///
+    /// Returns `Ok(true)` if renewed successfully, `Ok(false)` if we lost
+    /// leadership to another pod, or `Err` if renewal failed.
+    pub async fn renew_leadership(&mut self) -> Result<bool, IlmError> {
+        self.leader.renew_leadership().await
+            .map_err(|e| IlmError::CoordinatorError(e.to_string()))
+    }
+
+    /// Check if we are currently the leader.
+    pub fn is_leader(&self) -> bool {
+        self.leader.is_leader()
+    }
+
+    /// Get the current phase.
+    pub fn phase(&self) -> &str {
+        self.leader.phase()
+    }
+
+    /// Get the extra state (mutable).
+    pub fn extra_state(&mut self) -> &mut IlmExtraState {
+        self.leader.extra_state()
+    }
+
+    /// Get the extra state (immutable).
+    pub fn extra_state_ref(&self) -> &IlmExtraState {
+        self.leader.extra_state_ref()
+    }
+
+    /// Advance to the next phase and persist state.
+    ///
+    /// Should be called after each phase boundary so that a new leader can
+    /// resume from the last committed phase.
+    pub async fn advance_phase(&mut self, new_phase: &str) -> Result<(), IlmError> {
+        self.leader.persist_phase(new_phase.to_string()).await
+            .map_err(|e| IlmError::CoordinatorError(e.to_string()))
+    }
+
+    /// Start a new rollover operation for a policy.
+    pub async fn start_rollover(
+        &mut self,
+        policy_name: &str,
+        new_index: String,
+        old_index: String,
+    ) -> Result<(), IlmError> {
+        let now = millis_now();
+        let rollover_state = RolloverState {
+            policy_name: policy_name.to_string(),
+            phase: "creating".to_string(),
+            new_index,
+            old_index,
+            started_at: now,
+            error: None,
+        };
+
+        self.leader.extra_state().active_rollovers.insert(policy_name.to_string(), rollover_state);
+        self.leader.persist_phase("rollover_in_progress".to_string()).await
+            .map_err(|e| IlmError::CoordinatorError(e.to_string()))?;
+
+        info!("ILM: started rollover for policy '{}'", policy_name);
+        Ok(())
+    }
+
+    /// Complete a rollover operation.
+    pub async fn complete_rollover(&mut self, policy_name: &str) -> Result<(), IlmError> {
+        self.leader.extra_state().active_rollovers.remove(policy_name);
+        self.leader.persist_phase("idle".to_string()).await
+            .map_err(|e| IlmError::CoordinatorError(e.to_string()))?;
+
+        info!("ILM: completed rollover for policy '{}'", policy_name);
+        Ok(())
+    }
+
+    /// Mark the operation as failed and step down from leadership.
+    pub async fn fail(&mut self, error: String) -> Result<(), IlmError> {
+        self.leader.fail(error).await
+            .map_err(|e| IlmError::CoordinatorError(e.to_string()))
+    }
+
+    /// Mark the operation as completed and step down from leadership.
+    pub async fn complete(&mut self) -> Result<(), IlmError> {
+        self.leader.complete().await
+            .map_err(|e| IlmError::CoordinatorError(e.to_string()))
+    }
+
+    /// Recover the operation state from the task store.
+    ///
+    /// Called by a new leader to read the persisted phase state and resume
+    /// from the last committed phase boundary.
+    pub async fn recover(&mut self) -> Result<(), IlmError> {
+        let existing = self.leader.recover().await
+            .map_err(|e| IlmError::CoordinatorError(e.to_string()))?;
+
+        if let Some(ref op) = existing {
+            info!(
+                phase = %op.phase,
+                active_rollovers = self.leader.extra_state_ref().active_rollovers.len(),
+                "recovered ILM coordinator from persisted phase"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Delete the operation state after completion.
+    pub async fn delete(&self) -> Result<bool, IlmError> {
+        self.leader.delete().await
+            .map_err(|e| IlmError::CoordinatorError(e.to_string()))
+    }
+
+    /// Update the last check time and persist.
+    pub async fn update_check_time(&mut self) -> Result<(), IlmError> {
+        self.leader.extra_state().last_check_ms = millis_now();
+        self.leader.persist_phase(self.leader.phase().to_string()).await
+            .map_err(|e| IlmError::CoordinatorError(e.to_string()))
+    }
+
+    /// Get the active rollover for a policy.
+    pub fn active_rollover(&self, policy_name: &str) -> Option<RolloverState> {
+        self.leader.extra_state_ref().active_rollovers.get(policy_name).cloned()
+    }
+
+    /// Get all active rollovers.
+    pub fn active_rollovers(&self) -> HashMap<String, RolloverState> {
+        self.leader.extra_state_ref().active_rollovers.clone()
+    }
+}
+
 /// ILM error types.
 #[derive(Debug, thiserror::Error)]
 pub enum IlmError {
@@ -293,6 +494,8 @@ pub enum IlmError {
     AliasError(String),
     #[error("safety lock violation: index is too new to delete")]
     SafetyLockViolation,
+    #[error("coordinator error: {0}")]
+    CoordinatorError(String),
 }
 
 /// Get current UNIX timestamp in milliseconds.

@@ -282,6 +282,31 @@ impl TaskStore for MockTaskStore {
     fn delete_expired_admin_sessions(&self, _now_ms: i64) -> Result<usize> {
         Ok(0)
     }
+
+    // Mode B operations (Table 15)
+    fn upsert_mode_b_operation(&self, _operation: &crate::task_store::ModeBOperation) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_mode_b_operation(&self, _operation_id: &str) -> Result<Option<crate::task_store::ModeBOperation>> {
+        Ok(None)
+    }
+
+    fn get_mode_b_operation_by_scope(&self, _scope: &str) -> Result<Option<crate::task_store::ModeBOperation>> {
+        Ok(None)
+    }
+
+    fn list_mode_b_operations(&self, _filter: &crate::task_store::ModeBOperationFilter) -> Result<Vec<crate::task_store::ModeBOperation>> {
+        Ok(Vec::new())
+    }
+
+    fn delete_mode_b_operation(&self, _operation_id: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn prune_mode_b_operations(&self, _cutoff_ms: i64, _batch_size: u32) -> Result<usize> {
+        Ok(0)
+    }
 }
 
 /// P4.1-A1: Advisory lock ensures only one pod runs the rebalancer at a time.

@@ -17,6 +17,7 @@ pub mod hedging;
 pub mod idempotency;
 pub mod ilm;
 pub mod leader_election;
+pub mod mode_b_coordinator;
 pub mod merger;
 pub mod migration;
 #[cfg(feature = "peer-discovery")]
@@ -29,6 +30,7 @@ pub mod replica_selection;
 pub mod reshard;
 pub mod router;
 pub mod schema_migrations;
+pub mod scoped_key_rotation;
 pub mod scatter;
 pub mod session_pinning;
 pub mod settings;

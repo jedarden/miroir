@@ -24,6 +24,7 @@ use crate::task_store::{
     NewSearchUiConfig, SearchUiConfigRow,
     NewAdminSession, AdminSessionRow,
     LeaderLeaseRow,
+    ModeBOperation, ModeBOperationFilter,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -285,6 +286,31 @@ impl TaskStore for MockTaskStore {
     }
 
     fn delete_expired_admin_sessions(&self, _now_ms: i64) -> Result<usize> {
+        Ok(0)
+    }
+
+    // Mode B operations (Table 15)
+    fn upsert_mode_b_operation(&self, _operation: &ModeBOperation) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_mode_b_operation(&self, _operation_id: &str) -> Result<Option<ModeBOperation>> {
+        Ok(None)
+    }
+
+    fn get_mode_b_operation_by_scope(&self, _scope: &str) -> Result<Option<ModeBOperation>> {
+        Ok(None)
+    }
+
+    fn list_mode_b_operations(&self, _filter: &ModeBOperationFilter) -> Result<Vec<ModeBOperation>> {
+        Ok(Vec::new())
+    }
+
+    fn delete_mode_b_operation(&self, _operation_id: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn prune_mode_b_operations(&self, _cutoff_ms: i64, _batch_size: u32) -> Result<usize> {
         Ok(0)
     }
 }

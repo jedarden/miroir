@@ -4,8 +4,12 @@
 //! without downtime. Aliases resolve to one or more concrete Meilisearch
 //! index UIDs, supporting both single-target (writable) and multi-target
 //! (read-only, used by ILM) aliases.
+//! Uses leader-only singleton coordination (plan §14.5) to ensure only one pod
+//! performs an alias flip at a time for a given alias name.
 
 use crate::error::{MiroirError, Result};
+use crate::leader_election::LeaderElection;
+use crate::mode_b_coordinator::ModeBOpLeader;
 use crate::task_store::TaskStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -244,6 +248,146 @@ impl AliasRegistry {
 impl Default for AliasRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Alias flip coordinator with leader-only singleton coordination (plan §14.5).
+///
+/// Acquires a per-alias leader lease (scope: "alias_flip:<name>") and persists
+/// phase state so that a new leader can resume from the last committed phase.
+pub struct AliasFlipCoordinator {
+    /// Mode B operation leader with phase state persistence.
+    leader: ModeBOpLeader<AliasFlipExtraState>,
+}
+
+/// Extra state for alias flip operations persisted to mode_b_operations.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AliasFlipExtraState {
+    /// Old index UID (before flip).
+    pub old_uid: Option<String>,
+    /// New index UID (after flip).
+    pub new_uid: String,
+    /// History retention count (for rollback).
+    pub history_retention: usize,
+    /// Generation number (incremented on each flip).
+    pub generation: u64,
+}
+
+impl AliasFlipCoordinator {
+    /// Create a new alias flip coordinator.
+    pub fn new(
+        leader_election: Arc<LeaderElection>,
+        task_store: Arc<dyn TaskStore>,
+        alias_name: String,
+        new_uid: String,
+        pod_id: String,
+    ) -> Self {
+        let scope = format!("alias_flip:{}", alias_name);
+
+        let extra_state = AliasFlipExtraState {
+            new_uid,
+            history_retention: 10,
+            generation: 0,
+            ..Default::default()
+        };
+
+        let leader = ModeBOpLeader::new(
+            leader_election,
+            task_store,
+            crate::task_store::mode_b_type::ALIAS_FLIP.to_string(),
+            scope,
+            pod_id,
+            extra_state,
+        );
+
+        Self { leader }
+    }
+
+    /// Try to acquire leadership for this alias flip.
+    ///
+    /// Returns `Ok(true)` if we are now the leader, `Ok(false)` if another
+    /// pod holds the lease, or `Err` if acquisition failed.
+    pub async fn try_acquire_leadership(&mut self) -> Result<bool> {
+        self.leader.try_acquire_leadership().await
+    }
+
+    /// Renew the leader lease.
+    ///
+    /// Returns `Ok(true)` if renewed successfully, `Ok(false)` if we lost
+    /// leadership to another pod, or `Err` if renewal failed.
+    pub async fn renew_leadership(&mut self) -> Result<bool> {
+        self.leader.renew_leadership().await
+    }
+
+    /// Check if we are currently the leader.
+    pub fn is_leader(&self) -> bool {
+        self.leader.is_leader()
+    }
+
+    /// Get the current phase.
+    pub fn phase(&self) -> &str {
+        self.leader.phase()
+    }
+
+    /// Get the extra state (mutable).
+    pub fn extra_state(&mut self) -> &mut AliasFlipExtraState {
+        self.leader.extra_state()
+    }
+
+    /// Get the extra state (immutable).
+    pub fn extra_state_ref(&self) -> &AliasFlipExtraState {
+        self.leader.extra_state_ref()
+    }
+
+    /// Advance to the next phase and persist state.
+    ///
+    /// Should be called after each phase boundary so that a new leader can
+    /// resume from the last committed phase.
+    pub async fn advance_phase(&mut self, new_phase: &str) -> Result<()> {
+        self.leader.persist_phase(new_phase.to_string()).await
+    }
+
+    /// Perform the alias flip operation.
+    pub async fn flip(&mut self, old_uid: String) -> Result<()> {
+        self.leader.extra_state().old_uid = Some(old_uid);
+        self.leader.extra_state().generation += 1;
+        self.leader.persist_phase("flipped".to_string()).await
+    }
+
+    /// Mark the operation as failed and step down from leadership.
+    pub async fn fail(&mut self, error: String) -> Result<()> {
+        self.leader.fail(error).await
+    }
+
+    /// Mark the operation as completed and step down from leadership.
+    pub async fn complete(&mut self) -> Result<()> {
+        self.leader.complete().await
+    }
+
+    /// Recover the operation state from the task store.
+    ///
+    /// Called by a new leader to read the persisted phase state and resume
+    /// from the last committed phase boundary.
+    pub async fn recover(&mut self) -> Result<Option<String>> {
+        let existing = self.leader.recover().await?;
+
+        if let Some(ref op) = existing {
+            info!(
+                new_uid = %self.leader.extra_state_ref().new_uid,
+                generation = self.leader.extra_state_ref().generation,
+                phase = %op.phase,
+                "recovered alias flip from persisted phase"
+            );
+
+            return Ok(Some(op.phase.clone()));
+        }
+
+        Ok(None)
+    }
+
+    /// Delete the operation state after completion.
+    pub async fn delete(&self) -> Result<bool> {
+        self.leader.delete().await
     }
 }
 
