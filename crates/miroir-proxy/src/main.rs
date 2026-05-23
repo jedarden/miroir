@@ -143,6 +143,8 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             previous_docs_migrated: state.admin.previous_docs_migrated.clone(),
             settings_broadcast: state.admin.settings_broadcast.clone(),
             drift_reconciler: state.admin.drift_reconciler.clone(),
+            session_manager: state.admin.session_manager.clone(),
+            alias_registry: state.admin.alias_registry.clone(),
         }
     }
 }

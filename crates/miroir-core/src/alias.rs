@@ -6,10 +6,12 @@
 //! (read-only, used by ILM) aliases.
 
 use crate::error::{MiroirError, Result};
+use crate::task_store::{AliasRow, AliasHistoryEntry, TaskStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::{info, warn, error};
 
 /// Alias kind: single-target (writable) or multi-target (read-only, ILM-managed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,7 +37,8 @@ pub struct Alias {
     /// Created at timestamp.
     pub created_at: u64,
     /// Last updated timestamp.
-    pub updated_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
 }
 
 impl Alias {
@@ -52,7 +55,7 @@ impl Alias {
             target_uids: None,
             generation: 0,
             created_at: now,
-            updated_at: now,
+            updated_at: Some(now),
         }
     }
 
@@ -69,8 +72,13 @@ impl Alias {
             target_uids: Some(target_uids),
             generation: 0,
             created_at: now,
-            updated_at: now,
+            updated_at: Some(now),
         }
+    }
+
+    /// Check if this alias is multi-target (read-only, ILM-managed).
+    pub fn is_multi_target(&self) -> bool {
+        matches!(self.kind, AliasKind::Multi)
     }
 
     /// Get the effective target UIDs for this alias.
@@ -96,10 +104,10 @@ impl Alias {
         }
         self.current_uid = Some(new_target);
         self.generation += 1;
-        self.updated_at = std::time::SystemTime::now()
+        self.updated_at = Some(std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs();
+            .as_secs());
         Ok(())
     }
 
@@ -110,10 +118,10 @@ impl Alias {
         }
         self.target_uids = Some(new_targets);
         self.generation += 1;
-        self.updated_at = std::time::SystemTime::now()
+        self.updated_at = Some(std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs();
+            .as_secs());
         Ok(())
     }
 }
@@ -132,6 +140,41 @@ impl AliasRegistry {
         }
     }
 
+    /// Create a new alias registry and load from task store.
+    pub async fn load_from_store(task_store: &dyn TaskStore) -> Result<Self> {
+        let registry = Self::new();
+        registry.sync_from_store(task_store).await?;
+        Ok(registry)
+    }
+
+    /// Sync aliases from the task store into memory.
+    pub async fn sync_from_store(&self, task_store: &dyn TaskStore) -> Result<()> {
+        let rows = task_store.list_aliases()?;
+        let mut aliases = self.aliases.write().await;
+
+        // Clear and reload from store
+        aliases.clear();
+        for row in rows {
+            let alias = Alias {
+                name: row.name.clone(),
+                kind: match row.kind.as_str() {
+                    "single" => AliasKind::Single,
+                    "multi" => AliasKind::Multi,
+                    _ => return Err(MiroirError::InvalidState(format!("invalid alias kind: {}", row.kind))),
+                },
+                current_uid: row.current_uid,
+                target_uids: row.target_uids,
+                generation: row.version as u64,
+                created_at: row.created_at as u64,
+                updated_at: None, // Task store doesn't track updated_at separately
+            };
+            aliases.insert(row.name, alias);
+        }
+
+        info!("loaded {} aliases from task store", aliases.len());
+        Ok(())
+    }
+
     /// Resolve an index UID or alias name to concrete target UIDs.
     ///
     /// If `input` is not a known alias, returns it as-is (treat as concrete UID).
@@ -146,6 +189,14 @@ impl AliasRegistry {
     /// Check if an input is an alias (vs a concrete UID).
     pub async fn is_alias(&self, input: &str) -> bool {
         self.aliases.read().await.contains_key(input)
+    }
+
+    /// Check if an input is a multi-target alias (for write rejection).
+    pub async fn is_multi_target_alias(&self, input: &str) -> bool {
+        self.aliases.read().await
+            .get(input)
+            .map(|a| a.is_multi_target())
+            .unwrap_or(false)
     }
 
     /// Get a single alias by name.

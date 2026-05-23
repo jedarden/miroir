@@ -324,6 +324,10 @@ pub struct AppState {
     pub settings_broadcast: Arc<miroir_core::settings::SettingsBroadcast>,
     /// Settings drift reconciler worker (§13.5).
     pub drift_reconciler: Option<Arc<miroir_core::rebalancer_worker::DriftReconciler>>,
+    /// Session pinning manager (§13.6).
+    pub session_manager: Arc<miroir_core::session_pinning::SessionManager>,
+    /// Alias registry (§13.7).
+    pub alias_registry: Arc<miroir_core::alias::AliasRegistry>,
 }
 
 impl AppState {
@@ -499,6 +503,17 @@ impl AppState {
             None
         };
 
+        // Create session pinning manager (§13.6)
+        let session_manager = Arc::new(miroir_core::session_pinning::SessionManager::new(
+            miroir_core::session_pinning::SessionPinningConfig::from(
+                config.session_pinning.clone()
+            ),
+        ));
+
+        // Create alias registry (§13.7)
+        // Note: Aliases are loaded asynchronously in background, not during initialization
+        let alias_registry = Arc::new(miroir_core::alias::AliasRegistry::new());
+
         Self {
             config: Arc::new(config),
             topology: topology_arc,
@@ -519,6 +534,8 @@ impl AppState {
             previous_docs_migrated: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             settings_broadcast,
             drift_reconciler,
+            session_manager,
+            alias_registry,
         }
     }
 

@@ -936,7 +936,7 @@ impl TaskRegistryImpl {
                     target_uids: row.target_uids,
                     generation: row.version as u64,
                     created_at: row.created_at as u64,
-                    updated_at: row.created_at as u64, // Use created_at as fallback
+                    updated_at: Some(row.created_at as u64), // Use created_at as fallback
                 }))
             }
             #[cfg(feature = "redis-store")]
@@ -952,7 +952,7 @@ impl TaskRegistryImpl {
                     target_uids: row.target_uids,
                     generation: row.version as u64,
                     created_at: row.created_at as u64,
-                    updated_at: row.created_at as u64, // Use created_at as fallback
+                    updated_at: Some(row.created_at as u64), // Use created_at as fallback
                 }))
             }
         }
@@ -1025,7 +1025,7 @@ impl TaskRegistryImpl {
                     target_uids: row.target_uids,
                     generation: row.version as u64,
                     created_at: row.created_at as u64,
-                    updated_at: row.created_at as u64,
+                    updated_at: Some(row.created_at as u64),
                 }).collect())
             }
             #[cfg(feature = "redis-store")]
@@ -1042,7 +1042,7 @@ impl TaskRegistryImpl {
                     target_uids: row.target_uids,
                     generation: row.version as u64,
                     created_at: row.created_at as u64,
-                    updated_at: row.created_at as u64,
+                    updated_at: Some(row.created_at as u64),
                 }).collect())
             }
         }
