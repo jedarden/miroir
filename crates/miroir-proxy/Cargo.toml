@@ -40,6 +40,7 @@ miroir-core = { path = "../miroir-core", features = ["axum", "redis-store", "pee
 rust-embed = "8"
 mime_guess = "2"
 chrono = "0.4"
+futures-util = "0.3"
 
 # OpenTelemetry (optional - use feature flag to enable)
 opentelemetry = { version = "0.27", optional = true }

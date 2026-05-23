@@ -129,6 +129,10 @@ fn test_sqlite_all_14_tables_initialized() {
         params: "{}".to_string(),
         state: "queued".to_string(),
         progress: "{}".to_string(),
+        parent_job_id: None,
+        chunk_index: None,
+        total_chunks: None,
+        created_at: now_ms(),
     }).expect("Should insert job");
     assert!(store.get_job("job1").expect("Should get job").is_some());
 
@@ -369,6 +373,10 @@ fn test_job_list_by_state() {
             params: "{}".to_string(),
             state: state.to_string(),
             progress: "{}".to_string(),
+            parent_job_id: None,
+            chunk_index: None,
+            total_chunks: None,
+            created_at: now_ms(),
         }).expect("Should insert job");
     }
 
@@ -492,6 +500,10 @@ fn test_all_tables_survive_store_reopen() {
             params: "{}".to_string(),
             state: "queued".to_string(),
             progress: "{}".to_string(),
+            parent_job_id: None,
+            chunk_index: None,
+            total_chunks: None,
+            created_at: now_ms(),
         }).expect("Should insert job");
 
         store.try_acquire_leader_lease("scope1", "pod1", now_ms() + 10000, now_ms())

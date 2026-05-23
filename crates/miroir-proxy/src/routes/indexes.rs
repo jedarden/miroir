@@ -14,6 +14,7 @@ use axum::extract::{Extension, Path};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures_util::future::join_all;
 use miroir_core::api_error::{MeilisearchError, MiroirCode};
 use miroir_core::config::Config;
 use miroir_core::error::MiroirError;
@@ -888,22 +889,34 @@ async fn two_phase_settings_broadcast(
     let verify_timeout = Duration::from_secs(config.settings_broadcast.verify_timeout_s);
 
     // Define verify logic as a closure that can be called multiple times
+    // Uses parallel execution for performance (P5.5.b)
     let run_verify = || {
         let client = client.clone();
         let nodes = nodes.clone();
         let index = index.to_string();
         let settings_path = settings_path.to_string();
         async move {
+            // Parallel verification: spawn GET requests to all nodes concurrently
+            let verify_tasks: Vec<_> = nodes.iter().map(|address| {
+                let client = client.clone();
+                let address = address.clone();
+                let path = format!("/indexes/{}{}", index, settings_path);
+                async move {
+                    (address.clone(), client.get_raw(&address, &path).await)
+                }
+            }).collect();
+
+            let results: Vec<(String, Result<(u16, String), String>)> = join_all(verify_tasks).await;
+
             let mut node_hashes = HashMap::new();
             let mut verify_errors: Vec<String> = Vec::new();
 
-            for address in &nodes {
-                let path = format!("/indexes/{}{}", index, settings_path);
-                match client.get_raw(address, &path).await {
+            for (address, result) in results {
+                match result {
                     Ok((status, text)) if status >= 200 && status < 300 => {
                         if let Ok(settings) = serde_json::from_str::<Value>(&text) {
                             let hash = fingerprint_settings(&settings);
-                            node_hashes.insert(address.clone(), hash);
+                            node_hashes.insert(address, hash);
                         }
                     }
                     Ok((status, text)) => {
