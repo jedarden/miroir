@@ -313,16 +313,7 @@ where
                         let response_limit = query.limit.unwrap_or(20);
                         let response_offset = query.offset.unwrap_or(0);
 
-                        let body = serde_json::json!({
-                            "hits": hits,
-                            "estimatedTotalHits": result.estimated_total_hits,
-                            "limit": response_limit,
-                            "offset": response_offset,
-                            "processingTimeMs": result.processing_time_ms,
-                            "query": query.q,
-                        });
-
-                        let mut search_response = SearchResponse {
+                        let search_response = SearchResponse {
                             hits,
                             estimated_total_hits: result.estimated_total_hits,
                             limit: response_limit,

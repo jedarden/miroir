@@ -8,9 +8,11 @@ use axum::{
     middleware::Next,
     response::{Response, IntoResponse},
     routing::get,
-    async_trait::async_trait,
+    Router,
     Extension,
 };
+use axum::http::request::Parts;
+use async_trait::async_trait;
 
 use miroir_core::config::MiroirConfig;
 use prometheus::{
@@ -107,7 +109,7 @@ where
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
+        parts: &mut Parts,
         _state: &S,
     ) -> Result<Self, Self::Rejection> {
         Ok(OptionalSessionId(
