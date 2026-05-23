@@ -336,6 +336,8 @@ pub struct AppState {
     pub leader_election: Option<Arc<LeaderElection>>,
     /// Mode C worker for chunked background jobs (plan §14.5 Mode C).
     pub mode_c_worker: Option<Arc<ModeCWorker>>,
+    /// Adaptive replica selector (plan §13.3).
+    pub replica_selector: Arc<miroir_core::replica_selection::ReplicaSelector>,
 }
 
 impl AppState {
@@ -631,6 +633,7 @@ impl AppState {
             alias_registry,
             leader_election,
             mode_c_worker,
+            replica_selector: Arc::new(miroir_core::replica_selection::ReplicaSelector::default()),
         }
     }
 
