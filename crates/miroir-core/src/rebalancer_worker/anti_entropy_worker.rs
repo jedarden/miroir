@@ -298,6 +298,8 @@ impl AntiEntropyWorker {
             fingerprint_batch_size: 1000,
             auto_repair: true,
             updated_at_field: "_miroir_updated_at".to_string(),
+            expires_at_field: "_miroir_expires_at".to_string(),
+            ttl_enabled: false,
         };
 
         let node_client = HttpNodeClient::new(node_master_key);
