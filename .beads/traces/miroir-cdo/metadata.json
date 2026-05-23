@@ -9,7 +9,7 @@
   "input_tokens": null,
   "output_tokens": null,
   "cost_usd": null,
-  "captured_at": "2026-05-23T14:50:38.621576178Z",
+  "captured_at": "2026-05-23T17:40:35.144777820Z",
   "trace_format": "claude_json",
   "pruned": false,
   "template_version": null
