@@ -21,7 +21,7 @@ use crate::router::assign_shard_in_group;
 use crate::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, NodeClient};
 use crate::topology::{NodeId, Topology};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hasher;
 use std::sync::Arc;
