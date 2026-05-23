@@ -291,6 +291,10 @@ pub struct Metrics {
     antientropy_mismatches_found_total: Counter,
     antientropy_docs_repaired_total: Counter,
     antientropy_last_scan_completed_seconds: Gauge,
+
+    // ── §13.3 Adaptive replica selection metrics (always present) ──
+    replica_selection_score: GaugeVec,
+    replica_selection_exploration_total: Counter,
 }
 
 impl Clone for Metrics {
@@ -380,6 +384,8 @@ impl Clone for Metrics {
             antientropy_mismatches_found_total: self.antientropy_mismatches_found_total.clone(),
             antientropy_docs_repaired_total: self.antientropy_docs_repaired_total.clone(),
             antientropy_last_scan_completed_seconds: self.antientropy_last_scan_completed_seconds.clone(),
+            replica_selection_score: self.replica_selection_score.clone(),
+            replica_selection_exploration_total: self.replica_selection_exploration_total.clone(),
         }
     }
 }
@@ -949,6 +955,17 @@ impl Metrics {
         reg!(antientropy_docs_repaired_total);
         reg!(antientropy_last_scan_completed_seconds);
 
+        // ── §13.3 Adaptive replica selection metrics (always present) ──
+        let replica_selection_score = GaugeVec::new(
+            Opts::new("miroir_replica_selection_score", "Adaptive replica selection score (lower is better)"),
+            &["node_id"],
+        ).expect("create replica_selection_score");
+        let replica_selection_exploration_total = Counter::with_opts(
+            Opts::new("miroir_replica_selection_exploration_total", "Exploration selections (epsilon-greedy random picks)")
+        ).expect("create replica_selection_exploration_total");
+        reg!(replica_selection_score);
+        reg!(replica_selection_exploration_total);
+
         Self {
             registry,
             request_duration,
@@ -1034,6 +1051,8 @@ impl Metrics {
             antientropy_mismatches_found_total,
             antientropy_docs_repaired_total,
             antientropy_last_scan_completed_seconds,
+            replica_selection_score,
+            replica_selection_exploration_total,
         }
     }
 
@@ -1725,6 +1744,16 @@ impl Metrics {
 
     pub fn inc_session_wait_timeout(&self, strategy: &str) {
         self.session_wait_timeout_total.with_label_values(&[strategy]).inc();
+    }
+
+    // ── §13.3 Adaptive replica selection metrics ──
+
+    pub fn set_replica_selection_score(&self, node_id: &str, score: f64) {
+        self.replica_selection_score.with_label_values(&[node_id]).set(score);
+    }
+
+    pub fn inc_replica_selection_exploration(&self) {
+        self.replica_selection_exploration_total.inc();
     }
 
     pub fn registry(&self) -> &Registry {
