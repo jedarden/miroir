@@ -353,6 +353,27 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Load aliases from task store on startup (plan §13.7)
+    // Aliases must be loaded before any request routing to ensure consistent resolution
+    if let Some(ref task_store) = state.admin.task_store {
+        let alias_registry = state.admin.alias_registry.clone();
+        let store = task_store.clone();
+        tokio::spawn(async move {
+            info!("loading aliases from task store");
+            match alias_registry.sync_from_store(&*store).await {
+                Ok(()) => {
+                    let count = alias_registry.list().await.len();
+                    info!(count, "aliases loaded successfully");
+                }
+                Err(e) => {
+                    error!(error = %e, "failed to load aliases from task store");
+                }
+            }
+        });
+    } else {
+        info!("alias loading skipped (no task store configured)");
+    }
+
     // Start drift reconciler background task (plan §13.5)
     // Uses the drift_reconciler from AppState which is already configured
     if let Some(ref drift_reconciler) = state.admin.drift_reconciler {
@@ -534,8 +555,9 @@ async fn main() -> anyhow::Result<()> {
         // 1. csrf_middleware - runs first
         // 2. auth_middleware
         // 3. Extension layers
-        // 4. request_id_middleware - sets X-Request-Id header
-        // 5. telemetry_middleware - reads X-Request-Id, creates tracing span with request_id field
+        // 4. session_pinning_middleware - extracts X-Miroir-Session header
+        // 5. request_id_middleware - sets X-Request-Id header
+        // 6. telemetry_middleware - reads X-Request-Id, creates tracing span with request_id field
         //    The span's request_id field propagates to all child log events via with_current_span(true)
         //
         // To achieve this order, we add layers in REVERSE (last call = outermost):
@@ -548,6 +570,9 @@ async fn main() -> anyhow::Result<()> {
         ))
         .layer(axum::middleware::from_fn(
             middleware::request_id_middleware,
+        ))
+        .layer(axum::middleware::from_fn(
+            middleware::session_pinning_middleware,
         ))
         .layer(axum::extract::DefaultBodyLimit::max(
             config.server.max_body_bytes as usize,
@@ -693,6 +718,20 @@ async fn run_health_checker(state: admin_endpoints::AppState) {
 
         // Update §14.9 resource-pressure metrics
         update_resource_pressure_metrics(&state.metrics);
+
+        // Update §13.6 session pinning metrics
+        state.session_manager.update_metrics(|count| {
+            state.metrics.set_session_active_count(count as u64);
+        });
+
+        // Prune expired sessions (plan §13.6)
+        let pruned = state.session_manager.prune_expired().await;
+        if pruned > 0 {
+            info!(
+                pruned_count = pruned,
+                "pruned expired sessions"
+            );
+        }
     }
 }
 

@@ -1741,6 +1741,7 @@ dependencies = [
  "criterion",
  "futures-util",
  "hex",
+ "indexmap 2.14.0",
  "proptest",
  "rand 0.8.6",
  "redis",
