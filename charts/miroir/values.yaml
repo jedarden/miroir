@@ -58,10 +58,10 @@ miroir:
   resources:
     limits:
       cpu: 2000m
-      memory: 3840Mi
+      memory: 3584Mi  # 3.5 GiB (leaves headroom under 3.75 GB node limit, per §14.8)
     requests:
-      cpu: 1000m
-      memory: 2048Mi
+      cpu: 500m
+      memory: 1Gi
 
   # Pod annotations
   podAnnotations: {}
