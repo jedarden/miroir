@@ -30,13 +30,31 @@ miroir:
   scatter:
     unavailableShardPolicy: partial  # partial | error
 
-  # Horizontal Pod Autoscaler
+  # Horizontal Pod Autoscaler (plan §14.4)
   hpa:
     enabled: false  # dev default; production: true (requires taskStore.backend=redis)
-    minReplicas: 2
-    maxReplicas: 10
+    # Per-workload-tier defaults (plan §14.7):
+    #   ≤ 500 QPS:   min=2, max=3
+    #   ≤ 2k QPS:    min=2, max=4
+    #   ≤ 5k QPS:    min=4, max=8  (default)
+    #   ≤ 20k QPS:   min=8, max=12
+    #   ≤ 100k QPS:  min=12, max=24
+    minReplicas: 4
+    maxReplicas: 8
+    # Stabilization windows (plan §14.4): scale-up fast, scale-down slow
+    behavior:
+      scaleDown:
+        stabilizationWindowSeconds: 300
+      scaleUp:
+        stabilizationWindowSeconds: 30
+    # Resource metrics (plan §14.4)
     targetCPUUtilizationPercentage: 70
-    targetMemoryUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 75
+    # Custom metrics (require prometheus-adapter)
+    # Per-pod metric: average requests per pod
+    targetRequestsInFlight: 500
+    # Global metric: total background jobs queued across all pods
+    targetBackgroundQueueDepth: 10
 
   # Ingress configuration
   ingress:
