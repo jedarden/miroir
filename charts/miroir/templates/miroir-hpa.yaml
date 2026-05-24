@@ -1,9 +1,9 @@
 {{/*
 Miroir Horizontal Pod Autoscaler (plan §14.4)
 Requires prometheus-adapter for custom metrics (miroir_requests_in_flight, miroir_background_queue_depth).
-The prometheus-adapter dependency is auto-enabled when hpa.enabled=true.
+The prometheus-adapter dependency is a prerequisite when hpa.enabled=true (see NOTES.txt).
 */}}
-{{- if and .Values.miroir.replicas .Values.hpa.enabled }}
+{{- if and .Values.miroir.replicas .Values.miroir.hpa.enabled }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -12,37 +12,34 @@ metadata:
     {{- include "miroir.labels" . | nindent 4 }}
     app.kubernetes.io/component: miroir
   annotations:
-    {{- with .Values.hpa.annotations }}
+    {{- with .Values.miroir.hpa.annotations }}
     {{- toYaml . | nindent 4 }}
-    {{- end }}
-    {{- if .Values.hpa.enabled }}
-    helm.sh/hook: post-install,post-upgrade
     {{- end }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
     name: {{ include "miroir.fullname" . }}-miroir
-  minReplicas: {{ .Values.hpa.minReplicas }}
-  maxReplicas: {{ .Values.hpa.maxReplicas }}
+  minReplicas: {{ .Values.miroir.hpa.minReplicas }}
+  maxReplicas: {{ .Values.miroir.hpa.maxReplicas }}
   metrics:
-    {{- if .Values.hpa.targetCPUUtilizationPercentage }}
+    {{- if .Values.miroir.hpa.targetCPUUtilizationPercentage }}
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: {{ .Values.hpa.targetCPUUtilizationPercentage }}
+          averageUtilization: {{ .Values.miroir.hpa.targetCPUUtilizationPercentage }}
     {{- end }}
-    {{- if .Values.hpa.targetMemoryUtilizationPercentage }}
+    {{- if .Values.miroir.hpa.targetMemoryUtilizationPercentage }}
     - type: Resource
       resource:
         name: memory
         target:
           type: Utilization
-          averageUtilization: {{ .Values.hpa.targetMemoryUtilizationPercentage }}
+          averageUtilization: {{ .Values.miroir.hpa.targetMemoryUtilizationPercentage }}
     {{- end }}
-    {{- if .Values.hpa.targetRequestsInFlight }}
+    {{- if .Values.miroir.hpa.targetRequestsInFlight }}
     # Per-pod custom metric (plan §14.4)
     # Type: Pods AverageValue
     # Query: sum(miroir_requests_in_flight{pod=<pod>}) by (pod)
@@ -57,9 +54,9 @@ spec:
               app.kubernetes.io/component: miroir
         target:
           type: AverageValue
-          averageValue: {{ .Values.hpa.targetRequestsInFlight | default "500" }}
+          averageValue: {{ .Values.miroir.hpa.targetRequestsInFlight | default "500" }}
     {{- end }}
-    {{- if .Values.hpa.targetBackgroundQueueDepth }}
+    {{- if .Values.miroir.hpa.targetBackgroundQueueDepth }}
     # Global custom metric (plan §14.4)
     # Type: External Value (not averaged across pods)
     # Query: sum(miroir_background_queue_depth)
@@ -69,80 +66,12 @@ spec:
       external:
         metric:
           name: miroir_background_queue_depth
-          selector:
-            matchLabels:
-              {{- include "miroir.selectorLabels" . | nindent 14 }}
-              app.kubernetes.io/component: miroir
         target:
           type: Value
-          value: {{ .Values.hpa.targetBackgroundQueueDepth | default "10" }}
+          value: {{ .Values.miroir.hpa.targetBackgroundQueueDepth | default "10" }}
     {{- end }}
-  {{- with .Values.hpa.behavior }}
+  {{- with .Values.miroir.hpa.behavior }}
   behavior:
     {{- toYaml . | nindent 4 }}
   {{- end }}
-{{- end }}
-
-{{/*
-PrometheusAdapter custom metrics configuration (plan §14.4)
-Auto-rendered when hpa.enabled=true to configure prometheus-adapter for Miroir metrics.
-This ConfigMap is consumed by the prometheus-adapter Helm chart.
-*/}}
-{{- if and .Values.miroir.replicas .Values.hpa.enabled }}
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ include "miroir.fullname" . }}-prometheus-adapter-metrics
-  labels:
-    {{- include "miroir.labels" . | nindent 4 }}
-  annotations:
-    helm.sh/hook: pre-install,pre-upgrade
-    helm.sh/hook-weight: "-5"
-data:
-  # Custom metrics for Miroir HPA (plan §14.4)
-  # Per-pod metric: miroir_requests_in_flight
-  # Type: Pods (average value across all pods)
-  rules.yaml: |
-    - seriesQuery: '{__name__="miroir_requests_in_flight",namespace="{{ .Release.Namespace }}"}'
-      name:
-        as: "miroir_requests_in_flight"
-      metricsQuery: |
-        sum(miroir_requests_in_flight{<<.LabelMatchers>>}) by (<<.GroupBy>>)
-      resource:
-        name: miroir_requests_in_flight
-      container: miroir
-      type:
-        type: Pods
-    # Global metric: miroir_background_queue_depth
-    # Type: Value (not averaged, global cluster-wide metric)
-    - seriesQuery: '{__name__="miroir_background_queue_depth",namespace="{{ .Release.Namespace }}"}'
-      name:
-        as: "miroir_background_queue_depth"
-      metricsQuery: |
-        sum(miroir_background_queue_depth{<<.LabelMatchers>>})
-      resource:
-        name: miroir_background_queue_depth
-      type:
-        type: Value
-{{- end }}
-{{- if and .Values.miroir.replicas .Values.hpa.enabled }}
----
-# NOTES: Prometheus Adapter Configuration (plan §14.4)
-#
-# The Miroir Helm chart auto-enables prometheus-adapter when HPA is enabled.
-# Custom metrics are configured via the ConfigMap above.
-#
-# To verify prometheus-adapter is working:
-#
-# 1. Check the custom metrics API is available:
-#    kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1 | jq .
-#
-# 2. Query the per-pod metric:
-#    kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1/namespaces/{{ .Release.Namespace }}/pods/miroir_requests_in_flight | jq .
-#
-# 3. Query the global metric:
-#    kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1/namespaces/{{ .Release.Namespace }}/miroir_background_queue_depth | jq .
-#
-# 4. Check HPA status:
-#    kubectl describe hpa {{ include "miroir.fullname" . }}-miroir
 {{- end }}

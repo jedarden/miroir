@@ -35,6 +35,30 @@ Redis is deployed and accessible at:
 
 {{- end }}
 
+{{- if .Values.miroir.hpa.enabled }}
+
+HPA is enabled for this deployment.
+
+IMPORTANT: HPA uses custom metrics (miroir_requests_in_flight, miroir_background_queue_depth) that require prometheus-adapter (or an equivalent custom/external metrics API bridge). This chart does NOT install prometheus-adapter — it must be deployed separately in your cluster.
+
+To verify prometheus-adapter is configured correctly:
+
+1. Check the custom metrics API is available:
+   kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1 | jq .
+
+2. Query the per-pod metric:
+   kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1/namespaces/{{ .Release.Namespace }}/pods/*/miroir_requests_in_flight | jq .
+
+3. Query the global metric (requires prometheus-adapter external metrics):
+   kubectl get --raw /apis/external.metrics.k8s.io/v1beta1/namespaces/{{ .Release.Namespace }}/miroir_background_queue_depth | jq .
+
+4. Check HPA status and current metrics:
+   kubectl describe hpa {{ include "miroir.fullname" . }}-miroir -n {{ .Release.Namespace }}
+
+This chart renders a ConfigMap ({{ include "miroir.fullname" . }}-prometheus-adapter-metrics) with the required prometheus-adapter rules. Configure your prometheus-adapter installation to load rules from ConfigMaps with the label: app.kubernetes.io/name={{ include "miroir.name" . }}
+
+{{- end }}
+
 To verify the deployment, run:
   kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "miroir.name" . }},app.kubernetes.io/instance={{ .Release.Name }}"
 
