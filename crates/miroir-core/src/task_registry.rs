@@ -198,6 +198,48 @@ impl InMemoryTaskRegistry {
         tasks.len()
     }
 
+    /// Update the status of a task (async version for tests).
+    /// Automatically sets started_at when transitioning to Processing.
+    /// Automatically sets finished_at when transitioning to a terminal state.
+    pub async fn update_status(&self, miroir_id: &str, status: TaskStatus) -> Result<()> {
+        let mut tasks = self.tasks.write().await;
+        if let Some(task) = tasks.get_mut(miroir_id) {
+            // Set started_at when transitioning to Processing
+            if status == TaskStatus::Processing && task.started_at.is_none() {
+                task.started_at = Some(std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| MiroirError::Task(format!("clock error: {}", e)))?
+                    .as_millis() as u64);
+            }
+            // Set finished_at when transitioning to a terminal state
+            if matches!(status, TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled)
+                && task.finished_at.is_none() {
+                task.finished_at = Some(std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| MiroirError::Task(format!("clock error: {}", e)))?
+                    .as_millis() as u64);
+            }
+            task.status = status;
+        }
+        Ok(())
+    }
+
+    /// Update a node task's status (async version for tests).
+    pub async fn update_node_task(
+        &self,
+        miroir_id: &str,
+        node_id: &str,
+        node_status: NodeTaskStatus,
+    ) -> Result<()> {
+        let mut tasks = self.tasks.write().await;
+        if let Some(task) = tasks.get_mut(miroir_id) {
+            if let Some(node_task) = task.node_tasks.get_mut(node_id) {
+                node_task.status = node_status;
+            }
+        }
+        Ok(())
+    }
+
     /// Prune old tasks (in-memory only, for Phase 3 this will use durable storage).
     pub async fn prune_old_tasks(&self, _cutoff_ms: u64) -> Result<usize> {
         // In-memory implementation: no pruning in Phase 2
@@ -481,6 +523,48 @@ impl InMemoryTaskRegistry {
         }
 
         Ok(result)
+    }
+}
+
+/// Test helper: set error on a task (for testing failure scenarios).
+#[cfg(feature = "test-helpers")]
+impl InMemoryTaskRegistry {
+    pub async fn set_error_for_test(&self, miroir_id: &str, error: String, node_errors: HashMap<String, String>) {
+        let mut tasks = self.tasks.write().await;
+        if let Some(t) = tasks.get_mut(miroir_id) {
+            t.error = Some(error);
+            t.node_errors = node_errors;
+        }
+    }
+
+    pub async fn set_timestamps_for_test(&self, miroir_id: &str, started_at: Option<u64>, finished_at: Option<u64>) {
+        let mut tasks = self.tasks.write().await;
+        if let Some(t) = tasks.get_mut(miroir_id) {
+            if started_at.is_some() {
+                t.started_at = started_at;
+            }
+            if finished_at.is_some() {
+                t.finished_at = finished_at;
+            }
+        }
+    }
+
+    /// Test helper: set the status of a specific node task.
+    pub async fn set_node_task_status_for_test(&self, miroir_id: &str, node_id: &str, status: NodeTaskStatus) {
+        let mut tasks = self.tasks.write().await;
+        if let Some(t) = tasks.get_mut(miroir_id) {
+            if let Some(nt) = t.node_tasks.get_mut(node_id) {
+                nt.status = status;
+            }
+        }
+    }
+
+    /// Test helper: set the overall task status.
+    pub async fn set_task_status_for_test(&self, miroir_id: &str, status: TaskStatus) {
+        let mut tasks = self.tasks.write().await;
+        if let Some(t) = tasks.get_mut(miroir_id) {
+            t.status = status;
+        }
     }
 }
 

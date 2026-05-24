@@ -16,7 +16,24 @@ use miroir_core::api_error::{MiroirCode, MeilisearchError};
 #[test]
 fn test_miroir_error_shape_matches_meilisearch() {
     // Test each MiroirCode variant
-    for code in MiroirCode::ALL {
+    const ALL_CODES: [MiroirCode; 14] = [
+        MiroirCode::PrimaryKeyRequired,
+        MiroirCode::NoQuorum,
+        MiroirCode::ShardUnavailable,
+        MiroirCode::ReservedField,
+        MiroirCode::IdempotencyKeyReused,
+        MiroirCode::SettingsVersionStale,
+        MiroirCode::MultiAliasNotWritable,
+        MiroirCode::JwtInvalid,
+        MiroirCode::JwtScopeDenied,
+        MiroirCode::InvalidAuth,
+        MiroirCode::MissingCsrf,
+        MiroirCode::CsrfMismatch,
+        MiroirCode::IndexAlreadyExists,
+        MiroirCode::Timeout,
+    ];
+
+    for code in ALL_CODES {
         let error = MeilisearchError::new(code, "test message");
 
         // Serialize to JSON
@@ -78,7 +95,7 @@ fn test_error_http_status_codes() {
     ];
 
     for (code, expected_status, expected_type) in test_cases {
-        let error = MeilisearchError::new(code, "test message");
+        let _error = MeilisearchError::new(code, "test message");
 
         assert_eq!(code.http_status(), expected_status,
             "HTTP status for {:?} should be {}, got {}",
@@ -141,7 +158,24 @@ fn test_invalid_json_is_not_parsed_as_meilisearch_error() {
 #[test]
 fn test_error_code_roundtrip() {
     // Test that code strings can be parsed back to MiroirCode
-    for code in MiroirCode::ALL {
+    const ALL_CODES: [MiroirCode; 14] = [
+        MiroirCode::PrimaryKeyRequired,
+        MiroirCode::NoQuorum,
+        MiroirCode::ShardUnavailable,
+        MiroirCode::ReservedField,
+        MiroirCode::IdempotencyKeyReused,
+        MiroirCode::SettingsVersionStale,
+        MiroirCode::MultiAliasNotWritable,
+        MiroirCode::JwtInvalid,
+        MiroirCode::JwtScopeDenied,
+        MiroirCode::InvalidAuth,
+        MiroirCode::MissingCsrf,
+        MiroirCode::CsrfMismatch,
+        MiroirCode::IndexAlreadyExists,
+        MiroirCode::Timeout,
+    ];
+
+    for code in ALL_CODES {
         let code_str = code.as_str();
         let parsed = MiroirCode::from_code_str(code_str);
 
@@ -234,7 +268,24 @@ fn test_error_message_preserves_content() {
 #[test]
 fn test_all_miroir_codes_are_documented() {
     // Verify all error codes have proper documentation links
-    for code in MiroirCode::ALL {
+    const ALL_CODES: [MiroirCode; 14] = [
+        MiroirCode::PrimaryKeyRequired,
+        MiroirCode::NoQuorum,
+        MiroirCode::ShardUnavailable,
+        MiroirCode::ReservedField,
+        MiroirCode::IdempotencyKeyReused,
+        MiroirCode::SettingsVersionStale,
+        MiroirCode::MultiAliasNotWritable,
+        MiroirCode::JwtInvalid,
+        MiroirCode::JwtScopeDenied,
+        MiroirCode::InvalidAuth,
+        MiroirCode::MissingCsrf,
+        MiroirCode::CsrfMismatch,
+        MiroirCode::IndexAlreadyExists,
+        MiroirCode::Timeout,
+    ];
+
+    for code in ALL_CODES {
         let error = MeilisearchError::new(code, "test");
         let json = serde_json::to_value(&error).unwrap();
 
