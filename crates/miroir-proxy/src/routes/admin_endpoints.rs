@@ -1,7 +1,7 @@
 //! Admin API endpoints for topology, readiness, shards, and metrics.
 
 use axum::{
-    extract::{FromRef, Path, State},
+    extract::{FromRef, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -385,6 +385,8 @@ pub struct AppState {
     /// Resharding registry for tracking active resharding operations (plan §13.1).
     /// Used by the write path to detect dual-write phase and route to both live and shadow indexes.
     pub resharding_registry: Arc<tokio::sync::RwLock<ReshardingRegistry>>,
+    /// Shadow manager for traffic shadowing (plan §13.16).
+    pub shadow_manager: Option<Arc<miroir_core::shadow::ShadowManager>>,
 }
 
 impl AppState {
@@ -768,6 +770,7 @@ impl AppState {
             resharding_registry: Arc::new(tokio::sync::RwLock::new(
                 miroir_core::reshard::ReshardingRegistry::new(),
             )),
+            shadow_manager: None, // Initialized in main.rs if shadow is enabled
         }
     }
 
@@ -2112,4 +2115,75 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"error\":\"timeout\""));
     }
+}
+
+/// GET /_miroir/shadow/diff — Get recent shadow diff results (plan §13.16).
+///
+/// Query parameters:
+/// - target: filter by target name (optional)
+/// - limit: max number of diffs to return (default: 100, max: 10000)
+/// - kind: filter by diff kind (hits|ranking|latency|error, optional)
+pub async fn get_shadow_diff<S>(
+    State(state): State<S>,
+    Query(params): Query<ShadowDiffQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let shadow_manager = app_state
+        .shadow_manager
+        .as_ref()
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let limit = params.limit.unwrap_or(100).min(10000);
+    let diffs = shadow_manager.recent_diffs(limit).await;
+
+    let mut filtered = diffs;
+    if let Some(target) = &params.target {
+        filtered = filtered
+            .into_iter()
+            .filter(|d| &d.target == target)
+            .collect();
+    }
+
+    Ok(Json(serde_json::json!({
+        "diffs": filtered,
+        "total": filtered.len(),
+    })))
+}
+
+/// Query parameters for GET /_miroir/shadow/diff.
+#[derive(Debug, Deserialize)]
+pub struct ShadowDiffQuery {
+    pub target: Option<String>,
+    pub limit: Option<usize>,
+    pub kind: Option<String>,
+}
+
+/// GET /_miroir/shadow/stats — Get shadow statistics (plan §13.16).
+pub async fn get_shadow_stats<S>(
+    State(state): State<S>,
+) -> Result<Json<serde_json::Value>, StatusCode>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let shadow_manager = app_state
+        .shadow_manager
+        .as_ref()
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let stats = shadow_manager.stats().await;
+
+    Ok(Json(serde_json::json!({
+        "total_shadowed": stats.total_shadowed,
+        "total_errors": stats.total_errors,
+        "error_rate": stats.error_rate,
+        "recent_diffs_count": stats.recent_diffs_count,
+    })))
 }
