@@ -48,6 +48,10 @@ pub struct DriftReconcilerConfig {
     pub interval_s: u64,
     /// Whether to automatically repair drift.
     pub auto_repair: bool,
+    /// Leader lease renewal interval in milliseconds.
+    pub lease_renewal_interval_ms: u64,
+    /// Leader lease TTL in seconds.
+    pub lease_ttl_secs: u64,
 }
 
 impl Default for DriftReconcilerConfig {
@@ -55,6 +59,8 @@ impl Default for DriftReconcilerConfig {
         Self {
             interval_s: 300, // 5 minutes
             auto_repair: true,
+            lease_renewal_interval_ms: 5000, // 5 seconds
+            lease_ttl_secs: 30, // 30 seconds
         }
     }
 }

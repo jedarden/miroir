@@ -6,6 +6,7 @@
 
 use miroir_core::api_error::{ErrorType, MeilisearchError, MiroirCode};
 use serde_json::json;
+use axum::response::IntoResponse;
 
 /// Test 1: All Miroir error codes produce the correct Meilisearch-compatible shape.
 ///

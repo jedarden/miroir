@@ -44,12 +44,18 @@ use tracing::{debug, error, info, warn};
 pub struct AntiEntropyWorkerConfig {
     /// Schedule interval in seconds (parsed from "every 6h" format).
     pub interval_s: u64,
+    /// Leader lease renewal interval in milliseconds.
+    pub lease_renewal_interval_ms: u64,
+    /// Leader lease TTL in seconds.
+    pub lease_ttl_secs: u64,
 }
 
 impl Default for AntiEntropyWorkerConfig {
     fn default() -> Self {
         Self {
             interval_s: 6 * 3600, // 6 hours
+            lease_renewal_interval_ms: 5000, // 5 seconds
+            lease_ttl_secs: 30, // 30 seconds
         }
     }
 }

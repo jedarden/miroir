@@ -759,6 +759,49 @@ impl TaskStore for SqliteTaskStore {
         Ok(rows)
     }
 
+    fn list_terminal_tasks_batch(
+        &self,
+        cutoff_ms: i64,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Vec<TaskRow>> {
+        let conn = self.conn.lock().unwrap();
+        let sql = "SELECT miroir_id, created_at, status, node_tasks, error, started_at, finished_at, index_uid, task_type, node_errors
+                   FROM tasks
+                   WHERE created_at < ?1 AND status IN ('succeeded', 'failed', 'canceled')
+                   ORDER BY created_at DESC
+                   LIMIT ?2 OFFSET ?3";
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(params![cutoff_ms, limit, offset], Self::task_row_from_row)?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    fn delete_tasks_batch(&self, miroir_ids: &[&str]) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let mut sql = "DELETE FROM tasks WHERE miroir_id IN (".to_string();
+        for (i, _) in miroir_ids.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push_str(&format!("?{}", i + 1));
+        }
+        sql.push(')');
+
+        // Build IN clause dynamically and execute for each ID
+        // (SQLite doesn't support array binding directly)
+        let mut total_deleted = 0;
+        for miroir_id in miroir_ids {
+            let delete_sql = "DELETE FROM tasks WHERE miroir_id = ?1";
+            let rows = conn.execute(delete_sql, [&*miroir_id])?;
+            total_deleted += rows;
+        }
+        Ok(total_deleted)
+    }
+
     fn task_count(&self) -> Result<u64> {
         let conn = self.conn.lock().unwrap();
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
