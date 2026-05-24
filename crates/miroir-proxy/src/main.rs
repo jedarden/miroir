@@ -172,6 +172,7 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             replica_selector: state.admin.replica_selector.clone(),
             idempotency_cache: state.admin.idempotency_cache.clone(),
             query_coalescer: state.admin.query_coalescer.clone(),
+            query_planner: state.admin.query_planner.clone(),
         }
     }
 }
@@ -213,6 +214,7 @@ impl FromRef<UnifiedState> for routes::explain::ExplainState {
         Self {
             config: state.admin.config.clone(),
             topology: state.admin.topology.clone(),
+            query_planner: state.admin.query_planner.clone(),
         }
     }
 }
