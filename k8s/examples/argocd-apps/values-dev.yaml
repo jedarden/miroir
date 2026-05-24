@@ -1,0 +1,56 @@
+# Development values.yaml example
+# Copy to jedarden/declarative-config/k8s/<cluster>/miroir/<instance>/values.yaml
+# Update <placeholders> with actual values
+
+miroir:
+  image:
+    repository: ghcr.io/jedarden/miroir
+    tag: ""  # Defaults to Chart.appVersion
+  replicas: 1  # Single pod for dev
+  shards: 64
+  replicationFactor: 1  # No HA
+  replicaGroups: 1  # No throughput scaling
+  existingSecret: <secret-name>
+  logLevel: debug
+  scatter:
+    unavailableShardPolicy: partial
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  hpa:
+    enabled: false
+  ingress:
+    enabled: false
+  serviceMonitor:
+    enabled: true
+
+taskStore:
+  backend: sqlite
+  path: /data/miroir-tasks.db
+
+meilisearch:
+  image:
+    repository: getmeili/meilisearch
+    tag: v1.37.0
+  replicas: 2  # Minimal for testing shard routing
+  nodesPerGroup: 2
+  existingSecret: <meilisearch-secret-name>
+  persistence:
+    enabled: true
+    size: 10Gi
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  podAntiAffinity:
+    enabled: false
+
+redis:
+  enabled: false
