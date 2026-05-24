@@ -21,6 +21,8 @@ use miroir_core::{
     task_store::{RedisTaskStore, TaskStore},
     topology::{Node, NodeId, Topology},
     mode_c_worker::{ModeCWorker, ModeCWorkerConfig},
+    mode_a_coordinator::ModeACoordinator,
+    peer_discovery::PeerDiscovery,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -366,6 +368,8 @@ pub struct AppState {
     pub group_addition_coordinator: Option<Arc<RwLock<GroupAdditionCoordinator>>>,
     /// Group sync worker for background document sync.
     pub group_sync_worker: Option<Arc<GroupSyncWorker<HttpClient>>>,
+    /// Mode A coordinator for shard-partitioned ownership (plan §14.5 Mode A).
+    pub mode_a_coordinator: Option<Arc<ModeACoordinator>>,
 }
 
 impl AppState {
