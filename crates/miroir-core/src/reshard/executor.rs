@@ -8,17 +8,16 @@
 //! 5. Alias swap
 //! 6. Cleanup
 
-use crate::anti_entropy::{AntiEntropyConfig, AntiEntropyReconciler, BUCKET_COUNT};
+use crate::anti_entropy::{AntiEntropyConfig, AntiEntropyReconciler};
 use crate::error::{MiroirError, Result};
-use crate::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, NodeClient};
-use crate::topology::{NodeId, Topology};
+use crate::scatter::NodeClient;
+use crate::task_store::TaskStore;
+use crate::topology::Topology;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::HashMap;
 use std::hash::Hasher;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use twox_hash::XxHash64;
 use uuid::Uuid;
 
@@ -68,6 +67,7 @@ pub struct ReshardExecutor<C: NodeClient> {
     topology: Arc<RwLock<Topology>>,
     config: ReshardConfig,
     node_client: Arc<C>,
+    task_store: Option<Arc<dyn TaskStore>>,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +88,7 @@ impl<C: NodeClient> ReshardExecutor<C> {
         topology: Arc<RwLock<Topology>>,
         config: ReshardConfig,
         node_client: Arc<C>,
+        task_store: Option<Arc<dyn TaskStore>>,
     ) -> Self {
         let id = Uuid::new_v4();
         let now = std::time::SystemTime::now()
@@ -118,6 +119,7 @@ impl<C: NodeClient> ReshardExecutor<C> {
             topology,
             config,
             node_client,
+            task_store,
         }
     }
 
@@ -405,21 +407,47 @@ impl<C: NodeClient> ReshardExecutor<C> {
         Ok(())
     }
 
-    /// Phase 5: Atomic alias swap.
+    /// Phase 5: Atomic alias swap (P5.1.e, plan §13.1 step 5).
+    ///
+    /// Performs an atomic alias flip via the task store's flip_alias() method,
+    /// pointing the alias at the new shadow index. After this step, dual-write
+    /// stops and client writes target ONLY the new index.
     async fn alias_swap(&self, state: &mut ReshardState) -> Result<()> {
         let shadow_name = state
             .shadow_index
             .as_ref()
             .ok_or_else(|| MiroirError::InvalidState("Shadow index not created".to_string()))?;
 
+        let task_store = self.task_store.as_ref().ok_or_else(|| {
+            MiroirError::InvalidState("Task store required for alias swap".to_string())
+        })?;
+
         tracing::info!(
             index = %state.index_uid,
             shadow = %shadow_name,
-            "Performing atomic alias swap"
+            "Performing atomic alias swap (P5.1.e)"
         );
 
-        // TODO: Use §13.7 atomic alias flip
-        // PUT /_miroir/aliases/{index_uid} {"target": shadow_name}
+        // Perform the atomic alias flip via task store
+        // This uses §13.7 atomic alias flip: PUT /_miroir/aliases/{index_uid} {"target": shadow_name}
+        let history_retention = 10; // Default history retention for rollback
+        let flipped = task_store
+            .flip_alias(&state.index_uid, shadow_name, history_retention)
+            .map_err(|e| MiroirError::AliasSwapFailed(format!("{}", e)))?;
+
+        if !flipped {
+            return Err(MiroirError::AliasSwapFailed(format!(
+                "alias flip returned false for '{}' -> '{}'",
+                state.index_uid, shadow_name
+            )));
+        }
+
+        tracing::info!(
+            index = %state.index_uid,
+            old_target = %state.index_uid,
+            new_target = %shadow_name,
+            "alias swap completed: dual-write stopped"
+        );
 
         Ok(())
     }

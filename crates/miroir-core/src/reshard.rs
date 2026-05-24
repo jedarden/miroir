@@ -2854,7 +2854,7 @@ fn compute_content_hash_for_verify(document: &serde_json::Value) -> Result<u64, 
 // ---------------------------------------------------------------------------
 
 /// Result of the alias swap phase.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AliasSwapResult {
     /// Alias name that was flipped.
     pub alias_name: String,

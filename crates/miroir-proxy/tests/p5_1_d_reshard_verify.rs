@@ -191,6 +191,7 @@ async fn test_reshard_executor_initializes_with_correct_state() {
         topology,
         config,
         Arc::new(MockNodeClient::default()),
+        None, // task_store
     );
 
     let state = executor.state().await;

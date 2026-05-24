@@ -106,4 +106,8 @@ pub enum MiroirError {
     /// Verification error (for resharding cross-index verification).
     #[error("verification failed: {0}")]
     VerificationFailed(String),
+
+    /// Alias swap error (for resharding alias swap phase).
+    #[error("alias swap failed: {0}")]
+    AliasSwapFailed(String),
 }
