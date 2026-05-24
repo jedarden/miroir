@@ -21,7 +21,7 @@ use tracing::{info, warn};
 use crate::admin_session::{seal_session, COOKIE_NAME};
 use crate::auth::{build_csp_header, generate_csrf_token, validate_origin, AdminSessionId};
 
-use super::admin_endpoints::AppState;
+use super::admin_endpoints::{parse_rate_limit, AppState};
 
 /// Hash a PII value (session ID, IP, username) for safe log correlation.
 fn hash_for_log(value: &str) -> String {
@@ -83,6 +83,12 @@ pub struct SearchUiSessionResponse {
 /// - JSON response with session_id, csrf_token, expires_at
 ///
 /// Origin is checked against `admin_ui.allowed_origins` (default "same-origin").
+///
+/// Rate limiting (plan §9):
+/// - 10 requests per minute per IP (configurable via `admin_ui.rate_limit.per_ip`)
+/// - Exponential backoff after 5 consecutive failed attempts:
+///   - 10m, 20m, 40m, ... up to 24h cap
+/// - Successful login resets both the rate limit counter and backoff state
 pub async fn admin_login<S>(
     State(state): State<S>,
     headers: HeaderMap,
@@ -112,10 +118,96 @@ where
         return Err((StatusCode::FORBIDDEN, "origin not allowed".into()));
     }
 
+    // Extract source IP for rate limiting (plan §9)
+    let source_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .or_else(|| headers.get("x-real-ip").and_then(|h| h.to_str().ok()))
+        .unwrap_or("unknown")
+        .trim()
+        .to_string();
+
+    // Parse rate limit config
+    let (limit, window_seconds) = match parse_rate_limit(&config.admin_ui.rate_limit.per_ip) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            warn!(error = %e, "invalid admin_ui.rate_limit.per_ip config");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "rate limit configuration error".into(),
+            ));
+        }
+    };
+
+    // Check rate limit and backoff (plan §9)
+    let backend = config.admin_ui.rate_limit.backend.as_str();
+    if backend == "redis" {
+        if let Some(ref redis) = state.redis_store {
+            match redis.check_rate_limit_admin_login(&source_ip, limit, window_seconds) {
+                Ok((allowed, wait_seconds)) => {
+                    if !allowed {
+                        if let Some(ws) = wait_seconds {
+                            warn!(
+                                source_ip_hash = hash_for_log(&source_ip),
+                                wait_seconds = ws,
+                                "admin login rate limited (backoff)"
+                            );
+                            return Err((
+                                StatusCode::TOO_MANY_REQUESTS,
+                                format!("Too many failed login attempts. Try again in {} seconds.", ws),
+                            ));
+                        } else {
+                            return Err((
+                                StatusCode::TOO_MANY_REQUESTS,
+                                "Too many login attempts. Please try again later.".into(),
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to check admin login rate limit");
+                    // Continue anyway on error (fail-open)
+                }
+            }
+        }
+    }
+
     // Validate admin key (constant-time compare)
     let expected_key = &config.admin.api_key;
     if !crate::auth::constant_time_compare(body.admin_key.as_bytes(), expected_key.as_bytes()) {
+        // Record failure for backoff tracking (plan §9)
+        if backend == "redis" {
+            if let Some(ref redis) = state.redis_store {
+                let backoff_start_minutes = config.admin_ui.rate_limit.backoff_start_minutes;
+                let backoff_max_hours = config.admin_ui.rate_limit.backoff_max_hours;
+                let failed_threshold = config.admin_ui.rate_limit.failed_attempt_threshold;
+
+                if let Err(e) = redis.record_failure_admin_login(
+                    &source_ip,
+                    failed_threshold,
+                    backoff_start_minutes,
+                    backoff_max_hours,
+                ) {
+                    warn!(error = %e, "failed to record admin login failure");
+                }
+            }
+        }
+
+        warn!(
+            source_ip_hash = hash_for_log(&source_ip),
+            "admin login failed: invalid admin key"
+        );
         return Err((StatusCode::UNAUTHORIZED, "invalid admin key".into()));
+    }
+
+    // Successful login - reset rate limit counters (plan §9)
+    if backend == "redis" {
+        if let Some(ref redis) = state.redis_store {
+            if let Err(e) = redis.reset_rate_limit_admin_login(&source_ip) {
+                warn!(error = %e, "failed to reset admin login rate limit");
+            }
+        }
     }
 
     // Generate session ID and CSRF token
@@ -129,15 +221,10 @@ where
     // Hash the admin key for storage (never store the key itself)
     let admin_key_hash = hash_admin_key(expected_key);
 
-    // Extract user agent and source IP for audit
+    // Extract user agent for audit
     let user_agent = headers
         .get("user-agent")
         .and_then(|h| h.to_str().ok())
-        .map(String::from);
-    let source_ip = headers
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .or_else(|| headers.get("x-real-ip").and_then(|h| h.to_str().ok()))
         .map(String::from);
 
     // Create session in task store
@@ -148,7 +235,7 @@ where
         created_at: now,
         expires_at,
         user_agent,
-        source_ip,
+        source_ip: Some(source_ip),
     };
 
     if let Some(ref redis) = state.redis_store {
