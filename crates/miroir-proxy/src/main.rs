@@ -17,6 +17,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, registry, util::SubscriberInitExt, EnvFilter};
 
 mod admin_session;
+mod admin_ui;
 mod auth;
 mod client;
 pub mod error_response;
@@ -181,6 +182,7 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             resharding_registry: state.admin.resharding_registry.clone(),
             shadow_manager: state.admin.shadow_manager.clone(),
             cdc_manager: state.admin.cdc_manager.clone(),
+            tenant_affinity_manager: state.admin.tenant_affinity_manager.clone(),
         }
     }
 }

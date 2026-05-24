@@ -675,7 +675,7 @@ impl Metrics {
             .expect("create multisearch_partial_failures_total");
             let t = CounterVec::new(
                 Opts::new(
-                    "miroir_tenant_session_pin_override_total",
+                    "miroir_multisearch_tenant_session_pin_override_total",
                     "Session pin overrides triggered by multi-search tenant routing",
                 ),
                 &["tenant"],
