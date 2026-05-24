@@ -96,4 +96,13 @@ where
         .route("/changes", get(cdc::get_changes::<S>))
         // Dump import routes (plan §13.9)
         .nest("/dumps", dumps::routes())
+        // Resharding endpoints (plan §13.1)
+        .route(
+            "/indexes/{uid}/reshard",
+            post(admin_endpoints::post_reshard::<S>),
+        )
+        .route(
+            "/indexes/{uid}/reshard/status",
+            get(admin_endpoints::get_reshard_status::<S>),
+        )
 }
