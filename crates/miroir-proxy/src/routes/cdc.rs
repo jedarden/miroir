@@ -52,10 +52,11 @@ pub async fn get_changes<S>(
 ) -> Result<Json<ChangesResponse>, StatusCode>
 where
     S: Clone + Send + Sync + 'static,
-    miroir_core::cdc::CdcManager: FromRef<S>,
+    std::sync::Arc<miroir_core::cdc::CdcManager>: FromRef<S>,
 {
     // Extract CDC manager from state
-    let cdc_manager = miroir_core::cdc::CdcManager::from_ref(&state);
+    let cdc_manager_arc = std::sync::Arc::<miroir_core::cdc::CdcManager>::from_ref(&state);
+    let cdc_manager = cdc_manager_arc.as_ref();
 
     // Cap limit at 1000 to prevent large responses
     let limit = params.limit.min(1000);

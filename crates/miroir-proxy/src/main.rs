@@ -178,6 +178,7 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             mode_a_coordinator: state.admin.mode_a_coordinator.clone(),
             resharding_registry: state.admin.resharding_registry.clone(),
             shadow_manager: state.admin.shadow_manager.clone(),
+            cdc_manager: state.admin.cdc_manager.clone(),
         }
     }
 }
@@ -224,18 +225,18 @@ impl FromRef<UnifiedState> for routes::explain::ExplainState {
     }
 }
 
-// Implement FromRef so that miroir_core::cdc::CdcManager can be extracted from UnifiedState
-impl FromRef<UnifiedState> for miroir_core::cdc::CdcManager {
+// Implement FromRef so that Arc<CdcManager> can be extracted from UnifiedState
+impl FromRef<UnifiedState> for std::sync::Arc<miroir_core::cdc::CdcManager> {
     fn from_ref(state: &UnifiedState) -> Self {
         // Return the CDC manager if it exists, otherwise return a disabled one
         if let Some(ref cdc) = state.admin.cdc_manager {
-            cdc.clone()
+            Arc::clone(cdc)
         } else {
             // Create a disabled CDC manager
-            miroir_core::cdc::CdcManager::new(miroir_core::cdc::CdcConfig {
+            Arc::new(miroir_core::cdc::CdcManager::new(miroir_core::cdc::CdcConfig {
                 enabled: false,
                 ..Default::default()
-            })
+            }))
         }
     }
 }

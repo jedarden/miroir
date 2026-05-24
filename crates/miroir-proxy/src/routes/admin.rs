@@ -21,7 +21,7 @@ where
     aliases::AliasState: FromRef<S>,
     explain::ExplainState: FromRef<S>,
     canary::CanaryState: FromRef<S>,
-    miroir_core::cdc::CdcManager: FromRef<S>,
+    std::sync::Arc<miroir_core::cdc::CdcManager>: FromRef<S>,
 {
     Router::new()
         // Admin session endpoints (plan §9, §13.19)
