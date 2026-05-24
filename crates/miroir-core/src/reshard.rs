@@ -2816,6 +2816,240 @@ fn compute_content_hash_for_verify(document: &serde_json::Value) -> Result<u64, 
 }
 
 // ---------------------------------------------------------------------------
+// Phase 5: Alias swap + dual-write stop (P5.1.e, plan §13.1 step 5)
+// ---------------------------------------------------------------------------
+
+/// Result of the alias swap phase.
+#[derive(Debug, Clone)]
+pub struct AliasSwapResult {
+    /// Alias name that was flipped.
+    pub alias_name: String,
+    /// Old target UID (before flip).
+    pub old_target: String,
+    /// New target UID (after flip).
+    pub new_target: String,
+    /// New alias version after flip.
+    pub new_version: u64,
+    /// Timestamp of the flip (UNIX ms).
+    pub flipped_at: u64,
+}
+
+/// Error during alias swap phase.
+#[derive(Debug, thiserror::Error)]
+pub enum AliasSwapError {
+    #[error("alias not found: {0}")]
+    AliasNotFound(String),
+
+    #[error("alias is not single-target: {0}")]
+    NotSingleTargetAlias(String),
+
+    #[error("alias flip failed: {0}")]
+    FlipFailed(String),
+
+    #[error("alias lookup failed: {0}")]
+    LookupFailed(String),
+
+    #[error("task store unavailable: {0}")]
+    TaskStoreUnavailable(String),
+}
+
+/// Execute Phase 5: Alias swap + dual-write stop (P5.1.e, plan §13.1 step 5).
+///
+/// Performs an atomic alias flip via the task store's `flip_alias()` method,
+/// pointing the alias at the new shadow index. After this step:
+/// - Client writes target ONLY the new index (dual-write stops)
+/// - The old index is retained for rollback (until cleanup phase)
+/// - Rollback is a reverse alias flip to the old index
+///
+/// # Arguments
+/// * `alias_name` - The alias name to flip (typically the live index UID)
+/// * `new_target_uid` - The shadow index UID to point at (e.g., "products__reshard_128")
+/// * `task_store` - Task store for persisting the alias flip
+/// * `history_retention` - Number of history entries to retain for rollback
+///
+/// # Returns
+/// `Ok(AliasSwapResult)` with details of the flip on success.
+///
+/// # Panics
+/// None. All errors are returned via `Result`.
+pub async fn alias_swap_phase(
+    alias_name: &str,
+    new_target_uid: &str,
+    task_store: &dyn crate::task_store::TaskStore,
+    history_retention: usize,
+) -> Result<AliasSwapResult, AliasSwapError> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    tracing::info!(
+        alias = %alias_name,
+        new_target = %new_target_uid,
+        "starting Phase 5: alias swap + dual-write stop"
+    );
+
+    // Step 1: Get the current alias state to capture old_target for rollback info
+    let existing = task_store
+        .get_alias(alias_name)
+        .map_err(|e| AliasSwapError::LookupFailed(format!("{}", e)))?
+        .ok_or_else(|| AliasSwapError::AliasNotFound(alias_name.to_string()))?;
+
+    if existing.kind != "single" {
+        return Err(AliasSwapError::NotSingleTargetAlias(alias_name.to_string()));
+    }
+
+    let old_target = existing
+        .current_uid
+        .ok_or_else(|| AliasSwapError::LookupFailed("alias missing current_uid".to_string()))?;
+
+    tracing::debug!(
+        alias = %alias_name,
+        old_target = %old_target,
+        new_target = %new_target_uid,
+        "flipping alias from old to new target"
+    );
+
+    // Step 2: Perform the atomic alias flip via task store
+    let flipped = task_store
+        .flip_alias(alias_name, new_target_uid, history_retention)
+        .map_err(|e| AliasSwapError::FlipFailed(format!("{}", e)))?;
+
+    if !flipped {
+        return Err(AliasSwapError::FlipFailed(
+            "alias flip returned false (target may not exist)".to_string(),
+        ));
+    }
+
+    // Step 3: Get the updated alias to capture new version
+    let updated = task_store
+        .get_alias(alias_name)
+        .map_err(|e| AliasSwapError::LookupFailed(format!("{}", e)))?
+        .ok_or_else(|| AliasSwapError::LookupFailed("alias disappeared after flip".to_string()))?;
+
+    let flipped_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    tracing::info!(
+        alias = %alias_name,
+        old_target = %old_target,
+        new_target = %new_target_uid,
+        new_version = updated.version,
+        "alias swap completed: dual-write stopped"
+    );
+
+    Ok(AliasSwapResult {
+        alias_name: alias_name.to_string(),
+        old_target,
+        new_target: new_target_uid.to_string(),
+        new_version: updated.version as u64,
+        flipped_at,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Alias swap phase tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_alias_swap_phase {
+    use super::*;
+    use crate::task_store::{AliasRow, NewAlias};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn alias_swap_result_fields() {
+        let result = AliasSwapResult {
+            alias_name: "products".to_string(),
+            old_target: "products".to_string(),
+            new_target: "products__reshard_128".to_string(),
+            new_version: 2,
+            flipped_at: 1704067200000,
+        };
+
+        assert_eq!(result.alias_name, "products");
+        assert_eq!(result.old_target, "products");
+        assert_eq!(result.new_target, "products__reshard_128");
+        assert_eq!(result.new_version, 2);
+        assert_eq!(result.flipped_at, 1704067200000);
+    }
+
+    #[test]
+    fn alias_swap_error_display() {
+        let err = AliasSwapError::AliasNotFound("products".to_string());
+        assert!(err.to_string().contains("not found"));
+        assert!(err.to_string().contains("products"));
+
+        let err = AliasSwapError::NotSingleTargetAlias("logs".to_string());
+        assert!(err.to_string().contains("not single-target"));
+        assert!(err.to_string().contains("logs"));
+
+        let err = AliasSwapError::FlipFailed("database error".to_string());
+        assert!(err.to_string().contains("flip failed"));
+        assert!(err.to_string().contains("database error"));
+    }
+
+    // Helper to create a test alias row
+    fn create_test_alias_row(
+        name: &str,
+        kind: &str,
+        current_uid: Option<String>,
+        target_uids: Option<Vec<String>>,
+        version: i64,
+    ) -> AliasRow {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        AliasRow {
+            name: name.to_string(),
+            kind: kind.to_string(),
+            current_uid,
+            target_uids,
+            version,
+            created_at: now,
+            history: vec![],
+        }
+    }
+
+    #[test]
+    fn create_test_alias_row_helper() {
+        let row = create_test_alias_row(
+            "products",
+            "single",
+            Some("products_v1".to_string()),
+            None,
+            1,
+        );
+
+        assert_eq!(row.name, "products");
+        assert_eq!(row.kind, "single");
+        assert_eq!(row.current_uid, Some("products_v1".to_string()));
+        assert_eq!(row.target_uids, None);
+        assert_eq!(row.version, 1);
+    }
+
+    #[test]
+    fn alias_swap_phase_result_construction() {
+        // Verify the result structure is correct for reshard coordinator consumption
+        let result = AliasSwapResult {
+            alias_name: "products".to_string(),
+            old_target: "products".to_string(),
+            new_target: "products__reshard_128".to_string(),
+            new_version: 5,
+            flipped_at: 1704067200000,
+        };
+
+        // These fields are used by the reshard coordinator to update phase state
+        assert!(!result.alias_name.is_empty());
+        assert!(!result.old_target.is_empty());
+        assert!(!result.new_target.is_empty());
+        assert!(result.new_version > 0);
+        assert!(result.flipped_at > 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Verify phase tests
 // ---------------------------------------------------------------------------
 
