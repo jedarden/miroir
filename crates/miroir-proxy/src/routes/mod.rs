@@ -13,6 +13,7 @@ pub mod indexes;
 pub mod keys;
 pub mod multi_search;
 pub mod search;
+pub mod search_ui;
 pub mod session;
 pub mod settings;
 pub mod tasks;
