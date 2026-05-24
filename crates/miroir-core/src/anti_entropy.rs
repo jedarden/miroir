@@ -1691,9 +1691,15 @@ mod tests_mode_a_acceptance {
             "pod-2".to_string(),
             "pod-3".to_string(),
         ]);
-        coordinator_1.set_peer_set_for_test(peer_set_3pods.clone()).await;
-        coordinator_2.set_peer_set_for_test(peer_set_3pods.clone()).await;
-        coordinator_3.set_peer_set_for_test(peer_set_3pods.clone()).await;
+        coordinator_1
+            .set_peer_set_for_test(peer_set_3pods.clone())
+            .await;
+        coordinator_2
+            .set_peer_set_for_test(peer_set_3pods.clone())
+            .await;
+        coordinator_3
+            .set_peer_set_for_test(peer_set_3pods.clone())
+            .await;
 
         // Track which shards pod-3 owns initially
         let mut pod3_owned_initial = Vec::new();
@@ -1707,8 +1713,12 @@ mod tests_mode_a_acceptance {
         // Pod-3 dies: remove it from the peer set
         let peer_set_2pods =
             crate::peer_discovery::PeerSet::new(vec!["pod-1".to_string(), "pod-2".to_string()]);
-        coordinator_1.set_peer_set_for_test(peer_set_2pods.clone()).await;
-        coordinator_2.set_peer_set_for_test(peer_set_2pods.clone()).await;
+        coordinator_1
+            .set_peer_set_for_test(peer_set_2pods.clone())
+            .await;
+        coordinator_2
+            .set_peer_set_for_test(peer_set_2pods.clone())
+            .await;
 
         // Verify that all shards previously owned by pod-3 are now owned by pod-1 or pod-2
         for shard_id in &pod3_owned_initial {

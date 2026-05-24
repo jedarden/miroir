@@ -155,7 +155,10 @@ where
                             );
                             return Err((
                                 StatusCode::TOO_MANY_REQUESTS,
-                                format!("Too many failed login attempts. Try again in {} seconds.", ws),
+                                format!(
+                                    "Too many failed login attempts. Try again in {} seconds.",
+                                    ws
+                                ),
                             ));
                         } else {
                             return Err((

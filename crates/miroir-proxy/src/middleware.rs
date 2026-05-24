@@ -808,45 +808,49 @@ impl Metrics {
             };
 
         // ── §13.15 Tenant affinity metrics (cardinality cap: top 100 tenants, rest bucketed) ──
-        let (tenant_queries_total, tenant_pinned_groups, tenant_fallback_total, tenant_session_pin_override_total) =
-            if config.tenant_affinity.enabled {
-                let q = CounterVec::new(
-                    Opts::new(
-                        "miroir_tenant_queries_total",
-                        "Queries routed per tenant and group",
-                    ),
-                    &["tenant", "group"],
-                )
-                .expect("create tenant_queries_total");
-                let p = GaugeVec::new(
-                    Opts::new(
-                        "miroir_tenant_pinned_groups",
-                        "Current pinned group per tenant",
-                    ),
-                    &["tenant"],
-                )
-                .expect("create tenant_pinned_groups");
-                let f = CounterVec::new(
-                    Opts::new(
-                        "miroir_tenant_fallback_total",
-                        "Tenant affinity fallback invocations",
-                    ),
-                    &["reason"],
-                )
-                .expect("create tenant_fallback_total");
-                let o = Counter::new(
-                    "miroir_tenant_session_pin_override_total",
-                    "Session pin overrides tenant affinity (plan §13.15 interaction)",
-                )
-                .expect("create tenant_session_pin_override_total");
-                reg!(q);
-                reg!(p);
-                reg!(f);
-                reg!(o);
-                (Some(q), Some(p), Some(f), Some(o))
-            } else {
-                (None, None, None, None)
-            };
+        let (
+            tenant_queries_total,
+            tenant_pinned_groups,
+            tenant_fallback_total,
+            tenant_session_pin_override_total,
+        ) = if config.tenant_affinity.enabled {
+            let q = CounterVec::new(
+                Opts::new(
+                    "miroir_tenant_queries_total",
+                    "Queries routed per tenant and group",
+                ),
+                &["tenant", "group"],
+            )
+            .expect("create tenant_queries_total");
+            let p = GaugeVec::new(
+                Opts::new(
+                    "miroir_tenant_pinned_groups",
+                    "Current pinned group per tenant",
+                ),
+                &["tenant"],
+            )
+            .expect("create tenant_pinned_groups");
+            let f = CounterVec::new(
+                Opts::new(
+                    "miroir_tenant_fallback_total",
+                    "Tenant affinity fallback invocations",
+                ),
+                &["reason"],
+            )
+            .expect("create tenant_fallback_total");
+            let o = Counter::new(
+                "miroir_tenant_session_pin_override_total",
+                "Session pin overrides tenant affinity (plan §13.15 interaction)",
+            )
+            .expect("create tenant_session_pin_override_total");
+            reg!(q);
+            reg!(p);
+            reg!(f);
+            reg!(o);
+            (Some(q), Some(p), Some(f), Some(o))
+        } else {
+            (None, None, None, None)
+        };
 
         // ── §13.16 Shadow traffic metrics ──
         let (

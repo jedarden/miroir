@@ -18,7 +18,7 @@ mod acceptance_tests;
 mod settings_broadcast_acceptance_tests;
 
 pub use anti_entropy_worker::{AntiEntropyWorker, AntiEntropyWorkerConfig};
-pub use drift_reconciler::{DriftRepairCallback, DriftReconciler, DriftReconcilerConfig};
+pub use drift_reconciler::{DriftReconciler, DriftReconcilerConfig, DriftRepairCallback};
 
 use crate::migration::{MigrationCoordinator, MigrationId, MigrationNodeId, ShardId};
 use crate::rebalancer::{MigrationExecutor, Rebalancer, RebalancerMetrics};
