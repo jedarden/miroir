@@ -525,10 +525,21 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref store) = state.admin.task_store {
         let store = store.clone();
         let pruner_config = config.task_registry.clone();
+        let mode_a_coordinator = state.admin.mode_a_coordinator.clone();
+
         tokio::spawn(async move {
+            // Mode A ownership function: uses rendezvous hashing to determine task ownership
+            let mode_a_owner_fn = mode_a_coordinator.as_ref().map(|coordinator| {
+                let coordinator = coordinator.clone();
+                move |miroir_id: &str| coordinator.owns_task_sync(miroir_id)
+            });
+
             // The pruner runs in its own thread via spawn_pruner
-            let _pruner_handle =
-                task_pruner::spawn_pruner::<fn(&str) -> bool>(store, pruner_config, None);
+            let _pruner_handle = match mode_a_owner_fn {
+                Some(fn_owner) => task_pruner::spawn_pruner(store, pruner_config, Some(fn_owner)),
+                None => task_pruner::spawn_pruner::<fn(&str) -> bool>(store, pruner_config, None),
+            };
+
             // The handle is dropped here only on process exit
             info!("task registry TTL pruner started");
             // Keep this task alive forever
