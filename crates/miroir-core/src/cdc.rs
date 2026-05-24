@@ -53,6 +53,12 @@ use ::redis::AsyncCommands;
 #[cfg(feature = "nats-sink")]
 use async_nats::Client;
 
+#[cfg(feature = "kafka-sink")]
+use rdkafka::{
+    producer::{FutureProducer, FutureRecord},
+    ClientConfig,
+};
+
 /// Add random jitter to a duration.
 ///
 /// Jitter is ±`fraction` of the base duration. For example, with fraction=0.25,
@@ -386,6 +392,9 @@ pub struct CdcManager {
     /// NATS client pool (url -> client), for NATS sinks.
     #[cfg(feature = "nats-sink")]
     nats_clients: Arc<RwLock<HashMap<String, Client>>>,
+    /// Kafka producer pool (url -> producer), for Kafka sinks.
+    #[cfg(feature = "kafka-sink")]
+    kafka_producers: Arc<RwLock<HashMap<String, FutureProducer>>>,
 }
 
 /// CDC manager configuration.
@@ -1062,6 +1071,9 @@ impl CdcManager {
         #[cfg(feature = "nats-sink")]
         let nats_clients = Arc::new(RwLock::new(HashMap::new()));
 
+        #[cfg(feature = "kafka-sink")]
+        let kafka_producers = Arc::new(RwLock::new(HashMap::new()));
+
         if config.enabled {
             // Spawn background publisher task
             let state_clone = state.clone();
@@ -1070,6 +1082,8 @@ impl CdcManager {
             let internal_queue_clone = internal_queue.clone();
             #[cfg(feature = "nats-sink")]
             let nats_clients_clone = nats_clients.clone();
+            #[cfg(feature = "kafka-sink")]
+            let kafka_producers_clone = kafka_producers.clone();
             tokio::spawn(async move {
                 Self::background_publisher(
                     event_rx,
@@ -1079,6 +1093,8 @@ impl CdcManager {
                     internal_queue_clone,
                     #[cfg(feature = "nats-sink")]
                     nats_clients_clone,
+                    #[cfg(feature = "kafka-sink")]
+                    kafka_producers_clone,
                 )
                 .await;
             });
@@ -1094,6 +1110,8 @@ impl CdcManager {
             internal_queue,
             #[cfg(feature = "nats-sink")]
             nats_clients,
+            #[cfg(feature = "kafka-sink")]
+            kafka_producers,
         }
     }
 
@@ -1211,6 +1229,9 @@ impl CdcManager {
         buffers: HashMap<String, Arc<CdcBuffer>>,
         internal_queue: Arc<CdcInternalQueue>,
         #[cfg(feature = "nats-sink")] nats_clients: Arc<RwLock<HashMap<String, Client>>>,
+        #[cfg(feature = "kafka-sink")] kafka_producers: Arc<
+            RwLock<HashMap<String, FutureProducer>>,
+        >,
     ) {
         info!("CDC: background publisher started");
 
@@ -1261,7 +1282,18 @@ impl CdcManager {
 
                                 // Flush if buffer size reached (batch_size trigger)
                                 if buffer.len() >= sink.batch_size as usize {
-                                    if let Err(e) = Self::flush_sink(sink, buffer, &state, &internal_queue, #[cfg(feature = "nats-sink")] &nats_clients).await {
+                                    if let Err(e) = Self::flush_sink(
+                                        sink,
+                                        buffer,
+                                        &state,
+                                        &internal_queue,
+                                        #[cfg(feature = "nats-sink")]
+                                        &nats_clients,
+                                        #[cfg(feature = "kafka-sink")]
+                                        &kafka_producers,
+                                    )
+                                    .await
+                                    {
                                         error!("CDC: failed to flush sink {}: {}", sink.url, e);
                                     }
                                     sink_buffers.insert(sink.url.clone(), Vec::new());
@@ -1300,6 +1332,8 @@ impl CdcManager {
                                         &internal_queue,
                                         #[cfg(feature = "nats-sink")]
                                         &nats_clients,
+                                        #[cfg(feature = "kafka-sink")]
+                                        &kafka_producers,
                                     )
                                     .await
                                     {
@@ -1327,6 +1361,8 @@ impl CdcManager {
                         &internal_queue,
                         #[cfg(feature = "nats-sink")]
                         &nats_clients,
+                        #[cfg(feature = "kafka-sink")]
+                        &kafka_producers,
                     )
                     .await
                     {
@@ -1349,6 +1385,9 @@ impl CdcManager {
         state: &Arc<RwLock<CdcPublisherState>>,
         internal_queue: &Arc<CdcInternalQueue>,
         #[cfg(feature = "nats-sink")] nats_clients: &Arc<RwLock<HashMap<String, Client>>>,
+        #[cfg(feature = "kafka-sink")] kafka_producers: &Arc<
+            RwLock<HashMap<String, FutureProducer>>,
+        >,
     ) -> Result<(), CdcError> {
         match sink.sink_type {
             CdcSinkType::Webhook => {
@@ -1368,7 +1407,16 @@ impl CdcManager {
             }
             #[cfg(not(feature = "nats-sink"))]
             CdcSinkType::Nats => Self::flush_nats(sink, events).await,
-            CdcSinkType::Kafka => Self::flush_kafka(sink, events).await,
+            #[cfg(feature = "kafka-sink")]
+            CdcSinkType::Kafka => {
+                Self::flush_kafka(sink, events, kafka_producers).await?;
+                // Increment published count on success
+                let mut st = state.write().await;
+                st.published_count += events.len() as u64;
+                Ok(())
+            }
+            #[cfg(not(feature = "kafka-sink"))]
+            CdcSinkType::Kafka => Self::flush_kafka_stub(sink, events).await,
             CdcSinkType::Internal => {
                 // Internal queue: events are stored in memory for polling
                 Ok(())
@@ -1555,11 +1603,95 @@ impl CdcManager {
         Err(CdcError::SinkError("nats-sink feature not enabled".into()))
     }
 
-    /// Kafka flush (placeholder for P5.13.c).
-    async fn flush_kafka(_sink: &CdcSinkConfig, _events: &[CdcEvent]) -> Result<(), CdcError> {
-        // Kafka publishing implementation (P5.13.c)
-        // (requires rustafka or rdkafka crate)
+    /// Kafka flush (P5.13.c).
+    ///
+    /// Publishes events to Kafka topics using the pattern `miroir.cdc.{index}`.
+    /// Plan §13.13: "produce to topic miroir.cdc.{index}"
+    /// Uses rdkafka with connection pooling per sink URL.
+    ///
+    /// Partition key: primary_key (preserves per-key ordering).
+    /// Delivery: at-least-once; event_id in record headers for consumer-side dedup.
+    #[cfg(feature = "kafka-sink")]
+    async fn flush_kafka(
+        sink: &CdcSinkConfig,
+        events: &[CdcEvent],
+        kafka_producers: &Arc<RwLock<HashMap<String, FutureProducer>>>,
+    ) -> Result<(), CdcError> {
+        use std::time::Duration;
+
+        // Get or create Kafka producer for this sink URL
+        let producer = {
+            let producers = kafka_producers.read().await;
+            producers.get(&sink.url).cloned()
+        };
+
+        let producer = match producer {
+            Some(producer) => producer,
+            None => {
+                // Create new producer using rdkafka::ClientConfig
+                let mut client_config = ClientConfig::new();
+                client_config
+                    .set("bootstrap.servers", &sink.url)
+                    .set("message.timeout.ms", "30000") // 30 second timeout
+                    .set("acks", "all") // Wait for all in-sync replicas
+                    .set("delivery.timeout.ms", "60000"); // 60 second delivery timeout
+
+                let producer = client_config.create().map_err(|e| {
+                    CdcError::SinkError(format!("Kafka producer create error: {e}"))
+                })?;
+
+                // Store in pool for reuse
+                let mut producers = kafka_producers.write().await;
+                producers.insert(sink.url.clone(), producer.clone());
+                producer
+            }
+        };
+
+        // Topic prefix from config (default: "miroir.cdc")
+        let topic_prefix = "miroir.cdc";
+
+        // Publish each event to its index-specific topic
+        for event in events {
+            let topic = format!("{}.{}", topic_prefix, event.index);
+
+            // Use the first primary key as the partition key to preserve per-key ordering
+            // If no primary keys exist, use the event_id as fallback
+            let partition_key = event.primary_keys.first().unwrap_or(&event.event_id);
+
+            // Serialize event (respect include_body setting)
+            let mut event_to_send = event.clone();
+            if !sink.include_body {
+                event_to_send.document = None;
+            }
+
+            let payload = serde_json::to_vec(&event_to_send)
+                .map_err(|e| CdcError::SinkError(format!("serialize error: {e}")))?;
+
+            // Create record with partition key and event_id header
+            let mut record = FutureRecord::to(&topic)
+                .key(partition_key)
+                .payload(&payload);
+
+            // Add event_id header for consumer-side deduplication
+            record = record.headers(rdkafka::message::Headers::own(vec![(
+                "event_id",
+                event.event_id.as_bytes(),
+            )]));
+
+            // Send with timeout
+            producer
+                .send(record, Duration::from_secs(30))
+                .await
+                .map_err(|(e, _)| CdcError::SinkError(format!("Kafka send error: {e}")))?;
+        }
+
         Ok(())
+    }
+
+    /// Kafka flush stub when kafka-sink feature is disabled.
+    #[cfg(not(feature = "kafka-sink"))]
+    async fn flush_kafka_stub(_sink: &CdcSinkConfig, _events: &[CdcEvent]) -> Result<(), CdcError> {
+        Err(CdcError::SinkError("kafka-sink feature not enabled".into()))
     }
 }
 
@@ -1760,7 +1892,6 @@ mod tests {
     #[tokio::test]
     async fn test_cdc_suppression_metric_all_origins() {
         use std::collections::HashSet;
-        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let suppressed_origins = Arc::new(std::sync::Mutex::new(HashSet::new()));
         let origins_clone = suppressed_origins.clone();
@@ -2154,5 +2285,31 @@ mod tests {
         assert_eq!(events[0].mtask_id, "mtask-delayed");
         // Should have waited at least 100ms for the event
         assert!(elapsed >= Duration::from_millis(90));
+    }
+
+    #[test]
+    fn test_cdc_kafka_sink_type_serialization() {
+        let sink_type = CdcSinkType::Kafka;
+        let json = serde_json::to_string(&sink_type).unwrap();
+        assert_eq!(json, "\"Kafka\"");
+    }
+
+    #[test]
+    fn test_cdc_kafka_sink_config_from_config() {
+        let config = crate::config::advanced::CdcSinkConfig {
+            sink_type: "kafka".to_string(),
+            url: "localhost:9092".to_string(),
+            batch_size: 100,
+            batch_flush_ms: 1000,
+            include_body: false,
+            retry_max_s: 3600,
+            subject_prefix: None,
+        };
+
+        let sink_config: CdcSinkConfig = config.into();
+        assert_eq!(sink_config.sink_type, CdcSinkType::Kafka);
+        assert_eq!(sink_config.url, "localhost:9092");
+        assert_eq!(sink_config.batch_size, 100);
+        assert!(!sink_config.include_body);
     }
 }
