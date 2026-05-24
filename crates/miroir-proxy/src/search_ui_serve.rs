@@ -15,6 +15,9 @@ use rust_embed::RustEmbed;
 
 use crate::auth::build_csp_header;
 
+// Re-export for use in the handler
+pub use crate::routes::admin_endpoints;
+
 /// Embedded static assets for the Search UI.
 ///
 /// All UI files (HTML, CSS, JS) are embedded in the binary at compile time.
@@ -53,8 +56,10 @@ pub async fn serve_search_ui<S>(
 ) -> Result<Response, StatusCode>
 where
     S: Clone + Send + Sync + 'static,
+    admin_endpoints::AppState: FromRef<S>,
 {
-    let config: &MiroirConfig = &state.config;
+    let app_state = admin_endpoints::AppState::from_ref(&state);
+    let config = &app_state.config;
 
     // Check if search UI is enabled
     if !config.search_ui.enabled {
