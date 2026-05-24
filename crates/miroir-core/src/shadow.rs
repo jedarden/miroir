@@ -2,8 +2,9 @@
 //!
 //! Shadows a fraction of incoming requests to a shadow cluster for comparison.
 
+use crate::config::advanced;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::error;
@@ -85,6 +86,38 @@ impl Default for ShadowConfig {
     }
 }
 
+impl From<advanced::ShadowConfig> for ShadowConfig {
+    fn from(config: advanced::ShadowConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            targets: config.targets.into_iter().map(Into::into).collect(),
+            diff_buffer_size: config.diff_buffer_size as usize,
+            max_shadow_latency_ms: config.max_shadow_latency_ms,
+        }
+    }
+}
+
+impl From<advanced::ShadowTargetConfig> for ShadowTarget {
+    fn from(config: advanced::ShadowTargetConfig) -> Self {
+        Self {
+            name: config.name,
+            url: config.url,
+            api_key_env: config.api_key_env,
+            sample_rate: config.sample_rate,
+            operations: config
+                .operations
+                .into_iter()
+                .filter_map(|op| match op.as_str() {
+                    "search" => Some(ShadowOperation::Search),
+                    "multi_search" => Some(ShadowOperation::MultiSearch),
+                    "explain" => Some(ShadowOperation::Explain),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Shadow manager state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShadowState {
@@ -139,7 +172,7 @@ impl ShadowManager {
         index_uid: &str,
         request_body: &serde_json::Value,
         primary_latency_ms: u64,
-        primary_hit_count: usize,
+        primary_hits: &[serde_json::Value],
     ) -> Result<ShadowDiff, ShadowError> {
         let start = std::time::Instant::now();
 
@@ -150,46 +183,45 @@ impl ShadowManager {
             index_uid
         );
 
+        // Get API key from environment
+        let api_key = std::env::var(&target.api_key_env).ok();
+
+        // Build request with optional API key
+        let mut request_builder = self.client.post(&url).json(request_body);
+        if let Some(key) = &api_key {
+            request_builder = request_builder.header("Authorization", format!("Bearer {}", key));
+        }
+
         // Send shadow request with timeout
         let result = tokio::time::timeout(
             tokio::time::Duration::from_millis(self.config.max_shadow_latency_ms),
-            self.client.post(&url).json(request_body).send(),
+            request_builder.send(),
         )
         .await;
 
         let shadow_latency_ms = start.elapsed().as_millis() as u64;
+        let primary_hit_count = primary_hits.len();
 
         match result {
             Ok(Ok(response)) => {
                 let shadow_success = response.status().is_success();
-                let (shadow_hit_count, _primary_hits, shadow_hits) = if shadow_success {
+                let shadow_hits = if shadow_success {
                     match response.json::<serde_json::Value>().await {
-                        Ok(shadow_response) => {
-                            let hits = shadow_response
-                                .get("hits")
-                                .and_then(|h| h.as_array())
-                                .cloned()
-                                .unwrap_or_default();
-                            let count = hits.len();
-                            (count, Vec::<serde_json::Value>::new(), hits)
-                        }
-                        Err(_) => (
-                            0,
-                            Vec::<serde_json::Value>::new(),
-                            Vec::<serde_json::Value>::new(),
-                        ),
+                        Ok(shadow_response) => shadow_response
+                            .get("hits")
+                            .and_then(|h| h.as_array())
+                            .cloned()
+                            .unwrap_or_default(),
+                        Err(_) => Vec::new(),
                     }
                 } else {
-                    (
-                        0,
-                        Vec::<serde_json::Value>::new(),
-                        Vec::<serde_json::Value>::new(),
-                    )
+                    Vec::new()
                 };
+                let shadow_hit_count = shadow_hits.len();
 
                 // Compute symmetric diff and Kendall tau
                 let (primary_only_hits, shadow_only_hits, kendall_tau) =
-                    self.compute_diff_and_correlation(primary_hit_count, &shadow_hits);
+                    self.compute_diff_and_correlation(primary_hits, &shadow_hits);
 
                 let diff = ShadowDiff {
                     target: target.name.clone(),
@@ -274,10 +306,19 @@ impl ShadowManager {
     /// Returns (primary_only_ids, shadow_only_ids, kendall_tau).
     fn compute_diff_and_correlation(
         &self,
-        _primary_hit_count: usize,
+        primary_hits: &[serde_json::Value],
         shadow_hits: &[serde_json::Value],
     ) -> (Vec<String>, Vec<String>, Option<f64>) {
-        // Extract document IDs from shadow hits
+        // Extract document IDs from both result sets
+        let primary_ids: Vec<String> = primary_hits
+            .iter()
+            .filter_map(|hit| {
+                hit.get("id")
+                    .and_then(|id| id.as_str())
+                    .map(|s| s.to_string())
+            })
+            .collect();
+
         let shadow_ids: Vec<String> = shadow_hits
             .iter()
             .filter_map(|hit| {
@@ -287,18 +328,83 @@ impl ShadowManager {
             })
             .collect();
 
-        // For symmetric diff, we need the primary hit IDs
-        // Since we only have the count, we can't compute exact diff
-        // In a real implementation, we'd need to pass the primary hit IDs
-        let primary_only_hits = Vec::new();
-        let shadow_only_hits = shadow_ids.clone();
+        // Compute symmetric difference
+        let primary_set: HashSet<&str> = primary_ids.iter().map(|s| s.as_str()).collect();
+        let shadow_set: HashSet<&str> = shadow_ids.iter().map(|s| s.as_str()).collect();
+
+        let primary_only_hits: Vec<String> = primary_set
+            .difference(&shadow_set)
+            .map(|s| s.to_string())
+            .collect();
+
+        let shadow_only_hits: Vec<String> = shadow_set
+            .difference(&primary_set)
+            .map(|s| s.to_string())
+            .collect();
 
         // Compute Kendall tau correlation
-        // Since we only have shadow hits, we can't compute true correlation
-        // In a real implementation, we'd need both primary and shadow ordered results
-        let kendall_tau = None;
+        let kendall_tau = self.compute_kendall_tau(&primary_ids, &shadow_ids);
 
         (primary_only_hits, shadow_only_hits, kendall_tau)
+    }
+
+    /// Compute Kendall tau rank correlation coefficient.
+    ///
+    /// Measures the similarity between the ordering of two ranked lists.
+    /// Returns None if either list is empty or if there are ties in the data.
+    fn compute_kendall_tau(&self, primary: &[String], shadow: &[String]) -> Option<f64> {
+        if primary.is_empty() || shadow.is_empty() {
+            return None;
+        }
+
+        // Build position map for shadow results
+        let shadow_pos: HashMap<&str, usize> = shadow
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.as_str(), i))
+            .collect();
+
+        // Find the intersection (documents present in both results)
+        let mut primary_pos: Vec<(&str, usize)> = Vec::new();
+        let mut shadow_ranks: Vec<usize> = Vec::new();
+
+        for (i, doc_id) in primary.iter().enumerate() {
+            if let Some(&shadow_idx) = shadow_pos.get(doc_id.as_str()) {
+                primary_pos.push((doc_id.as_str(), i));
+                shadow_ranks.push(shadow_idx);
+            }
+        }
+
+        // Need at least 2 pairs to compute correlation
+        if primary_pos.len() < 2 {
+            return None;
+        }
+
+        // Count concordant and discordant pairs
+        let mut concordant = 0;
+        let mut discordant = 0;
+
+        let n = primary_pos.len();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let primary_order = primary_pos[i].1 < primary_pos[j].1;
+                let shadow_order = shadow_ranks[i] < shadow_ranks[j];
+
+                if primary_order == shadow_order {
+                    concordant += 1;
+                } else {
+                    discordant += 1;
+                }
+            }
+        }
+
+        let total = concordant + discordant;
+        if total == 0 {
+            return None;
+        }
+
+        // Kendall tau = (concordant - discordant) / total
+        Some((concordant as f64 - discordant as f64) / total as f64)
     }
 }
 

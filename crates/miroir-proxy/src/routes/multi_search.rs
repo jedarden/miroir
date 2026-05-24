@@ -14,6 +14,7 @@ use miroir_core::{
         dfs_query_then_fetch_search, plan_search_scatter_with_narrowing, NodeClient, SearchRequest,
         VectorMode,
     },
+    shadow::ShadowOperation,
     topology::Topology,
 };
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,7 @@ pub struct MultiSearchState {
     pub alias_registry: Arc<miroir_core::alias::AliasRegistry>,
     pub replica_selector: Arc<miroir_core::replica_selection::ReplicaSelector>,
     pub query_planner: Arc<miroir_core::query_planner::QueryPlanner>,
+    pub shadow_manager: Option<Arc<miroir_core::shadow::ShadowManager>>,
 }
 
 /// Multi-search request (plan §13.11).
@@ -202,6 +204,10 @@ where
     // Convert MultiSearchRequest to core MultiSearchRequest
     // Resolve aliases for each query (plan §13.7)
     let mut queries_with_resolutions = Vec::new();
+
+    // Clone queries for shadowing before they're consumed
+    let original_queries_for_shadow = body.queries.clone();
+
     for mut q in body.queries {
         // Resolve alias to concrete index UID(s)
         let (effective_index, resolved_targets) = if state.config.aliases.enabled {
@@ -232,6 +238,14 @@ where
 
         queries_with_resolutions.push((q, filter_str, resolved_targets));
     }
+
+    // Capture shadow config and manager before executor (state will be moved into closure)
+    let (shadow_config_for_later, shadow_manager_for_later) =
+        if let Some(ref sm) = state.shadow_manager {
+            (Some(state.config.shadow.clone()), Some(sm.clone()))
+        } else {
+            (None, None)
+        };
 
     let core_request = miroir_core::multi_search::MultiSearchRequest {
         queries: queries_with_resolutions
@@ -274,16 +288,22 @@ where
     };
 
     // Execute multi-search with scatter-gather
+    // Clone state fields before closure to avoid moving state
+    let config_for_executor = state.config.clone();
+    let replica_selector_for_executor = state.replica_selector.clone();
+    let query_planner_for_executor = state.query_planner.clone();
+    let metrics_for_executor = state.metrics.clone();
+
     let response = executor
         .execute(core_request, move |query| {
             let topology = topology.clone();
             let node_client = node_client.clone();
-            let config = state.config.clone();
+            let config = config_for_executor.clone();
             let strategy = strategy.clone();
             let policy = policy;
-            let replica_selector = state.replica_selector.clone();
-            let query_planner = state.query_planner.clone();
-            let metrics = state.metrics.clone();
+            let replica_selector = replica_selector_for_executor.clone();
+            let query_planner = query_planner_for_executor.clone();
+            let metrics = metrics_for_executor.clone();
 
             async move {
                 let start = Instant::now();
@@ -432,6 +452,96 @@ where
     let has_failures = response.results.iter().any(|r| !r.is_success());
     if has_failures {
         state.metrics.inc_multisearch_partial_failures();
+    }
+
+    // Shadow each query in the batch to configured targets (plan §13.16)
+    // This is done asynchronously after returning the primary response
+    if let (Some(ref shadow_manager), Some(ref shadow_config)) =
+        (shadow_manager_for_later, shadow_config_for_later)
+    {
+        let shadow_mgr = shadow_manager.clone();
+        let config = shadow_config.clone();
+        let original_queries = original_queries_for_shadow;
+
+        tokio::spawn(async move {
+            if !config.enabled {
+                return;
+            }
+
+            let targets = config.targets;
+
+            // Shadow each query in the batch
+            for query in original_queries {
+                for target in &targets {
+                    // Check if this target has multi_search operation enabled
+                    if !target.operations.iter().any(|op| op == "multi_search") {
+                        continue;
+                    }
+
+                    let shadow_target = miroir_core::shadow::ShadowTarget {
+                        name: target.name.clone(),
+                        url: target.url.clone(),
+                        api_key_env: target.api_key_env.clone(),
+                        sample_rate: target.sample_rate,
+                        operations: target
+                            .operations
+                            .clone()
+                            .into_iter()
+                            .filter_map(|op| match op.as_str() {
+                                "search" => Some(ShadowOperation::Search),
+                                "multi_search" => Some(ShadowOperation::MultiSearch),
+                                "explain" => Some(ShadowOperation::Explain),
+                                _ => None,
+                            })
+                            .collect(),
+                    };
+
+                    // Check if this request should be shadowed
+                    if !shadow_mgr.should_shadow(&shadow_target) {
+                        continue;
+                    }
+
+                    // Build the request body for this individual query
+                    let request_body = serde_json::json!({
+                        "q": query.q,
+                        "filter": query.filter,
+                        "limit": query.limit,
+                        "offset": query.offset,
+                        "facets": query.facets,
+                        "rankingScore": query.ranking_score,
+                    });
+
+                    // Shadow the request (with empty hits since we don't have them in multi_search response)
+                    let result = shadow_mgr
+                        .shadow_search(
+                            &shadow_target,
+                            &query.index_uid,
+                            &request_body,
+                            0, // No latency info in multi_search
+                            &[],
+                        )
+                        .await;
+
+                    match result {
+                        Ok(_) => {
+                            tracing::debug!(
+                                target = shadow_target.name,
+                                index = %query.index_uid,
+                                "multi_search shadow request completed"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target = shadow_target.name,
+                                index = %query.index_uid,
+                                error = %e,
+                                "multi_search shadow request failed"
+                            );
+                        }
+                    }
+                }
+            }
+        });
     }
 
     Ok(Json(response))

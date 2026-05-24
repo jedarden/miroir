@@ -796,7 +796,16 @@ impl AppState {
             resharding_registry: Arc::new(tokio::sync::RwLock::new(
                 miroir_core::reshard::ReshardingRegistry::new(),
             )),
-            shadow_manager: None, // Initialized in main.rs if shadow is enabled
+            shadow_manager: {
+                // Create shadow manager if enabled in config (plan §13.16)
+                if config.shadow.enabled && !config.shadow.targets.is_empty() {
+                    Some(Arc::new(miroir_core::shadow::ShadowManager::new(
+                        config.shadow.clone().into(),
+                    )))
+                } else {
+                    None
+                }
+            },
             tenant_affinity_manager,
             cdc_manager: {
                 // Create CDC manager if enabled in config

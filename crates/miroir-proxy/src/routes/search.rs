@@ -15,6 +15,7 @@ use miroir_core::scatter::{
     plan_search_scatter_with_version_floor, NodeClient, SearchRequest, VectorMode,
 };
 use miroir_core::session_pinning::WaitStrategy;
+use miroir_core::shadow::ShadowOperation;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -338,12 +339,8 @@ async fn search_handler(
                 if let Some(group) = resolution.pinned_group {
                     // Record tenant affinity metrics
                     if let Some(ref tenant) = tid {
-                        state
-                            .metrics
-                            .inc_tenant_queries(tenant, &group.to_string());
-                        state
-                            .metrics
-                            .set_tenant_pinned_groups(tenant, group);
+                        state.metrics.inc_tenant_queries(tenant, &group.to_string());
+                        state.metrics.set_tenant_pinned_groups(tenant, group);
                     }
                     debug!(
                         tenant_id = ?tid,
@@ -859,6 +856,84 @@ async fn search_handler(
             serde_json::to_string(&body).unwrap(),
         ))
         .unwrap();
+
+    // Shadow the request to configured targets (plan §13.16)
+    // This is done asynchronously after returning the primary response
+    if let Some(ref shadow_manager) = state.shadow_manager {
+        // Clone data needed for the async task
+        let shadow_mgr = shadow_manager.clone();
+        let index_clone = effective_index.clone();
+        let request_body = serde_json::to_value(&body).unwrap_or_default();
+        let primary_hits = result.hits.clone();
+        let primary_latency = start.elapsed().as_millis() as u64;
+        let config = state.config.shadow.clone();
+
+        // Spawn async task to shadow the request
+        tokio::spawn(async move {
+            // Check if shadow is enabled and search operation is configured
+            if !config.enabled {
+                return;
+            }
+
+            // Get configured targets
+            let targets = config.targets;
+
+            // Shadow to each configured target
+            for target in targets {
+                // Check if this target has search operation enabled
+                if !target.operations.iter().any(|op| op == "search") {
+                    continue;
+                }
+
+                // Convert target to shadow target
+                let shadow_target = miroir_core::shadow::ShadowTarget {
+                    name: target.name.clone(),
+                    url: target.url.clone(),
+                    api_key_env: target.api_key_env.clone(),
+                    sample_rate: target.sample_rate,
+                    operations: target
+                        .operations
+                        .into_iter()
+                        .filter_map(|op| match op.as_str() {
+                            "search" => Some(ShadowOperation::Search),
+                            "multi_search" => Some(ShadowOperation::MultiSearch),
+                            "explain" => Some(ShadowOperation::Explain),
+                            _ => None,
+                        })
+                        .collect(),
+                };
+
+                // Check if this request should be shadowed
+                if !shadow_mgr.should_shadow(&shadow_target) {
+                    continue;
+                }
+
+                // Shadow the request
+                let result = shadow_mgr
+                    .shadow_search(
+                        &shadow_target,
+                        &index_clone,
+                        &request_body,
+                        primary_latency,
+                        &primary_hits,
+                    )
+                    .await;
+
+                match result {
+                    Ok(_) => {
+                        tracing::debug!(target = shadow_target.name, "shadow request completed");
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target = shadow_target.name,
+                            error = %e,
+                            "shadow request failed"
+                        );
+                    }
+                }
+            }
+        });
+    }
 
     // Structured log entry (plan §10 shape)
     // request_id and pod_id are included from the middleware span via
