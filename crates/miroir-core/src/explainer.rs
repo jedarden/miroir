@@ -4,7 +4,6 @@
 //! showing the chosen replica group, target nodes, and any warnings.
 
 use crate::config::MiroirConfig;
-use crate::router::shard_for_key;
 use crate::topology::{NodeId, Topology};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

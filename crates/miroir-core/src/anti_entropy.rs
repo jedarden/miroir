@@ -1574,7 +1574,7 @@ mod tests_mode_a_acceptance {
         // Create 3 anti-entropy reconcilers, one per pod
         let config = AntiEntropyConfig::default();
         let topology = Arc::new(RwLock::new(Topology::new(64, 2, 2))); // 64 shards, 2 groups, RF 2
-        let node_client = Arc::new(MockNodeClient::default());
+        let node_client = Arc::new(crate::scatter::MockNodeClient::default());
 
         let reconciler_1 =
             AntiEntropyReconciler::new(config.clone(), topology.clone(), node_client.clone())
@@ -1774,7 +1774,7 @@ mod tests_mode_a_acceptance {
             ..Default::default()
         };
         let topology = Arc::new(RwLock::new(Topology::new(16, 2, 2))); // 16 shards
-        let node_client = Arc::new(MockNodeClient::default());
+        let node_client = Arc::new(crate::scatter::MockNodeClient::default());
 
         let reconciler =
             AntiEntropyReconciler::new(config, topology, node_client).with_mode_a(coordinator);
