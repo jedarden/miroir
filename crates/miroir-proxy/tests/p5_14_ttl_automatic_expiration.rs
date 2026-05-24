@@ -7,12 +7,12 @@
 //! - `_miroir_expires_at` stripped from search hits
 //! - 10k-doc sweep respects `max_deletes_per_sweep` (doesn't exceed)
 
-use miroir_core::config::{Config, MiroirConfig, NodeConfig};
-use miroir_core::topology::{Node, NodeId, Topology};
-use miroir_core::ttl::{TtlManager, TtlConfig, TtlOverride};
-use miroir_core::cdc::{CdcConfig, CdcEvent, CdcManager, CdcOperation, ORIGIN_TTL_EXPIRE};
-use miroir_core::scatter::{DeleteByFilterRequest, MockNodeClient, NodeClient};
 use miroir_core::anti_entropy::{AntiEntropyConfig, AntiEntropyReconciler};
+use miroir_core::cdc::{CdcConfig, CdcEvent, CdcManager, CdcOperation, ORIGIN_TTL_EXPIRE};
+use miroir_core::config::{Config, MiroirConfig, NodeConfig};
+use miroir_core::scatter::{DeleteByFilterRequest, MockNodeClient, NodeClient};
+use miroir_core::topology::{Node, NodeId, Topology};
+use miroir_core::ttl::{TtlConfig, TtlManager, TtlOverride};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -80,11 +80,13 @@ async fn test_expires_at_stripped_from_search_hits() {
     });
 
     let input = MergeInput {
-        shard_hits: vec![ShardHitPage { body: json!({
-            "hits": vec![hit],
-            "estimatedTotalHits": 1,
-            "processingTimeMs": 10,
-        })}],
+        shard_hits: vec![ShardHitPage {
+            body: json!({
+                "hits": vec![hit],
+                "estimatedTotalHits": 1,
+                "processingTimeMs": 10,
+            }),
+        }],
         offset: 0,
         limit: 10,
         client_requested_score: false,
@@ -99,16 +101,22 @@ async fn test_expires_at_stripped_from_search_hits() {
     let doc = &result.hits[0];
 
     // Verify _miroir_expires_at is stripped
-    assert!(doc.get("_miroir_expires_at").is_none(),
-        "_miroir_expires_at should be stripped from search hits");
+    assert!(
+        doc.get("_miroir_expires_at").is_none(),
+        "_miroir_expires_at should be stripped from search hits"
+    );
 
     // Verify _miroir_shard is also stripped
-    assert!(doc.get("_miroir_shard").is_none(),
-        "_miroir_shard should be stripped from search hits");
+    assert!(
+        doc.get("_miroir_shard").is_none(),
+        "_miroir_shard should be stripped from search hits"
+    );
 
     // Verify _rankingScore is stripped when not requested
-    assert!(doc.get("_rankingScore").is_none(),
-        "_rankingScore should be stripped when not requested");
+    assert!(
+        doc.get("_rankingScore").is_none(),
+        "_rankingScore should be stripped when not requested"
+    );
 
     // Verify regular fields are present
     assert_eq!(doc.get("id").unwrap(), "doc1");
@@ -121,7 +129,7 @@ async fn test_expires_at_stripped_from_search_hits() {
 
 #[tokio::test]
 async fn test_anti_entropy_skips_expired_documents() {
-    use miroir_core::anti_entropy::{AntiEntropyReconciler, AntiEntropyConfig};
+    use miroir_core::anti_entropy::{AntiEntropyConfig, AntiEntropyReconciler};
 
     let topo = Arc::new(RwLock::new(make_test_topology()));
     let client = Arc::new(MockNodeClient::default());
@@ -139,11 +147,7 @@ async fn test_anti_entropy_skips_expired_documents() {
         ttl_enabled: true,
     };
 
-    let _reconciler = AntiEntropyReconciler::new(
-        ae_config,
-        topo,
-        client,
-    );
+    let _reconciler = AntiEntropyReconciler::new(ae_config, topo, client);
 
     // Test that is_document_expired correctly identifies expired docs
     let now_ms = std::time::SystemTime::now()
@@ -166,12 +170,18 @@ async fn test_anti_entropy_skips_expired_documents() {
     });
 
     // Use internal method to check expiration
-    assert!(is_document_expired_internal(&expired_doc),
-        "Document with past expires_at should be considered expired");
-    assert!(!is_document_expired_internal(&valid_doc),
-        "Document with future expires_at should not be considered expired");
-    assert!(!is_document_expired_internal(&no_expiry_doc),
-        "Document without expires_at should not be considered expired");
+    assert!(
+        is_document_expired_internal(&expired_doc),
+        "Document with past expires_at should be considered expired"
+    );
+    assert!(
+        !is_document_expired_internal(&valid_doc),
+        "Document with future expires_at should not be considered expired"
+    );
+    assert!(
+        !is_document_expired_internal(&no_expiry_doc),
+        "Document without expires_at should not be considered expired"
+    );
 }
 
 /// Helper function to replicate the is_document_expired logic from AntiEntropyReconciler
@@ -274,17 +284,27 @@ async fn test_max_deletes_per_sweep_limit() {
 
     // Test per-index override
     let mut override_map = HashMap::new();
-    override_map.insert("test_index".into(), TtlOverride {
-        sweep_interval_s: 600,
-        max_deletes_per_sweep: 50,
-    });
+    override_map.insert(
+        "test_index".into(),
+        TtlOverride {
+            sweep_interval_s: 600,
+            max_deletes_per_sweep: 50,
+        },
+    );
 
     let config_with_override = TtlConfig {
         per_index_overrides: override_map,
         ..ttl_config
     };
 
-    assert_eq!(config_with_override.per_index_overrides.get("test_index").unwrap().max_deletes_per_sweep, 50);
+    assert_eq!(
+        config_with_override
+            .per_index_overrides
+            .get("test_index")
+            .unwrap()
+            .max_deletes_per_sweep,
+        50
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -330,7 +350,12 @@ async fn test_mock_node_client_expect_delete_by_filter() {
 
     // The MockNodeClient should have a method to set up delete expectations
     // For now, we just verify the method exists and doesn't panic
-    mock_node_client_expect_delete_by_filter(&mut client, &NodeId::new("node-0".to_string()), "http://node-0:7700", vec![]);
+    mock_node_client_expect_delete_by_filter(
+        &mut client,
+        &NodeId::new("node-0".to_string()),
+        "http://node-0:7700",
+        vec![],
+    );
 }
 
 /// Helper function for MockNodeClient delete expectations

@@ -228,7 +228,8 @@ mod tests {
     #[test]
     fn stub_update_node_task_is_ok() {
         let stub = StubTaskRegistry;
-        stub.update_node_task("any", "node-0", NodeTaskStatus::Succeeded).unwrap();
+        stub.update_node_task("any", "node-0", NodeTaskStatus::Succeeded)
+            .unwrap();
     }
 
     #[test]

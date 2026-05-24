@@ -6,9 +6,9 @@
 //! - Multi-target aliases: reads fan out, writes rejected with 409
 //! - History retention: 11th flip evicts oldest
 
-use std::sync::Arc;
 use miroir_core::alias::{Alias, AliasKind, AliasRegistry};
 use miroir_core::task_store::{NewAlias, TaskStore};
+use std::sync::Arc;
 
 /// Test that single-target alias resolves correctly.
 #[tokio::test]
@@ -30,7 +30,10 @@ async fn test_multi_target_alias_resolution() {
     let registry = AliasRegistry::new();
 
     // Create a multi-target alias
-    let alias = Alias::new_multi("logs".into(), vec!["logs-2026-01-01".into(), "logs-2026-01-02".into()]);
+    let alias = Alias::new_multi(
+        "logs".into(),
+        vec!["logs-2026-01-01".into(), "logs-2026-01-02".into()],
+    );
     registry.upsert(alias).await.unwrap();
 
     // Verify resolution returns all targets
@@ -144,9 +147,18 @@ async fn test_alias_listing() {
     let registry = AliasRegistry::new();
 
     // Create multiple aliases
-    registry.upsert(Alias::new_single("a1".into(), "t1".into())).await.unwrap();
-    registry.upsert(Alias::new_single("a2".into(), "t2".into())).await.unwrap();
-    registry.upsert(Alias::new_multi("a3".into(), vec!["x".into(), "y".into()])).await.unwrap();
+    registry
+        .upsert(Alias::new_single("a1".into(), "t1".into()))
+        .await
+        .unwrap();
+    registry
+        .upsert(Alias::new_single("a2".into(), "t2".into()))
+        .await
+        .unwrap();
+    registry
+        .upsert(Alias::new_multi("a3".into(), vec!["x".into(), "y".into()]))
+        .await
+        .unwrap();
 
     // List all aliases
     let aliases = registry.list().await;

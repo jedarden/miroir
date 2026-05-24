@@ -139,10 +139,13 @@ impl PeerDiscovery {
         let lookup = tokio::task::spawn_blocking(move || {
             // Use system resolver config from /etc/resolv.conf (plan §14.5)
             let resolver = Resolver::new(ResolverConfig::default(), ResolverOpts::default())
-                .map_err(|e| MiroirError::Discovery(format!("failed to create DNS resolver: {}", e)))?;
+                .map_err(|e| {
+                    MiroirError::Discovery(format!("failed to create DNS resolver: {}", e))
+                })?;
 
-            resolver.srv_lookup(&srv_name)
-                .map_err(|e| MiroirError::Discovery(format!("SRV lookup failed for {}: {}", srv_name, e)))
+            resolver.srv_lookup(&srv_name).map_err(|e| {
+                MiroirError::Discovery(format!("SRV lookup failed for {}: {}", srv_name, e))
+            })
         })
         .await
         .map_err(|e| MiroirError::Discovery(format!("SRV lookup task failed: {}", e)))??;
@@ -157,7 +160,11 @@ impl PeerDiscovery {
                 // Remove trailing dot if present
                 let target = target.strip_suffix('.').unwrap_or(&target);
                 // Split and take first component, skip empty strings
-                target.split('.').next().filter(|s| !s.is_empty()).map(|s| s.to_string())
+                target
+                    .split('.')
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
             })
             .collect();
 
@@ -211,15 +218,29 @@ mod tests {
         // We extract the first component as the pod name.
 
         let test_cases = vec![
-            ("miroir-miroir-0.miroir-headless.default.svc.cluster.local", Some("miroir-miroir-0")),
-            ("miroir-miroir-1.miroir-headless.default.svc.cluster.local.", Some("miroir-miroir-1")),
-            ("miroir-miroir-2.miroir-headless.production.svc.cluster.local", Some("miroir-miroir-2")),
+            (
+                "miroir-miroir-0.miroir-headless.default.svc.cluster.local",
+                Some("miroir-miroir-0"),
+            ),
+            (
+                "miroir-miroir-1.miroir-headless.default.svc.cluster.local.",
+                Some("miroir-miroir-1"),
+            ),
+            (
+                "miroir-miroir-2.miroir-headless.production.svc.cluster.local",
+                Some("miroir-miroir-2"),
+            ),
             ("invalid", Some("invalid")),
-            ("", None),  // Empty string returns None after filter
+            ("", None), // Empty string returns None after filter
         ];
 
         for (target, expected) in test_cases {
-            let result = target.strip_suffix('.').unwrap_or(target).split('.').next().filter(|s| !s.is_empty());
+            let result = target
+                .strip_suffix('.')
+                .unwrap_or(target)
+                .split('.')
+                .next()
+                .filter(|s| !s.is_empty());
             assert_eq!(result, expected, "Failed for target: {}", target);
         }
     }

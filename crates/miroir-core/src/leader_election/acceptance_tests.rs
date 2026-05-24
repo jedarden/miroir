@@ -8,10 +8,7 @@
 
 use crate::config::LeaderElectionConfig;
 use crate::leader_election::LeaderElection;
-use crate::task_store::{
-    ModeBOperation, SqliteTaskStore, TaskStore,
-    mode_b_status, mode_b_type,
-};
+use crate::task_store::{mode_b_status, mode_b_type, ModeBOperation, SqliteTaskStore, TaskStore};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
@@ -283,7 +280,10 @@ async fn ac4_reshard_phase_recovery_after_leader_loss() {
     assert_eq!(recovered_op.index_uid, Some("products".to_string()));
     assert_eq!(recovered_op.old_shards, Some(4));
     assert_eq!(recovered_op.target_shards, Some(8));
-    assert_eq!(recovered_op.shadow_index, Some("products_shadow".to_string()));
+    assert_eq!(
+        recovered_op.shadow_index,
+        Some("products_shadow".to_string())
+    );
     assert_eq!(recovered_op.documents_backfilled, Some(5000));
 }
 
@@ -301,10 +301,22 @@ async fn ac5_reshard_multiple_phases_persisted_correctly() {
     // Simulate progressing through phases
     let phases = vec![
         ("shadow", r#"{"shadow_index":"orders_shadow"}"#),
-        ("backfill", r#"{"shadow_index":"orders_shadow","backfilled_docs":2500}"#),
-        ("verify", r#"{"shadow_index":"orders_shadow","backfilled_docs":5000,"verified":true}"#),
-        ("swap", r#"{"shadow_index":"orders_shadow","backfilled_docs":5000,"swapped":true}"#),
-        ("cleanup", r#"{"shadow_index":"orders_shadow","cleanup_complete":false}"#),
+        (
+            "backfill",
+            r#"{"shadow_index":"orders_shadow","backfilled_docs":2500}"#,
+        ),
+        (
+            "verify",
+            r#"{"shadow_index":"orders_shadow","backfilled_docs":5000,"verified":true}"#,
+        ),
+        (
+            "swap",
+            r#"{"shadow_index":"orders_shadow","backfilled_docs":5000,"swapped":true}"#,
+        ),
+        (
+            "cleanup",
+            r#"{"shadow_index":"orders_shadow","cleanup_complete":false}"#,
+        ),
     ];
 
     for (i, (phase, state_json)) in phases.iter().enumerate() {
@@ -369,7 +381,9 @@ async fn ac6_settings_broadcast_phase_recovery_after_leader_loss() {
         phase_started_at: 2000,
         created_at: 1500,
         updated_at: 2500,
-        state_json: r#"{"proposed_version":5,"acked_nodes":["node-1","node-2"],"pending_nodes":["node-3"]}"#.to_string(),
+        state_json:
+            r#"{"proposed_version":5,"acked_nodes":["node-1","node-2"],"pending_nodes":["node-3"]}"#
+                .to_string(),
         error: None,
         status: mode_b_status::RUNNING.to_string(),
         index_uid: Some("products".to_string()),
@@ -419,9 +433,18 @@ async fn ac7_settings_broadcast_all_phases_persisted() {
 
     // Simulate 2PC phases
     let phases = vec![
-        ("propose", r#"{"proposed_version":3,"target_nodes":["node-1","node-2","node-3"]}"#),
-        ("verify", r#"{"proposed_version":3,"acked_nodes":["node-1","node-2"],"pending_nodes":["node-3"]}"#),
-        ("commit", r#"{"proposed_version":3,"committed_nodes":["node-1","node-2","node-3"]}"#),
+        (
+            "propose",
+            r#"{"proposed_version":3,"target_nodes":["node-1","node-2","node-3"]}"#,
+        ),
+        (
+            "verify",
+            r#"{"proposed_version":3,"acked_nodes":["node-1","node-2"],"pending_nodes":["node-3"]}"#,
+        ),
+        (
+            "commit",
+            r#"{"proposed_version":3,"committed_nodes":["node-1","node-2","node-3"]}"#,
+        ),
     ];
 
     for (i, (phase, state_json)) in phases.iter().enumerate() {
@@ -489,7 +512,11 @@ async fn ac8_leader_metrics_sum_is_one_across_pods() {
         + metrics2.leader_status.get(scope).unwrap_or(&0.0)
         + metrics3.leader_status.get(scope).unwrap_or(&0.0);
 
-    assert_eq!(sum, 1.0, "miroir_leader sum across all pods should be 1, got {}", sum);
+    assert_eq!(
+        sum, 1.0,
+        "miroir_leader sum across all pods should be 1, got {}",
+        sum
+    );
 }
 
 #[tokio::test]

@@ -12,27 +12,28 @@ pub mod drift_reconciler;
 pub mod dump;
 pub mod dump_chunking;
 pub mod dump_import;
-pub mod group_addition;
-pub mod group_sync_worker;
 pub mod error;
 pub mod explainer;
+pub mod group_addition;
+pub mod group_sync_worker;
 pub mod hedging;
 pub mod idempotency;
 pub mod ilm;
 pub mod leader_election;
-pub mod mode_a_coordinator;
-pub mod mode_b_coordinator;
-pub mod mode_c_coordinator;
-pub mod mode_c_worker;
-#[cfg(test)]
-mod mode_b_acceptance_tests;
-#[cfg(test)]
-mod mode_c_acceptance_tests;
 pub mod merger;
 pub mod migration;
 #[cfg(feature = "peer-discovery")]
-pub mod peer_discovery;
+pub mod mode_a_coordinator;
+#[cfg(test)]
+mod mode_b_acceptance_tests;
+pub mod mode_b_coordinator;
+#[cfg(test)]
+mod mode_c_acceptance_tests;
+pub mod mode_c_coordinator;
+pub mod mode_c_worker;
 pub mod multi_search;
+#[cfg(feature = "peer-discovery")]
+pub mod peer_discovery;
 pub mod query_planner;
 pub mod rebalancer;
 pub mod rebalancer_worker;
@@ -40,9 +41,9 @@ pub mod replica_selection;
 pub mod reshard;
 pub mod reshard_chunking;
 pub mod router;
+pub mod scatter;
 pub mod schema_migrations;
 pub mod scoped_key_rotation;
-pub mod scatter;
 pub mod session_pinning;
 pub mod settings;
 pub mod shadow;

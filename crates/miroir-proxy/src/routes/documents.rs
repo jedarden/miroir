@@ -16,14 +16,16 @@
 //! - Tracks pinned group (first to reach quorum)
 
 use axum::extract::{Extension, Path, Query};
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::http::{StatusCode, header};
 use axum::{Json, Router};
-use miroir_core::api_error::{MiroirCode, MeilisearchError};
+use miroir_core::api_error::{MeilisearchError, MiroirCode};
 use miroir_core::router::{shard_for_key, write_targets_with_migration};
-use miroir_core::scatter::{DeleteByIdsRequest, DeleteByFilterRequest, NodeClient, WriteRequest, WriteResponse};
+use miroir_core::scatter::{
+    DeleteByFilterRequest, DeleteByIdsRequest, NodeClient, WriteRequest, WriteResponse,
+};
 use miroir_core::task::TaskRegistry;
-use miroir_core::topology::{Topology, NodeId};
+use miroir_core::topology::{NodeId, Topology};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -160,7 +162,11 @@ async fn post_documents(
     // Extract session ID from request extensions (set by session_pinning_middleware)
     let sid = session_id.and_then(|ext| {
         let s = ext.0;
-        if s.0.is_empty() { None } else { Some(s.0.clone()) }
+        if s.0.is_empty() {
+            None
+        } else {
+            Some(s.0.clone())
+        }
     });
 
     // Extract idempotency key (plan §13.10)
@@ -169,7 +175,15 @@ async fn post_documents(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    write_documents_impl(index, params.primaryKey, documents, &state, sid, idempotency_key).await
+    write_documents_impl(
+        index,
+        params.primaryKey,
+        documents,
+        &state,
+        sid,
+        idempotency_key,
+    )
+    .await
 }
 
 /// PUT /indexes/{uid}/documents - Replace documents.
@@ -184,7 +198,11 @@ async fn put_documents(
 ) -> std::result::Result<Response, MeilisearchError> {
     let sid = session_id.and_then(|ext| {
         let s = ext.0;
-        if s.0.is_empty() { None } else { Some(s.0.clone()) }
+        if s.0.is_empty() {
+            None
+        } else {
+            Some(s.0.clone())
+        }
     });
 
     // Extract idempotency key (plan §13.10)
@@ -193,7 +211,15 @@ async fn put_documents(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    write_documents_impl(index, params.primaryKey, documents, &state, sid, idempotency_key).await
+    write_documents_impl(
+        index,
+        params.primaryKey,
+        documents,
+        &state,
+        sid,
+        idempotency_key,
+    )
+    .await
 }
 
 /// DELETE /indexes/{uid}/documents - Delete by IDs or filter.
@@ -206,7 +232,11 @@ async fn delete_documents(
 ) -> std::result::Result<Response, MeilisearchError> {
     let sid = session_id.and_then(|ext| {
         let s = ext.0;
-        if s.0.is_empty() { None } else { Some(s.0.clone()) }
+        if s.0.is_empty() {
+            None
+        } else {
+            Some(s.0.clone())
+        }
     });
 
     // Extract idempotency key (plan §13.10)
@@ -257,7 +287,11 @@ async fn delete_document_by_id(
 ) -> std::result::Result<Response, MeilisearchError> {
     let sid = session_id.and_then(|ext| {
         let s = ext.0;
-        if s.0.is_empty() { None } else { Some(s.0.clone()) }
+        if s.0.is_empty() {
+            None
+        } else {
+            Some(s.0.clone())
+        }
     });
 
     // Extract idempotency key (plan §13.10)
@@ -296,7 +330,10 @@ async fn write_documents_impl(
         if let Some(ref key) = idempotency_key {
             // Compute SHA256 hash of the request body
             use sha2::{Digest, Sha256};
-            let body_hash = format!("{:x}", Sha256::digest(serde_json::to_string(&documents).unwrap_or_default()));
+            let body_hash = format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_string(&documents).unwrap_or_default())
+            );
 
             // Check cache
             match state.idempotency_cache.check(key, &body_hash).await {
@@ -366,11 +403,8 @@ async fn write_documents_impl(
     };
 
     // 1. Extract primary key from first document if not provided
-    let primary_key = primary_key.or_else(|| {
-        documents
-            .first()
-            .and_then(|doc| extract_primary_key(doc))
-    });
+    let primary_key =
+        primary_key.or_else(|| documents.first().and_then(|doc| extract_primary_key(doc)));
 
     let primary_key = primary_key.ok_or_else(|| {
         MeilisearchError::new(
@@ -409,7 +443,10 @@ async fn write_documents_impl(
         if ttl_enabled && doc.get(expires_at_field).is_some() {
             return Err(MeilisearchError::new(
                 MiroirCode::ReservedField,
-                format!("document contains reserved field `{}` (reserved when ttl.enabled: true)", expires_at_field),
+                format!(
+                    "document contains reserved field `{}` (reserved when ttl.enabled: true)",
+                    expires_at_field
+                ),
             ));
         }
 
@@ -436,7 +473,7 @@ async fn write_documents_impl(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
-                .as_millis() as u64
+                .as_millis() as u64,
         )
     } else {
         None
@@ -473,18 +510,13 @@ async fn write_documents_impl(
         let migration_coordinator = state.migration_coordinator.as_ref().map(|c| {
             // We need a read lock on the coordinator
             tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    c.read().await
-                })
+                tokio::runtime::Handle::current().block_on(async { c.read().await })
             })
         });
 
         // Use migration-aware routing
-        let targets = write_targets_with_migration(
-            shard_id,
-            &topology,
-            migration_coordinator.as_deref(),
-        );
+        let targets =
+            write_targets_with_migration(shard_id, &topology, migration_coordinator.as_deref());
 
         if targets.is_empty() {
             return Err(MeilisearchError::new(
@@ -496,9 +528,9 @@ async fn write_documents_impl(
         // Track which groups we're targeting for this shard
 
         for node_id in targets {
-            let node = topology
-                .node(&node_id)
-                .ok_or_else(|| MeilisearchError::new(MiroirCode::ShardUnavailable, "node not found in topology"))?;
+            let node = topology.node(&node_id).ok_or_else(|| {
+                MeilisearchError::new(MiroirCode::ShardUnavailable, "node not found in topology")
+            })?;
 
             let group_id = node.replica_group;
             quorum_state.record_attempt(group_id, &node_id);
@@ -558,18 +590,20 @@ async fn write_documents_impl(
             Some(index_uid.clone()),
             Some("documentAdditionOrUpdate".to_string()),
         )
-        .map_err(|e| MeilisearchError::new(
-            MiroirCode::ShardUnavailable,
-            format!("failed to register task: {}", e),
-        ))?;
+        .map_err(|e| {
+            MeilisearchError::new(
+                MiroirCode::ShardUnavailable,
+                format!("failed to register task: {}", e),
+            )
+        })?;
 
     // 7.5. Record session pinning if session header present (plan §13.6)
     if let (Some(ref sid), true) = (&session_id, state.session_manager.is_enabled()) {
-        if let Err(e) = state.session_manager.record_write_with_quorum(
-            sid,
-            miroir_task.miroir_id.clone(),
-            first_quorum_group,
-        ).await {
+        if let Err(e) = state
+            .session_manager
+            .record_write_with_quorum(sid, miroir_task.miroir_id.clone(), first_quorum_group)
+            .await
+        {
             // Log error but don't fail the write - session pinning is best-effort
             tracing::error!(
                 session_id = %sid,
@@ -583,14 +617,18 @@ async fn write_documents_impl(
     if state.config.idempotency.enabled {
         if let Some(ref key) = idempotency_key {
             use sha2::{Digest, Sha256};
-            let body_hash = format!("{:x}", Sha256::digest(serde_json::to_string(&documents).unwrap_or_default()));
-            state.idempotency_cache.insert(
-                key.clone(),
-                body_hash,
-                miroir_task.miroir_id.clone(),
-            ).await;
+            let body_hash = format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_string(&documents).unwrap_or_default())
+            );
+            state
+                .idempotency_cache
+                .insert(key.clone(), body_hash, miroir_task.miroir_id.clone())
+                .await;
             // Update cache size metric
-            state.metrics.set_idempotency_cache_size(state.idempotency_cache.size().await as u64);
+            state
+                .metrics
+                .set_idempotency_cache_size(state.idempotency_cache.size().await as u64);
         }
     }
 
@@ -628,7 +666,10 @@ async fn delete_by_ids_impl(
     if state.config.idempotency.enabled {
         if let Some(ref key) = idempotency_key {
             use sha2::{Digest, Sha256};
-            let body_hash = format!("{:x}", Sha256::digest(serde_json::to_string(&req).unwrap_or_default()));
+            let body_hash = format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_string(&req).unwrap_or_default())
+            );
 
             match state.idempotency_cache.check(key, &body_hash).await {
                 Ok(Some(cached_mtask_id)) => {
@@ -719,9 +760,9 @@ async fn delete_by_ids_impl(
         }
 
         for node_id in targets {
-            let node = topology
-                .node(&node_id)
-                .ok_or_else(|| MeilisearchError::new(MiroirCode::ShardUnavailable, "node not found in topology"))?;
+            let node = topology.node(&node_id).ok_or_else(|| {
+                MeilisearchError::new(MiroirCode::ShardUnavailable, "node not found in topology")
+            })?;
 
             let group_id = node.replica_group;
             quorum_state.record_attempt(group_id, &node_id);
@@ -732,7 +773,10 @@ async fn delete_by_ids_impl(
                 origin: None, // Client write
             };
 
-            match client.delete_documents(&node_id, &node.address, &delete_req).await {
+            match client
+                .delete_documents(&node_id, &node.address, &delete_req)
+                .await
+            {
                 Ok(resp) if resp.success => {
                     quorum_state.record_success(group_id, &node_id);
                     if let Some(task_uid) = resp.task_uid {
@@ -778,18 +822,20 @@ async fn delete_by_ids_impl(
             Some(index.clone()),
             Some("documentDeletion".to_string()),
         )
-        .map_err(|e| MeilisearchError::new(
-            MiroirCode::ShardUnavailable,
-            format!("failed to register task: {}", e),
-        ))?;
+        .map_err(|e| {
+            MeilisearchError::new(
+                MiroirCode::ShardUnavailable,
+                format!("failed to register task: {}", e),
+            )
+        })?;
 
     // Record session pinning if session header present (plan §13.6)
     if let (Some(ref sid), true) = (&session_id, state.session_manager.is_enabled()) {
-        if let Err(e) = state.session_manager.record_write_with_quorum(
-            sid,
-            miroir_task.miroir_id.clone(),
-            first_quorum_group,
-        ).await {
+        if let Err(e) = state
+            .session_manager
+            .record_write_with_quorum(sid, miroir_task.miroir_id.clone(), first_quorum_group)
+            .await
+        {
             tracing::error!(
                 session_id = %sid,
                 error = %e,
@@ -802,13 +848,17 @@ async fn delete_by_ids_impl(
     if state.config.idempotency.enabled {
         if let Some(ref key) = idempotency_key {
             use sha2::{Digest, Sha256};
-            let body_hash = format!("{:x}", Sha256::digest(serde_json::to_string(&req).unwrap_or_default()));
-            state.idempotency_cache.insert(
-                key.clone(),
-                body_hash,
-                miroir_task.miroir_id.clone(),
-            ).await;
-            state.metrics.set_idempotency_cache_size(state.idempotency_cache.size().await as u64);
+            let body_hash = format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_string(&req).unwrap_or_default())
+            );
+            state
+                .idempotency_cache
+                .insert(key.clone(), body_hash, miroir_task.miroir_id.clone())
+                .await;
+            state
+                .metrics
+                .set_idempotency_cache_size(state.idempotency_cache.size().await as u64);
         }
     }
 
@@ -838,7 +888,10 @@ async fn delete_by_filter_impl(
     if state.config.idempotency.enabled {
         if let Some(ref key) = idempotency_key {
             use sha2::{Digest, Sha256};
-            let body_hash = format!("{:x}", Sha256::digest(serde_json::to_string(&req).unwrap_or_default()));
+            let body_hash = format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_string(&req).unwrap_or_default())
+            );
 
             match state.idempotency_cache.check(key, &body_hash).await {
                 Ok(Some(cached_mtask_id)) => {
@@ -939,18 +992,20 @@ async fn delete_by_filter_impl(
             Some(index.clone()),
             Some("documentDeletion".to_string()),
         )
-        .map_err(|e| MeilisearchError::new(
-            MiroirCode::ShardUnavailable,
-            format!("failed to register task: {}", e),
-        ))?;
+        .map_err(|e| {
+            MeilisearchError::new(
+                MiroirCode::ShardUnavailable,
+                format!("failed to register task: {}", e),
+            )
+        })?;
 
     // Record session pinning if session header present (plan §13.6)
     if let (Some(ref sid), true) = (&session_id, state.session_manager.is_enabled()) {
-        if let Err(e) = state.session_manager.record_write_with_quorum(
-            sid,
-            miroir_task.miroir_id.clone(),
-            first_quorum_group,
-        ).await {
+        if let Err(e) = state
+            .session_manager
+            .record_write_with_quorum(sid, miroir_task.miroir_id.clone(), first_quorum_group)
+            .await
+        {
             tracing::error!(
                 session_id = %sid,
                 error = %e,
@@ -1048,15 +1103,18 @@ fn build_response_with_degraded_header(
 
     // Add X-Miroir-Degraded header if any groups were degraded
     if degraded_groups > 0 {
-        builder = builder.header(HEADER_MIROIR_DEGRADED, format!("groups={}", degraded_groups));
+        builder = builder.header(
+            HEADER_MIROIR_DEGRADED,
+            format!("groups={}", degraded_groups),
+        );
     }
 
-    Ok(builder
-        .body(axum::body::Body::from(body))
-        .map_err(|e| MeilisearchError::new(
+    Ok(builder.body(axum::body::Body::from(body)).map_err(|e| {
+        MeilisearchError::new(
             MiroirCode::ShardUnavailable,
             format!("failed to build response: {}", e),
-        ))?)
+        )
+    })?)
 }
 
 /// Build an error response as JSON (for forwarded node errors).
@@ -1072,7 +1130,7 @@ fn build_json_error_response(resp: DocumentsWriteResponse) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miroir_core::api_error::{MiroirCode, MeilisearchError};
+    use miroir_core::api_error::{MeilisearchError, MiroirCode};
     use serde_json::json;
 
     #[test]
@@ -1124,7 +1182,10 @@ mod tests {
         let err = reserved_field_error("_miroir_shard");
         assert_eq!(err.code, "miroir_reserved_field");
         assert_eq!(err.http_status(), 400);
-        assert_eq!(err.error_type, miroir_core::api_error::ErrorType::InvalidRequest);
+        assert_eq!(
+            err.error_type,
+            miroir_core::api_error::ErrorType::InvalidRequest
+        );
     }
 
     #[test]
@@ -1133,7 +1194,10 @@ mod tests {
         let field = "_miroir_updated_at";
         let err = MeilisearchError::new(
             MiroirCode::ReservedField,
-            format!("document contains reserved field `{}` (reserved when anti_entropy.enabled: true)", field),
+            format!(
+                "document contains reserved field `{}` (reserved when anti_entropy.enabled: true)",
+                field
+            ),
         );
         assert_eq!(err.code, "miroir_reserved_field");
         assert_eq!(err.http_status(), 400);
@@ -1145,7 +1209,10 @@ mod tests {
         let field = "_miroir_expires_at";
         let err = MeilisearchError::new(
             MiroirCode::ReservedField,
-            format!("document contains reserved field `{}` (reserved when ttl.enabled: true)", field),
+            format!(
+                "document contains reserved field `{}` (reserved when ttl.enabled: true)",
+                field
+            ),
         );
         assert_eq!(err.code, "miroir_reserved_field");
         assert_eq!(err.http_status(), 400);
@@ -1154,7 +1221,8 @@ mod tests {
     #[test]
     fn test_reserved_field_non_miroir_fields_allowed() {
         // Non-reserved _miroir_ fields are allowed
-        let doc = json!({"id": "test", "_miroir_custom": "value", "_miroir_metadata": {"key": "val"}});
+        let doc =
+            json!({"id": "test", "_miroir_custom": "value", "_miroir_metadata": {"key": "val"}});
         assert!(doc.get("_miroir_custom").is_some());
         assert!(doc.get("_miroir_metadata").is_some());
     }
@@ -1223,9 +1291,24 @@ mod tests {
         ];
 
         for tc in test_cases {
-            assert_eq!(tc.doc.get("_miroir_shard").is_some(), tc.has_shard, "{}: shard check", tc.description);
-            assert_eq!(tc.doc.get("_miroir_updated_at").is_some(), tc.has_updated_at, "{}: updated_at check", tc.description);
-            assert_eq!(tc.doc.get("_miroir_expires_at").is_some(), tc.has_expires_at, "{}: expires_at check", tc.description);
+            assert_eq!(
+                tc.doc.get("_miroir_shard").is_some(),
+                tc.has_shard,
+                "{}: shard check",
+                tc.description
+            );
+            assert_eq!(
+                tc.doc.get("_miroir_updated_at").is_some(),
+                tc.has_updated_at,
+                "{}: updated_at check",
+                tc.description
+            );
+            assert_eq!(
+                tc.doc.get("_miroir_expires_at").is_some(),
+                tc.has_expires_at,
+                "{}: expires_at check",
+                tc.description
+            );
         }
     }
 
@@ -1241,8 +1324,14 @@ mod tests {
         assert_eq!(json["code"], "miroir_reserved_field");
         assert_eq!(json["type"], "invalid_request");
         assert!(json["message"].is_string());
-        assert!(json["link"].as_str().unwrap().contains("miroir_reserved_field"));
-        assert_eq!(json["message"], "document contains reserved field `_miroir_shard`");
+        assert!(json["link"]
+            .as_str()
+            .unwrap()
+            .contains("miroir_reserved_field"));
+        assert_eq!(
+            json["message"],
+            "document contains reserved field `_miroir_shard`"
+        );
     }
 
     #[test]
@@ -1269,14 +1358,23 @@ mod tests {
         // 4. Write proceeds with injected field
 
         let client_doc = json!({"id": "user:123", "name": "Test User"});
-        assert!(client_doc.get("_miroir_shard").is_none(), "client doc should not have _miroir_shard");
+        assert!(
+            client_doc.get("_miroir_shard").is_none(),
+            "client doc should not have _miroir_shard"
+        );
 
         // Simulate orchestrator injection (happens AFTER validation at line 279-290)
         let mut doc_with_shard = client_doc.clone();
         doc_with_shard["_miroir_shard"] = json!(5);
 
-        assert_eq!(doc_with_shard["_miroir_shard"], 5, "orchestrator should inject _miroir_shard");
-        assert!(doc_with_shard.get("id").is_some(), "primary key should still be present");
+        assert_eq!(
+            doc_with_shard["_miroir_shard"], 5,
+            "orchestrator should inject _miroir_shard"
+        );
+        assert!(
+            doc_with_shard.get("id").is_some(),
+            "primary key should still be present"
+        );
     }
 
     #[test]
@@ -1358,7 +1456,10 @@ mod tests {
         // This test verifies the stamping logic (plan §13.8)
 
         let client_doc = json!({"id": "user:123", "name": "Test User"});
-        assert!(client_doc.get("_miroir_updated_at").is_none(), "client doc should not have _miroir_updated_at");
+        assert!(
+            client_doc.get("_miroir_updated_at").is_none(),
+            "client doc should not have _miroir_updated_at"
+        );
 
         // Simulate orchestrator stamping (happens AFTER validation)
         let mut doc_with_timestamp = client_doc.clone();
@@ -1368,8 +1469,17 @@ mod tests {
             .as_millis() as u64;
         doc_with_timestamp["_miroir_updated_at"] = json!(now_ms);
 
-        assert!(doc_with_timestamp.get("_miroir_updated_at").is_some(), "orchestrator should stamp _miroir_updated_at");
-        assert_eq!(doc_with_timestamp["_miroir_updated_at"], now_ms, "timestamp should be current ms since epoch");
-        assert!(doc_with_timestamp.get("id").is_some(), "primary key should still be present");
+        assert!(
+            doc_with_timestamp.get("_miroir_updated_at").is_some(),
+            "orchestrator should stamp _miroir_updated_at"
+        );
+        assert_eq!(
+            doc_with_timestamp["_miroir_updated_at"], now_ms,
+            "timestamp should be current ms since epoch"
+        );
+        assert!(
+            doc_with_timestamp.get("id").is_some(),
+            "primary key should still be present"
+        );
     }
 }

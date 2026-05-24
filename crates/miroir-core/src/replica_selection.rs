@@ -179,7 +179,10 @@ pub struct ReplicaSelector {
 
 impl ReplicaSelector {
     /// Create a new replica selector with a metrics observer.
-    pub fn new_with_observer(config: ReplicaSelectionConfig, observer: Arc<dyn SelectionObserver>) -> Self {
+    pub fn new_with_observer(
+        config: ReplicaSelectionConfig,
+        observer: Arc<dyn SelectionObserver>,
+    ) -> Self {
         Self {
             config,
             metrics: Arc::new(RwLock::new(HashMap::new())),
@@ -206,7 +209,9 @@ impl ReplicaSelector {
 
         match strategy {
             SelectionStrategy::Adaptive => self.select_adaptive(candidates).await,
-            SelectionStrategy::RoundRobin => self.select_round_robin(candidates, group_id as u64).await,
+            SelectionStrategy::RoundRobin => {
+                self.select_round_robin(candidates, group_id as u64).await
+            }
             SelectionStrategy::Random => self.select_random(candidates),
         }
     }
@@ -278,11 +283,7 @@ impl ReplicaSelector {
         if candidates.is_empty() {
             return None;
         }
-        let idx = self
-            .rng
-            .lock()
-            .unwrap()
-            .gen_range(0..candidates.len());
+        let idx = self.rng.lock().unwrap().gen_range(0..candidates.len());
         Some(candidates[idx].clone())
     }
 

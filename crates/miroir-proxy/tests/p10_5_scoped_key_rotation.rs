@@ -49,10 +49,7 @@ fn make_config(node_addresses: Vec<String>, search_ui: SearchUiConfig) -> Miroir
 async fn redis_store() -> RedisTaskStore {
     let node = Redis::default();
     let container = node.start().await.expect("start redis");
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("get port");
+    let port = container.get_host_port_ipv4(6379).await.expect("get port");
     let url = format!("redis://localhost:{port}");
     RedisTaskStore::open(&url).await.expect("redis connect")
 }
@@ -82,7 +79,9 @@ fn seed_scoped_key(
         rotated_at: now - rotated_at_ms_ago,
         generation,
     };
-    redis.set_search_ui_scoped_key(&key).expect("seed scoped key");
+    redis
+        .set_search_ui_scoped_key(&key)
+        .expect("seed scoped key");
 }
 
 /// Simulate pod observation beacon.
@@ -413,10 +412,7 @@ async fn test_force_rotation_bypasses_timing_gate() {
 
     assert_eq!(result.status, "rotated");
     assert_eq!(result.generation, 2);
-    assert_eq!(
-        result.previous_uid_revoked,
-        Some("fresh-uid-300".into())
-    );
+    assert_eq!(result.previous_uid_revoked, Some("fresh-uid-300".into()));
 
     let sk = redis.get_search_ui_scoped_key("catalog").unwrap().unwrap();
     assert_eq!(sk.primary_key, "forced-new-key");
@@ -666,7 +662,10 @@ async fn test_mint_key_all_nodes_fail() {
     let result = scoped_key_rotation::mint_scoped_key(&client, &config, "test-idx").await;
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.contains("failed to mint key"), "unexpected error: {err}");
+    assert!(
+        err.contains("failed to mint key"),
+        "unexpected error: {err}"
+    );
 }
 
 // ---------------------------------------------------------------------------

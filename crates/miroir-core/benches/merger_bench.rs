@@ -145,11 +145,15 @@ fn bench_varying_shard_count(c: &mut Criterion) {
             failed_shards: Vec::new(),
         };
 
-        group.bench_with_input(BenchmarkId::from_parameter(shard_count), shard_count, |b, _| {
-            b.iter(|| {
-                black_box(merge(black_box(input.clone()))).unwrap();
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(shard_count),
+            shard_count,
+            |b, _| {
+                b.iter(|| {
+                    black_box(merge(black_box(input.clone()))).unwrap();
+                });
+            },
+        );
     }
     group.finish();
 }
@@ -293,7 +297,12 @@ fn bench_degraded_response(c: &mut Criterion) {
         // Healthy shard
         make_shard_response(
             (0..hits_per_shard)
-                .map(|i| make_hit(&i.to_string(), (TARGET_HITS - i) as f64 / TARGET_HITS as f64))
+                .map(|i| {
+                    make_hit(
+                        &i.to_string(),
+                        (TARGET_HITS - i) as f64 / TARGET_HITS as f64,
+                    )
+                })
                 .collect(),
             hits_per_shard as u64,
             15,
@@ -308,7 +317,12 @@ fn bench_degraded_response(c: &mut Criterion) {
         // Another healthy shard
         make_shard_response(
             (hits_per_shard..2 * hits_per_shard)
-                .map(|i| make_hit(&i.to_string(), (TARGET_HITS - i) as f64 / TARGET_HITS as f64))
+                .map(|i| {
+                    make_hit(
+                        &i.to_string(),
+                        (TARGET_HITS - i) as f64 / TARGET_HITS as f64,
+                    )
+                })
                 .collect(),
             hits_per_shard as u64,
             15,

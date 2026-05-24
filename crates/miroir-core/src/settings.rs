@@ -174,7 +174,8 @@ impl SettingsBroadcast {
         node_task_uids: HashMap<String, u64>,
     ) -> Result<()> {
         let mut in_flight = self.in_flight.write().await;
-        let status = in_flight.get_mut(index)
+        let status = in_flight
+            .get_mut(index)
             .ok_or_else(|| MiroirError::NotFound(format!("index '{}'", index)))?;
 
         if status.phase != BroadcastPhase::Propose {
@@ -197,7 +198,8 @@ impl SettingsBroadcast {
         expected_fingerprint: &str,
     ) -> Result<()> {
         let mut in_flight = self.in_flight.write().await;
-        let status = in_flight.get_mut(index)
+        let status = in_flight
+            .get_mut(index)
             .ok_or_else(|| MiroirError::NotFound(format!("index '{}'", index)))?;
 
         if status.phase != BroadcastPhase::Verify {
@@ -227,7 +229,8 @@ impl SettingsBroadcast {
     /// Increments the global settings version and stamps all affected nodes.
     pub async fn commit(&self, index: &str) -> Result<u64> {
         let mut in_flight = self.in_flight.write().await;
-        let status = in_flight.get_mut(index)
+        let status = in_flight
+            .get_mut(index)
             .ok_or_else(|| MiroirError::NotFound(format!("index '{}'", index)))?;
 
         if status.phase != BroadcastPhase::Verify {
@@ -252,12 +255,7 @@ impl SettingsBroadcast {
 
             // Persist to task store if available
             if let Some(ref store) = self.task_store {
-                let _ = store.upsert_node_settings_version(
-                    index,
-                    node_id,
-                    new_version as i64,
-                    now,
-                );
+                let _ = store.upsert_node_settings_version(index, node_id, new_version as i64, now);
             }
         }
 
@@ -271,7 +269,8 @@ impl SettingsBroadcast {
     /// Complete the broadcast and remove from in-flight tracking.
     pub async fn complete(&self, index: &str) -> Result<()> {
         let mut in_flight = self.in_flight.write().await;
-        in_flight.remove(index)
+        in_flight
+            .remove(index)
             .ok_or_else(|| MiroirError::NotFound(format!("index '{}'", index)))?;
         Ok(())
     }
@@ -282,7 +281,8 @@ impl SettingsBroadcast {
         if let Some(status) = in_flight.get_mut(index) {
             status.error = Some(error);
         }
-        in_flight.remove(index)
+        in_flight
+            .remove(index)
             .ok_or_else(|| MiroirError::NotFound(format!("index '{}'", index)))?;
         Ok(())
     }
@@ -540,7 +540,10 @@ mod tests {
         let index = "products".to_string();
         let settings = json!({"rankingRules": ["words"]});
         let fp = fingerprint_settings(&settings);
-        broadcast.start_propose(index.clone(), &settings).await.unwrap();
+        broadcast
+            .start_propose(index.clone(), &settings)
+            .await
+            .unwrap();
 
         // Enter verify with node task UIDs.
         let mut node_tasks = HashMap::new();
@@ -552,7 +555,10 @@ mod tests {
         let mut node_hashes = HashMap::new();
         node_hashes.insert("node-1".to_string(), fp.clone());
         node_hashes.insert("node-2".to_string(), fp.clone());
-        broadcast.verify_hashes(&index, node_hashes, &fp).await.unwrap();
+        broadcast
+            .verify_hashes(&index, node_hashes, &fp)
+            .await
+            .unwrap();
 
         // Commit.
         let new_version = broadcast.commit(&index).await.unwrap();
@@ -570,7 +576,10 @@ mod tests {
         let index = "products".to_string();
         let settings = json!({"rankingRules": ["words"]});
         let fp = fingerprint_settings(&settings);
-        broadcast.start_propose(index.clone(), &settings).await.unwrap();
+        broadcast
+            .start_propose(index.clone(), &settings)
+            .await
+            .unwrap();
 
         let mut node_tasks = HashMap::new();
         node_tasks.insert("node-1".to_string(), 100);
@@ -598,7 +607,10 @@ mod tests {
         let index = "products".to_string();
         let settings = json!({"rankingRules": ["words"]});
         let fp = fingerprint_settings(&settings);
-        broadcast.start_propose(index.clone(), &settings).await.unwrap();
+        broadcast
+            .start_propose(index.clone(), &settings)
+            .await
+            .unwrap();
 
         let mut node_tasks = HashMap::new();
         node_tasks.insert("node-1".to_string(), 100);
@@ -606,7 +618,10 @@ mod tests {
 
         let mut node_hashes = HashMap::new();
         node_hashes.insert("node-1".to_string(), fp.clone());
-        broadcast.verify_hashes(&index, node_hashes, &fp).await.unwrap();
+        broadcast
+            .verify_hashes(&index, node_hashes, &fp)
+            .await
+            .unwrap();
 
         broadcast.commit(&index).await.unwrap();
 

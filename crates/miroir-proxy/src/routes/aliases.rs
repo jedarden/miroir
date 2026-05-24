@@ -1,5 +1,6 @@
 //! Atomic index alias management endpoints (plan §13.7).
 
+use crate::middleware::Metrics;
 use axum::{
     extract::{FromRef, Path, State},
     http::StatusCode,
@@ -10,7 +11,6 @@ use miroir_core::{
     config::MiroirConfig,
     task_store::TaskStore,
 };
-use crate::middleware::Metrics;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -125,7 +125,8 @@ where
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
                     code: "invalid_request".to_string(),
-                    message: "must provide either 'target' (single) or 'targets' (multi)".to_string(),
+                    message: "must provide either 'target' (single) or 'targets' (multi)"
+                        .to_string(),
                 }),
             ));
         }
@@ -235,10 +236,14 @@ where
 
     match alias {
         Some(alias) => {
-            let history = alias.history.into_iter().map(|entry| AliasHistoryEntry {
-                uid: entry.uid,
-                flipped_at: entry.flipped_at as u64,
-            }).collect();
+            let history = alias
+                .history
+                .into_iter()
+                .map(|entry| AliasHistoryEntry {
+                    uid: entry.uid,
+                    flipped_at: entry.flipped_at as u64,
+                })
+                .collect();
 
             Ok(Json(GetAliasResponse {
                 name: alias.name,
@@ -335,38 +340,47 @@ where
         }
 
         // Perform the atomic flip
-        task_store.flip_alias(
-            &name,
-            &new_target,
-            state.config.aliases.history_retention as usize,
-        ).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    code: "alias_flip_failed".to_string(),
-                    message: format!("failed to flip alias: {}", e),
-                }),
+        task_store
+            .flip_alias(
+                &name,
+                &new_target,
+                state.config.aliases.history_retention as usize,
             )
-        })?;
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        code: "alias_flip_failed".to_string(),
+                        message: format!("failed to flip alias: {}", e),
+                    }),
+                )
+            })?;
 
         // Record alias flip metric
         state.metrics.inc_alias_flip(&name);
 
         // Get updated alias
-        let updated = task_store.get_alias(&name).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    code: "alias_lookup_failed".to_string(),
-                    message: format!("failed to lookup updated alias: {}", e),
-                }),
-            )
-        })?.unwrap();
+        let updated = task_store
+            .get_alias(&name)
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        code: "alias_lookup_failed".to_string(),
+                        message: format!("failed to lookup updated alias: {}", e),
+                    }),
+                )
+            })?
+            .unwrap();
 
-        let history = updated.history.into_iter().map(|entry| AliasHistoryEntry {
-            uid: entry.uid,
-            flipped_at: entry.flipped_at as u64,
-        }).collect();
+        let history = updated
+            .history
+            .into_iter()
+            .map(|entry| AliasHistoryEntry {
+                uid: entry.uid,
+                flipped_at: entry.flipped_at as u64,
+            })
+            .collect();
 
         Ok(Json(GetAliasResponse {
             name: updated.name,
@@ -515,7 +529,13 @@ mod tests {
     fn test_create_alias_request_multi() {
         let json = r#"{"targets": ["logs-2026-01-01", "logs-2026-01-02"]}"#;
         let req: CreateAliasRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.targets, Some(vec!["logs-2026-01-01".to_string(), "logs-2026-01-02".to_string()]));
+        assert_eq!(
+            req.targets,
+            Some(vec![
+                "logs-2026-01-01".to_string(),
+                "logs-2026-01-02".to_string()
+            ])
+        );
         assert!(req.target.is_none());
     }
 
@@ -571,7 +591,10 @@ mod tests {
                     name: "logs".to_string(),
                     kind: "multi".to_string(),
                     current_uid: None,
-                    target_uids: Some(vec!["logs-2026-01-01".to_string(), "logs-2026-01-02".to_string()]),
+                    target_uids: Some(vec![
+                        "logs-2026-01-01".to_string(),
+                        "logs-2026-01-02".to_string(),
+                    ]),
                     version: 1,
                 },
             ],

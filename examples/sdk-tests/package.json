@@ -1,0 +1,17 @@
+{
+  "name": "miroir-sdk-tests",
+  "version": "0.1.0",
+  "description": "SDK smoke tests for Miroir",
+  "private": true,
+  "scripts": {
+    "test": "npx ts-node typescript_smoke_test.ts"
+  },
+  "dependencies": {
+    "meilisearch": "^0.47.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}

@@ -137,7 +137,10 @@ impl NodeStatus {
 
     /// Check if a node in this status can accept any writes unconditionally.
     pub fn is_active(self) -> bool {
-        matches!(self, NodeStatus::Active | NodeStatus::Healthy | NodeStatus::Degraded)
+        matches!(
+            self,
+            NodeStatus::Active | NodeStatus::Healthy | NodeStatus::Degraded
+        )
     }
 }
 
@@ -367,7 +370,10 @@ impl Topology {
 
     /// Get a mutable node by ID.
     pub fn node_mut(&mut self, id: &NodeId) -> Option<&mut Node> {
-        self.node_index.get(id).copied().map(move |i| &mut self.nodes[i])
+        self.node_index
+            .get(id)
+            .copied()
+            .map(move |i| &mut self.nodes[i])
     }
 
     /// Iterate over all nodes.
@@ -382,7 +388,9 @@ impl Topology {
 
     /// Get a mutable reference to a group by ID.
     pub fn group_mut(&mut self, id: u32) -> Option<&mut Group> {
-        self.groups.get_mut(id as usize).filter(|g| g.node_count() > 0)
+        self.groups
+            .get_mut(id as usize)
+            .filter(|g| g.node_count() > 0)
     }
 
     /// Iterate over all groups in ascending order by ID.
@@ -402,7 +410,10 @@ impl Topology {
 
     /// Build a HashMap<NodeId, Node> for use with Group::healthy_nodes.
     pub fn node_map(&self) -> HashMap<NodeId, Node> {
-        self.nodes.iter().map(|n| (n.id.clone(), n.clone())).collect()
+        self.nodes
+            .iter()
+            .map(|n| (n.id.clone(), n.clone()))
+            .collect()
     }
 
     /// Remove a node from the topology.
@@ -450,13 +461,13 @@ impl Topology {
             .iter()
             .map(|n| n.replica_group)
             .max()
-            .map_or(self.replica_groups as usize, |m| (m as usize + 1).max(self.replica_groups as usize));
+            .map_or(self.replica_groups as usize, |m| {
+                (m as usize + 1).max(self.replica_groups as usize)
+            });
 
         // Preserve existing group states when rebuilding
-        let old_states: std::collections::HashMap<u32, GroupState> = self.groups
-            .iter()
-            .map(|g| (g.id, g.state))
-            .collect();
+        let old_states: std::collections::HashMap<u32, GroupState> =
+            self.groups.iter().map(|g| (g.id, g.state)).collect();
 
         self.groups = (0..num_groups)
             .map(|i| {
@@ -724,11 +735,7 @@ nodes:
 
     #[test]
     fn node_transition_method() {
-        let mut node = Node::new(
-            NodeId::new("n0".into()),
-            "http://n0:7700".into(),
-            0,
-        );
+        let mut node = Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0);
         assert_eq!(node.status, NodeStatus::Joining);
 
         node.transition_to(NodeStatus::Active).unwrap();
@@ -741,11 +748,7 @@ nodes:
 
     #[test]
     fn full_lifecycle_joining_to_removed() {
-        let mut node = Node::new(
-            NodeId::new("n0".into()),
-            "http://n0:7700".into(),
-            0,
-        );
+        let mut node = Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0);
         assert_eq!(node.status, NodeStatus::Joining);
 
         node.transition_to(NodeStatus::Active).unwrap();
@@ -783,11 +786,9 @@ nodes:
             (Healthy, false, true),
             (Degraded, true, true),
             (Degraded, false, true),
-
             // Draining: eligible only for shards still owned (not affected)
             (Draining, false, true),
             (Draining, true, false),
-
             // Joining/Failed/Removed: never eligible
             (Joining, false, false),
             (Joining, true, false),
@@ -959,8 +960,16 @@ nodes:
     #[test]
     fn topology_auto_derives_replica_groups_from_nodes() {
         let mut topo = Topology::new(64, 1, 1);
-        topo.add_node(Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("n1".into()), "http://n1:7700".into(), 2));
+        topo.add_node(Node::new(
+            NodeId::new("n0".into()),
+            "http://n0:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("n1".into()),
+            "http://n1:7700".into(),
+            2,
+        ));
         // replica_groups should auto-derive to 3
         assert_eq!(topo.replica_groups, 3);
         assert!(topo.group(2).is_some());
@@ -1010,13 +1019,23 @@ nodes:
         let initial_count = topo.nodes.len();
         let node_id = NodeId::new("meili-0".into());
 
-        assert!(topo.node(&node_id).is_some(), "Node should exist before removal");
+        assert!(
+            topo.node(&node_id).is_some(),
+            "Node should exist before removal"
+        );
 
         let removed = topo.remove_node(&node_id);
 
         assert!(removed, "remove_node should return true");
-        assert_eq!(topo.nodes.len(), initial_count - 1, "Node count should decrease");
-        assert!(topo.node(&node_id).is_none(), "Node should not exist after removal");
+        assert_eq!(
+            topo.nodes.len(),
+            initial_count - 1,
+            "Node count should decrease"
+        );
+        assert!(
+            topo.node(&node_id).is_none(),
+            "Node should not exist after removal"
+        );
     }
 
     #[test]
@@ -1027,8 +1046,15 @@ nodes:
 
         let removed = topo.remove_node(&nonexistent_id);
 
-        assert!(!removed, "remove_node should return false for nonexistent node");
-        assert_eq!(topo.nodes.len(), initial_count, "Node count should not change");
+        assert!(
+            !removed,
+            "remove_node should return false for nonexistent node"
+        );
+        assert_eq!(
+            topo.nodes.len(),
+            initial_count,
+            "Node count should not change"
+        );
     }
 
     #[test]
@@ -1040,15 +1066,31 @@ nodes:
         topo.remove_node(&node_id);
 
         let g0_after = topo.group(0).unwrap().node_count();
-        assert_eq!(g0_after, g0_before - 1, "Group 0 node count should decrease");
+        assert_eq!(
+            g0_after,
+            g0_before - 1,
+            "Group 0 node count should decrease"
+        );
     }
 
     #[test]
     fn remove_node_updates_indices() {
         let mut topo = Topology::new(64, 1, 1);
-        topo.add_node(Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("n1".into()), "http://n1:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("n2".into()), "http://n2:7700".into(), 0));
+        topo.add_node(Node::new(
+            NodeId::new("n0".into()),
+            "http://n0:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("n1".into()),
+            "http://n1:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("n2".into()),
+            "http://n2:7700".into(),
+            0,
+        ));
 
         // Remove middle node
         topo.remove_node(&NodeId::new("n1".into()));
@@ -1069,7 +1111,10 @@ nodes:
 
         assert!(removed, "remove_group should return true");
         assert_eq!(topo.nodes.len(), initial_count - group_0_initial_nodes);
-        assert!(topo.group(0).is_none(), "Group 0 should not exist after removal");
+        assert!(
+            topo.group(0).is_none(),
+            "Group 0 should not exist after removal"
+        );
         assert!(topo.group(1).is_some(), "Group 1 should still exist");
     }
 
@@ -1080,15 +1125,26 @@ nodes:
 
         let removed = topo.remove_group(99);
 
-        assert!(!removed, "remove_group should return false for nonexistent group");
-        assert_eq!(topo.nodes.len(), initial_count, "Node count should not change");
+        assert!(
+            !removed,
+            "remove_group should return false for nonexistent group"
+        );
+        assert_eq!(
+            topo.nodes.len(),
+            initial_count,
+            "Node count should not change"
+        );
     }
 
     #[test]
     fn remove_group_empty_group_returns_false() {
         let mut topo = Topology::new(64, 2, 1);
         // Only add nodes to group 0
-        topo.add_node(Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0));
+        topo.add_node(Node::new(
+            NodeId::new("n0".into()),
+            "http://n0:7700".into(),
+            0,
+        ));
 
         // Group 1 exists but has no nodes
         let removed = topo.remove_group(1);
@@ -1100,11 +1156,31 @@ nodes:
     fn remove_group_removes_all_nodes() {
         let mut topo = Topology::new(64, 2, 1);
         // Add 3 nodes to group 0, 2 nodes to group 1
-        topo.add_node(Node::new(NodeId::new("g0-n0".into()), "http://g0-n0:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("g0-n1".into()), "http://g0-n1:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("g0-n2".into()), "http://g0-n2:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("g1-n0".into()), "http://g1-n0:7700".into(), 1));
-        topo.add_node(Node::new(NodeId::new("g1-n1".into()), "http://g1-n1:7700".into(), 1));
+        topo.add_node(Node::new(
+            NodeId::new("g0-n0".into()),
+            "http://g0-n0:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("g0-n1".into()),
+            "http://g0-n1:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("g0-n2".into()),
+            "http://g0-n2:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("g1-n0".into()),
+            "http://g1-n0:7700".into(),
+            1,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("g1-n1".into()),
+            "http://g1-n1:7700".into(),
+            1,
+        ));
 
         assert_eq!(topo.nodes.len(), 5);
 
@@ -1121,9 +1197,21 @@ nodes:
     #[test]
     fn remove_node_then_remove_group() {
         let mut topo = Topology::new(64, 2, 1);
-        topo.add_node(Node::new(NodeId::new("g0-n0".into()), "http://g0-n0:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("g0-n1".into()), "http://g0-n1:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("g1-n0".into()), "http://g1-n0:7700".into(), 1));
+        topo.add_node(Node::new(
+            NodeId::new("g0-n0".into()),
+            "http://g0-n0:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("g0-n1".into()),
+            "http://g0-n1:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("g1-n0".into()),
+            "http://g1-n0:7700".into(),
+            1,
+        ));
 
         // Remove one node from group 0
         topo.remove_node(&NodeId::new("g0-n0".into()));
@@ -1185,7 +1273,11 @@ nodes:
     #[test]
     fn rebuild_groups_preserves_state() {
         let mut topo = Topology::new(64, 2, 1);
-        topo.add_node(Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0));
+        topo.add_node(Node::new(
+            NodeId::new("n0".into()),
+            "http://n0:7700".into(),
+            0,
+        ));
 
         // Mark group 0 as active
         if let Some(g) = topo.group_mut(0) {
@@ -1215,8 +1307,16 @@ nodes:
     #[test]
     fn topology_with_initializing_group() {
         let mut topo = Topology::new(64, 2, 1);
-        topo.add_node(Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("n1".into()), "http://n1:7700".into(), 1));
+        topo.add_node(Node::new(
+            NodeId::new("n0".into()),
+            "http://n0:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("n1".into()),
+            "http://n1:7700".into(),
+            1,
+        ));
 
         // Group 0 is initializing (default)
         let g0 = topo.group(0).unwrap();

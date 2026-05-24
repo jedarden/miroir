@@ -17,7 +17,10 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
 /// Helper to create a Redis container and connect to it
-async fn create_redis_store() -> (miroir_core::task_store::RedisTaskStore, testcontainers::ContainerAsync<Redis>) {
+async fn create_redis_store() -> (
+    miroir_core::task_store::RedisTaskStore,
+    testcontainers::ContainerAsync<Redis>,
+) {
     let redis_container = Redis::default().start().await.unwrap();
 
     let port = redis_container.get_host_port_ipv4(6379).await.unwrap();
@@ -62,9 +65,7 @@ async fn test_redis_task_roundtrip() {
     let task = new_test_task("mtask-redis-001");
 
     // Insert
-    store
-        .insert_task(&task)
-        .expect("Failed to insert task");
+    store.insert_task(&task).expect("Failed to insert task");
 
     // Get
     let retrieved = store
@@ -375,14 +376,10 @@ async fn test_redis_alias_flip_records_history() {
     store.create_alias(&alias).unwrap();
 
     // Flip to index-2
-    store
-        .flip_alias("flip-alias-redis", "index-2", 10)
-        .unwrap();
+    store.flip_alias("flip-alias-redis", "index-2", 10).unwrap();
 
     // Flip to index-3
-    store
-        .flip_alias("flip-alias-redis", "index-3", 10)
-        .unwrap();
+    store.flip_alias("flip-alias-redis", "index-3", 10).unwrap();
 
     // Verify history
     let retrieved = store.get_alias("flip-alias-redis").unwrap().unwrap();
@@ -501,9 +498,7 @@ async fn test_redis_job_claim_renew() {
         .unwrap();
 
     // Renew claim
-    let renewed = store
-        .renew_job_claim("job-renew", 1714500200000)
-        .unwrap();
+    let renewed = store.renew_job_claim("job-renew", 1714500200000).unwrap();
 
     assert!(renewed);
 }
@@ -681,16 +676,12 @@ async fn test_redis_admin_session_delete_expired() {
 
     // Redis handles expiration automatically via EXPIRE
     // delete_expired_admin_sessions is a no-op for Redis
-    let deleted = store
-        .delete_expired_admin_sessions(1714500000000)
-        .unwrap();
+    let deleted = store.delete_expired_admin_sessions(1714500000000).unwrap();
 
     assert_eq!(deleted, 0, "Redis handles expiration automatically");
 
     // Verify expired session is gone (TTL expired)
-    let retrieved = store
-        .get_admin_session("expired-session")
-        .unwrap();
+    let retrieved = store.get_admin_session("expired-session").unwrap();
 
     // Note: In real Redis, the key would have been auto-deleted by EXPIRE
     // In test, we check the revoked flag or TTL
@@ -719,23 +710,16 @@ async fn test_redis_tenant_mapping() {
 
     store.insert_tenant_mapping(&mapping).unwrap();
 
-    let retrieved = store
-        .get_tenant_mapping(&api_key_hash)
-        .unwrap()
-        .unwrap();
+    let retrieved = store.get_tenant_mapping(&api_key_hash).unwrap().unwrap();
 
     assert_eq!(retrieved.tenant_id, "tenant-123");
     assert_eq!(retrieved.group_id, Some(0));
 
     // Delete mapping
-    store
-        .delete_tenant_mapping(&api_key_hash)
-        .unwrap();
+    store.delete_tenant_mapping(&api_key_hash).unwrap();
 
     // Verify gone
-    let retrieved = store
-        .get_tenant_mapping(&api_key_hash)
-        .unwrap();
+    let retrieved = store.get_tenant_mapping(&api_key_hash).unwrap();
 
     assert!(retrieved.is_none());
 }
@@ -808,10 +792,7 @@ async fn test_redis_rollover_policy() {
 
     store.upsert_rollover_policy(&policy).unwrap();
 
-    let retrieved = store
-        .get_rollover_policy("daily-logs")
-        .unwrap()
-        .unwrap();
+    let retrieved = store.get_rollover_policy("daily-logs").unwrap().unwrap();
 
     assert_eq!(retrieved.pattern, "logs-{YYYY-MM-DD}");
     assert_eq!(retrieved.enabled, true);
@@ -837,21 +818,14 @@ async fn test_redis_search_ui_config() {
 
     store.upsert_search_ui_config(&config).unwrap();
 
-    let retrieved = store
-        .get_search_ui_config("test-index")
-        .unwrap()
-        .unwrap();
+    let retrieved = store.get_search_ui_config("test-index").unwrap().unwrap();
 
     assert_eq!(retrieved.config_json, config.config_json);
 
     // Delete config
-    store
-        .delete_search_ui_config("test-index")
-        .unwrap();
+    store.delete_search_ui_config("test-index").unwrap();
 
-    let retrieved = store
-        .get_search_ui_config("test-index")
-        .unwrap();
+    let retrieved = store.get_search_ui_config("test-index").unwrap();
 
     assert!(retrieved.is_none());
 }

@@ -12,10 +12,10 @@ use crate::mode_b_coordinator::{ModeBOpLeader, PhaseState};
 use crate::router::{assign_shard_in_group, shard_for_key};
 use crate::topology::{Group, NodeId};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::collections::HashMap;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 // ---------------------------------------------------------------------------
 // Schedule window guard
@@ -630,7 +630,10 @@ mod tests {
     #[test]
     fn check_window_now_no_restriction() {
         let config = ReshardingConfig::default();
-        assert!(matches!(check_window_now(&config), WindowGuardResult::NoRestriction));
+        assert!(matches!(
+            check_window_now(&config),
+            WindowGuardResult::NoRestriction
+        ));
     }
 
     #[test]
@@ -818,10 +821,7 @@ impl ReshardOperation {
 
     /// Check if the operation is in a terminal state.
     pub fn is_terminal(&self) -> bool {
-        matches!(
-            self.phase,
-            ReshardPhase::Complete | ReshardPhase::Failed
-        )
+        matches!(self.phase, ReshardPhase::Complete | ReshardPhase::Failed)
     }
 
     /// Get the shadow index name.
@@ -933,7 +933,9 @@ impl<E> ReshardCoordinator<E> {
     /// Returns `Ok(true)` if we are now the leader, `Ok(false)` if another
     /// pod holds the lease, or `Err` if acquisition failed.
     pub async fn try_acquire_leadership(&mut self) -> Result<bool, String> {
-        self.leader.try_acquire_leadership().await
+        self.leader
+            .try_acquire_leadership()
+            .await
             .map_err(|e| e.to_string())
     }
 
@@ -942,7 +944,9 @@ impl<E> ReshardCoordinator<E> {
     /// Returns `Ok(true)` if renewed successfully, `Ok(false)` if we lost
     /// leadership to another pod, or `Err` if renewal failed.
     pub async fn renew_leadership(&mut self) -> Result<bool, String> {
-        self.leader.renew_leadership().await
+        self.leader
+            .renew_leadership()
+            .await
             .map_err(|e| e.to_string())
     }
 
@@ -972,7 +976,9 @@ impl<E> ReshardCoordinator<E> {
     /// resume from the last committed phase.
     pub async fn advance_phase(&mut self, new_phase: ReshardPhase) -> Result<(), String> {
         let phase_name = new_phase.name().to_string();
-        self.leader.persist_phase(phase_name).await
+        self.leader
+            .persist_phase(phase_name)
+            .await
             .map_err(|e| e.to_string())
     }
 
@@ -984,21 +990,21 @@ impl<E> ReshardCoordinator<E> {
     ) -> Result<(), String> {
         self.leader.extra_state().documents_backfilled = backfilled;
         self.leader.extra_state().total_documents = total;
-        self.leader.persist_phase(self.leader.phase().to_string()).await
+        self.leader
+            .persist_phase(self.leader.phase().to_string())
+            .await
             .map_err(|e| e.to_string())
     }
 
     /// Mark the operation as failed and step down from leadership.
     pub async fn fail(&mut self, error: String) -> Result<(), String> {
         self.leader.extra_state().last_error = Some(error.clone());
-        self.leader.fail(error).await
-            .map_err(|e| e.to_string())
+        self.leader.fail(error).await.map_err(|e| e.to_string())
     }
 
     /// Mark the operation as completed and step down from leadership.
     pub async fn complete(&mut self) -> Result<(), String> {
-        self.leader.complete().await
-            .map_err(|e| e.to_string())
+        self.leader.complete().await.map_err(|e| e.to_string())
     }
 
     /// Recover the operation state from the task store.
@@ -1006,8 +1012,7 @@ impl<E> ReshardCoordinator<E> {
     /// Called by a new leader to read the persisted phase state and resume
     /// from the last committed phase boundary.
     pub async fn recover(&mut self) -> Result<Option<ReshardPhase>, String> {
-        let existing = self.leader.recover().await
-            .map_err(|e| e.to_string())?;
+        let existing = self.leader.recover().await.map_err(|e| e.to_string())?;
 
         if let Some(ref op) = existing {
             // Parse phase string back to ReshardPhase enum
@@ -1041,8 +1046,7 @@ impl<E> ReshardCoordinator<E> {
 
     /// Delete the operation state after completion.
     pub async fn delete(&self) -> Result<bool, String> {
-        self.leader.delete().await
-            .map_err(|e| e.to_string())
+        self.leader.delete().await.map_err(|e| e.to_string())
     }
 }
 
@@ -1092,7 +1096,10 @@ impl ReshardRegistry {
 
     /// Complete an operation and remove from active index tracking.
     pub fn complete(&mut self, id: &str) -> Result<(), String> {
-        let op = self.operations.get(id).ok_or_else(|| format!("Operation '{}' not found", id))?;
+        let op = self
+            .operations
+            .get(id)
+            .ok_or_else(|| format!("Operation '{}' not found", id))?;
         if !op.is_terminal() {
             return Err(format!("Operation '{}' is not in a terminal state", id));
         }
@@ -1128,7 +1135,10 @@ mod tests_reshard_execution {
     #[test]
     fn phase_display_names() {
         assert_eq!(ReshardPhase::Idle.name(), "Idle");
-        assert_eq!(ReshardPhase::BackfillInProgress.name(), "Backfill In Progress");
+        assert_eq!(
+            ReshardPhase::BackfillInProgress.name(),
+            "Backfill In Progress"
+        );
         assert_eq!(ReshardPhase::Failed.name(), "Failed");
     }
 

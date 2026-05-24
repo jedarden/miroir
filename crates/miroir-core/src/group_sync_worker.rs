@@ -13,9 +13,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::group_addition::{
-    GroupAdditionCoordinator, GroupAdditionError, GroupAdditionId,
-};
+use crate::group_addition::{GroupAdditionCoordinator, GroupAdditionError, GroupAdditionId};
 use crate::migration::ShardId;
 use crate::scatter::FetchDocumentsRequest;
 use crate::topology::{Group, GroupState, Node, NodeId, Topology};
@@ -110,7 +108,10 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
 
         for (addition_id, state) in additions {
             // Only sync additions in Syncing phase
-            if !matches!(state.phase, crate::group_addition::GroupAdditionPhase::Syncing) {
+            if !matches!(
+                state.phase,
+                crate::group_addition::GroupAdditionPhase::Syncing
+            ) {
                 continue;
             }
 
@@ -168,66 +169,47 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
         source_group: u32,
     ) -> Result<u64> {
         let topology = self.topology.read().await;
-        let page_size = self
-            .coordinator
-            .read()
-            .await
-            .config()
-            .sync_page_size;
+        let page_size = self.coordinator.read().await.config().sync_page_size;
 
         // Get source group
-        let source = topology
-            .group(source_group)
-            .ok_or_else(|| {
-                crate::error::MiroirError::Topology(format!(
-                    "source group {} not found",
-                    source_group
-                ))
-            })?;
+        let source = topology.group(source_group).ok_or_else(|| {
+            crate::error::MiroirError::Topology(format!("source group {} not found", source_group))
+        })?;
 
         // Get target group (the new group being added)
         let target_group_id = {
             let coord = self.coordinator.read().await;
             let state = coord.get_state(addition_id).ok_or_else(|| {
-                crate::error::MiroirError::Topology(format!(
-                    "addition {} not found",
-                    addition_id
-                ))
+                crate::error::MiroirError::Topology(format!("addition {} not found", addition_id))
             })?;
             state.group_id
         };
 
-        let target = topology
-            .group(target_group_id)
-            .ok_or_else(|| {
-                crate::error::MiroirError::Topology(format!(
-                    "target group {} not found",
-                    target_group_id
-                ))
-            })?;
+        let target = topology.group(target_group_id).ok_or_else(|| {
+            crate::error::MiroirError::Topology(format!(
+                "target group {} not found",
+                target_group_id
+            ))
+        })?;
 
         // Find healthy nodes in source and target groups
         let node_map = topology.node_map();
         let source_healthy = source.healthy_nodes(&node_map);
         let target_healthy = target.healthy_nodes(&node_map);
 
-        let source_node = source_healthy
-            .first()
-            .ok_or_else(|| {
-                crate::error::MiroirError::Topology(format!(
-                    "no healthy nodes in source group {}",
-                    source_group
-                ))
-            })?;
+        let source_node = source_healthy.first().ok_or_else(|| {
+            crate::error::MiroirError::Topology(format!(
+                "no healthy nodes in source group {}",
+                source_group
+            ))
+        })?;
 
-        let target_node = target_healthy
-            .first()
-            .ok_or_else(|| {
-                crate::error::MiroirError::Topology(format!(
-                    "no healthy nodes in target group {}",
-                    target_group_id
-                ))
-            })?;
+        let target_node = target_healthy.first().ok_or_else(|| {
+            crate::error::MiroirError::Topology(format!(
+                "no healthy nodes in target group {}",
+                target_group_id
+            ))
+        })?;
 
         let source_node_id = source_node.id.clone();
         let source_node_address = source_node.address.clone();
@@ -254,7 +236,8 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
             // Fetch from source
             let docs = tokio::time::timeout(
                 self.config.fetch_timeout,
-                self.node_client.fetch_documents(&source_node_id, &source_node_address, &fetch_req),
+                self.node_client
+                    .fetch_documents(&source_node_id, &source_node_address, &fetch_req),
             )
             .await
             .map_err(|_| {
@@ -326,10 +309,7 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
         coord
             .shard_sync_complete(addition_id, shard_id, total_copied)
             .map_err(|e| {
-                crate::error::MiroirError::Topology(format!(
-                    "failed to mark shard complete: {}",
-                    e
-                ))
+                crate::error::MiroirError::Topology(format!("failed to mark shard complete: {}", e))
             })?;
 
         info!(
@@ -352,7 +332,10 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
         let timeout = Duration::from_secs(3600); // 1 hour default
 
         for (addition_id, state) in additions {
-            if !matches!(state.phase, crate::group_addition::GroupAdditionPhase::Syncing) {
+            if !matches!(
+                state.phase,
+                crate::group_addition::GroupAdditionPhase::Syncing
+            ) {
                 continue;
             }
 
@@ -365,10 +348,8 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
                     );
 
                     let mut coord = self.coordinator.write().await;
-                    let _ = coord.fail_addition(
-                        addition_id,
-                        format!("sync timeout after {:?}", timeout),
-                    );
+                    let _ = coord
+                        .fail_addition(addition_id, format!("sync timeout after {:?}", timeout));
                 }
             }
         }
@@ -417,7 +398,10 @@ mod tests {
             address: &str,
             request: &FetchDocumentsRequest,
         ) -> std::result::Result<serde_json::Value, String> {
-            let key = (node.clone(), format!("{}-{}-{}", request.index_uid, request.offset, request.limit));
+            let key = (
+                node.clone(),
+                format!("{}-{}-{}", request.index_uid, request.offset, request.limit),
+            );
             let responses = self.fetch_responses.read().await;
             Ok(responses.get(&key).cloned().unwrap_or_else(|| {
                 serde_json::json!({

@@ -329,7 +329,11 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
                 if self.config.ttl_enabled && Self::is_document_expired(doc) {
                     debug!(
                         shard_id,
-                        primary_key = doc.get("id").or(doc.get("_id")).and_then(|v| v.as_str()).unwrap_or(""),
+                        primary_key = doc
+                            .get("id")
+                            .or(doc.get("_id"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(""),
                         "Skipping expired document in anti-entropy fingerprint"
                     );
                     continue;
@@ -944,7 +948,10 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         // Step 3: Pick authoritative version (highest _miroir_updated_at)
         let (authoritative_doc, authoritative_node) = match (&ref_doc, &target_doc) {
             (None, None) => {
-                warn!("PK {} not found on either replica, nothing to repair", primary_key);
+                warn!(
+                    "PK {} not found on either replica, nothing to repair",
+                    primary_key
+                );
                 return Ok(0);
             }
             (Some(doc), None) => {
@@ -989,17 +996,19 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         // Check if reference needs repair
         if ref_doc.as_ref() != Some(&authoritative_doc) {
             if let Err(e) = self
-                .write_document_with_origin(
-                    reference_node,
-                    reference_address,
-                    &authoritative_doc,
-                )
+                .write_document_with_origin(reference_node, reference_address, &authoritative_doc)
                 .await
             {
-                error!("Failed to write repair to reference node {}: {}", reference_node, e);
+                error!(
+                    "Failed to write repair to reference node {}: {}",
+                    reference_node, e
+                );
             } else {
                 repairs_performed += 1;
-                debug!("Repaired PK {} on reference node {}", primary_key, reference_node);
+                debug!(
+                    "Repaired PK {} on reference node {}",
+                    primary_key, reference_node
+                );
             }
         }
 
@@ -1009,7 +1018,10 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
                 .write_document_with_origin(target_node, target_address, &authoritative_doc)
                 .await
             {
-                error!("Failed to write repair to target node {}: {}", target_node, e);
+                error!(
+                    "Failed to write repair to target node {}: {}",
+                    target_node, e
+                );
             } else {
                 repairs_performed += 1;
                 debug!("Repaired PK {} on target node {}", primary_key, target_node);
@@ -1184,8 +1196,12 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         let mut all_mismatched = Vec::new();
 
         // Fetch all PKs and their content hashes from both indexes, bucketed by PK
-        let bucket_pks_a = self.fetch_all_index_pks_bucketed(node_a, address_a, index_a, shard_count_a).await?;
-        let bucket_pks_b = self.fetch_all_index_pks_bucketed(node_b, address_b, index_b, shard_count_b).await?;
+        let bucket_pks_a = self
+            .fetch_all_index_pks_bucketed(node_a, address_a, index_a, shard_count_a)
+            .await?;
+        let bucket_pks_b = self
+            .fetch_all_index_pks_bucketed(node_b, address_b, index_b, shard_count_b)
+            .await?;
 
         // Compare each bucket
         for bucket_id in 0..BUCKET_COUNT {
@@ -1234,9 +1250,8 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         shard_count: u32,
     ) -> Result<Vec<HashMap<String, u64>>> {
         let batch_size = self.config.fingerprint_batch_size as usize;
-        let mut bucket_pks: Vec<HashMap<String, u64>> = (0..BUCKET_COUNT)
-            .map(|_| HashMap::new())
-            .collect();
+        let mut bucket_pks: Vec<HashMap<String, u64>> =
+            (0..BUCKET_COUNT).map(|_| HashMap::new()).collect();
 
         // Iterate through all shards in the index
         for shard_id in 0..shard_count {
@@ -1403,7 +1418,9 @@ mod tests {
             "_rankingScore": 0.95,
         });
 
-        let hash1 = AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc_with_internal);
+        let hash1 = AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(
+            &doc_with_internal,
+        );
 
         let doc_clean = json!({
             "id": "test-1",
@@ -1411,7 +1428,9 @@ mod tests {
             "content": "Some content",
         });
 
-        let hash2 = AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc_clean);
+        let hash2 = AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(
+            &doc_clean,
+        );
 
         // Same content (without internal fields) should produce same hash
         assert_eq!(
@@ -1429,8 +1448,10 @@ mod tests {
             "m_field": "middle",
         });
 
-        let hash1 = AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc);
-        let hash2 = AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc);
+        let hash1 =
+            AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc);
+        let hash2 =
+            AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc);
 
         assert_eq!(hash1, hash2, "hash should be deterministic");
     }
@@ -1447,10 +1468,15 @@ mod tests {
             "title": "Second",
         });
 
-        let hash1 = AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc1);
-        let hash2 = AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc2);
+        let hash1 =
+            AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc1);
+        let hash2 =
+            AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc2);
 
-        assert_ne!(hash1, hash2, "different content should produce different hashes");
+        assert_ne!(
+            hash1, hash2,
+            "different content should produce different hashes"
+        );
     }
 
     #[test]
@@ -1470,8 +1496,10 @@ mod tests {
             "b": "value_b",
         });
 
-        let hash1 = AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc1);
-        let hash2 = AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc2);
+        let hash1 =
+            AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc1);
+        let hash2 =
+            AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc2);
 
         assert_eq!(hash1, hash2, "hash should be independent of key order");
     }

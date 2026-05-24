@@ -2,12 +2,12 @@
 //!
 //! Phase 3: persistent backends (SQLite, Redis) alongside in-memory fallback.
 
-use crate::Result;
-use crate::task::{MiroirTask, NodeTask, NodeTaskStatus, TaskStatus, TaskFilter};
 use crate::error::MiroirError;
 use crate::scatter::NodeClient;
+use crate::task::{MiroirTask, NodeTask, NodeTaskStatus, TaskFilter, TaskStatus};
 use crate::task_store::TaskStore;
-use crate::topology::{Topology, NodeId};
+use crate::topology::{NodeId, Topology};
+use crate::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -74,7 +74,8 @@ impl InMemoryTaskRegistry {
 
     /// Register a new task with the given node tasks.
     pub async fn register_async(&self, node_tasks: HashMap<String, u64>) -> Result<MiroirTask> {
-        self.register_async_with_metadata(node_tasks, None, None).await
+        self.register_async_with_metadata(node_tasks, None, None)
+            .await
     }
 
     /// Register a new task with the given node tasks and metadata.
@@ -92,10 +93,13 @@ impl InMemoryTaskRegistry {
 
         let mut tasks = HashMap::new();
         for (node_id, task_uid) in node_tasks {
-            tasks.insert(node_id, NodeTask {
-                task_uid,
-                status: NodeTaskStatus::Enqueued,
-            });
+            tasks.insert(
+                node_id,
+                NodeTask {
+                    task_uid,
+                    status: NodeTaskStatus::Enqueued,
+                },
+            );
         }
 
         let task = MiroirTask {
@@ -145,10 +149,13 @@ impl InMemoryTaskRegistry {
 
         let mut tasks = HashMap::new();
         for (node_id, task_uid) in node_tasks {
-            tasks.insert(node_id.clone(), NodeTask {
-                task_uid,
-                status: NodeTaskStatus::Enqueued,
-            });
+            tasks.insert(
+                node_id.clone(),
+                NodeTask {
+                    task_uid,
+                    status: NodeTaskStatus::Enqueued,
+                },
+            );
         }
 
         let task = MiroirTask {
@@ -174,7 +181,9 @@ impl InMemoryTaskRegistry {
         let registry = self.clone();
         let miroir_id_clone = miroir_id.clone();
         tokio::spawn(async move {
-            registry.poll_task_status_with_poller(&miroir_id_clone, poller).await;
+            registry
+                .poll_task_status_with_poller(&miroir_id_clone, poller)
+                .await;
         });
 
         Ok(task)
@@ -206,18 +215,25 @@ impl InMemoryTaskRegistry {
         if let Some(task) = tasks.get_mut(miroir_id) {
             // Set started_at when transitioning to Processing
             if status == TaskStatus::Processing && task.started_at.is_none() {
-                task.started_at = Some(std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(|e| MiroirError::Task(format!("clock error: {}", e)))?
-                    .as_millis() as u64);
+                task.started_at = Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|e| MiroirError::Task(format!("clock error: {}", e)))?
+                        .as_millis() as u64,
+                );
             }
             // Set finished_at when transitioning to a terminal state
-            if matches!(status, TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled)
-                && task.finished_at.is_none() {
-                task.finished_at = Some(std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(|e| MiroirError::Task(format!("clock error: {}", e)))?
-                    .as_millis() as u64);
+            if matches!(
+                status,
+                TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled
+            ) && task.finished_at.is_none()
+            {
+                task.finished_at = Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|e| MiroirError::Task(format!("clock error: {}", e)))?
+                        .as_millis() as u64,
+                );
             }
             task.status = status;
         }
@@ -312,7 +328,10 @@ impl InMemoryTaskRegistry {
             };
 
             // Check if we've reached a terminal state
-            if matches!(task.status, TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled) {
+            if matches!(
+                task.status,
+                TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled
+            ) {
                 return;
             }
 
@@ -338,7 +357,10 @@ impl InMemoryTaskRegistry {
                 let mut tasks = self.tasks.write().await;
                 if let Some(t) = tasks.get_mut(miroir_id) {
                     for (_node_id, node_task) in &mut t.node_tasks {
-                        if matches!(node_task.status, NodeTaskStatus::Enqueued | NodeTaskStatus::Processing) {
+                        if matches!(
+                            node_task.status,
+                            NodeTaskStatus::Enqueued | NodeTaskStatus::Processing
+                        ) {
                             node_task.status = NodeTaskStatus::Succeeded;
                         }
                     }
@@ -362,11 +384,16 @@ impl InMemoryTaskRegistry {
                         t.status = TaskStatus::Processing;
                     }
                     // Set finished timestamp for terminal states
-                    if matches!(t.status, TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled) {
-                        t.finished_at = Some(std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64);
+                    if matches!(
+                        t.status,
+                        TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled
+                    ) {
+                        t.finished_at = Some(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64,
+                        );
                     }
                 }
                 return;
@@ -394,14 +421,23 @@ impl InMemoryTaskRegistry {
             };
 
             // Check if we've reached a terminal state
-            if matches!(task.status, TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled) {
+            if matches!(
+                task.status,
+                TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled
+            ) {
                 return;
             }
 
             // Collect node IDs and task UIDs to poll
-            let node_polls: Vec<(NodeId, u64)> = task.node_tasks
+            let node_polls: Vec<(NodeId, u64)> = task
+                .node_tasks
                 .iter()
-                .filter(|(_, nt)| !matches!(nt.status, NodeTaskStatus::Succeeded | NodeTaskStatus::Failed))
+                .filter(|(_, nt)| {
+                    !matches!(
+                        nt.status,
+                        NodeTaskStatus::Succeeded | NodeTaskStatus::Failed
+                    )
+                })
                 .map(|(node_id, nt)| (NodeId::new(node_id.clone()), nt.task_uid))
                 .collect();
 
@@ -428,11 +464,16 @@ impl InMemoryTaskRegistry {
                         t.status = TaskStatus::Processing;
                     }
                     // Set finished timestamp for terminal states
-                    if matches!(t.status, TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled) {
-                        t.finished_at = Some(std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64);
+                    if matches!(
+                        t.status,
+                        TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled
+                    ) {
+                        t.finished_at = Some(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64,
+                        );
                     }
                 }
                 return;
@@ -450,7 +491,12 @@ impl InMemoryTaskRegistry {
                         node_statuses.insert(node_id.clone(), status);
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to poll node {} for task {}: {}", node_id, task_uid, e);
+                        tracing::warn!(
+                            "Failed to poll node {} for task {}: {}",
+                            node_id,
+                            task_uid,
+                            e
+                        );
                         // On poll failure, keep the current status but mark for potential degradation
                     }
                 }
@@ -468,14 +514,17 @@ impl InMemoryTaskRegistry {
 
                     // Update started_at timestamp if moving to processing
                     if t.status == TaskStatus::Enqueued {
-                        let any_processing = t.node_tasks.values().any(|nt| {
-                            matches!(nt.status, NodeTaskStatus::Processing)
-                        });
+                        let any_processing = t
+                            .node_tasks
+                            .values()
+                            .any(|nt| matches!(nt.status, NodeTaskStatus::Processing));
                         if any_processing && t.started_at.is_none() {
-                            t.started_at = Some(std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_millis() as u64);
+                            t.started_at = Some(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis() as u64,
+                            );
                             t.status = TaskStatus::Processing;
                         }
                     }
@@ -529,7 +578,12 @@ impl InMemoryTaskRegistry {
 /// Test helper: set error on a task (for testing failure scenarios).
 #[cfg(feature = "test-helpers")]
 impl InMemoryTaskRegistry {
-    pub async fn set_error_for_test(&self, miroir_id: &str, error: String, node_errors: HashMap<String, String>) {
+    pub async fn set_error_for_test(
+        &self,
+        miroir_id: &str,
+        error: String,
+        node_errors: HashMap<String, String>,
+    ) {
         let mut tasks = self.tasks.write().await;
         if let Some(t) = tasks.get_mut(miroir_id) {
             t.error = Some(error);
@@ -537,7 +591,12 @@ impl InMemoryTaskRegistry {
         }
     }
 
-    pub async fn set_timestamps_for_test(&self, miroir_id: &str, started_at: Option<u64>, finished_at: Option<u64>) {
+    pub async fn set_timestamps_for_test(
+        &self,
+        miroir_id: &str,
+        started_at: Option<u64>,
+        finished_at: Option<u64>,
+    ) {
         let mut tasks = self.tasks.write().await;
         if let Some(t) = tasks.get_mut(miroir_id) {
             if started_at.is_some() {
@@ -550,7 +609,12 @@ impl InMemoryTaskRegistry {
     }
 
     /// Test helper: set the status of a specific node task.
-    pub async fn set_node_task_status_for_test(&self, miroir_id: &str, node_id: &str, status: NodeTaskStatus) {
+    pub async fn set_node_task_status_for_test(
+        &self,
+        miroir_id: &str,
+        node_id: &str,
+        status: NodeTaskStatus,
+    ) {
         let mut tasks = self.tasks.write().await;
         if let Some(t) = tasks.get_mut(miroir_id) {
             if let Some(nt) = t.node_tasks.get_mut(node_id) {
@@ -589,7 +653,9 @@ impl crate::task::TaskRegistry for InMemoryTaskRegistry {
             let rt = tokio::runtime::Handle::try_current()
                 .map_err(|e| MiroirError::Task(format!("runtime error: {}", e)))?;
             rt.block_on(async move {
-                registry.register_async_with_metadata(node_tasks, index_uid, task_type).await
+                registry
+                    .register_async_with_metadata(node_tasks, index_uid, task_type)
+                    .await
             })
         })
     }
@@ -600,9 +666,7 @@ impl crate::task::TaskRegistry for InMemoryTaskRegistry {
         tokio::task::block_in_place(|| {
             let rt = tokio::runtime::Handle::try_current()
                 .map_err(|e| MiroirError::Task(format!("runtime error: {}", e)))?;
-            rt.block_on(async move {
-                Ok(registry.get_async(&miroir_id).await)
-            })
+            rt.block_on(async move { Ok(registry.get_async(&miroir_id).await) })
         })
     }
 
@@ -651,9 +715,7 @@ impl crate::task::TaskRegistry for InMemoryTaskRegistry {
         tokio::task::block_in_place(|| {
             let rt = tokio::runtime::Handle::try_current()
                 .map_err(|e| MiroirError::Task(format!("runtime error: {}", e)))?;
-            rt.block_on(async move {
-                registry.list_async(&filter).await
-            })
+            rt.block_on(async move { registry.list_async(&filter).await })
         })
     }
 
@@ -664,9 +726,7 @@ impl crate::task::TaskRegistry for InMemoryTaskRegistry {
                 Ok(rt) => rt,
                 Err(_) => return 0,
             };
-            rt.block_on(async move {
-                registry.count().await
-            })
+            rt.block_on(async move { registry.count().await })
         })
     }
 }
@@ -766,8 +826,7 @@ impl TaskRegistryImpl {
     #[cfg(feature = "redis-store")]
     pub fn redis(url: &str) -> Result<Self> {
         let store = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(crate::task_store::RedisTaskStore::open(url))
+            tokio::runtime::Handle::current().block_on(crate::task_store::RedisTaskStore::open(url))
         })?;
         store.migrate()?;
         Ok(Self::Redis(Arc::new(store)))
@@ -813,11 +872,9 @@ impl TaskRegistryImpl {
         task_type: Option<String>,
     ) -> Result<MiroirTask> {
         match self {
-            TaskRegistryImpl::InMemory(r) => {
-                crate::task::TaskRegistry::register_with_metadata(
-                    r, node_tasks, index_uid, task_type,
-                )
-            }
+            TaskRegistryImpl::InMemory(r) => crate::task::TaskRegistry::register_with_metadata(
+                r, node_tasks, index_uid, task_type,
+            ),
             TaskRegistryImpl::Sqlite(store) => {
                 let miroir_id = format!("mtask-{}", Uuid::new_v4());
                 let created_at = std::time::SystemTime::now()
@@ -851,7 +908,15 @@ impl TaskRegistryImpl {
                     node_tasks: new_task
                         .node_tasks
                         .into_iter()
-                        .map(|(nid, uid)| (nid, NodeTask { task_uid: uid, status: NodeTaskStatus::Enqueued }))
+                        .map(|(nid, uid)| {
+                            (
+                                nid,
+                                NodeTask {
+                                    task_uid: uid,
+                                    status: NodeTaskStatus::Enqueued,
+                                },
+                            )
+                        })
                         .collect(),
                     error: None,
                     node_errors: HashMap::new(),
@@ -891,7 +956,15 @@ impl TaskRegistryImpl {
                     node_tasks: new_task
                         .node_tasks
                         .into_iter()
-                        .map(|(nid, uid)| (nid, NodeTask { task_uid: uid, status: NodeTaskStatus::Enqueued }))
+                        .map(|(nid, uid)| {
+                            (
+                                nid,
+                                NodeTask {
+                                    task_uid: uid,
+                                    status: NodeTaskStatus::Enqueued,
+                                },
+                            )
+                        })
                         .collect(),
                     error: None,
                     node_errors: HashMap::new(),
@@ -904,13 +977,9 @@ impl TaskRegistryImpl {
     pub fn get(&self, miroir_id: &str) -> Result<Option<MiroirTask>> {
         match self {
             TaskRegistryImpl::InMemory(r) => crate::task::TaskRegistry::get(r, miroir_id),
-            TaskRegistryImpl::Sqlite(store) => {
-                Ok(store.get_task(miroir_id)?.map(row_to_task))
-            }
+            TaskRegistryImpl::Sqlite(store) => Ok(store.get_task(miroir_id)?.map(row_to_task)),
             #[cfg(feature = "redis-store")]
-            TaskRegistryImpl::Redis(store) => {
-                Ok(store.get_task(miroir_id)?.map(row_to_task))
-            }
+            TaskRegistryImpl::Redis(store) => Ok(store.get_task(miroir_id)?.map(row_to_task)),
         }
     }
 
@@ -976,13 +1045,9 @@ impl TaskRegistryImpl {
     pub fn count(&self) -> usize {
         match self {
             TaskRegistryImpl::InMemory(r) => crate::task::TaskRegistry::count(r),
-            TaskRegistryImpl::Sqlite(store) => {
-                store.task_count().unwrap_or(0) as usize
-            }
+            TaskRegistryImpl::Sqlite(store) => store.task_count().unwrap_or(0) as usize,
             #[cfg(feature = "redis-store")]
-            TaskRegistryImpl::Redis(store) => {
-                store.task_count().unwrap_or(0) as usize
-            }
+            TaskRegistryImpl::Redis(store) => store.task_count().unwrap_or(0) as usize,
         }
     }
 
@@ -1098,36 +1163,42 @@ impl TaskRegistryImpl {
             TaskRegistryImpl::InMemory(_) => Ok(vec![]),
             TaskRegistryImpl::Sqlite(store) => {
                 let rows = store.list_aliases()?;
-                Ok(rows.into_iter().map(|row| crate::alias::Alias {
-                    name: row.name,
-                    kind: if row.kind == "single" {
-                        crate::alias::AliasKind::Single
-                    } else {
-                        crate::alias::AliasKind::Multi
-                    },
-                    current_uid: row.current_uid,
-                    target_uids: row.target_uids,
-                    generation: row.version as u64,
-                    created_at: row.created_at as u64,
-                    updated_at: Some(row.created_at as u64),
-                }).collect())
+                Ok(rows
+                    .into_iter()
+                    .map(|row| crate::alias::Alias {
+                        name: row.name,
+                        kind: if row.kind == "single" {
+                            crate::alias::AliasKind::Single
+                        } else {
+                            crate::alias::AliasKind::Multi
+                        },
+                        current_uid: row.current_uid,
+                        target_uids: row.target_uids,
+                        generation: row.version as u64,
+                        created_at: row.created_at as u64,
+                        updated_at: Some(row.created_at as u64),
+                    })
+                    .collect())
             }
             #[cfg(feature = "redis-store")]
             TaskRegistryImpl::Redis(store) => {
                 let rows = store.list_aliases()?;
-                Ok(rows.into_iter().map(|row| crate::alias::Alias {
-                    name: row.name,
-                    kind: if row.kind == "single" {
-                        crate::alias::AliasKind::Single
-                    } else {
-                        crate::alias::AliasKind::Multi
-                    },
-                    current_uid: row.current_uid,
-                    target_uids: row.target_uids,
-                    generation: row.version as u64,
-                    created_at: row.created_at as u64,
-                    updated_at: Some(row.created_at as u64),
-                }).collect())
+                Ok(rows
+                    .into_iter()
+                    .map(|row| crate::alias::Alias {
+                        name: row.name,
+                        kind: if row.kind == "single" {
+                            crate::alias::AliasKind::Single
+                        } else {
+                            crate::alias::AliasKind::Multi
+                        },
+                        current_uid: row.current_uid,
+                        target_uids: row.target_uids,
+                        generation: row.version as u64,
+                        created_at: row.created_at as u64,
+                        updated_at: Some(row.created_at as u64),
+                    })
+                    .collect())
             }
         }
     }
@@ -1181,9 +1252,9 @@ mod tests {
         node_tasks.insert("node-0".to_string(), 1);
         node_tasks.insert("node-1".to_string(), 2);
 
-        let task = rt.block_on(async {
-            registry.register_async(node_tasks).await
-        }).unwrap();
+        let task = rt
+            .block_on(async { registry.register_async(node_tasks).await })
+            .unwrap();
         assert!(task.miroir_id.starts_with("mtask-"));
         assert_eq!(task.status, TaskStatus::Enqueued);
         assert_eq!(task.node_tasks.len(), 2);
@@ -1196,12 +1267,10 @@ mod tests {
         let mut node_tasks = HashMap::new();
         node_tasks.insert("node-0".to_string(), 1);
 
-        let task = rt.block_on(async {
-            registry.register_async(node_tasks).await
-        }).unwrap();
-        let retrieved = rt.block_on(async {
-            registry.get_async(&task.miroir_id).await
-        });
+        let task = rt
+            .block_on(async { registry.register_async(node_tasks).await })
+            .unwrap();
+        let retrieved = rt.block_on(async { registry.get_async(&task.miroir_id).await });
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().miroir_id, task.miroir_id);
     }
@@ -1238,9 +1307,9 @@ mod tests {
             offset: None,
         };
 
-        let tasks = rt.block_on(async {
-            registry.list_async(&filter).await
-        }).unwrap();
+        let tasks = rt
+            .block_on(async { registry.list_async(&filter).await })
+            .unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].miroir_id, task1.miroir_id);
     }
@@ -1252,9 +1321,9 @@ mod tests {
         let mut node_tasks = HashMap::new();
         node_tasks.insert("node-0".to_string(), 1);
 
-        let task = rt.block_on(async {
-            registry.register_async(node_tasks).await
-        }).unwrap();
+        let task = rt
+            .block_on(async { registry.register_async(node_tasks).await })
+            .unwrap();
 
         // Update node task to succeeded - must be done within runtime context
         let task_id = task.miroir_id.clone();
@@ -1267,10 +1336,13 @@ mod tests {
             }
         });
 
-        let retrieved = rt.block_on(async {
-            registry.get_async(&task.miroir_id).await
-        }).unwrap();
-        assert_eq!(retrieved.node_tasks.get("node-0").unwrap().status, NodeTaskStatus::Succeeded);
+        let retrieved = rt
+            .block_on(async { registry.get_async(&task.miroir_id).await })
+            .unwrap();
+        assert_eq!(
+            retrieved.node_tasks.get("node-0").unwrap().status,
+            NodeTaskStatus::Succeeded
+        );
     }
 
     #[test]
@@ -1281,9 +1353,9 @@ mod tests {
         node_tasks.insert("node-0".to_string(), 1);
         node_tasks.insert("node-1".to_string(), 2);
 
-        let task = rt.block_on(async {
-            registry.register_async(node_tasks).await
-        }).unwrap();
+        let task = rt
+            .block_on(async { registry.register_async(node_tasks).await })
+            .unwrap();
 
         // Mark one node as succeeded, one as processing - must be done within runtime context
         let task_id = task.miroir_id.clone();
@@ -1300,14 +1372,14 @@ mod tests {
         });
 
         // Overall status should still be enqueued/processing
-        let updated = rt.block_on(async {
-            registry.update_overall_status(&task.miroir_id).await
-        }).unwrap();
+        let updated = rt
+            .block_on(async { registry.update_overall_status(&task.miroir_id).await })
+            .unwrap();
         assert!(updated);
 
-        let retrieved = rt.block_on(async {
-            registry.get_async(&task.miroir_id).await
-        }).unwrap();
+        let retrieved = rt
+            .block_on(async { registry.get_async(&task.miroir_id).await })
+            .unwrap();
         assert_eq!(retrieved.status, TaskStatus::Processing);
     }
 
@@ -1319,20 +1391,28 @@ mod tests {
         let mut node_tasks = HashMap::new();
         node_tasks.insert("node-0".to_string(), 1);
 
-        let _task1 = rt.block_on(async {
-            registry.register_async_with_metadata(
-                node_tasks.clone(),
-                Some("index-a".to_string()),
-                Some("documentAdditionOrUpdate".to_string())
-            ).await
-        }).unwrap();
-        let _task2 = rt.block_on(async {
-            registry.register_async_with_metadata(
-                node_tasks.clone(),
-                Some("index-b".to_string()),
-                Some("documentAdditionOrUpdate".to_string())
-            ).await
-        }).unwrap();
+        let _task1 = rt
+            .block_on(async {
+                registry
+                    .register_async_with_metadata(
+                        node_tasks.clone(),
+                        Some("index-a".to_string()),
+                        Some("documentAdditionOrUpdate".to_string()),
+                    )
+                    .await
+            })
+            .unwrap();
+        let _task2 = rt
+            .block_on(async {
+                registry
+                    .register_async_with_metadata(
+                        node_tasks.clone(),
+                        Some("index-b".to_string()),
+                        Some("documentAdditionOrUpdate".to_string()),
+                    )
+                    .await
+            })
+            .unwrap();
 
         // Filter by index_uid
         let filter = TaskFilter {
@@ -1344,9 +1424,9 @@ mod tests {
             offset: None,
         };
 
-        let tasks = rt.block_on(async {
-            registry.list_async(&filter).await
-        }).unwrap();
+        let tasks = rt
+            .block_on(async { registry.list_async(&filter).await })
+            .unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].index_uid, Some("index-a".to_string()));
     }
@@ -1359,20 +1439,28 @@ mod tests {
         let mut node_tasks = HashMap::new();
         node_tasks.insert("node-0".to_string(), 1);
 
-        let _task1 = rt.block_on(async {
-            registry.register_async_with_metadata(
-                node_tasks.clone(),
-                Some("test-index".to_string()),
-                Some("documentAdditionOrUpdate".to_string())
-            ).await
-        }).unwrap();
-        let _task2 = rt.block_on(async {
-            registry.register_async_with_metadata(
-                node_tasks.clone(),
-                Some("test-index".to_string()),
-                Some("documentDeletion".to_string())
-            ).await
-        }).unwrap();
+        let _task1 = rt
+            .block_on(async {
+                registry
+                    .register_async_with_metadata(
+                        node_tasks.clone(),
+                        Some("test-index".to_string()),
+                        Some("documentAdditionOrUpdate".to_string()),
+                    )
+                    .await
+            })
+            .unwrap();
+        let _task2 = rt
+            .block_on(async {
+                registry
+                    .register_async_with_metadata(
+                        node_tasks.clone(),
+                        Some("test-index".to_string()),
+                        Some("documentDeletion".to_string()),
+                    )
+                    .await
+            })
+            .unwrap();
 
         // Filter by task_type
         let filter = TaskFilter {
@@ -1384,11 +1472,14 @@ mod tests {
             offset: None,
         };
 
-        let tasks = rt.block_on(async {
-            registry.list_async(&filter).await
-        }).unwrap();
+        let tasks = rt
+            .block_on(async { registry.list_async(&filter).await })
+            .unwrap();
         assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].task_type, Some("documentAdditionOrUpdate".to_string()));
+        assert_eq!(
+            tasks[0].task_type,
+            Some("documentAdditionOrUpdate".to_string())
+        );
     }
 
     #[test]
@@ -1400,18 +1491,18 @@ mod tests {
         node_tasks.insert("node-1".to_string(), 2);
         node_tasks.insert("node-2".to_string(), 3);
 
-        let task = rt.block_on(async {
-            registry.register_async(node_tasks).await
-        }).unwrap();
+        let task = rt
+            .block_on(async { registry.register_async(node_tasks).await })
+            .unwrap();
 
         // Wait for task to complete (simulated exponential backoff: 25 + 50 + 100 + 200 + 400 = 775ms)
         rt.block_on(async {
             tokio::time::sleep(std::time::Duration::from_millis(800)).await;
         });
 
-        let retrieved = rt.block_on(async {
-            registry.get_async(&task.miroir_id).await
-        }).unwrap();
+        let retrieved = rt
+            .block_on(async { registry.get_async(&task.miroir_id).await })
+            .unwrap();
         assert_eq!(retrieved.status, TaskStatus::Succeeded);
         assert!(retrieved.finished_at.is_some());
     }
@@ -1423,9 +1514,9 @@ mod tests {
         let mut node_tasks = HashMap::new();
         node_tasks.insert("node-0".to_string(), 1);
 
-        let task = rt.block_on(async {
-            registry.register_async(node_tasks).await
-        }).unwrap();
+        let task = rt
+            .block_on(async { registry.register_async(node_tasks).await })
+            .unwrap();
         assert!(task.miroir_id.starts_with("mtask-"));
         // UUID format: 8-4-4-4-12 hex digits
         let uuid_part = &task.miroir_id[6..];
@@ -1442,20 +1533,28 @@ mod tests {
         node_tasks.insert("node-0".to_string(), 1);
 
         // Create tasks with different combinations
-        let _task1 = rt.block_on(async {
-            registry.register_async_with_metadata(
-                node_tasks.clone(),
-                Some("index-a".to_string()),
-                Some("documentAdditionOrUpdate".to_string())
-            ).await
-        }).unwrap();
-        let task2 = rt.block_on(async {
-            registry.register_async_with_metadata(
-                node_tasks.clone(),
-                Some("index-b".to_string()),
-                Some("documentDeletion".to_string())
-            ).await
-        }).unwrap();
+        let _task1 = rt
+            .block_on(async {
+                registry
+                    .register_async_with_metadata(
+                        node_tasks.clone(),
+                        Some("index-a".to_string()),
+                        Some("documentAdditionOrUpdate".to_string()),
+                    )
+                    .await
+            })
+            .unwrap();
+        let task2 = rt
+            .block_on(async {
+                registry
+                    .register_async_with_metadata(
+                        node_tasks.clone(),
+                        Some("index-b".to_string()),
+                        Some("documentDeletion".to_string()),
+                    )
+                    .await
+            })
+            .unwrap();
 
         // Mark task2 as succeeded - must be done within runtime context
         let task2_id = task2.miroir_id.clone();
@@ -1476,9 +1575,9 @@ mod tests {
             offset: None,
         };
 
-        let tasks = rt.block_on(async {
-            registry.list_async(&filter).await
-        }).unwrap();
+        let tasks = rt
+            .block_on(async { registry.list_async(&filter).await })
+            .unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].miroir_id, task2.miroir_id);
     }

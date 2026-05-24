@@ -179,11 +179,14 @@ async fn create_multi_target_alias_reads_fanout() {
 
     // Verify reads resolve to all targets (fanout)
     let resolved = registry.resolve("all-logs").await;
-    assert_eq!(resolved, vec![
-        "logs-2026-04-18".to_string(),
-        "logs-2026-04-17".to_string(),
-        "logs-2026-04-16".to_string(),
-    ]);
+    assert_eq!(
+        resolved,
+        vec![
+            "logs-2026-04-18".to_string(),
+            "logs-2026-04-17".to_string(),
+            "logs-2026-04-16".to_string(),
+        ]
+    );
 
     // Verify it's identified as multi-target
     assert!(registry.is_multi_target_alias("all-logs").await);
@@ -221,10 +224,13 @@ async fn write_to_multi_target_alias_returns_not_writable() {
     let alias = registry.get("il-read").await.unwrap();
     assert_eq!(alias.kind, AliasKind::Multi);
     assert!(alias.current_uid.is_none());
-    assert_eq!(alias.target_uids, Some(vec![
-        "logs-2026-04-18".to_string(),
-        "logs-2026-04-17".to_string(),
-    ]));
+    assert_eq!(
+        alias.target_uids,
+        Some(vec![
+            "logs-2026-04-18".to_string(),
+            "logs-2026-04-17".to_string(),
+        ])
+    );
 }
 
 #[tokio::test]
@@ -286,17 +292,17 @@ async fn update_multi_via_update_multi_method() {
     registry.sync_from_store(&store).await.unwrap();
 
     // Update via the ILM-specific method
-    registry.update_multi("il-logs", vec![
-        "logs-1".to_string(),
-        "logs-2".to_string(),
-    ]).await.unwrap();
+    registry
+        .update_multi("il-logs", vec!["logs-1".to_string(), "logs-2".to_string()])
+        .await
+        .unwrap();
 
     // Verify the update
     let alias = registry.get("il-logs").await.unwrap();
-    assert_eq!(alias.target_uids, Some(vec![
-        "logs-1".to_string(),
-        "logs-2".to_string(),
-    ]));
+    assert_eq!(
+        alias.target_uids,
+        Some(vec!["logs-1".to_string(), "logs-2".to_string(),])
+    );
     assert_eq!(alias.generation, 2); // Incremented from 1 to 2
 }
 
@@ -430,9 +436,14 @@ async fn alias_update_targets_multi() {
     let mut alias = Alias::new_multi("logs".to_string(), vec!["a".to_string()]);
     assert_eq!(alias.generation, 0);
 
-    alias.update_targets(vec!["a".to_string(), "b".to_string()]).unwrap();
+    alias
+        .update_targets(vec!["a".to_string(), "b".to_string()])
+        .unwrap();
     assert_eq!(alias.generation, 1);
-    assert_eq!(alias.target_uids, Some(vec!["a".to_string(), "b".to_string()]));
+    assert_eq!(
+        alias.target_uids,
+        Some(vec!["a".to_string(), "b".to_string()])
+    );
 }
 
 #[tokio::test]

@@ -93,10 +93,7 @@ pub enum MiroirError {
 
     /// Tenant not allowed.
     #[error("tenant '{tenant}' not allowed: {reason}")]
-    TenantNotAllowed {
-        tenant: String,
-        reason: String,
-    },
+    TenantNotAllowed { tenant: String, reason: String },
 
     /// Discovery error.
     #[error("discovery error: {0}")]

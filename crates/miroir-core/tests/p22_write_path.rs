@@ -54,7 +54,11 @@ fn test_document_distribution_uniformity() {
 
     // Check that no shard has unreasonable count
     for (_shard, count) in &shard_counts {
-        assert!(*count >= 5 && *count <= 30, "Shard has unusual count: {}", count);
+        assert!(
+            *count >= 5 && *count <= 30,
+            "Shard has unusual count: {}",
+            count
+        );
     }
 }
 
@@ -68,7 +72,10 @@ fn test_reserved_field_rejection() {
     let code = MiroirCode::ReservedField;
     assert_eq!(code.as_str(), "miroir_reserved_field");
     assert_eq!(code.http_status(), 400);
-    assert_eq!(code.error_type(), miroir_core::api_error::ErrorType::InvalidRequest);
+    assert_eq!(
+        code.error_type(),
+        miroir_core::api_error::ErrorType::InvalidRequest
+    );
 }
 
 /// Test 5: Primary key required error.
@@ -77,7 +84,10 @@ fn test_primary_key_required_error() {
     let code = MiroirCode::PrimaryKeyRequired;
     assert_eq!(code.as_str(), "miroir_primary_key_required");
     assert_eq!(code.http_status(), 400);
-    assert_eq!(code.error_type(), miroir_core::api_error::ErrorType::InvalidRequest);
+    assert_eq!(
+        code.error_type(),
+        miroir_core::api_error::ErrorType::InvalidRequest
+    );
 }
 
 /// Test 6: No quorum error.
@@ -120,12 +130,14 @@ async fn test_mock_client_write_documents() {
     };
 
     // Mock response
-    client.responses.insert(
-        node_id.clone(),
-        json!({"taskUid": 1, "status": "enqueued"}),
-    );
+    client
+        .responses
+        .insert(node_id.clone(), json!({"taskUid": 1, "status": "enqueued"}));
 
-    let resp = client.write_documents(&node_id, "http://localhost:7700", &req).await.unwrap();
+    let resp = client
+        .write_documents(&node_id, "http://localhost:7700", &req)
+        .await
+        .unwrap();
     assert!(resp.success);
     assert_eq!(resp.task_uid, Some(1));
 }
@@ -142,7 +154,10 @@ async fn test_mock_client_delete_by_ids() {
         origin: None,
     };
 
-    let resp = client.delete_documents(&node_id, "http://localhost:7700", &req).await.unwrap();
+    let resp = client
+        .delete_documents(&node_id, "http://localhost:7700", &req)
+        .await
+        .unwrap();
     assert!(resp.success);
     // MockNodeClient hardcodes task_uid to Some(1)
     assert_eq!(resp.task_uid, Some(1));
@@ -183,7 +198,10 @@ fn test_meilisearch_error_shape() {
     let json_val = serde_json::to_value(&err).unwrap();
     assert_eq!(json_val["code"], "miroir_reserved_field");
     assert_eq!(json_val["type"], "invalid_request");
-    assert_eq!(json_val["message"], "document contains reserved field `_miroir_shard`");
+    assert_eq!(
+        json_val["message"],
+        "document contains reserved field `_miroir_shard`"
+    );
 }
 
 /// Test 13: Verify X-Miroir-Degraded header constant.
@@ -242,7 +260,9 @@ fn test_shard_distribution_rf1() {
         let targets = miroir_core::router::write_targets(shard_id, &topo);
         assert_eq!(targets.len(), 1, "RF=1 should have 1 target per shard");
         if let Some(node) = topo.node(&targets[0]) {
-            *node_shard_counts.entry(node.id.as_str().to_string()).or_insert(0) += 1;
+            *node_shard_counts
+                .entry(node.id.as_str().to_string())
+                .or_insert(0) += 1;
         }
     }
 

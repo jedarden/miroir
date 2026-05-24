@@ -1,0 +1,111 @@
+# Miroir API Compatibility Test Stack
+# Runs both Miroir and a standalone Meilisearch side-by-side for comparison testing
+# Usage: docker-compose -f tests/api-compatibility/docker-compose-compat.yml up -d
+
+services:
+  # Meilisearch node 0
+  meili-0:
+    image: getmeili/meilisearch:v1.37.0
+    container_name: compat-meili-0
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=dev-node-key
+      - MEILI_NO_ANALYTICS=true
+    ports:
+      - "7701:7700"
+    volumes:
+      - compat-meili-0-data:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Meilisearch node 1
+  meili-1:
+    image: getmeili/meilisearch:v1.37.0
+    container_name: compat-meili-1
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=dev-node-key
+      - MEILI_NO_ANALYTICS=true
+    ports:
+      - "7702:7700"
+    volumes:
+      - compat-meili-1-data:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Meilisearch node 2
+  meili-2:
+    image: getmeili/meilisearch:v1.37.0
+    container_name: compat-meili-2
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=dev-node-key
+      - MEILI_NO_ANALYTICS=true
+    ports:
+      - "7703:7700"
+    volumes:
+      - compat-meili-2-data:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Miroir orchestrator
+  miroir:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: miroir-compat:latest
+    container_name: compat-miroir
+    environment:
+      - MIROIR_MASTER_KEY=dev-key
+      - MIROIR_NODE_MASTER_KEY=dev-node-key
+    ports:
+      - "7700:7700"
+    volumes:
+      - ../compat-config.yaml:/etc/miroir/config.yaml:ro
+      - compat-miroir-data:/data
+    depends_on:
+      meili-0:
+        condition: service_healthy
+      meili-1:
+        condition: service_healthy
+      meili-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Standalone Meilisearch for comparison (single node)
+  meilisearch-standalone:
+    image: getmeili/meilisearch:v1.37.0
+    container_name: compat-meilisearch-standalone
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=dev-node-key
+      - MEILI_NO_ANALYTICS=true
+    ports:
+      - "7704:7700"
+    volumes:
+      - compat-meili-standalone-data:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+volumes:
+  compat-meili-0-data:
+  compat-meili-1-data:
+  compat-meili-2-data:
+  compat-miroir-data:
+  compat-meili-standalone-data:

@@ -1,0 +1,2 @@
+# Miroir Python SDK smoke test dependencies
+meilisearch>=0.31.0

@@ -27,10 +27,7 @@ pub fn assign_shard_in_group(shard_id: u32, group_nodes: &[NodeId], rf: usize) -
         .iter()
         .map(|n| (score(shard_id, n.as_str()), n))
         .collect();
-    scored.sort_unstable_by(|a, b| {
-        b.0.cmp(&a.0)
-            .then_with(|| a.1.as_str().cmp(b.1.as_str()))
-    });
+    scored.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.as_str().cmp(b.1.as_str())));
     scored
         .into_iter()
         .take(rf)
@@ -454,11 +451,17 @@ mod tests {
         // Different shard_id → different score
         let score_0_a = score(0, node_a);
         let score_1_a = score(1, node_a);
-        assert_ne!(score_0_a, score_1_a, "Same node, different shard should differ");
+        assert_ne!(
+            score_0_a, score_1_a,
+            "Same node, different shard should differ"
+        );
 
         // Different node_id → different score (same shard)
         let score_0_b = score(0, node_b);
-        assert_ne!(score_0_a, score_0_b, "Same shard, different node should differ");
+        assert_ne!(
+            score_0_a, score_0_b,
+            "Same shard, different node should differ"
+        );
 
         // Verify determinism
         assert_eq!(score(0, node_a), score_0_a, "Score is non-deterministic");
@@ -482,7 +485,11 @@ mod tests {
 
         let targets = write_targets(0, &topo);
         // RG=3, RF=2 → 6 nodes total (may include duplicates)
-        assert_eq!(targets.len(), 6, "write_targets should return RG × RF nodes");
+        assert_eq!(
+            targets.len(),
+            6,
+            "write_targets should return RG × RF nodes"
+        );
     }
 
     /// P1.3-A2: write_targets assigns one-per-group.
@@ -504,10 +511,7 @@ mod tests {
 
         // Verify that the subset in group 0 matches assign_shard_in_group
         let g0 = topo.group(0).unwrap();
-        let g0_targets: Vec<_> = targets
-            .iter()
-            .filter(|n| g0.nodes().contains(n))
-            .collect();
+        let g0_targets: Vec<_> = targets.iter().filter(|n| g0.nodes().contains(n)).collect();
         let g0_expected = assign_shard_in_group(shard_id, g0.nodes(), 2);
         assert_eq!(
             g0_targets.len(),
@@ -520,10 +524,7 @@ mod tests {
 
         // Verify that the subset in group 1 matches assign_shard_in_group
         let g1 = topo.group(1).unwrap();
-        let g1_targets: Vec<_> = targets
-            .iter()
-            .filter(|n| g1.nodes().contains(n))
-            .collect();
+        let g1_targets: Vec<_> = targets.iter().filter(|n| g1.nodes().contains(n)).collect();
         let g1_expected = assign_shard_in_group(shard_id, g1.nodes(), 2);
         assert_eq!(
             g1_targets.len(),
@@ -713,7 +714,10 @@ mod tests {
     /// Test write_targets_with_migration with active dual-write for a shard.
     #[test]
     fn test_write_targets_with_migration_dual_write_includes_new_node() {
-        use crate::migration::{MigrationConfig, MigrationCoordinator, MigrationId, MigrationPhase, ShardMigrationState, ShardId as MigShardId, MigrationState, NodeId as MigNodeId};
+        use crate::migration::{
+            MigrationConfig, MigrationCoordinator, MigrationId, MigrationPhase, MigrationState,
+            NodeId as MigNodeId, ShardId as MigShardId, ShardMigrationState,
+        };
         use std::collections::HashMap;
 
         let mut topo = Topology::new(64, 2, 2);
@@ -737,10 +741,13 @@ mod tests {
 
         // Create a migration state
         let mut affected_shards = HashMap::new();
-        affected_shards.insert(shard_id, ShardMigrationState::Migrating {
-            docs_copied: 1000,
-            pages_remaining: 5,
-        });
+        affected_shards.insert(
+            shard_id,
+            ShardMigrationState::Migrating {
+                docs_copied: 1000,
+                pages_remaining: 5,
+            },
+        );
 
         let mut old_owners = HashMap::new();
         old_owners.insert(shard_id, MigNodeId("node-0".to_string()));
@@ -764,16 +771,26 @@ mod tests {
 
         // Should include standard RF nodes plus the new node
         let expected_count = 2 * 2 + 1; // RG=2, RF=2, plus 1 new node = 5
-        assert_eq!(targets.len(), expected_count, "Should include standard targets plus new node");
+        assert_eq!(
+            targets.len(),
+            expected_count,
+            "Should include standard targets plus new node"
+        );
 
         // Verify the new node is included
-        assert!(targets.contains(&NodeId::new("node-6".to_string())), "Should include new node during dual-write");
+        assert!(
+            targets.contains(&NodeId::new("node-6".to_string())),
+            "Should include new node during dual-write"
+        );
     }
 
     /// Test write_targets_with_migration with dual-write for non-affected shard.
     #[test]
     fn test_write_targets_with_migration_dual_write_non_affected_shard() {
-        use crate::migration::{MigrationConfig, MigrationCoordinator, MigrationId, MigrationPhase, ShardMigrationState, ShardId as MigShardId, MigrationState, NodeId as MigNodeId};
+        use crate::migration::{
+            MigrationConfig, MigrationCoordinator, MigrationId, MigrationPhase, MigrationState,
+            NodeId as MigNodeId, ShardId as MigShardId, ShardMigrationState,
+        };
         use std::collections::HashMap;
 
         let mut topo = Topology::new(64, 2, 2);
@@ -794,10 +811,13 @@ mod tests {
         let shard_id = MigShardId(5); // Different shard
 
         let mut affected_shards = HashMap::new();
-        affected_shards.insert(shard_id, ShardMigrationState::Migrating {
-            docs_copied: 1000,
-            pages_remaining: 5,
-        });
+        affected_shards.insert(
+            shard_id,
+            ShardMigrationState::Migrating {
+                docs_copied: 1000,
+                pages_remaining: 5,
+            },
+        );
 
         let mut old_owners = HashMap::new();
         old_owners.insert(shard_id, MigNodeId("node-0".to_string()));
@@ -819,13 +839,20 @@ mod tests {
         let targets = write_targets_with_migration(7, &topo, Some(&coordinator));
 
         // Should be standard RF count only (RG=2, RF=2 = 4)
-        assert_eq!(targets.len(), 4, "Non-affected shard should have standard target count");
+        assert_eq!(
+            targets.len(),
+            4,
+            "Non-affected shard should have standard target count"
+        );
     }
 
     /// Test write_targets_with_migration with completed migration (no dual-write).
     #[test]
     fn test_write_targets_with_migration_completed_migration() {
-        use crate::migration::{MigrationConfig, MigrationCoordinator, MigrationId, MigrationPhase, ShardMigrationState, ShardId as MigShardId, MigrationState, NodeId as MigNodeId};
+        use crate::migration::{
+            MigrationConfig, MigrationCoordinator, MigrationId, MigrationPhase, MigrationState,
+            NodeId as MigNodeId, ShardId as MigShardId, ShardMigrationState,
+        };
         use std::collections::HashMap;
 
         let mut topo = Topology::new(64, 2, 2);
@@ -865,13 +892,20 @@ mod tests {
         let targets = write_targets_with_migration(7, &topo, Some(&coordinator));
 
         // Should be standard RF count only (no dual-write)
-        assert_eq!(targets.len(), 4, "Completed migration should not add dual-write targets");
+        assert_eq!(
+            targets.len(),
+            4,
+            "Completed migration should not add dual-write targets"
+        );
     }
 
     /// Test write_targets_with_migration prevents duplicate new_node.
     #[test]
     fn test_write_targets_with_migration_no_duplicate_new_node() {
-        use crate::migration::{MigrationConfig, MigrationCoordinator, MigrationId, MigrationPhase, ShardMigrationState, ShardId as MigShardId, MigrationState, NodeId as MigNodeId};
+        use crate::migration::{
+            MigrationConfig, MigrationCoordinator, MigrationId, MigrationPhase, MigrationState,
+            NodeId as MigNodeId, ShardId as MigShardId, ShardMigrationState,
+        };
         use std::collections::HashMap;
 
         let mut topo = Topology::new(64, 2, 2);
@@ -894,10 +928,13 @@ mod tests {
         let shard_id = MigShardId(7);
 
         let mut affected_shards = HashMap::new();
-        affected_shards.insert(shard_id, ShardMigrationState::Migrating {
-            docs_copied: 500,
-            pages_remaining: 2,
-        });
+        affected_shards.insert(
+            shard_id,
+            ShardMigrationState::Migrating {
+                docs_copied: 500,
+                pages_remaining: 2,
+            },
+        );
 
         let mut old_owners = HashMap::new();
         old_owners.insert(shard_id, MigNodeId("node-0".to_string()));
@@ -921,6 +958,9 @@ mod tests {
         let node_6_count = targets.iter().filter(|n| n.as_str() == "node-6").count();
 
         // Should not duplicate node-6 if it's already in standard targets
-        assert_eq!(node_6_count, 1, "Should not duplicate new_node if already in targets");
+        assert_eq!(
+            node_6_count, 1,
+            "Should not duplicate new_node if already in targets"
+        );
     }
 }

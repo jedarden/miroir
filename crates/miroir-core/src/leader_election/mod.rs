@@ -23,7 +23,7 @@
 //! committed phase.
 
 use crate::config::LeaderElectionConfig;
-use crate::task_store::{TaskStore, LeaderLeaseRow};
+use crate::task_store::{LeaderLeaseRow, TaskStore};
 use crate::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,7 +38,8 @@ use tracing::{debug, error, info, warn};
 /// - metric name (e.g., "miroir_leader")
 /// - label map (e.g., {"scope": "reshard:my-index"})
 /// - value (1.0 for leader, 0.0 for follower)
-pub type LeaderElectionMetricsCallback = Arc<dyn Fn(&str, &HashMap<String, String>, f64) + Send + Sync>;
+pub type LeaderElectionMetricsCallback =
+    Arc<dyn Fn(&str, &HashMap<String, String>, f64) + Send + Sync>;
 
 /// Leader election metrics for Prometheus emission.
 #[derive(Debug, Clone, Default)]
@@ -72,7 +73,10 @@ impl LeaderElectionMetrics {
 
     /// Record a lease acquisition for a scope.
     pub fn record_acquisition(&mut self, scope: &str) {
-        *self.acquisitions_total.entry(scope.to_string()).or_insert(0) += 1;
+        *self
+            .acquisitions_total
+            .entry(scope.to_string())
+            .or_insert(0) += 1;
     }
 
     /// Record a lease renewal for a scope.
@@ -116,11 +120,7 @@ impl LeaderElectionMetrics {
         for (scope, count) in &self.acquisitions_total {
             let mut labels = HashMap::new();
             labels.insert("scope".to_string(), scope.clone());
-            callback(
-                "miroir_leader_acquisitions_total",
-                &labels,
-                *count as f64,
-            );
+            callback("miroir_leader_acquisitions_total", &labels, *count as f64);
         }
 
         // Emit renewal counts
@@ -230,9 +230,9 @@ impl LeaderElection {
         let ttl_secs = self.config.lease_ttl_s;
         let expires_at = now_ms + (ttl_secs * 1000) as i64;
 
-        let acquired = self
-            .task_store
-            .try_acquire_leader_lease(scope, &self.pod_id, expires_at, now_ms)?;
+        let acquired =
+            self.task_store
+                .try_acquire_leader_lease(scope, &self.pod_id, expires_at, now_ms)?;
 
         if acquired {
             debug!(scope, pod_id = %self.pod_id, "acquired leader lease");
@@ -323,7 +323,8 @@ impl LeaderElection {
         let now_ms = now_ms();
         // Check if we hold the lease (and it's not expired)
         let current = self.task_store.get_leader_lease(scope)?;
-        let held = current.as_ref()
+        let held = current
+            .as_ref()
             .map(|l| &l.holder == &self.pod_id && l.expires_at > now_ms)
             .unwrap_or(false);
 
@@ -498,9 +499,7 @@ impl LeaderElection {
         let leader_election = self.clone();
         let scope = scope.to_string();
 
-        tokio::spawn(async move {
-            leader_election.run(&scope, callback).await
-        })
+        tokio::spawn(async move { leader_election.run(&scope, callback).await })
     }
 
     /// Get all active leases.
@@ -524,13 +523,7 @@ impl LeaderElection {
     ///
     /// Useful for graceful shutdown.
     pub async fn step_down_all(&self) -> Result<()> {
-        let scopes: Vec<String> = self
-            .active_leases
-            .read()
-            .await
-            .keys()
-            .cloned()
-            .collect();
+        let scopes: Vec<String> = self.active_leases.read().await.keys().cloned().collect();
 
         for scope in scopes {
             self.step_down_async(&scope).await?;
@@ -549,7 +542,10 @@ impl LeaderElection {
     /// # Arguments
     ///
     /// * `operation` - The Mode B operation state to persist
-    pub fn persist_mode_b_operation(&self, operation: &crate::task_store::ModeBOperation) -> Result<()> {
+    pub fn persist_mode_b_operation(
+        &self,
+        operation: &crate::task_store::ModeBOperation,
+    ) -> Result<()> {
         self.task_store.upsert_mode_b_operation(operation)?;
         Ok(())
     }
@@ -562,7 +558,10 @@ impl LeaderElection {
     /// # Arguments
     ///
     /// * `scope` - The operation scope (e.g., "reshard:my-index")
-    pub fn recover_mode_b_operation(&self, scope: &str) -> Result<Option<crate::task_store::ModeBOperation>> {
+    pub fn recover_mode_b_operation(
+        &self,
+        scope: &str,
+    ) -> Result<Option<crate::task_store::ModeBOperation>> {
         self.task_store.get_mode_b_operation_by_scope(scope)
     }
 
@@ -573,7 +572,10 @@ impl LeaderElection {
     /// # Arguments
     ///
     /// * `filter` - Filter criteria for listing operations
-    pub fn list_mode_b_operations(&self, filter: &crate::task_store::ModeBOperationFilter) -> Result<Vec<crate::task_store::ModeBOperation>> {
+    pub fn list_mode_b_operations(
+        &self,
+        filter: &crate::task_store::ModeBOperationFilter,
+    ) -> Result<Vec<crate::task_store::ModeBOperation>> {
         self.task_store.list_mode_b_operations(filter)
     }
 
@@ -595,7 +597,8 @@ impl LeaderElection {
     /// * `cutoff_ms` - Operations with updated_at < cutoff_ms are eligible for pruning
     /// * `batch_size` - Maximum number of operations to delete in one call
     pub fn prune_mode_b_operations(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize> {
-        self.task_store.prune_mode_b_operations(cutoff_ms, batch_size)
+        self.task_store
+            .prune_mode_b_operations(cutoff_ms, batch_size)
     }
 }
 
@@ -625,11 +628,7 @@ mod tests {
             renew_interval_s: 3,
         };
 
-        LeaderElection::new(
-            Arc::new(store),
-            "pod-1".to_string(),
-            config,
-        )
+        LeaderElection::new(Arc::new(store), "pod-1".to_string(), config)
     }
 
     #[tokio::test]
@@ -665,17 +664,9 @@ mod tests {
         };
 
         let store = Arc::new(store);
-        let leader1 = LeaderElection::new(
-            store.clone(),
-            "pod-1".to_string(),
-            config.clone(),
-        );
+        let leader1 = LeaderElection::new(store.clone(), "pod-1".to_string(), config.clone());
 
-        let leader2 = LeaderElection::new(
-            store,
-            "pod-2".to_string(),
-            config,
-        );
+        let leader2 = LeaderElection::new(store, "pod-2".to_string(), config);
 
         // Leader 1 acquires the lease
         assert!(leader1.try_acquire_async("test-scope").await.unwrap());
@@ -700,17 +691,9 @@ mod tests {
         };
 
         let store = Arc::new(store);
-        let leader1 = LeaderElection::new(
-            store.clone(),
-            "pod-1".to_string(),
-            config.clone(),
-        );
+        let leader1 = LeaderElection::new(store.clone(), "pod-1".to_string(), config.clone());
 
-        let leader2 = LeaderElection::new(
-            store,
-            "pod-2".to_string(),
-            config,
-        );
+        let leader2 = LeaderElection::new(store, "pod-2".to_string(), config);
 
         // Leader 1 acquires the lease
         assert!(leader1.try_acquire_async("test-scope").await.unwrap());
@@ -752,17 +735,9 @@ mod tests {
         };
 
         let store = Arc::new(store);
-        let leader1 = LeaderElection::new(
-            store.clone(),
-            "pod-1".to_string(),
-            config.clone(),
-        );
+        let leader1 = LeaderElection::new(store.clone(), "pod-1".to_string(), config.clone());
 
-        let leader2 = LeaderElection::new(
-            store,
-            "pod-2".to_string(),
-            config,
-        );
+        let leader2 = LeaderElection::new(store, "pod-2".to_string(), config);
 
         // No lease holder initially
         assert!(leader1.get_holder("test-scope").unwrap().is_none());
@@ -771,8 +746,14 @@ mod tests {
         leader1.try_acquire_async("test-scope").await.unwrap();
 
         // Check the holder
-        assert_eq!(leader1.get_holder("test-scope").unwrap().as_deref(), Some("pod-1"));
-        assert_eq!(leader2.get_holder("test-scope").unwrap().as_deref(), Some("pod-1"));
+        assert_eq!(
+            leader1.get_holder("test-scope").unwrap().as_deref(),
+            Some("pod-1")
+        );
+        assert_eq!(
+            leader2.get_holder("test-scope").unwrap().as_deref(),
+            Some("pod-1")
+        );
     }
 
     #[tokio::test]

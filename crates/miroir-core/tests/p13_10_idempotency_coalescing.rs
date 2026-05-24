@@ -6,8 +6,8 @@
 //! - Hot query (1000 identical concurrent requests) → ≤ 10 scatters fire (one per 50ms window)
 //! - Settings change mid-coalesce-window → next query starts fresh (doesn't merge with pre-change queries)
 
-use miroir_core::idempotency::{IdempotencyCache, QueryCoalescer, QueryFingerprint};
 use miroir_core::error::MiroirError;
+use miroir_core::idempotency::{IdempotencyCache, QueryCoalescer, QueryFingerprint};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -36,11 +36,21 @@ async fn p5_10_a1_same_key_same_body_returns_cached_mtask() {
     assert!(result.is_none(), "first check should miss");
 
     // Insert after processing
-    cache.insert(key.to_string(), body_hash.clone(), "mtask-abc123".to_string()).await;
+    cache
+        .insert(
+            key.to_string(),
+            body_hash.clone(),
+            "mtask-abc123".to_string(),
+        )
+        .await;
 
     // Second check should hit with cached mtask ID
     let result = cache.check(key, &body_hash).await.unwrap();
-    assert_eq!(result, Some("mtask-abc123".to_string()), "second check should return cached mtask ID");
+    assert_eq!(
+        result,
+        Some("mtask-abc123".to_string()),
+        "second check should return cached mtask ID"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -55,15 +65,19 @@ async fn p5_10_a2_same_key_different_body_returns_conflict() {
     // Insert first body
     let body1 = json!({"id": "doc1", "name": "Original"});
     let hash1 = compute_hash(&body1);
-    cache.insert(key.to_string(), hash1.clone(), "mtask-xyz789".to_string()).await;
+    cache
+        .insert(key.to_string(), hash1.clone(), "mtask-xyz789".to_string())
+        .await;
 
     // Try with different body - should get IdempotencyKeyReused error
     let body2 = json!({"id": "doc1", "name": "Modified"});
     let hash2 = compute_hash(&body2);
 
     let result = cache.check(key, &hash2).await;
-    assert!(matches!(result, Err(MiroirError::IdempotencyKeyReused)),
-            "same key with different body should return IdempotencyKeyReused error");
+    assert!(
+        matches!(result, Err(MiroirError::IdempotencyKeyReused)),
+        "same key with different body should return IdempotencyKeyReused error"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -122,8 +136,11 @@ async fn p5_10_a3_hot_query_coalesces_scatters() {
 
     // With 50ms window and immediate launching, most requests should coalesce
     // At least 90% should have coalesced (they all hit within the window)
-    assert!(coalesced_count >= 900,
-            "expected at least 900 coalesced queries, got {}", coalesced_count);
+    assert!(
+        coalesced_count >= 900,
+        "expected at least 900 coalesced queries, got {}",
+        coalesced_count
+    );
 }
 
 #[tokio::test]
@@ -150,7 +167,11 @@ async fn p5_10_a3_multiple_scatters_across_windows() {
         // Simulate a few coalesced queries in this window
         for _ in 0..10 {
             let rx = coalescer.try_coalesce(fp.clone()).await;
-            assert!(rx.is_some(), "subsequent queries in window {} should coalesce", window);
+            assert!(
+                rx.is_some(),
+                "subsequent queries in window {} should coalesce",
+                window
+            );
         }
 
         // Complete this scatter
@@ -162,7 +183,11 @@ async fn p5_10_a3_multiple_scatters_across_windows() {
     }
 
     // We expect exactly 5 scatters (one per window)
-    assert_eq!(scatter_count, 5, "expected 5 scatters across 5 windows, got {}", scatter_count);
+    assert_eq!(
+        scatter_count, 5,
+        "expected 5 scatters across 5 windows, got {}",
+        scatter_count
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -186,8 +211,10 @@ async fn p5_10_a4_settings_version_change_invalidation() {
 
     // Query with new settings version should NOT coalesce with v1 query
     let rx = coalescer.try_coalesce(fp_v2.clone()).await;
-    assert!(rx.is_none(),
-            "query with different settings version should not coalesce with in-flight query");
+    assert!(
+        rx.is_none(),
+        "query with different settings version should not coalesce with in-flight query"
+    );
 
     // Complete the v1 query
     let _ = tx1.send(b"response v1".to_vec());
@@ -212,9 +239,18 @@ async fn p5_10_a4_canonical_json_ensures_consistency() {
     let fp2 = QueryFingerprint::new(index.clone(), &body2, 1);
     let fp3 = QueryFingerprint::new(index.clone(), &body3, 1);
 
-    assert_eq!(fp1, fp2, "different key orders should produce same fingerprint");
-    assert_eq!(fp2, fp3, "different key orders should produce same fingerprint");
-    assert_eq!(fp1.query_json, fp2.query_json, "canonical JSON should match");
+    assert_eq!(
+        fp1, fp2,
+        "different key orders should produce same fingerprint"
+    );
+    assert_eq!(
+        fp2, fp3,
+        "different key orders should produce same fingerprint"
+    );
+    assert_eq!(
+        fp1.query_json, fp2.query_json,
+        "canonical JSON should match"
+    );
 }
 
 #[tokio::test]
@@ -225,7 +261,10 @@ async fn p5_10_a4_settings_version_affects_fingerprint() {
     let fp_v1 = QueryFingerprint::new(index.clone(), &query_body, 1);
     let fp_v2 = QueryFingerprint::new(index.clone(), &query_body, 2);
 
-    assert_ne!(fp_v1, fp_v2, "different settings versions should produce different fingerprints");
+    assert_ne!(
+        fp_v1, fp_v2,
+        "different settings versions should produce different fingerprints"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -240,7 +279,9 @@ async fn p5_10_a5_idempotency_cache_ttl_eviction() {
     let body_hash = compute_hash(&body);
 
     // Insert entry
-    cache.insert(key.to_string(), body_hash.clone(), "mtask-ttl".to_string()).await;
+    cache
+        .insert(key.to_string(), body_hash.clone(), "mtask-ttl".to_string())
+        .await;
 
     // Should be present immediately
     let result = cache.check(key, &body_hash).await.unwrap();
@@ -251,7 +292,10 @@ async fn p5_10_a5_idempotency_cache_ttl_eviction() {
 
     // Should be evicted after TTL
     let result = cache.check(key, &body_hash).await.unwrap();
-    assert!(result.is_none(), "entry should be evicted after TTL expires");
+    assert!(
+        result.is_none(),
+        "entry should be evicted after TTL expires"
+    );
 }
 
 #[tokio::test]
@@ -272,18 +316,56 @@ async fn p5_10_a5_idempotency_cache_max_entries_enforcement() {
     let key4 = "key-4".to_string();
     let body4 = json!({"id": 4});
     let hash4 = format!("{:x}", sha2::Sha256::digest(body4.to_string().as_bytes()));
-    cache.insert(key4.clone(), hash4.clone(), "mtask-4".to_string()).await;
+    cache
+        .insert(key4.clone(), hash4.clone(), "mtask-4".to_string())
+        .await;
 
-    assert_eq!(cache.size().await, 3, "cache should still have 3 entries after inserting 4th");
+    assert_eq!(
+        cache.size().await,
+        3,
+        "cache should still have 3 entries after inserting 4th"
+    );
 
     // At least one of the original keys should be evicted
     let remaining = [
-        cache.check("key-0", &format!("{:x}", sha2::Sha256::digest(json!({"id": 0}).to_string().as_bytes()))).await.unwrap().is_some(),
-        cache.check("key-1", &format!("{:x}", sha2::Sha256::digest(json!({"id": 1}).to_string().as_bytes()))).await.unwrap().is_some(),
-        cache.check("key-2", &format!("{:x}", sha2::Sha256::digest(json!({"id": 2}).to_string().as_bytes()))).await.unwrap().is_some(),
+        cache
+            .check(
+                "key-0",
+                &format!(
+                    "{:x}",
+                    sha2::Sha256::digest(json!({"id": 0}).to_string().as_bytes())
+                ),
+            )
+            .await
+            .unwrap()
+            .is_some(),
+        cache
+            .check(
+                "key-1",
+                &format!(
+                    "{:x}",
+                    sha2::Sha256::digest(json!({"id": 1}).to_string().as_bytes())
+                ),
+            )
+            .await
+            .unwrap()
+            .is_some(),
+        cache
+            .check(
+                "key-2",
+                &format!(
+                    "{:x}",
+                    sha2::Sha256::digest(json!({"id": 2}).to_string().as_bytes())
+                ),
+            )
+            .await
+            .unwrap()
+            .is_some(),
     ];
-    assert!(remaining.iter().filter(|&&x| x).count() < 3,
-            "at least one original key should be evicted to maintain max size");
+    assert!(
+        remaining.iter().filter(|&&x| x).count() < 3,
+        "at least one original key should be evicted to maintain max size"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -309,7 +391,10 @@ async fn query_coalescer_max_pending_queries_enforcement() {
     // Third query should fail - too many pending
     let fp3 = QueryFingerprint::new(index.clone(), &body, 3);
     let result = coalescer.register(fp3).await;
-    assert!(result.is_err(), "registering beyond max_pending should return error");
+    assert!(
+        result.is_err(),
+        "registering beyond max_pending should return error"
+    );
 
     // Cleanup
     coalescer.unregister(&fp1).await;
@@ -338,7 +423,10 @@ async fn query_coalescer_prunes_stale_entries() {
     // The count depends on whether prune happens before or after the check
     // Let's verify the old fingerprint is gone by trying to coalesce with it
     let rx = coalescer.try_coalesce(fp).await;
-    assert!(rx.is_none(), "stale entry should not be available for coalescing");
+    assert!(
+        rx.is_none(),
+        "stale entry should not be available for coalescing"
+    );
 
     // Cleanup
     coalescer.unregister(&fp2).await;

@@ -117,17 +117,16 @@ impl HedgingManager {
     /// Record a latency observation for a node.
     pub async fn record_latency(&self, node_id: &NodeId, latency_ms: f64) {
         let mut latencies = self.node_latencies.write().await;
-        let entry = latencies.entry(node_id.clone()).or_insert_with(NodeLatency::default);
+        let entry = latencies
+            .entry(node_id.clone())
+            .or_insert_with(NodeLatency::default);
         entry.update(latency_ms);
     }
 
     /// Get the p95 latency for a node.
     pub async fn get_p95(&self, node_id: &NodeId) -> f64 {
         let latencies = self.node_latencies.read().await;
-        latencies
-            .get(node_id)
-            .map(|l| l.p95_ms())
-            .unwrap_or(50.0)
+        latencies.get(node_id).map(|l| l.p95_ms()).unwrap_or(50.0)
     }
 
     /// Compute the hedge deadline for a request to the given node.
@@ -139,7 +138,8 @@ impl HedgingManager {
         }
 
         let p95 = self.get_p95(primary_node).await;
-        let trigger_ms = (p95 * self.config.p95_trigger_multiplier).max(self.config.min_trigger_ms as f64);
+        let trigger_ms =
+            (p95 * self.config.p95_trigger_multiplier).max(self.config.min_trigger_ms as f64);
         Some(Duration::from_millis(trigger_ms as u64))
     }
 
@@ -160,7 +160,8 @@ impl HedgingManager {
         }
 
         // Get all nodes for this shard (assign across all replica groups)
-        let all_nodes: Vec<NodeId> = self.topology
+        let all_nodes: Vec<NodeId> = self
+            .topology
             .groups()
             .flat_map(|group| assign_shard_in_group(shard_id, group.nodes(), self.topology.rf()))
             .collect();

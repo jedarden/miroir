@@ -154,14 +154,16 @@ impl SessionManager {
         }
 
         // Get or create session
-        let session = sessions.entry(session_id.to_string()).or_insert(SessionState {
-            last_write_mtask_id: None,
-            last_write_at: 0,
-            pinned_group: None,
-            min_settings_version: 0,
-            created_at: now,
-            expires_at,
-        });
+        let session = sessions
+            .entry(session_id.to_string())
+            .or_insert(SessionState {
+                last_write_mtask_id: None,
+                last_write_at: 0,
+                pinned_group: None,
+                min_settings_version: 0,
+                created_at: now,
+                expires_at,
+            });
 
         // Update session state
         session.last_write_mtask_id = Some(mtask_id.clone());
@@ -188,7 +190,8 @@ impl SessionManager {
 
         // Track pending write per session
         let mut pending = self.pending_writes.write().await;
-        pending.entry(session_id.to_string())
+        pending
+            .entry(session_id.to_string())
             .or_insert_with(HashMap::new)
             .insert(mtask_id.clone(), first_quorum_group.to_string());
 
@@ -209,9 +212,8 @@ impl SessionManager {
             sessions.get(session_id).cloned()
         };
 
-        let session = session.ok_or_else(|| {
-            MiroirError::InvalidRequest("session not found".to_string())
-        })?;
+        let session =
+            session.ok_or_else(|| MiroirError::InvalidRequest("session not found".to_string()))?;
 
         let mtask_id = session.last_write_mtask_id.ok_or_else(|| {
             MiroirError::InvalidRequest("no pending write for session".to_string())
@@ -248,7 +250,9 @@ impl SessionManager {
                     max_wait_ms = max_wait.as_millis(),
                     "session pin wait timeout"
                 );
-                return Err(MiroirError::InvalidState("session pin wait timeout".to_string()));
+                return Err(MiroirError::InvalidState(
+                    "session pin wait timeout".to_string(),
+                ));
             }
 
             // Exponential backoff with cap

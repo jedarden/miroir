@@ -152,10 +152,7 @@ impl TtlManager {
     }
 
     /// Run a single sweep pass.
-    async fn run_sweep(
-        config: &TtlConfig,
-        state: &Arc<RwLock<TtlSweeperState>>,
-    ) -> Result<()> {
+    async fn run_sweep(config: &TtlConfig, state: &Arc<RwLock<TtlSweeperState>>) -> Result<()> {
         let now_ms = millis_now();
 
         // In a real implementation, this would:

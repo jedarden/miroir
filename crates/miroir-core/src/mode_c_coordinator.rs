@@ -60,7 +60,7 @@ use crate::task_store::{JobRow, NewJob, TaskStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, warn};
 
 /// Job states (plan §14.5 Mode C).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,16 +206,13 @@ pub struct ModeCCoordinator {
 
 impl ModeCCoordinator {
     /// Create a new Mode C coordinator.
-    pub fn new(
-        task_store: Arc<dyn TaskStore>,
-        pod_id: String,
-    ) -> Self {
+    pub fn new(task_store: Arc<dyn TaskStore>, pod_id: String) -> Self {
         Self {
             task_store,
             pod_id,
-            claim_ttl_ms: 30_000,  // 30 seconds
-            heartbeat_interval_ms: 10_000,  // 10 seconds
-            default_chunk_size_bytes: 268_435_456,  // 256 MiB
+            claim_ttl_ms: 30_000,                  // 30 seconds
+            heartbeat_interval_ms: 10_000,         // 10 seconds
+            default_chunk_size_bytes: 268_435_456, // 256 MiB
         }
     }
 
@@ -243,11 +240,7 @@ impl ModeCCoordinator {
     }
 
     /// Enqueue a new job.
-    pub fn enqueue_job(
-        &self,
-        type_: JobType,
-        params: JobParams,
-    ) -> Result<String> {
+    pub fn enqueue_job(&self, type_: JobType, params: JobParams) -> Result<String> {
         let job_id = format!("{}-{}", type_.as_str(), uuid::Uuid::new_v4());
         let params_json = serde_json::to_string(&params)
             .map_err(|e| MiroirError::TaskStore(format!("failed to serialize params: {}", e)))?;
@@ -283,7 +276,9 @@ impl ModeCCoordinator {
     /// Returns the claimed job if successful, or None if no jobs are available.
     pub fn claim_job(&self) -> Result<Option<ClaimedJob>> {
         // List queued jobs
-        let queued_jobs = self.task_store.list_jobs_by_state(JobState::Queued.as_str())?;
+        let queued_jobs = self
+            .task_store
+            .list_jobs_by_state(JobState::Queued.as_str())?;
 
         if queued_jobs.is_empty() {
             return Ok(None);
@@ -294,7 +289,10 @@ impl ModeCCoordinator {
         let claim_expires_at = now + self.claim_ttl_ms;
 
         for job in queued_jobs {
-            if self.task_store.claim_job(&job.id, &self.pod_id, claim_expires_at)? {
+            if self
+                .task_store
+                .claim_job(&job.id, &self.pod_id, claim_expires_at)?
+            {
                 // Successfully claimed
                 debug!(
                     job_id = %job.id,
@@ -350,7 +348,8 @@ impl ModeCCoordinator {
         let progress_json = serde_json::to_string(progress)
             .map_err(|e| MiroirError::TaskStore(format!("failed to serialize progress: {}", e)))?;
 
-        self.task_store.update_job_progress(job_id, state.as_str(), &progress_json)?;
+        self.task_store
+            .update_job_progress(job_id, state.as_str(), &progress_json)?;
 
         debug!(
             job_id = %job_id,
@@ -382,7 +381,8 @@ impl ModeCCoordinator {
         let progress_json = serde_json::to_string(&failed_progress)
             .map_err(|e| MiroirError::TaskStore(format!("failed to serialize progress: {}", e)))?;
 
-        self.task_store.update_job_progress(job_id, JobState::Failed.as_str(), &progress_json)?;
+        self.task_store
+            .update_job_progress(job_id, JobState::Failed.as_str(), &progress_json)?;
 
         error!(
             job_id = %job_id,
@@ -423,11 +423,13 @@ impl ModeCCoordinator {
             chunk_params.chunk = Some(chunk.clone());
 
             let chunk_job_id = format!("{}-chunk-{}", job.id, idx);
-            let params_json = serde_json::to_string(&chunk_params)
-                .map_err(|e| MiroirError::TaskStore(format!("failed to serialize chunk params: {}", e)))?;
+            let params_json = serde_json::to_string(&chunk_params).map_err(|e| {
+                MiroirError::TaskStore(format!("failed to serialize chunk params: {}", e))
+            })?;
             let progress = JobProgress::default();
-            let progress_json = serde_json::to_string(&progress)
-                .map_err(|e| MiroirError::TaskStore(format!("failed to serialize progress: {}", e)))?;
+            let progress_json = serde_json::to_string(&progress).map_err(|e| {
+                MiroirError::TaskStore(format!("failed to serialize progress: {}", e))
+            })?;
 
             let new_job = NewJob {
                 id: chunk_job_id.clone(),
@@ -470,7 +472,11 @@ impl ModeCCoordinator {
             let progress_json = job.progress.clone();
 
             // Clear claim and reset to queued
-            self.task_store.reclaim_job_claim(&job.id, JobState::Queued.as_str(), &progress_json)?;
+            self.task_store.reclaim_job_claim(
+                &job.id,
+                JobState::Queued.as_str(),
+                &progress_json,
+            )?;
 
             debug!(
                 job_id = %job.id,
@@ -482,10 +488,7 @@ impl ModeCCoordinator {
         }
 
         if reclaimed > 0 {
-            info!(
-                count = reclaimed,
-                "reclaimed expired job claims"
-            );
+            info!(count = reclaimed, "reclaimed expired job claims");
         }
 
         Ok(reclaimed)
@@ -495,7 +498,8 @@ impl ModeCCoordinator {
     ///
     /// Used for HPA scaling per plan §14.4.
     pub fn queue_depth(&self) -> Result<u64> {
-        self.task_store.count_jobs_by_state(JobState::Queued.as_str())
+        self.task_store
+            .count_jobs_by_state(JobState::Queued.as_str())
     }
 
     /// Get job by ID.
@@ -594,7 +598,10 @@ mod tests {
     #[test]
     fn test_job_state_roundtrip() {
         assert_eq!(JobState::from_str("queued"), Some(JobState::Queued));
-        assert_eq!(JobState::from_str("in_progress"), Some(JobState::InProgress));
+        assert_eq!(
+            JobState::from_str("in_progress"),
+            Some(JobState::InProgress)
+        );
         assert_eq!(JobState::from_str("completed"), Some(JobState::Completed));
         assert_eq!(JobState::from_str("failed"), Some(JobState::Failed));
         assert_eq!(JobState::from_str("unknown"), None);
@@ -608,7 +615,10 @@ mod tests {
     #[test]
     fn test_job_type_roundtrip() {
         assert_eq!(JobType::from_str("dump_import"), Some(JobType::DumpImport));
-        assert_eq!(JobType::from_str("reshard_backfill"), Some(JobType::ReshardBackfill));
+        assert_eq!(
+            JobType::from_str("reshard_backfill"),
+            Some(JobType::ReshardBackfill)
+        );
         assert_eq!(JobType::from_str("unknown"), None);
 
         assert_eq!(JobType::DumpImport.as_str(), "dump_import");
@@ -752,7 +762,9 @@ mod tests {
             source_size_bytes: None,
         };
 
-        let job_id = coord.enqueue_job(JobType::DumpImport, params.clone()).unwrap();
+        let job_id = coord
+            .enqueue_job(JobType::DumpImport, params.clone())
+            .unwrap();
         let claimed = coord.claim_job().unwrap().unwrap();
 
         // Complete the job
@@ -772,7 +784,9 @@ mod tests {
         let claimed2 = coord.claim_job().unwrap().unwrap();
 
         let fail_progress = JobProgress::default();
-        coord.fail_job(&job_id2, &fail_progress, "test error".to_string()).unwrap();
+        coord
+            .fail_job(&job_id2, &fail_progress, "test error".to_string())
+            .unwrap();
 
         let job2 = coord.get_job(&job_id2).unwrap().unwrap();
         assert_eq!(job2.state, "failed");
@@ -796,8 +810,12 @@ mod tests {
 
         assert_eq!(coord.queue_depth().unwrap(), 0);
 
-        coord.enqueue_job(JobType::DumpImport, params.clone()).unwrap();
-        coord.enqueue_job(JobType::DumpImport, params.clone()).unwrap();
+        coord
+            .enqueue_job(JobType::DumpImport, params.clone())
+            .unwrap();
+        coord
+            .enqueue_job(JobType::DumpImport, params.clone())
+            .unwrap();
         coord.enqueue_job(JobType::DumpImport, params).unwrap();
 
         assert_eq!(coord.queue_depth().unwrap(), 3);
@@ -829,15 +847,13 @@ mod tests {
         assert!(!claimed.is_chunk());
 
         // Create chunks
-        let chunks = vec![
-            JobChunk {
-                index: 0,
-                total: 1,
-                start: "0".to_string(),
-                end: "1000".to_string(),
-                size_bytes: 1000,
-            },
-        ];
+        let chunks = vec![JobChunk {
+            index: 0,
+            total: 1,
+            start: "0".to_string(),
+            end: "1000".to_string(),
+            size_bytes: 1000,
+        }];
         coord.split_job_into_chunks(&claimed, chunks).unwrap();
 
         // Get the chunk job

@@ -1,0 +1,20 @@
+[miroir-core]
+# Minimum 90% coverage for miroir-core per plan §8
+coverage-limit = 90
+# Fail if coverage drops below the limit
+fail-under = 90
+
+[output]
+# Generate multiple output formats for CI
+formats = ["lcov", "html", "xml"]
+
+[filter]
+# Only cover miroir-core, not integration tests or examples
+include-tests = true
+# Don't cover dependencies
+exclude-paths = ["target/*", "benches/*"]
+
+[engine]
+# Use the LLVM engine for better accuracy (requires nightly)
+# Fall back to ptrace for stable Rust
+# coverage-type = "llvm"

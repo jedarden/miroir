@@ -9,6 +9,10 @@ pub enum ExplainSubcommand {
     },
 }
 
-pub async fn run(_cmd: ExplainSubcommand, _admin_key: &str, _api_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(
+    _cmd: ExplainSubcommand,
+    _admin_key: &str,
+    _api_url: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     Err("This command is not yet implemented. See bead miroir-qon for tracking.".into())
 }

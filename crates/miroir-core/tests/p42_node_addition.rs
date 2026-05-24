@@ -118,7 +118,9 @@ impl MigrationExecutor for MockMigrationExecutor {
             .or_insert(0) += 1;
 
         // Track fetch sequence for log inspection tests
-        let seq = self.fetch_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let seq = self
+            .fetch_counter
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.fetch_sequence
             .lock()
             .unwrap()
@@ -135,14 +137,23 @@ impl MigrationExecutor for MockMigrationExecutor {
                 let start = offset as usize;
                 let end = (start + limit as usize).min(v.len());
                 if start < v.len() {
-                    println!("MockMigrationExecutor: fetch {} shard {} offset {} -> {} docs", source_node, shard_id, offset, end - start);
+                    println!(
+                        "MockMigrationExecutor: fetch {} shard {} offset {} -> {} docs",
+                        source_node,
+                        shard_id,
+                        offset,
+                        end - start
+                    );
                     (v[start..end].to_vec(), total)
                 } else {
                     (Vec::new(), total)
                 }
             })
             .unwrap_or_else(|| {
-                println!("MockMigrationExecutor: fetch {} shard {} offset {} -> NO DOCS", source_node, shard_id, offset);
+                println!(
+                    "MockMigrationExecutor: fetch {} shard {} offset {} -> NO DOCS",
+                    source_node, shard_id, offset
+                );
                 (Vec::new(), 0)
             });
 
@@ -168,7 +179,11 @@ impl MigrationExecutor for MockMigrationExecutor {
             .entry(target_node.to_string())
             .or_insert(0) += documents.len();
 
-        println!("MockMigrationExecutor: write {} documents to {}", documents.len(), target_node);
+        println!(
+            "MockMigrationExecutor: write {} documents to {}",
+            documents.len(),
+            target_node
+        );
 
         // Check for simulated failure
         // Extract shard_id from first document if present
@@ -181,7 +196,9 @@ impl MigrationExecutor for MockMigrationExecutor {
                     .get(&(target_node.to_string(), shard_id as u32))
                     .unwrap_or(&false)
                 {
-                    return Err(format!("Simulated write failure for {target_node} shard {shard_id}"));
+                    return Err(format!(
+                        "Simulated write failure for {target_node} shard {shard_id}"
+                    ));
                 }
             }
         }
@@ -197,7 +214,10 @@ impl MigrationExecutor for MockMigrationExecutor {
                         .or_insert_with(Vec::new);
 
                     // Check if doc already exists (by id)
-                    if !docs.iter().any(|d| d.get("id").and_then(|v| v.as_str()) == Some(doc_id)) {
+                    if !docs
+                        .iter()
+                        .any(|d| d.get("id").and_then(|v| v.as_str()) == Some(doc_id))
+                    {
                         docs.push(doc.clone());
                     }
                 }
@@ -281,7 +301,12 @@ async fn p42_node_addition_3_to_4_migration_10k_docs() {
     for shard_id in 0..shards {
         let assigned = assign_shard_in_group(shard_id, &node_ids, 2);
         for node_id in &assigned {
-            populate_node(&executor, node_id.as_str(), &[shard_id], docs_per_shard as usize);
+            populate_node(
+                &executor,
+                node_id.as_str(),
+                &[shard_id],
+                docs_per_shard as usize,
+            );
         }
     }
 
@@ -322,11 +347,15 @@ async fn p42_node_addition_3_to_4_migration_10k_docs() {
     assert!(
         result.migrations_count >= expected_min && result.migrations_count <= expected_max,
         "Expected ~{}-{} migrations, got {}",
-        expected_min, expected_max,
+        expected_min,
+        expected_max,
         result.migrations_count
     );
 
-    println!("Started {} migrations for node addition", result.migrations_count);
+    println!(
+        "Started {} migrations for node addition",
+        result.migrations_count
+    );
 
     // Wait for migration to complete (simulated by polling status)
     let mut attempts = 0;
@@ -361,7 +390,11 @@ async fn p42_node_addition_3_to_4_migration_10k_docs() {
         }
     }
 
-    println!("New node has documents for {} shards: {:?}", shards_on_new_node.len(), shards_on_new_node);
+    println!(
+        "New node has documents for {} shards: {:?}",
+        shards_on_new_node.len(),
+        shards_on_new_node
+    );
 
     // For each shard, verify documents exist on the assigned nodes
     let mut verified_docs = HashSet::new();
@@ -418,7 +451,12 @@ async fn p42_chaos_writes_during_migration_dual_write() {
     for shard_id in 0..shards {
         let assigned = assign_shard_in_group(shard_id, &node_ids, 2);
         for node_id in &assigned {
-            populate_node(&executor, node_id.as_str(), &[shard_id], docs_per_shard as usize);
+            populate_node(
+                &executor,
+                node_id.as_str(),
+                &[shard_id],
+                docs_per_shard as usize,
+            );
         }
     }
 
@@ -474,7 +512,10 @@ async fn p42_chaos_writes_during_migration_dual_write() {
         }
     }
 
-    println!("Total shards with docs on new node: {}", shards_with_docs_on_new_node.len());
+    println!(
+        "Total shards with docs on new node: {}",
+        shards_with_docs_on_new_node.len()
+    );
 
     // Verify that shards with documents are correctly assigned to the new node
     let topo_read = topo_arc.read().await;
@@ -482,7 +523,10 @@ async fn p42_chaos_writes_during_migration_dual_write() {
     let all_nodes: Vec<NodeId> = group.nodes().to_vec();
     let new_node_id = NodeId::new("node-3".to_string());
 
-    println!("All nodes in group: {:?}", all_nodes.iter().map(|n| n.as_str()).collect::<Vec<_>>());
+    println!(
+        "All nodes in group: {:?}",
+        all_nodes.iter().map(|n| n.as_str()).collect::<Vec<_>>()
+    );
 
     for shard_id in &shards_with_docs_on_new_node {
         let assigned = assign_shard_in_group(*shard_id, &all_nodes, 2);
@@ -530,7 +574,12 @@ async fn p42_performance_document_count_bounds() {
     for shard_id in 0..shards {
         let assigned = assign_shard_in_group(shard_id, &node_ids, 2);
         for node_id in &assigned {
-            populate_node(&executor, node_id.as_str(), &[shard_id], docs_per_shard as usize);
+            populate_node(
+                &executor,
+                node_id.as_str(),
+                &[shard_id],
+                docs_per_shard as usize,
+            );
         }
     }
 
@@ -613,7 +662,12 @@ async fn p42_log_inspection_old_node_not_queried_after_migration() {
     for shard_id in 0..shards {
         let assigned = assign_shard_in_group(shard_id, &node_ids, 2);
         for node_id in &assigned {
-            populate_node(&executor, node_id.as_str(), &[shard_id], docs_per_shard as usize);
+            populate_node(
+                &executor,
+                node_id.as_str(),
+                &[shard_id],
+                docs_per_shard as usize,
+            );
         }
     }
 
@@ -672,7 +726,11 @@ async fn p42_log_inspection_old_node_not_queried_after_migration() {
         }
     }
 
-    println!("New node owns {} shards: {:?}", new_node_shards.len(), new_node_shards);
+    println!(
+        "New node owns {} shards: {:?}",
+        new_node_shards.len(),
+        new_node_shards
+    );
 
     // Debug: Check which shards have documents on each node
     println!("Documents per node:");
@@ -690,7 +748,10 @@ async fn p42_log_inspection_old_node_not_queried_after_migration() {
     let fetch_calls = executor.fetch_calls.lock().unwrap();
     println!("Total fetch calls: {}", fetch_calls.len());
     for ((node, shard, offset), count) in fetch_calls.iter() {
-        println!("  {} shard {} offset {}: {} calls", node, shard, offset, count);
+        println!(
+            "  {} shard {} offset {}: {} calls",
+            node, shard, offset, count
+        );
     }
 
     // Verify the new node HAS documents for migrated shards
@@ -702,7 +763,11 @@ async fn p42_log_inspection_old_node_not_queried_after_migration() {
         }
     }
 
-    println!("New node has documents for {} out of {} shards", shards_with_docs, new_node_shards.len());
+    println!(
+        "New node has documents for {} out of {} shards",
+        shards_with_docs,
+        new_node_shards.len()
+    );
 
     // At least some shards should have been migrated
     assert!(
@@ -714,11 +779,8 @@ async fn p42_log_inspection_old_node_not_queried_after_migration() {
     for &shard_id in &new_node_shards {
         // Check if any old node was queried after migration completed
         for old_node in &node_ids {
-            let was_queried = executor.was_queried_after(
-                old_node.as_str(),
-                shard_id,
-                migration_complete_seq,
-            );
+            let was_queried =
+                executor.was_queried_after(old_node.as_str(), shard_id, migration_complete_seq);
             assert!(
                 !was_queried,
                 "Old node {} should not be queried for migrated shard {} after migration completes",
@@ -749,7 +811,12 @@ async fn p42_verify_dual_write_during_migration() {
     for shard_id in 0..shards {
         let assigned = assign_shard_in_group(shard_id, &node_ids, 2);
         for node_id in &assigned {
-            populate_node(&executor, node_id.as_str(), &[shard_id], docs_per_shard as usize);
+            populate_node(
+                &executor,
+                node_id.as_str(),
+                &[shard_id],
+                docs_per_shard as usize,
+            );
         }
     }
 
@@ -844,7 +911,11 @@ async fn p42_verify_dual_write_during_migration() {
     let doc_on_new = executor.get_stored_doc_count(new_node, shard_id);
 
     // New node should have the document
-    assert!(doc_on_new > 0, "New node should have documents for shard {}", shard_id);
+    assert!(
+        doc_on_new > 0,
+        "New node should have documents for shard {}",
+        shard_id
+    );
 
     // At least one old node should have cleaned up this shard
     assert!(
@@ -874,7 +945,12 @@ async fn p42_pagination_limit_offset() {
     for shard_id in 0..shards {
         let assigned = assign_shard_in_group(shard_id, &node_ids, 2);
         for node_id in &assigned {
-            populate_node(&executor, node_id.as_str(), &[shard_id], docs_per_shard as usize);
+            populate_node(
+                &executor,
+                node_id.as_str(),
+                &[shard_id],
+                docs_per_shard as usize,
+            );
         }
     }
 
@@ -907,17 +983,30 @@ async fn p42_pagination_limit_offset() {
     loop {
         tokio::time::sleep(Duration::from_millis(50)).await;
         let status = rebalancer.status().await;
-        println!("Attempt {}: in_progress={}, operations={:?}",
-            attempts, status.in_progress,
-            status.operations.iter().map(|o| (o.id, format!("{:?}", o.status))).collect::<Vec<_>>());
+        println!(
+            "Attempt {}: in_progress={}, operations={:?}",
+            attempts,
+            status.in_progress,
+            status
+                .operations
+                .iter()
+                .map(|o| (o.id, format!("{:?}", o.status)))
+                .collect::<Vec<_>>()
+        );
         if !status.in_progress {
             break;
         }
         attempts += 1;
         if attempts > 200 {
-            panic!("Migration did not complete in time. Final status: in_progress={}, operations={:?}",
+            panic!(
+                "Migration did not complete in time. Final status: in_progress={}, operations={:?}",
                 status.in_progress,
-                status.operations.iter().map(|o| (o.id, format!("{:?}", o.status))).collect::<Vec<_>>());
+                status
+                    .operations
+                    .iter()
+                    .map(|o| (o.id, format!("{:?}", o.status)))
+                    .collect::<Vec<_>>()
+            );
         }
     }
 
@@ -951,7 +1040,10 @@ async fn p42_pagination_limit_offset() {
     );
 
     let (shard_id, offsets) = found_paginated_shard.unwrap();
-    println!("Shard {} has paginated fetches with offsets: {:?}", shard_id, offsets);
+    println!(
+        "Shard {} has paginated fetches with offsets: {:?}",
+        shard_id, offsets
+    );
 
     // Verify offsets are multiples of batch size
     for offset in &offsets {

@@ -14,7 +14,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::signal;
 use tracing::{error, info};
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, registry, util::SubscriberInitExt};
+use tracing_subscriber::{layer::SubscriberExt, registry, util::SubscriberInitExt, EnvFilter};
 
 mod admin_session;
 mod auth;
@@ -26,13 +26,16 @@ mod scoped_key_rotation;
 
 use admin_session::SealKey;
 use auth::AuthState;
+use middleware::{metrics_router, Metrics, TelemetryState};
 use miroir_core::{
-    canary::{CanaryAssertion, CanaryRunner, CapturedQuery, QueryCapture, SearchQuery, SearchResponse},
+    canary::{
+        CanaryAssertion, CanaryRunner, CapturedQuery, QueryCapture, SearchQuery, SearchResponse,
+    },
     task_store::TaskStore,
 };
-use middleware::{Metrics, metrics_router, TelemetryState};
 use routes::{
-    admin, admin_endpoints, explain, health, indexes, keys, multi_search, search, settings, tasks, version,
+    admin, admin_endpoints, explain, health, indexes, keys, multi_search, search, settings, tasks,
+    version,
 };
 use scoped_key_rotation::ScopedKeyRotationState;
 use std::sync::Arc;
@@ -53,11 +56,11 @@ impl UnifiedState {
     fn new(config: MiroirConfig) -> Self {
         let metrics = Metrics::new(&config);
 
-        let master_key = std::env::var("MIROIR_MASTER_KEY")
-            .unwrap_or_else(|_| config.master_key.clone());
+        let master_key =
+            std::env::var("MIROIR_MASTER_KEY").unwrap_or_else(|_| config.master_key.clone());
 
-        let admin_key = std::env::var("MIROIR_ADMIN_API_KEY")
-            .unwrap_or_else(|_| config.admin.api_key.clone());
+        let admin_key =
+            std::env::var("MIROIR_ADMIN_API_KEY").unwrap_or_else(|_| config.admin.api_key.clone());
 
         let jwt_primary = if config.search_ui.enabled {
             std::env::var(&config.search_ui.auth.jwt_secret_env).ok()
@@ -73,7 +76,9 @@ impl UnifiedState {
 
         // Set the key-generated gauge before constructing AuthState
         // so the metric is accurate from the first scrape.
-        metrics.admin_session_key_generated().set(if seal_key.is_generated() { 1.0 } else { 0.0 });
+        metrics
+            .admin_session_key_generated()
+            .set(if seal_key.is_generated() { 1.0 } else { 0.0 });
 
         let pod_id = std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string());
         let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string());
@@ -92,19 +97,19 @@ impl UnifiedState {
 
         // Create Redis task store if backend is redis (must happen before AppState
         // so redis_store and pod_id are available to admin endpoints).
-        let redis_store = if config.task_store.backend == "redis" && !config.task_store.url.is_empty() {
-            let url = config.task_store.url.clone();
-            Some(
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(
-                        miroir_core::task_store::RedisTaskStore::open(&url)
-                    )
-                })
-                .expect("Failed to connect to Redis for scoped key rotation"),
-            )
-        } else {
-            None
-        };
+        let redis_store =
+            if config.task_store.backend == "redis" && !config.task_store.url.is_empty() {
+                let url = config.task_store.url.clone();
+                Some(
+                    tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(miroir_core::task_store::RedisTaskStore::open(&url))
+                    })
+                    .expect("Failed to connect to Redis for scoped key rotation"),
+                )
+            } else {
+                None
+            };
 
         let auth = AuthState {
             master_key,
@@ -230,7 +235,9 @@ impl FromRef<UnifiedState> for routes::multi_search::MultiSearchState {
 impl FromRef<UnifiedState> for routes::canary::CanaryState {
     fn from_ref(state: &UnifiedState) -> Self {
         // Canary routes require Redis task store
-        let redis_store = state.redis_store.clone()
+        let redis_store = state
+            .redis_store
+            .clone()
             .expect("Canary routes require Redis task store (task_store.backend: redis)");
         let store: Arc<dyn miroir_core::task_store::TaskStore> = Arc::from(redis_store);
         Self {
@@ -243,14 +250,13 @@ impl FromRef<UnifiedState> for routes::canary::CanaryState {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load configuration (file → env → CLI overlay)
-    let config = MiroirConfig::load()
-        .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
+    let config =
+        MiroirConfig::load().map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
 
     // Initialize structured JSON logging (plan §10 format)
     // Fields on every line: timestamp, level, target, message, pod_id
     // Per-request fields (request_id) are added by telemetry middleware span.
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let pod_id = std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string());
 
@@ -277,10 +283,7 @@ async fn main() -> anyhow::Result<()> {
             .with_target(true)
             .with_current_span(true)
             .with_span_list(false);
-        registry()
-            .with(filter)
-            .with(json_layer)
-            .init();
+        registry().with(filter).with(json_layer).init();
     }
 
     // Set pod_id as a global default field so it appears on every log line.
@@ -478,10 +481,7 @@ async fn main() -> anyhow::Result<()> {
                 match peer_discovery.refresh().await {
                     Ok(peer_set) => {
                         let count = peer_set.len() as u64;
-                        info!(
-                            peer_count = count,
-                            "peer discovery refresh completed"
-                        );
+                        info!(peer_count = count, "peer discovery refresh completed");
                         metrics.set_peer_pod_count(count);
                     }
                     Err(e) => {
@@ -521,32 +521,48 @@ async fn main() -> anyhow::Result<()> {
             // Clone config values for the search executor
             let search_config = config.clone();
             let search_executor: miroir_core::canary::SearchExecutor = Arc::new(
-                move |index_uid: &str, query: &SearchQuery| -> std::pin::Pin<Box<dyn std::future::Future<Output = miroir_core::error::Result<SearchResponse>> + Send>> {
+                move |index_uid: &str,
+                      query: &SearchQuery|
+                      -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = miroir_core::error::Result<SearchResponse>>
+                            + Send,
+                    >,
+                > {
                     let index_uid = index_uid.to_string();
                     let query = query.clone();
                     let config = search_config.clone();
 
                     Box::pin(async move {
                         // For canary queries, we execute against the first available healthy node
-                        let node_addresses: Vec<_> = config.nodes.iter()
-                            .map(|n| n.address.clone())
-                            .collect();
+                        let node_addresses: Vec<_> =
+                            config.nodes.iter().map(|n| n.address.clone()).collect();
 
                         for address in node_addresses {
                             let client = match reqwest::Client::builder()
-                                .timeout(std::time::Duration::from_millis(config.scatter.node_timeout_ms))
+                                .timeout(std::time::Duration::from_millis(
+                                    config.scatter.node_timeout_ms,
+                                ))
                                 .build()
                             {
                                 Ok(c) => c,
                                 Err(_) => continue,
                             };
 
-                            let url = format!("{}/indexes/{}/search", address.trim_end_matches('/'), index_uid);
+                            let url = format!(
+                                "{}/indexes/{}/search",
+                                address.trim_end_matches('/'),
+                                index_uid
+                            );
 
                             // Build the search request body
                             let mut body = match serde_json::to_value(&query) {
                                 Ok(v) => v,
-                                Err(e) => return Err(miroir_core::error::MiroirError::InvalidRequest(format!("Failed to serialize query: {}", e))),
+                                Err(e) => {
+                                    return Err(miroir_core::error::MiroirError::InvalidRequest(
+                                        format!("Failed to serialize query: {}", e),
+                                    ))
+                                }
                             };
 
                             // Add limit to avoid large responses for canary queries
@@ -554,8 +570,12 @@ async fn main() -> anyhow::Result<()> {
                                 body["limit"] = serde_json::json!(20);
                             }
 
-                            let response = match client.post(&url)
-                                .header("Authorization", format!("Bearer {}", config.node_master_key))
+                            let response = match client
+                                .post(&url)
+                                .header(
+                                    "Authorization",
+                                    format!("Bearer {}", config.node_master_key),
+                                )
                                 .json(&body)
                                 .send()
                                 .await
@@ -566,7 +586,9 @@ async fn main() -> anyhow::Result<()> {
 
                             if response.status().is_success() {
                                 if let Ok(text) = response.text().await {
-                                    if let Ok(search_response) = serde_json::from_str::<SearchResponse>(&text) {
+                                    if let Ok(search_response) =
+                                        serde_json::from_str::<SearchResponse>(&text)
+                                    {
                                         return Ok(search_response);
                                     }
                                 }
@@ -575,54 +597,56 @@ async fn main() -> anyhow::Result<()> {
 
                         // All nodes failed
                         Err(miroir_core::error::MiroirError::Topology(
-                            "All nodes failed for canary query".to_string()
+                            "All nodes failed for canary query".to_string(),
                         ))
                     })
-                }
+                },
             );
 
             // Create metrics emitter callback
             let metrics_for_canary = state.metrics.clone();
-            let metrics_emitter: miroir_core::canary::MetricsEmitter = Arc::new(
-                move |result| {
-                    use miroir_core::canary::CanaryStatus;
-                    let result_str = match result.status {
-                        CanaryStatus::Passed => "passed",
-                        CanaryStatus::Failed => "failed",
-                        CanaryStatus::Error => "error",
-                    };
-                    metrics_for_canary.inc_canary_runs(&result.canary_id, result_str);
-                    metrics_for_canary.observe_canary_latency_ms(&result.canary_id, result.latency_ms as f64);
+            let metrics_emitter: miroir_core::canary::MetricsEmitter = Arc::new(move |result| {
+                use miroir_core::canary::CanaryStatus;
+                let result_str = match result.status {
+                    CanaryStatus::Passed => "passed",
+                    CanaryStatus::Failed => "failed",
+                    CanaryStatus::Error => "error",
+                };
+                metrics_for_canary.inc_canary_runs(&result.canary_id, result_str);
+                metrics_for_canary
+                    .observe_canary_latency_ms(&result.canary_id, result.latency_ms as f64);
 
-                    for failure in &result.failed_assertions {
-                        metrics_for_canary.inc_canary_assertion_failures(&result.canary_id, &failure.assertion_type);
-                    }
+                for failure in &result.failed_assertions {
+                    metrics_for_canary
+                        .inc_canary_assertion_failures(&result.canary_id, &failure.assertion_type);
                 }
-            );
+            });
 
             // Create settings version checker callback
             let store_for_version = store.clone();
             let version_config = config.clone();
-            let settings_version_checker: miroir_core::canary::SettingsVersionChecker = Arc::new(
-                move |index_uid: &str| -> Option<i64> {
+            let settings_version_checker: miroir_core::canary::SettingsVersionChecker =
+                Arc::new(move |index_uid: &str| -> Option<i64> {
                     // Try to get the settings version from the task store
-                    let node_ids: Vec<String> = version_config.nodes.iter()
-                        .map(|n| n.id.clone())
-                        .collect();
+                    let node_ids: Vec<String> =
+                        version_config.nodes.iter().map(|n| n.id.clone()).collect();
 
                     let mut min_version: Option<i64> = None;
                     for node_id in node_ids {
-                        if let Ok(Some(row)) = store_for_version.get_node_settings_version(index_uid, &node_id) {
+                        if let Ok(Some(row)) =
+                            store_for_version.get_node_settings_version(index_uid, &node_id)
+                        {
                             match min_version {
                                 None => min_version = Some(row.version),
-                                Some(current) if row.version < current => min_version = Some(row.version),
+                                Some(current) if row.version < current => {
+                                    min_version = Some(row.version)
+                                }
                                 _ => {}
                             }
                         }
                     }
                     min_version
-                }
-            );
+                });
 
             // Create and start the canary runner
             let runner = CanaryRunner::new(
@@ -650,7 +674,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health::get_health))
         .route("/version", get(version::get_version::<UnifiedState>))
         .route("/stats", get(indexes::global_stats_handler))
-        .route("/multi-search", post(multi_search::multi_search::<UnifiedState>)) // §13.11
+        .route(
+            "/multi-search",
+            post(multi_search::multi_search::<UnifiedState>),
+        ) // §13.11
         .nest("/_miroir", admin::router::<UnifiedState>())
         .nest("/indexes", indexes::router::<UnifiedState>())
         .nest("/keys", keys::router::<UnifiedState>())
@@ -675,9 +702,7 @@ async fn main() -> anyhow::Result<()> {
             },
             middleware::telemetry_middleware,
         ))
-        .layer(axum::middleware::from_fn(
-            middleware::request_id_middleware,
-        ))
+        .layer(axum::middleware::from_fn(middleware::request_id_middleware))
         .layer(axum::middleware::from_fn(
             middleware::session_pinning_middleware,
         ))
@@ -715,19 +740,15 @@ async fn main() -> anyhow::Result<()> {
     let metrics_listener = tokio::net::TcpListener::bind(metrics_addr).await?;
 
     // Spawn main server with graceful shutdown
-    let main_server = axum::serve(main_listener, app)
-        .with_graceful_shutdown(shutdown_signal());
+    let main_server = axum::serve(main_listener, app).with_graceful_shutdown(shutdown_signal());
 
     // Spawn metrics server with graceful shutdown
     let metrics_app = metrics_router().with_state(state.metrics.clone());
-    let metrics_server = axum::serve(metrics_listener, metrics_app)
-        .with_graceful_shutdown(shutdown_signal());
+    let metrics_server =
+        axum::serve(metrics_listener, metrics_app).with_graceful_shutdown(shutdown_signal());
 
     // Run both servers concurrently
-    let (main_result, metrics_result) = tokio::join!(
-        main_server,
-        metrics_server
-    );
+    let (main_result, metrics_result) = tokio::join!(main_server, metrics_server);
 
     // Check for errors
     if let Err(e) = main_result {
@@ -749,13 +770,14 @@ async fn main() -> anyhow::Result<()> {
 /// - unhealthy_threshold consecutive failures → mark node as Failed
 /// - recovery_threshold consecutive successes → recover from Failed/Degraded
 async fn run_health_checker(state: admin_endpoints::AppState) {
-    let mut interval = tokio::time::interval(Duration::from_millis(
-        state.config.health.interval_ms,
-    ));
+    let mut interval =
+        tokio::time::interval(Duration::from_millis(state.config.health.interval_ms));
 
     // Track consecutive failures per node (in-memory only)
-    let mut consecutive_failures: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    let mut consecutive_successes: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut consecutive_failures: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+    let mut consecutive_successes: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
 
     loop {
         interval.tick().await;
@@ -799,7 +821,10 @@ async fn run_health_checker(state: admin_endpoints::AppState) {
 
             if result.is_ok() && result.unwrap().status().is_success() {
                 // Node is reachable
-                consecutive_successes.entry(node_id.clone()).and_modify(|c| *c += 1).or_insert(1);
+                consecutive_successes
+                    .entry(node_id.clone())
+                    .and_modify(|c| *c += 1)
+                    .or_insert(1);
                 consecutive_failures.remove(node_id);
 
                 let successes = *consecutive_successes.get(node_id.as_str()).unwrap_or(&1);
@@ -916,10 +941,7 @@ async fn run_health_checker(state: admin_endpoints::AppState) {
         // Prune expired sessions (plan §13.6)
         let pruned = state.session_manager.prune_expired().await;
         if pruned > 0 {
-            info!(
-                pruned_count = pruned,
-                "pruned expired sessions"
-            );
+            info!(pruned_count = pruned, "pruned expired sessions");
         }
     }
 }
@@ -938,9 +960,8 @@ fn update_shard_metrics(topo: &Topology, metrics: &middleware::Metrics) {
     for shard_id in 0..topo.shards {
         let mut has_healthy_replica = false;
         for group in topo.groups() {
-            let assigned = miroir_core::router::assign_shard_in_group(
-                shard_id, group.nodes(), topo.rf(),
-            );
+            let assigned =
+                miroir_core::router::assign_shard_in_group(shard_id, group.nodes(), topo.rf());
             for node_id in &assigned {
                 let healthy = node_map
                     .get(node_id)
@@ -986,7 +1007,13 @@ fn update_resource_pressure_metrics(metrics: &middleware::Metrics) {
     if let (Some(current), Some(max)) = (mem_current, mem_max) {
         if max > 0 {
             let ratio = current as f64 / max as f64;
-            let level = if ratio > 0.90 { 2 } else if ratio > 0.75 { 1 } else { 0 };
+            let level = if ratio > 0.90 {
+                2
+            } else if ratio > 0.75 {
+                1
+            } else {
+                0
+            };
             metrics.set_memory_pressure(level);
         }
     }

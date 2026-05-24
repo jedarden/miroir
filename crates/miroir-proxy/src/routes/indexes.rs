@@ -23,9 +23,9 @@ use miroir_core::settings::{BroadcastPhase, SettingsBroadcast};
 use miroir_core::topology::Topology;
 use reqwest::Client;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
-use sha2::{Digest, Sha256};
 use tokio::time::{timeout, Duration};
 
 use crate::routes::{admin_endpoints::AppState, documents};
@@ -37,14 +37,12 @@ fn convert_miroir_error(e: MiroirError) -> MeilisearchError {
             MiroirCode::NoQuorum,
             "settings divergence detected across nodes",
         ),
-        MiroirError::NotFound(msg) => MeilisearchError::new(
-            MiroirCode::NoQuorum,
-            format!("not found: {}", msg),
-        ),
-        MiroirError::InvalidState(msg) => MeilisearchError::new(
-            MiroirCode::NoQuorum,
-            format!("invalid state: {}", msg),
-        ),
+        MiroirError::NotFound(msg) => {
+            MeilisearchError::new(MiroirCode::NoQuorum, format!("not found: {}", msg))
+        }
+        MiroirError::InvalidState(msg) => {
+            MeilisearchError::new(MiroirCode::NoQuorum, format!("invalid state: {}", msg))
+        }
         _ => MeilisearchError::new(
             MiroirCode::NoQuorum,
             format!("settings broadcast error: {}", e),
@@ -116,11 +114,7 @@ impl MeilisearchClient {
     }
 
     /// DELETE on a node — generic helper.
-    pub async fn delete_raw(
-        &self,
-        address: &str,
-        path: &str,
-    ) -> Result<(u16, String), String> {
+    pub async fn delete_raw(&self, address: &str, path: &str) -> Result<(u16, String), String> {
         let url = format!("{}{}", address.trim_end_matches('/'), path);
         let resp = self
             .client
@@ -135,11 +129,7 @@ impl MeilisearchClient {
     }
 
     /// GET from a node — generic helper.
-    pub async fn get_raw(
-        &self,
-        address: &str,
-        path: &str,
-    ) -> Result<(u16, String), String> {
+    pub async fn get_raw(&self, address: &str, path: &str) -> Result<(u16, String), String> {
         let url = format!("{}{}", address.trim_end_matches('/'), path);
         let resp = self
             .client
@@ -159,7 +149,11 @@ impl MeilisearchClient {
         address: &str,
         index_uid: &str,
     ) -> Result<Value, Box<dyn std::error::Error>> {
-        let url = format!("{}/indexes/{}/stats", address.trim_end_matches('/'), index_uid);
+        let url = format!(
+            "{}/indexes/{}/stats",
+            address.trim_end_matches('/'),
+            index_uid
+        );
         let response = self
             .client
             .get(&url)
@@ -339,13 +333,12 @@ async fn create_index_handler(
     Extension(config): Extension<Arc<Config>>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, MeilisearchError> {
-    let uid = body
-        .get("uid")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| MeilisearchError::new(
+    let uid = body.get("uid").and_then(|v| v.as_str()).ok_or_else(|| {
+        MeilisearchError::new(
             MiroirCode::PrimaryKeyRequired,
             "index creation requires a `uid` field",
-        ))?;
+        )
+    })?;
 
     let client = MeilisearchClient::new(config.node_master_key.clone());
     let nodes = all_node_addresses(&config);
@@ -386,10 +379,16 @@ async fn create_index_handler(
     let mut merged_attrs: Vec<Value> = vec![serde_json::json!("_miroir_shard")];
 
     if let Some(first_addr) = nodes.first() {
-        match client.get_raw(first_addr, &format!("/indexes/{}/settings", uid)).await {
+        match client
+            .get_raw(first_addr, &format!("/indexes/{}/settings", uid))
+            .await
+        {
             Ok((status, text)) if status >= 200 && status < 300 => {
                 if let Ok(settings) = serde_json::from_str::<Value>(&text) {
-                    if let Some(existing) = settings.get("filterableAttributes").and_then(|v| v.as_array()) {
+                    if let Some(existing) = settings
+                        .get("filterableAttributes")
+                        .and_then(|v| v.as_array())
+                    {
                         for attr in existing {
                             let attr_str = attr.as_str().unwrap_or("");
                             if attr_str != "_miroir_shard" && !attr_str.is_empty() {
@@ -445,7 +444,9 @@ async fn create_index_handler(
         "index created on all nodes"
     );
 
-    Ok(Json(first_response.unwrap_or(serde_json::json!({"uid": uid, "status": "created"}))))
+    Ok(Json(first_response.unwrap_or(
+        serde_json::json!({"uid": uid, "status": "created"}),
+    )))
 }
 
 async fn rollback_delete_index(client: &MeilisearchClient, uid: &str, nodes: &[String]) {
@@ -453,7 +454,9 @@ async fn rollback_delete_index(client: &MeilisearchClient, uid: &str, nodes: &[S
         let path = format!("/indexes/{}", uid);
         match client.delete_raw(address, &path).await {
             Ok(_) => tracing::info!(node = %address, "rollback: deleted index"),
-            Err(e) => tracing::error!(node = %address, error = %e, "rollback: failed to delete index"),
+            Err(e) => {
+                tracing::error!(node = %address, error = %e, "rollback: failed to delete index")
+            }
         }
     }
 }
@@ -466,11 +469,17 @@ async fn list_indexes_handler(
     Extension(config): Extension<Arc<Config>>,
 ) -> Result<Json<Value>, StatusCode> {
     let client = MeilisearchClient::new(config.node_master_key.clone());
-    let address = config.nodes.first().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let (status, text) = client.get_raw(&address.address, "/indexes").await.map_err(|e| {
-        tracing::error!(error = %e, "list indexes failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let address = config
+        .nodes
+        .first()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let (status, text) = client
+        .get_raw(&address.address, "/indexes")
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "list indexes failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     if status >= 200 && status < 300 {
         let json: Value = serde_json::from_str(&text).unwrap_or(serde_json::json!({"results": []}));
         Ok(Json(json))
@@ -488,7 +497,10 @@ async fn get_index_handler(
     Extension(config): Extension<Arc<Config>>,
 ) -> Result<Json<Value>, StatusCode> {
     let client = MeilisearchClient::new(config.node_master_key.clone());
-    let address = config.nodes.first().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let address = config
+        .nodes
+        .first()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let path = format!("/indexes/{}", index);
     let (status, text) = client.get_raw(&address.address, &path).await.map_err(|e| {
         tracing::error!(error = %e, "get index failed");
@@ -569,7 +581,9 @@ async fn update_index_handler(
         }
     }
 
-    Ok(Json(first_response.unwrap_or(serde_json::json!({"uid": index, "status": "updated"}))))
+    Ok(Json(first_response.unwrap_or(
+        serde_json::json!({"uid": index, "status": "updated"}),
+    )))
 }
 
 /// Rollback index metadata updates by restoring pre-change snapshots.
@@ -646,7 +660,9 @@ async fn delete_index_handler(
         );
     }
 
-    Ok(Json(first_response.unwrap_or(serde_json::json!({"taskUid": 0, "status": "enqueued"}))))
+    Ok(Json(first_response.unwrap_or(
+        serde_json::json!({"taskUid": 0, "status": "enqueued"}),
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -697,7 +713,11 @@ async fn get_index_stats_handler(
     let rg = config.replica_groups as u64;
     let rf = config.replication_factor as u64;
     let divisor = rg * rf;
-    let logical_docs = if divisor > 0 { total_docs / divisor } else { total_docs };
+    let logical_docs = if divisor > 0 {
+        total_docs / divisor
+    } else {
+        total_docs
+    };
 
     Ok(Json(serde_json::json!({
         "numberOfDocuments": logical_docs,
@@ -718,17 +738,25 @@ pub async fn global_stats_handler(
     let nodes = all_node_addresses(&config);
 
     // Get list of indexes from first node
-    let first_address = nodes.first().ok_or_else(|| MeilisearchError::new(
-        MiroirCode::NoQuorum,
-        "no nodes configured",
-    ))?;
+    let first_address = nodes
+        .first()
+        .ok_or_else(|| MeilisearchError::new(MiroirCode::NoQuorum, "no nodes configured"))?;
 
-    let (status, text) = client.get_raw(first_address, "/indexes").await.map_err(|e| {
-        MeilisearchError::new(MiroirCode::NoQuorum, format!("failed to list indexes: {}", e))
-    })?;
+    let (status, text) = client
+        .get_raw(first_address, "/indexes")
+        .await
+        .map_err(|e| {
+            MeilisearchError::new(
+                MiroirCode::NoQuorum,
+                format!("failed to list indexes: {}", e),
+            )
+        })?;
 
     if status < 200 || status >= 300 {
-        return Err(MeilisearchError::new(MiroirCode::NoQuorum, "failed to list indexes"));
+        return Err(MeilisearchError::new(
+            MiroirCode::NoQuorum,
+            "failed to list indexes",
+        ));
     }
 
     let indexes: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
@@ -749,10 +777,12 @@ pub async fn global_stats_handler(
                         if let Some(n) = stats.get("numberOfDocuments").and_then(|v| v.as_u64()) {
                             total_docs += n;
                         }
-                        if let Some(fd) = stats.get("fieldDistribution").and_then(|v| v.as_object()) {
+                        if let Some(fd) = stats.get("fieldDistribution").and_then(|v| v.as_object())
+                        {
                             for (field, count) in fd {
                                 if let Some(c) = count.as_u64() {
-                                    *total_field_distribution.entry(field.clone()).or_insert(0) += c;
+                                    *total_field_distribution.entry(field.clone()).or_insert(0) +=
+                                        c;
                                 }
                             }
                         }
@@ -766,7 +796,11 @@ pub async fn global_stats_handler(
     let rg = config.replica_groups as u64;
     let rf = config.replication_factor as u64;
     let divisor = rg * rf;
-    let logical_docs = if divisor > 0 { total_docs / divisor } else { total_docs };
+    let logical_docs = if divisor > 0 {
+        total_docs / divisor
+    } else {
+        total_docs
+    };
 
     Ok(Json(serde_json::json!({
         "databaseSize": 0,
@@ -879,7 +913,10 @@ async fn two_phase_settings_broadcast(
     }
 
     // Start broadcast tracking
-    state.settings_broadcast.start_propose(index.to_string(), body).await
+    state
+        .settings_broadcast
+        .start_propose(index.to_string(), body)
+        .await
         .map_err(convert_miroir_error)?;
 
     // Set phase to Verify (2)
@@ -897,16 +934,18 @@ async fn two_phase_settings_broadcast(
         let settings_path = settings_path.to_string();
         async move {
             // Parallel verification: spawn GET requests to all nodes concurrently
-            let verify_tasks: Vec<_> = nodes.iter().map(|address| {
-                let client = client.clone();
-                let address = address.clone();
-                let path = format!("/indexes/{}{}", index, settings_path);
-                async move {
-                    (address.clone(), client.get_raw(&address, &path).await)
-                }
-            }).collect();
+            let verify_tasks: Vec<_> = nodes
+                .iter()
+                .map(|address| {
+                    let client = client.clone();
+                    let address = address.clone();
+                    let path = format!("/indexes/{}{}", index, settings_path);
+                    async move { (address.clone(), client.get_raw(&address, &path).await) }
+                })
+                .collect();
 
-            let results: Vec<(String, Result<(u16, String), String>)> = join_all(verify_tasks).await;
+            let results: Vec<(String, Result<(u16, String), String>)> =
+                join_all(verify_tasks).await;
 
             let mut node_hashes = HashMap::new();
             let mut verify_errors: Vec<String> = Vec::new();
@@ -934,18 +973,17 @@ async fn two_phase_settings_broadcast(
 
     let (mut node_hashes, verify_errors) = timeout(verify_timeout, run_verify())
         .await
-        .map_err(|_| {
-            MeilisearchError::new(
-                MiroirCode::Timeout,
-                "Phase 2 verify timed out",
-            )
-        })?;
+        .map_err(|_| MeilisearchError::new(MiroirCode::Timeout, "Phase 2 verify timed out"))?;
 
     if !verify_errors.is_empty() {
-        state.settings_broadcast.abort(
-            index,
-            format!("Phase 2 verify failed: {}", verify_errors.join("; ")),
-        ).await.ok();
+        state
+            .settings_broadcast
+            .abort(
+                index,
+                format!("Phase 2 verify failed: {}", verify_errors.join("; ")),
+            )
+            .await
+            .ok();
         return Err(MeilisearchError::new(
             MiroirCode::NoQuorum,
             format!("Phase 2 verify failed: {}", verify_errors.join("; ")),
@@ -953,7 +991,10 @@ async fn two_phase_settings_broadcast(
     }
 
     // Enter verify phase and check hashes
-    state.settings_broadcast.enter_verify(index, node_task_uids.clone()).await
+    state
+        .settings_broadcast
+        .enter_verify(index, node_task_uids.clone())
+        .await
         .map_err(convert_miroir_error)?;
 
     // Retry loop with exponential backoff for hash mismatches
@@ -961,20 +1002,24 @@ async fn two_phase_settings_broadcast(
     let max_retries = config.settings_broadcast.max_repair_retries;
 
     loop {
-        match state.settings_broadcast.verify_hashes(
-            index,
-            node_hashes.clone(),
-            &expected_fingerprint,
-        ).await {
+        match state
+            .settings_broadcast
+            .verify_hashes(index, node_hashes.clone(), &expected_fingerprint)
+            .await
+        {
             Ok(()) => break,
             Err(miroir_core::error::MiroirError::SettingsDivergence) => {
                 state.metrics.inc_settings_hash_mismatch();
                 retry_count += 1;
                 if retry_count > max_retries {
-                    state.settings_broadcast.abort(
-                        index,
-                        format!("max repair retries ({}) exceeded", max_retries),
-                    ).await.ok();
+                    state
+                        .settings_broadcast
+                        .abort(
+                            index,
+                            format!("max repair retries ({}) exceeded", max_retries),
+                        )
+                        .await
+                        .ok();
 
                     // Freeze writes on this index if configured
                     if config.settings_broadcast.freeze_writes_on_unrepairable {
@@ -1000,7 +1045,8 @@ async fn two_phase_settings_broadcast(
                 tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
 
                 // Identify mismatched nodes and reissue PATCH to them
-                let mismatched_nodes: Vec<_> = node_hashes.iter()
+                let mismatched_nodes: Vec<_> = node_hashes
+                    .iter()
                     .filter(|(_, hash)| hash.as_str() != expected_fingerprint)
                     .map(|(node, _)| node.clone())
                     .collect();
@@ -1034,10 +1080,14 @@ async fn two_phase_settings_broadcast(
                 }
 
                 if !repair_errors.is_empty() {
-                    state.settings_broadcast.abort(
-                        index,
-                        format!("repair reissue failed: {}", repair_errors.join("; ")),
-                    ).await.ok();
+                    state
+                        .settings_broadcast
+                        .abort(
+                            index,
+                            format!("repair reissue failed: {}", repair_errors.join("; ")),
+                        )
+                        .await
+                        .ok();
                     return Err(MeilisearchError::new(
                         MiroirCode::NoQuorum,
                         format!("repair reissue failed: {}", repair_errors.join("; ")),
@@ -1047,10 +1097,14 @@ async fn two_phase_settings_broadcast(
                 // Re-run verify phase after repair
                 let (new_hashes, new_errors) = run_verify().await;
                 if !new_errors.is_empty() {
-                    state.settings_broadcast.abort(
-                        index,
-                        format!("re-verify failed: {}", new_errors.join("; ")),
-                    ).await.ok();
+                    state
+                        .settings_broadcast
+                        .abort(
+                            index,
+                            format!("re-verify failed: {}", new_errors.join("; ")),
+                        )
+                        .await
+                        .ok();
                     return Err(MeilisearchError::new(
                         MiroirCode::NoQuorum,
                         format!("re-verify failed: {}", new_errors.join("; ")),
@@ -1059,17 +1113,21 @@ async fn two_phase_settings_broadcast(
                 node_hashes = new_hashes;
             }
             Err(e) => {
-                state.settings_broadcast.abort(index, e.to_string()).await.ok();
-                return Err(MeilisearchError::new(
-                    MiroirCode::NoQuorum,
-                    e.to_string(),
-                ));
+                state
+                    .settings_broadcast
+                    .abort(index, e.to_string())
+                    .await
+                    .ok();
+                return Err(MeilisearchError::new(MiroirCode::NoQuorum, e.to_string()));
             }
         }
     }
 
     // Phase 3: Commit - increment settings version
-    let new_version = state.settings_broadcast.commit(index).await
+    let new_version = state
+        .settings_broadcast
+        .commit(index)
+        .await
         .map_err(convert_miroir_error)?;
 
     // Update settings version metric
@@ -1118,7 +1176,10 @@ async fn update_settings_broadcast_legacy(
                 return Err(forward_or_miroir(
                     status,
                     &text,
-                    &format!("failed to snapshot settings on {}: HTTP {}", address, status),
+                    &format!(
+                        "failed to snapshot settings on {}: HTTP {}",
+                        address, status
+                    ),
                 ));
             }
             Err(e) => {
@@ -1161,7 +1222,9 @@ async fn update_settings_broadcast_legacy(
         }
     }
 
-    Ok(Json(first_response.unwrap_or(serde_json::json!({"taskUid": 0, "status": "enqueued"}))))
+    Ok(Json(first_response.unwrap_or(
+        serde_json::json!({"taskUid": 0, "status": "enqueued"}),
+    )))
 }
 
 /// Rollback settings on previously-applied nodes using pre-change snapshots.
@@ -1202,7 +1265,10 @@ async fn get_settings_handler(
     Extension(config): Extension<Arc<Config>>,
 ) -> Result<Json<Value>, StatusCode> {
     let client = MeilisearchClient::new(config.node_master_key.clone());
-    let address = config.nodes.first().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let address = config
+        .nodes
+        .first()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let path = format!("/indexes/{}/settings", index);
     let (status, text) = client.get_raw(&address.address, &path).await.map_err(|e| {
         tracing::error!(error = %e, "get settings failed");
@@ -1220,7 +1286,10 @@ async fn get_settings_subpath_handler(
     Extension(config): Extension<Arc<Config>>,
 ) -> Result<Json<Value>, StatusCode> {
     let client = MeilisearchClient::new(config.node_master_key.clone());
-    let address = config.nodes.first().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let address = config
+        .nodes
+        .first()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let path = format!("/indexes/{}/settings/{}", index, subpath);
     let (status, text) = client.get_raw(&address.address, &path).await.map_err(|e| {
         tracing::error!(error = %e, "get settings subpath failed");
@@ -1270,7 +1339,10 @@ async fn preflight_handler(
 
     let mut term_stats = HashMap::new();
     for term in &body.terms {
-        match client.get_term_df(&node.address, &index, term, &body.filter).await {
+        match client
+            .get_term_df(&node.address, &index, term, &body.filter)
+            .await
+        {
             Ok(df) => {
                 term_stats.insert(term.clone(), TermStats { df });
             }

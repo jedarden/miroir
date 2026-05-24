@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, error, warn};
+use tracing::{error, info, warn};
 
 /// ILM rollover policy configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,7 +191,9 @@ impl IlmManager {
     /// Trigger an immediate rollover for a policy.
     pub async fn trigger_rollover(&self, policy_name: &str) -> Result<(), IlmError> {
         let state = self.state.read().await;
-        let policy = state.policies.iter()
+        let policy = state
+            .policies
+            .iter()
             .find(|p| p.name == policy_name)
             .ok_or_else(|| IlmError::PolicyNotFound(policy_name.to_string()))?;
 
@@ -209,20 +211,23 @@ impl IlmManager {
 
         drop(state);
         let mut state = self.state.write().await;
-        state.active_rollovers.insert(policy_name.to_string(), operation);
+        state
+            .active_rollovers
+            .insert(policy_name.to_string(), operation);
 
-        info!("ILM: triggered rollover for policy '{}', new index: {}", policy_name, new_index);
+        info!(
+            "ILM: triggered rollover for policy '{}', new index: {}",
+            policy_name, new_index
+        );
         Ok(())
     }
 
     /// Background evaluator that checks policies and performs rollovers.
-    async fn background_evaluator(
-        state: Arc<RwLock<IlmState>>,
-        config: IlmConfig,
-    ) {
+    async fn background_evaluator(state: Arc<RwLock<IlmState>>, config: IlmConfig) {
         info!("ILM: background evaluator started");
 
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(config.check_interval_s));
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(config.check_interval_s));
         loop {
             interval.tick().await;
 
@@ -231,7 +236,10 @@ impl IlmManager {
                 state.policies.clone()
             };
 
-            for policy in policies.iter().take(config.max_rollovers_per_check as usize) {
+            for policy in policies
+                .iter()
+                .take(config.max_rollovers_per_check as usize)
+            {
                 if let Err(e) = Self::evaluate_policy(&state, &policy, &config).await {
                     error!("ILM: error evaluating policy '{}': {}", policy.name, e);
                 }
@@ -276,7 +284,9 @@ impl IlmManager {
             };
 
             let mut state = state.write().await;
-            state.active_rollovers.insert(policy.name.clone(), operation);
+            state
+                .active_rollovers
+                .insert(policy.name.clone(), operation);
 
             info!("ILM: auto-triggered rollover for policy '{}'", policy.name);
         }
@@ -361,7 +371,9 @@ impl IlmCoordinator {
     /// Returns `Ok(true)` if we are now the leader, `Ok(false)` if another
     /// pod holds the lease, or `Err` if acquisition failed.
     pub async fn try_acquire_leadership(&mut self) -> Result<(), IlmError> {
-        self.leader.try_acquire_leadership().await
+        self.leader
+            .try_acquire_leadership()
+            .await
             .map_err(|e| IlmError::CoordinatorError(e.to_string()))?;
         Ok(())
     }
@@ -371,7 +383,9 @@ impl IlmCoordinator {
     /// Returns `Ok(true)` if renewed successfully, `Ok(false)` if we lost
     /// leadership to another pod, or `Err` if renewal failed.
     pub async fn renew_leadership(&mut self) -> Result<bool, IlmError> {
-        self.leader.renew_leadership().await
+        self.leader
+            .renew_leadership()
+            .await
             .map_err(|e| IlmError::CoordinatorError(e.to_string()))
     }
 
@@ -400,7 +414,9 @@ impl IlmCoordinator {
     /// Should be called after each phase boundary so that a new leader can
     /// resume from the last committed phase.
     pub async fn advance_phase(&mut self, new_phase: &str) -> Result<(), IlmError> {
-        self.leader.persist_phase(new_phase.to_string()).await
+        self.leader
+            .persist_phase(new_phase.to_string())
+            .await
             .map_err(|e| IlmError::CoordinatorError(e.to_string()))
     }
 
@@ -421,8 +437,13 @@ impl IlmCoordinator {
             error: None,
         };
 
-        self.leader.extra_state().active_rollovers.insert(policy_name.to_string(), rollover_state);
-        self.leader.persist_phase("rollover_in_progress".to_string()).await
+        self.leader
+            .extra_state()
+            .active_rollovers
+            .insert(policy_name.to_string(), rollover_state);
+        self.leader
+            .persist_phase("rollover_in_progress".to_string())
+            .await
             .map_err(|e| IlmError::CoordinatorError(e.to_string()))?;
 
         info!("ILM: started rollover for policy '{}'", policy_name);
@@ -431,8 +452,13 @@ impl IlmCoordinator {
 
     /// Complete a rollover operation.
     pub async fn complete_rollover(&mut self, policy_name: &str) -> Result<(), IlmError> {
-        self.leader.extra_state().active_rollovers.remove(policy_name);
-        self.leader.persist_phase("idle".to_string()).await
+        self.leader
+            .extra_state()
+            .active_rollovers
+            .remove(policy_name);
+        self.leader
+            .persist_phase("idle".to_string())
+            .await
             .map_err(|e| IlmError::CoordinatorError(e.to_string()))?;
 
         info!("ILM: completed rollover for policy '{}'", policy_name);
@@ -441,13 +467,17 @@ impl IlmCoordinator {
 
     /// Mark the operation as failed and step down from leadership.
     pub async fn fail(&mut self, error: String) -> Result<(), IlmError> {
-        self.leader.fail(error).await
+        self.leader
+            .fail(error)
+            .await
             .map_err(|e| IlmError::CoordinatorError(e.to_string()))
     }
 
     /// Mark the operation as completed and step down from leadership.
     pub async fn complete(&mut self) -> Result<(), IlmError> {
-        self.leader.complete().await
+        self.leader
+            .complete()
+            .await
             .map_err(|e| IlmError::CoordinatorError(e.to_string()))
     }
 
@@ -456,7 +486,10 @@ impl IlmCoordinator {
     /// Called by a new leader to read the persisted phase state and resume
     /// from the last committed phase boundary.
     pub async fn recover(&mut self) -> Result<(), IlmError> {
-        let existing = self.leader.recover().await
+        let existing = self
+            .leader
+            .recover()
+            .await
             .map_err(|e| IlmError::CoordinatorError(e.to_string()))?;
 
         if let Some(ref op) = existing {
@@ -472,20 +505,28 @@ impl IlmCoordinator {
 
     /// Delete the operation state after completion.
     pub async fn delete(&self) -> Result<bool, IlmError> {
-        self.leader.delete().await
+        self.leader
+            .delete()
+            .await
             .map_err(|e| IlmError::CoordinatorError(e.to_string()))
     }
 
     /// Update the last check time and persist.
     pub async fn update_check_time(&mut self) -> Result<(), IlmError> {
         self.leader.extra_state().last_check_ms = millis_now();
-        self.leader.persist_phase(self.leader.phase().to_string()).await
+        self.leader
+            .persist_phase(self.leader.phase().to_string())
+            .await
             .map_err(|e| IlmError::CoordinatorError(e.to_string()))
     }
 
     /// Get the active rollover for a policy.
     pub fn active_rollover(&self, policy_name: &str) -> Option<RolloverState> {
-        self.leader.extra_state_ref().active_rollovers.get(policy_name).cloned()
+        self.leader
+            .extra_state_ref()
+            .active_rollovers
+            .get(policy_name)
+            .cloned()
     }
 
     /// Get all active rollovers.
@@ -560,9 +601,7 @@ mod tests {
                 max_age: "7d".into(),
                 max_size_gb: 50,
             },
-            retention: RetentionPolicy {
-                keep_indexes: 30,
-            },
+            retention: RetentionPolicy { keep_indexes: 30 },
             index_template: IndexTemplate {
                 primary_key: "event_id".into(),
                 settings_ref: "logs-settings".into(),
@@ -590,9 +629,7 @@ mod tests {
                 max_age: "1d".into(),
                 max_size_gb: 10,
             },
-            retention: RetentionPolicy {
-                keep_indexes: 7,
-            },
+            retention: RetentionPolicy { keep_indexes: 7 },
             index_template: IndexTemplate {
                 primary_key: "id".into(),
                 settings_ref: "default".into(),
@@ -621,9 +658,7 @@ mod tests {
                 max_age: "1d".into(),
                 max_size_gb: 10,
             },
-            retention: RetentionPolicy {
-                keep_indexes: 7,
-            },
+            retention: RetentionPolicy { keep_indexes: 7 },
             index_template: IndexTemplate {
                 primary_key: "id".into(),
                 settings_ref: "default".into(),

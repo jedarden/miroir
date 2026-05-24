@@ -101,7 +101,10 @@ async fn chaos_add_node_mid_indexing() {
     // Verify rebalance status
     let status = rebalancer.status().await;
     assert!(status.in_progress, "Rebalance should be in progress");
-    assert!(!status.operations.is_empty(), "Should have active operations");
+    assert!(
+        !status.operations.is_empty(),
+        "Should have active operations"
+    );
 }
 
 /// Test 2: Drain node while queries in flight — zero client-visible failures.
@@ -164,7 +167,13 @@ async fn chaos_drain_node_while_querying() {
     // For each shard, verify RF nodes are available
     for shard_id in 0..shard_count {
         let assigned = assign_shard_in_group(shard_id, &nodes, rf);
-        assert_eq!(assigned.len(), rf as usize, "Shard {} should have {} replicas", shard_id, rf);
+        assert_eq!(
+            assigned.len(),
+            rf as usize,
+            "Shard {} should have {} replicas",
+            shard_id,
+            rf
+        );
     }
 }
 
@@ -217,8 +226,14 @@ async fn chaos_add_replica_group_while_querying() {
     assert_eq!(group_count, 2, "Should have 2 replica groups");
 
     // Verify all nodes exist
-    assert!(topo_read.node(&node_id("node-2")).is_some(), "node-2 should exist");
-    assert!(topo_read.node(&node_id("node-3")).is_some(), "node-3 should exist");
+    assert!(
+        topo_read.node(&node_id("node-2")).is_some(),
+        "node-2 should exist"
+    );
+    assert!(
+        topo_read.node(&node_id("node-3")).is_some(),
+        "node-3 should exist"
+    );
     drop(topo_read);
 
     // Original group should still be functional for queries
@@ -375,11 +390,7 @@ async fn chaos_restart_node_mid_rebalance() {
 /// and that adding a node causes predictable shard movement.
 #[test]
 fn chaos_rendezvous_determinism() {
-    let nodes = vec![
-        node_id("node-0"),
-        node_id("node-1"),
-        node_id("node-2"),
-    ];
+    let nodes = vec![node_id("node-0"), node_id("node-1"), node_id("node-2")];
 
     // Same shard -> same assignment
     let shard_id = 42;
@@ -390,7 +401,10 @@ fn chaos_rendezvous_determinism() {
         .into_iter()
         .collect();
 
-    assert_eq!(assignment1, assignment2, "Same shard should assign to same nodes");
+    assert_eq!(
+        assignment1, assignment2,
+        "Same shard should assign to same nodes"
+    );
 
     // Different shards -> (mostly) different assignments
     // Try multiple shard pairs to find one with different assignments
@@ -404,10 +418,7 @@ fn chaos_rendezvous_determinism() {
                 .into_iter()
                 .collect();
 
-            let overlap_count = assign_a
-                .iter()
-                .filter(|n| assign_b.contains(n))
-                .count();
+            let overlap_count = assign_a.iter().filter(|n| assign_b.contains(n)).count();
 
             if overlap_count < 2 {
                 found_different = true;

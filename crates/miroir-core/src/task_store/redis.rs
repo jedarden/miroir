@@ -4,8 +4,8 @@
 //! Each SQLite table is mapped to a Redis keyspace as specified in plan §4.
 
 use crate::task_store::*;
-use crate::Result;
 use crate::MiroirError;
+use crate::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -13,11 +13,10 @@ use tokio::sync::Mutex;
 
 use ::redis::aio::ConnectionManager;
 use ::redis::{
-    pipe, AsyncCommands, Client, ExistenceCheck, FromRedisValue, Pipeline, SetExpiry,
-    SetOptions, Value,
+    pipe, AsyncCommands, Client, ExistenceCheck, FromRedisValue, Pipeline, SetExpiry, SetOptions,
+    Value,
 };
 use futures_util::StreamExt;
-
 
 /// Redis connection pool wrapper.
 #[derive(Clone)]
@@ -50,7 +49,6 @@ impl RedisPool {
             .await
             .map_err(|e| MiroirError::Redis(e.to_string()))
     }
-
 
     /// Block on an async future using a dedicated runtime.
     /// Spawns a dedicated thread with its own single-threaded runtime to avoid
@@ -114,10 +112,7 @@ impl RedisTaskStore {
     }
 
     /// Helper: parse a hash row into a TaskRow.
-    fn task_from_hash(
-        miroir_id: String,
-        fields: &HashMap<String, Value>,
-    ) -> Result<TaskRow> {
+    fn task_from_hash(miroir_id: String, fields: &HashMap<String, Value>) -> Result<TaskRow> {
         let created_at = get_field_i64(fields, "created_at")?;
         let status = get_field_string(fields, "status")?;
         let node_tasks_json = get_field_string(fields, "node_tasks")?;
@@ -147,10 +142,7 @@ impl RedisTaskStore {
     }
 
     /// Helper: parse canary hash row.
-    fn canary_from_hash(
-        id: String,
-        fields: &HashMap<String, Value>,
-    ) -> Result<CanaryRow> {
+    fn canary_from_hash(id: String, fields: &HashMap<String, Value>) -> Result<CanaryRow> {
         Ok(CanaryRow {
             id,
             name: get_field_string(fields, "name")?,
@@ -164,17 +156,17 @@ impl RedisTaskStore {
     }
 
     /// Helper: parse alias hash row.
-    fn alias_row_from_hash(
-        name: String,
-        fields: &HashMap<String, Value>,
-    ) -> Result<AliasRow> {
-        let target_uids_json = opt_field(fields, "target_uids").unwrap_or_else(|| "null".to_string());
-        let target_uids: Option<Vec<String>> = if target_uids_json == "null" {
-            None
-        } else {
-            Some(serde_json::from_str(&target_uids_json)
-                .map_err(|e| MiroirError::TaskStore(format!("invalid target_uids JSON: {e}")))?)
-        };
+    fn alias_row_from_hash(name: String, fields: &HashMap<String, Value>) -> Result<AliasRow> {
+        let target_uids_json =
+            opt_field(fields, "target_uids").unwrap_or_else(|| "null".to_string());
+        let target_uids: Option<Vec<String>> =
+            if target_uids_json == "null" {
+                None
+            } else {
+                Some(serde_json::from_str(&target_uids_json).map_err(|e| {
+                    MiroirError::TaskStore(format!("invalid target_uids JSON: {e}"))
+                })?)
+            };
         let history_json = get_field_string(fields, "history")?;
         let history: Vec<AliasHistoryEntry> = serde_json::from_str(&history_json)
             .map_err(|e| MiroirError::TaskStore(format!("invalid history JSON: {e}")))?;
@@ -259,11 +251,12 @@ impl TaskStore for RedisTaskStore {
         let version_key = format!("{}:schema_version", key_prefix);
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let current: Option<i64> = conn.get(&version_key).await
+            let current: Option<i64> = conn
+                .get(&version_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
-            let binary_version = crate::schema_migrations::build_registry()
-                .max_version();
+            let binary_version = crate::schema_migrations::build_registry().max_version();
 
             // Validate that store version is not ahead of binary
             if let Some(v) = current {
@@ -279,7 +272,9 @@ impl TaskStore for RedisTaskStore {
             // Redis doesn't need SQL migrations (no tables), but we track
             // version for compatibility with SQLite and to enable the
             // version-ahead safety check on rollback.
-            let _: () = conn.set(&version_key, binary_version).await
+            let _: () = conn
+                .set(&version_key, binary_version)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             Ok(())
@@ -339,7 +334,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let fields: HashMap<String, Value> = conn.hgetall(&key).await
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if fields.is_empty() {
@@ -357,14 +354,18 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let exists: bool = conn.hexists(&key, "miroir_id").await
+            let exists: bool = conn
+                .hexists(&key, "miroir_id")
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if !exists {
                 return Ok(false);
             }
 
-            let _: () = conn.hset(&key, "status", &status).await
+            let _: () = conn
+                .hset(&key, "status", &status)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
             Ok(true)
         })
@@ -377,7 +378,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let node_tasks_json: Option<String> = conn.hget(&key, "node_tasks").await
+            let node_tasks_json: Option<String> = conn
+                .hget(&key, "node_tasks")
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let Some(json) = node_tasks_json else {
@@ -389,7 +392,9 @@ impl TaskStore for RedisTaskStore {
             map.insert(node_id, task_uid);
             let updated = serde_json::to_string(&map)?;
 
-            let _: () = conn.hset(&key, "node_tasks", &updated).await
+            let _: () = conn
+                .hset(&key, "node_tasks", &updated)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
             Ok(true)
         })
@@ -402,14 +407,18 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let exists: bool = conn.hexists(&key, "miroir_id").await
+            let exists: bool = conn
+                .hexists(&key, "miroir_id")
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if !exists {
                 return Ok(false);
             }
 
-            let _: () = conn.hset(&key, "error", &error).await
+            let _: () = conn
+                .hset(&key, "error", &error)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
             Ok(true)
         })
@@ -427,13 +436,17 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let all_ids: Vec<String> = conn.smembers(&index_key).await
+            let all_ids: Vec<String> = conn
+                .smembers(&index_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let mut tasks = Vec::new();
             for miroir_id in all_ids {
                 let key = format!("{}:tasks:{}", key_prefix, miroir_id);
-                let fields: HashMap<String, Value> = conn.hgetall(&key).await
+                let fields: HashMap<String, Value> = conn
+                    .hgetall(&key)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
                 if fields.is_empty() {
@@ -489,7 +502,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let all_ids: Vec<String> = conn.smembers(&index_key).await
+            let all_ids: Vec<String> = conn
+                .smembers(&index_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let terminal_statuses = ["succeeded", "failed", "canceled"];
@@ -505,7 +520,8 @@ impl TaskStore for RedisTaskStore {
                 let result: (Option<String>, Option<String>) = pool.pipeline_query(&mut p).await?;
 
                 if let (Some(created_at_str), Some(status)) = result {
-                    let created_at: i64 = created_at_str.parse()
+                    let created_at: i64 = created_at_str
+                        .parse()
                         .map_err(|e| MiroirError::TaskStore(format!("invalid created_at: {e}")))?;
                     if created_at < cutoff_ms && terminal_statuses.contains(&status.as_str()) {
                         to_delete.push(miroir_id);
@@ -535,7 +551,9 @@ impl TaskStore for RedisTaskStore {
         let index_key = self.key(&["tasks", "_index"]);
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let count: u64 = conn.scard(&index_key).await
+            let count: u64 = conn
+                .scard(&index_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
             Ok(count)
         })
@@ -554,7 +572,10 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let index_uid = index_uid.to_string();
         let node_id = node_id.to_string();
-        let key = format!("{}:node_settings_version:{}:{}", key_prefix, index_uid, node_id);
+        let key = format!(
+            "{}:node_settings_version:{}:{}",
+            key_prefix, index_uid, node_id
+        );
         let index_key = format!("{}:node_settings_version:_index", key_prefix);
 
         self.block_on(async move {
@@ -587,11 +608,16 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let index_uid = index_uid.to_string();
         let node_id = node_id.to_string();
-        let key = format!("{}:node_settings_version:{}:{}", key_prefix, index_uid, node_id);
+        let key = format!(
+            "{}:node_settings_version:{}:{}",
+            key_prefix, index_uid, node_id
+        );
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let fields: HashMap<String, Value> = conn.hgetall(&key).await
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if fields.is_empty() {
@@ -660,7 +686,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let fields: HashMap<String, Value> = conn.hgetall(&key).await
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if fields.is_empty() {
@@ -701,7 +729,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let fields: HashMap<String, Value> = conn.hgetall(&key).await
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if fields.is_empty() {
@@ -748,7 +778,9 @@ impl TaskStore for RedisTaskStore {
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
 
-            let exists: bool = conn.exists(&key).await
+            let exists: bool = conn
+                .exists(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if !exists {
@@ -773,13 +805,17 @@ impl TaskStore for RedisTaskStore {
             let mut conn = pool.manager.lock().await;
 
             // Get all alias names from the index set
-            let names: Vec<String> = conn.smembers(&index_key).await
+            let names: Vec<String> = conn
+                .smembers(&index_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let mut result = Vec::new();
             for name in names {
                 let key = format!("{}:aliases:{}", key_prefix, name);
-                let fields: HashMap<String, Value> = conn.hgetall(&key).await
+                let fields: HashMap<String, Value> = conn
+                    .hgetall(&key)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
                 if !fields.is_empty() {
@@ -834,7 +870,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let fields: HashMap<String, Value> = conn.hgetall(&key).await
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if fields.is_empty() {
@@ -893,7 +931,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let fields: HashMap<String, Value> = conn.hgetall(&redis_key).await
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&redis_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if fields.is_empty() {
@@ -978,7 +1018,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let fields: HashMap<String, Value> = conn.hgetall(&key).await
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if fields.is_empty() {
@@ -1013,7 +1055,9 @@ impl TaskStore for RedisTaskStore {
             let mut conn = pool.manager.lock().await;
 
             // Check if state is 'queued'
-            let state: Option<String> = conn.hget(&key, "state").await
+            let state: Option<String> = conn
+                .hget(&key, "state")
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if state.as_deref() != Some("queued") {
@@ -1041,7 +1085,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
-            let exists: bool = conn.hexists(&key, "id").await
+            let exists: bool = conn
+                .hexists(&key, "id")
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if !exists {
@@ -1065,14 +1111,18 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let claimed_by: Option<String> = conn.hget(&key, "claimed_by").await
+            let claimed_by: Option<String> = conn
+                .hget(&key, "claimed_by")
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if claimed_by.is_none() {
                 return Ok(false);
             }
 
-            let _: () = conn.hset(&key, "claim_expires_at", claim_expires_at.to_string()).await
+            let _: () = conn
+                .hset(&key, "claim_expires_at", claim_expires_at.to_string())
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             Ok(true)
@@ -1090,12 +1140,16 @@ impl TaskStore for RedisTaskStore {
 
             // Use the _index set for O(cardinality) iteration (no SCAN).
             let index_key = format!("{}:jobs:_index", key_prefix);
-            let ids: Vec<String> = conn.smembers(&index_key).await
+            let ids: Vec<String> = conn
+                .smembers(&index_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             for id in ids {
                 let key = format!("{}:jobs:{}", key_prefix, id);
-                let fields: HashMap<String, Value> = conn.hgetall(&key).await
+                let fields: HashMap<String, Value> = conn
+                    .hgetall(&key)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
                 if !fields.is_empty() {
@@ -1135,7 +1189,9 @@ impl TaskStore for RedisTaskStore {
             // This is used for HPA queue depth metric per plan §14.4
             if state == "queued" {
                 let queued_key = format!("{}:jobs:_queued", key_prefix);
-                let count: u64 = conn.scard(&queued_key).await
+                let count: u64 = conn
+                    .scard(&queued_key)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
                 return Ok(count);
             }
@@ -1144,13 +1200,17 @@ impl TaskStore for RedisTaskStore {
             // This is O(n) but acceptable for non-queued states which are
             // typically few (only actively running jobs)
             let index_key = format!("{}:jobs:_index", key_prefix);
-            let ids: Vec<String> = conn.smembers(&index_key).await
+            let ids: Vec<String> = conn
+                .smembers(&index_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let mut count = 0u64;
             for id in ids {
                 let key = format!("{}:jobs:{}", key_prefix, id);
-                let job_state: Option<String> = conn.hget(&key, "state").await
+                let job_state: Option<String> = conn
+                    .hget(&key, "state")
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
                 if job_state.as_deref() == Some(&state) {
                     count += 1;
@@ -1171,12 +1231,16 @@ impl TaskStore for RedisTaskStore {
 
             // Use the _index set for O(cardinality) iteration
             let index_key = format!("{}:jobs:_index", key_prefix);
-            let ids: Vec<String> = conn.smembers(&index_key).await
+            let ids: Vec<String> = conn
+                .smembers(&index_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             for id in ids {
                 let key = format!("{}:jobs:{}", key_prefix, id);
-                let fields: HashMap<String, Value> = conn.hgetall(&key).await
+                let fields: HashMap<String, Value> = conn
+                    .hgetall(&key)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
                 if !fields.is_empty() {
@@ -1191,7 +1255,10 @@ impl TaskStore for RedisTaskStore {
                                         params: get_field_string(&fields, "params")?,
                                         state: job_state,
                                         claimed_by: opt_field(&fields, "claimed_by"),
-                                        claim_expires_at: opt_field_i64(&fields, "claim_expires_at"),
+                                        claim_expires_at: opt_field_i64(
+                                            &fields,
+                                            "claim_expires_at",
+                                        ),
                                         progress: get_field_string(&fields, "progress")?,
                                         parent_job_id: opt_field(&fields, "parent_job_id"),
                                         chunk_index: opt_field_i64(&fields, "chunk_index"),
@@ -1220,12 +1287,16 @@ impl TaskStore for RedisTaskStore {
 
             // Use the _index set for iteration
             let index_key = format!("{}:jobs:_index", key_prefix);
-            let ids: Vec<String> = conn.smembers(&index_key).await
+            let ids: Vec<String> = conn
+                .smembers(&index_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             for id in ids {
                 let key = format!("{}:jobs:{}", key_prefix, id);
-                let fields: HashMap<String, Value> = conn.hgetall(&key).await
+                let fields: HashMap<String, Value> = conn
+                    .hgetall(&key)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
                 if !fields.is_empty() {
@@ -1301,14 +1372,17 @@ impl TaskStore for RedisTaskStore {
                     .conditional_set(ExistenceCheck::NX)
                     .with_expiration(SetExpiry::EX(ttl_seconds));
                 conn.set_options(&key, &holder, opts).await
-            }.map_err(|e| MiroirError::Redis(e.to_string()))?;
+            }
+            .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if acquired {
                 return Ok(true);
             }
 
             // Check if we can steal the lease (expired or we hold it)
-            let current_holder: Option<String> = conn.get(&key).await
+            let current_holder: Option<String> = conn
+                .get(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             match current_holder {
@@ -1317,13 +1391,17 @@ impl TaskStore for RedisTaskStore {
                     let opts = SetOptions::default()
                         .conditional_set(ExistenceCheck::XX)
                         .with_expiration(SetExpiry::EX(ttl_seconds));
-                    let _: () = conn.set_options(&key, &holder, opts).await
+                    let _: () = conn
+                        .set_options(&key, &holder, opts)
+                        .await
                         .map_err(|e| MiroirError::Redis(e.to_string()))?;
                     Ok(true)
                 }
                 Some(_) => {
                     // Someone else holds it — check expiry using TTL
-                    let ttl: i64 = conn.ttl(&key).await
+                    let ttl: i64 = conn
+                        .ttl(&key)
+                        .await
                         .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
                     // TTL of -2 means key doesn't exist, -1 means no expiry
@@ -1332,7 +1410,9 @@ impl TaskStore for RedisTaskStore {
                         let opts = SetOptions::default()
                             .conditional_set(ExistenceCheck::NX)
                             .with_expiration(SetExpiry::EX(ttl_seconds));
-                        let acquired: bool = conn.set_options(&key, &holder, opts).await
+                        let acquired: bool = conn
+                            .set_options(&key, &holder, opts)
+                            .await
                             .map_err(|e| MiroirError::Redis(e.to_string()))?;
                         Ok(acquired)
                     } else {
@@ -1344,7 +1424,9 @@ impl TaskStore for RedisTaskStore {
                     let opts = SetOptions::default()
                         .conditional_set(ExistenceCheck::NX)
                         .with_expiration(SetExpiry::EX(ttl_seconds));
-                    let acquired: bool = conn.set_options(&key, &holder, opts).await
+                    let acquired: bool = conn
+                        .set_options(&key, &holder, opts)
+                        .await
                         .map_err(|e| MiroirError::Redis(e.to_string()))?;
                     Ok(acquired)
                 }
@@ -1367,7 +1449,9 @@ impl TaskStore for RedisTaskStore {
             let opts = SetOptions::default()
                 .conditional_set(ExistenceCheck::XX)
                 .with_expiration(SetExpiry::EX(ttl_seconds));
-            let renewed: bool = conn.set_options(&key, &holder, opts).await
+            let renewed: bool = conn
+                .set_options(&key, &holder, opts)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             Ok(renewed)
@@ -1382,7 +1466,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let holder: Option<String> = conn.get(&key).await
+            let holder: Option<String> = conn
+                .get(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let Some(holder) = holder else {
@@ -1390,7 +1476,9 @@ impl TaskStore for RedisTaskStore {
             };
 
             // Get TTL to compute expires_at
-            let ttl: i64 = conn.ttl(&key).await
+            let ttl: i64 = conn
+                .ttl(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let expires_at = if ttl == -1 {
@@ -1455,7 +1543,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let fields: HashMap<String, Value> = conn.hgetall(&key).await
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if fields.is_empty() {
@@ -1473,13 +1563,17 @@ impl TaskStore for RedisTaskStore {
         self.block_on(async move {
             let index_key = format!("{}:canary:_index", key_prefix);
             let mut conn = manager.lock().await;
-            let ids: Vec<String> = conn.smembers(&index_key).await
+            let ids: Vec<String> = conn
+                .smembers(&index_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let mut result = Vec::new();
             for id in ids {
                 let key = format!("{}:canary:{}", key_prefix, id);
-                let fields: HashMap<String, Value> = conn.hgetall(&key).await
+                let fields: HashMap<String, Value> = conn
+                    .hgetall(&key)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
                 if !fields.is_empty() {
@@ -1501,7 +1595,9 @@ impl TaskStore for RedisTaskStore {
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
 
-            let exists: bool = conn.exists(&key).await
+            let exists: bool = conn
+                .exists(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if !exists {
@@ -1530,13 +1626,17 @@ impl TaskStore for RedisTaskStore {
 
             // Add new run to sorted set (score = ran_at)
             let value = serde_json::to_string(&run)?;
-            let _: () = conn.zadd(&key, run.ran_at, value).await
+            let _: () = conn
+                .zadd(&key, run.ran_at, value)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             // Trim to keep only the most recent N runs using ZREMRANGEBYRANK
             let start = 0isize;
             let end = -(run_history_limit as isize) - 1;
-            let _: () = conn.zremrangebyrank(&key, start, end).await
+            let _: () = conn
+                .zremrangebyrank(&key, start, end)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             Ok(())
@@ -1553,7 +1653,9 @@ impl TaskStore for RedisTaskStore {
             let mut conn = manager.lock().await;
 
             // Get runs in descending order by ran_at (most recent first)
-            let values: Vec<String> = conn.zrevrange(&key, 0, (limit as isize) - 1).await
+            let values: Vec<String> = conn
+                .zrevrange(&key, 0, (limit as isize) - 1)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let mut result = Vec::new();
@@ -1579,7 +1681,10 @@ impl TaskStore for RedisTaskStore {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
         let cursor = cursor.clone();
-        let key = format!("{}:cdc_cursor:{}:{}", key_prefix, cursor.sink_name, cursor.index_uid);
+        let key = format!(
+            "{}:cdc_cursor:{}:{}",
+            key_prefix, cursor.sink_name, cursor.index_uid
+        );
         let index_key = format!("{}:cdc_cursor:_index:{}", key_prefix, cursor.sink_name);
         let index_value = format!("{}:{}", cursor.sink_name, cursor.index_uid);
 
@@ -1609,7 +1714,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let fields: HashMap<String, Value> = conn.hgetall(&key).await
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if fields.is_empty() {
@@ -1633,8 +1740,12 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             // Use the _index set for O(cardinality) iteration (no SCAN).
-            let members: Vec<String> = pool.manager.lock().await
-                .smembers(&index_key).await
+            let members: Vec<String> = pool
+                .manager
+                .lock()
+                .await
+                .smembers(&index_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let mut result = Vec::new();
@@ -1647,7 +1758,9 @@ impl TaskStore for RedisTaskStore {
                     None => continue,
                 };
                 let key = format!("{}:cdc_cursor:{}:{}", key_prefix, sink_name, idx);
-                let fields: HashMap<String, Value> = conn.hgetall(&key).await
+                let fields: HashMap<String, Value> = conn
+                    .hgetall(&key)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
                 if !fields.is_empty() {
@@ -1696,7 +1809,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let fields: HashMap<String, Value> = conn.hgetall(&key).await
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if fields.is_empty() {
@@ -1721,14 +1836,18 @@ impl TaskStore for RedisTaskStore {
         self.block_on(async move {
             let mut conn = manager.lock().await;
 
-            let exists: bool = conn.exists(&key).await
+            let exists: bool = conn
+                .exists(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if !exists {
                 return Ok(false);
             }
 
-            let _: () = conn.del(&key).await
+            let _: () = conn
+                .del(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             Ok(true)
@@ -1774,7 +1893,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let fields: HashMap<String, Value> = conn.hgetall(&key).await
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if fields.is_empty() {
@@ -1801,13 +1922,17 @@ impl TaskStore for RedisTaskStore {
         self.block_on(async move {
             let index_key = format!("{}:rollover:_index", key_prefix);
             let mut conn = manager.lock().await;
-            let names: Vec<String> = conn.smembers(&index_key).await
+            let names: Vec<String> = conn
+                .smembers(&index_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let mut result = Vec::new();
             for name in names {
                 let key = format!("{}:rollover:{}", key_prefix, name);
-                let fields: HashMap<String, Value> = conn.hgetall(&key).await
+                let fields: HashMap<String, Value> = conn
+                    .hgetall(&key)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
                 if !fields.is_empty() {
@@ -1838,7 +1963,9 @@ impl TaskStore for RedisTaskStore {
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
 
-            let exists: bool = conn.exists(&key).await
+            let exists: bool = conn
+                .exists(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if !exists {
@@ -1883,7 +2010,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let fields: HashMap<String, Value> = conn.hgetall(&key).await
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if fields.is_empty() {
@@ -1907,14 +2036,18 @@ impl TaskStore for RedisTaskStore {
         self.block_on(async move {
             let mut conn = manager.lock().await;
 
-            let exists: bool = conn.exists(&key).await
+            let exists: bool = conn
+                .exists(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if !exists {
                 return Ok(false);
             }
 
-            let _: () = conn.del(&key).await
+            let _: () = conn
+                .del(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             Ok(true)
@@ -1947,11 +2080,15 @@ impl TaskStore for RedisTaskStore {
 
             let mut conn = pool.manager.lock().await;
             if let Some(ref ua) = session.user_agent {
-                let _: () = conn.hset(&key, "user_agent", ua).await
+                let _: () = conn
+                    .hset(&key, "user_agent", ua)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
             }
             if let Some(ref ip) = session.source_ip {
-                let _: () = conn.hset(&key, "source_ip", ip).await
+                let _: () = conn
+                    .hset(&key, "source_ip", ip)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
             }
 
@@ -1967,7 +2104,9 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let fields: HashMap<String, Value> = conn.hgetall(&key).await
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if fields.is_empty() {
@@ -1997,18 +2136,24 @@ impl TaskStore for RedisTaskStore {
         self.block_on(async move {
             let mut conn = manager.lock().await;
 
-            let exists: bool = conn.hexists(&key, "session_id").await
+            let exists: bool = conn
+                .hexists(&key, "session_id")
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if !exists {
                 return Ok(false);
             }
 
-            let _: () = conn.hset(&key, "revoked", 1i64).await
+            let _: () = conn
+                .hset(&key, "revoked", 1i64)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             // Publish to revoked channel for immediate invalidation across pods
-            let _: () = conn.publish(&channel, &session_id).await
+            let _: () = conn
+                .publish(&channel, &session_id)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             Ok(true)
@@ -2067,12 +2212,14 @@ impl TaskStore for RedisTaskStore {
             }
 
             // Store the hash
-            conn.hset_multiple(&key, &items).await
+            conn.hset_multiple(&key, &items)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             // Add to scope index
             let scope_key = format!("{}:mode_b_ops_scope:{}", key_prefix, op.scope);
-            conn.set(&scope_key, &op.operation_id).await
+            conn.set(&scope_key, &op.operation_id)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             Ok(())
@@ -2089,14 +2236,18 @@ impl TaskStore for RedisTaskStore {
             let key = format!("{}:mode_b_ops:{}", key_prefix, id);
 
             // Check if key exists
-            let exists: bool = conn.exists(&key).await
+            let exists: bool = conn
+                .exists(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
             if !exists {
                 return Ok(None);
             }
 
             // Get all fields
-            let map: std::collections::HashMap<String, String> = conn.hgetall(&key).await
+            let map: std::collections::HashMap<String, String> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             Ok(Some(ModeBOperation {
@@ -2104,12 +2255,18 @@ impl TaskStore for RedisTaskStore {
                 operation_type: map.get("operation_type").cloned().unwrap_or_default(),
                 scope: map.get("scope").cloned().unwrap_or_default(),
                 phase: map.get("phase").cloned().unwrap_or_default(),
-                phase_started_at: map.get("phase_started_at")
-                    .and_then(|v| v.parse().ok()).unwrap_or(0),
-                created_at: map.get("created_at")
-                    .and_then(|v| v.parse().ok()).unwrap_or(0),
-                updated_at: map.get("updated_at")
-                    .and_then(|v| v.parse().ok()).unwrap_or(0),
+                phase_started_at: map
+                    .get("phase_started_at")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
+                created_at: map
+                    .get("created_at")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
+                updated_at: map
+                    .get("updated_at")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
                 state_json: map.get("state_json").cloned().unwrap_or_default(),
                 error: map.get("error").cloned(),
                 status: map.get("status").cloned().unwrap_or_default(),
@@ -2133,7 +2290,9 @@ impl TaskStore for RedisTaskStore {
             let scope_key = format!("{}:mode_b_ops_scope:{}", key_prefix, scope);
 
             // Get operation ID from scope index
-            let operation_id: Option<String> = conn.get(&scope_key).await
+            let operation_id: Option<String> = conn
+                .get(&scope_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let Some(id) = operation_id else {
@@ -2142,14 +2301,18 @@ impl TaskStore for RedisTaskStore {
 
             // Get the operation
             let key = format!("{}:mode_b_ops:{}", key_prefix, id);
-            let exists: bool = conn.exists(&key).await
+            let exists: bool = conn
+                .exists(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
             if !exists {
                 return Ok(None);
             }
 
             // Get all fields
-            let map: std::collections::HashMap<String, String> = conn.hgetall(&key).await
+            let map: std::collections::HashMap<String, String> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             Ok(Some(ModeBOperation {
@@ -2157,12 +2320,18 @@ impl TaskStore for RedisTaskStore {
                 operation_type: map.get("operation_type").cloned().unwrap_or_default(),
                 scope: map.get("scope").cloned().unwrap_or_default(),
                 phase: map.get("phase").cloned().unwrap_or_default(),
-                phase_started_at: map.get("phase_started_at")
-                    .and_then(|v| v.parse().ok()).unwrap_or(0),
-                created_at: map.get("created_at")
-                    .and_then(|v| v.parse().ok()).unwrap_or(0),
-                updated_at: map.get("updated_at")
-                    .and_then(|v| v.parse().ok()).unwrap_or(0),
+                phase_started_at: map
+                    .get("phase_started_at")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
+                created_at: map
+                    .get("created_at")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
+                updated_at: map
+                    .get("updated_at")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
                 state_json: map.get("state_json").cloned().unwrap_or_default(),
                 error: map.get("error").cloned(),
                 status: map.get("status").cloned().unwrap_or_default(),
@@ -2186,13 +2355,17 @@ impl TaskStore for RedisTaskStore {
 
             // Scan for mode_b_ops keys
             let pattern = format!("{}:mode_b_ops:*", key_prefix);
-            let keys: Vec<String> = conn.keys(&pattern).await
+            let keys: Vec<String> = conn
+                .keys(&pattern)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let mut results = Vec::new();
 
             for key in keys {
-                let map: std::collections::HashMap<String, String> = conn.hgetall(&key).await
+                let map: std::collections::HashMap<String, String> = conn
+                    .hgetall(&key)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
                 let op = ModeBOperation {
@@ -2200,12 +2373,18 @@ impl TaskStore for RedisTaskStore {
                     operation_type: map.get("operation_type").cloned().unwrap_or_default(),
                     scope: map.get("scope").cloned().unwrap_or_default(),
                     phase: map.get("phase").cloned().unwrap_or_default(),
-                    phase_started_at: map.get("phase_started_at")
-                        .and_then(|v| v.parse().ok()).unwrap_or(0),
-                    created_at: map.get("created_at")
-                        .and_then(|v| v.parse().ok()).unwrap_or(0),
-                    updated_at: map.get("updated_at")
-                        .and_then(|v| v.parse().ok()).unwrap_or(0),
+                    phase_started_at: map
+                        .get("phase_started_at")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0),
+                    created_at: map
+                        .get("created_at")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0),
+                    updated_at: map
+                        .get("updated_at")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0),
                     state_json: map.get("state_json").cloned().unwrap_or_default(),
                     error: map.get("error").cloned(),
                     status: map.get("status").cloned().unwrap_or_default(),
@@ -2213,7 +2392,9 @@ impl TaskStore for RedisTaskStore {
                     old_shards: map.get("old_shards").and_then(|v| v.parse().ok()),
                     target_shards: map.get("target_shards").and_then(|v| v.parse().ok()),
                     shadow_index: map.get("shadow_index").cloned(),
-                    documents_backfilled: map.get("documents_backfilled").and_then(|v| v.parse().ok()),
+                    documents_backfilled: map
+                        .get("documents_backfilled")
+                        .and_then(|v| v.parse().ok()),
                     total_documents: map.get("total_documents").and_then(|v| v.parse().ok()),
                 };
 
@@ -2266,18 +2447,24 @@ impl TaskStore for RedisTaskStore {
             let key = format!("{}:mode_b_ops:{}", key_prefix, id);
 
             // Get scope for cleanup
-            let scope: Option<String> = conn.hget(&key, "scope").await
+            let scope: Option<String> = conn
+                .hget(&key, "scope")
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             // Delete the operation
-            let _: () = conn.del(&key).await
+            let _: () = conn
+                .del(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
             let deleted = true; // If we got here, deletion succeeded
 
             // Clean up scope index
             if let Some(s) = scope {
                 let scope_key = format!("{}:mode_b_ops_scope:{}", key_prefix, s);
-                let _: () = conn.del(&scope_key).await
+                let _: () = conn
+                    .del(&scope_key)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
             }
 
@@ -2294,23 +2481,30 @@ impl TaskStore for RedisTaskStore {
 
             // Scan for mode_b_ops keys
             let pattern = format!("{}:mode_b_ops:*", key_prefix);
-            let keys: Vec<String> = conn.keys(&pattern).await
+            let keys: Vec<String> = conn
+                .keys(&pattern)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let mut deleted = 0;
 
             for key in keys {
-                let status: Option<String> = conn.hget(&key, "status").await
+                let status: Option<String> = conn
+                    .hget(&key, "status")
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
-                let updated_at_raw: Option<String> = conn.hget(&key, "updated_at").await
+                let updated_at_raw: Option<String> = conn
+                    .hget(&key, "updated_at")
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
-                let updated_at: Option<i64> = updated_at_raw
-                    .and_then(|v| v.parse().ok());
+                let updated_at: Option<i64> = updated_at_raw.and_then(|v| v.parse().ok());
 
                 if let (Some(s), Some(ts)) = (status, updated_at) {
                     if (s == "completed" || s == "failed") && ts < cutoff_ms {
                         // Delete the operation
-                        let _: () = conn.del(&key).await
+                        let _: () = conn
+                            .del(&key)
+                            .await
                             .map_err(|e| MiroirError::Redis(e.to_string()))?;
                         deleted += 1;
                     }
@@ -2346,11 +2540,15 @@ impl RedisTaskStore {
             let mut conn = manager.lock().await;
 
             // Get current count
-            let current: Option<u64> = conn.get(&key).await
+            let current: Option<u64> = conn
+                .get(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             // Get TTL
-            let ttl: i64 = conn.ttl(&key).await
+            let ttl: i64 = conn
+                .ttl(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let count = current.unwrap_or(0);
@@ -2361,12 +2559,16 @@ impl RedisTaskStore {
             }
 
             // Increment counter
-            let new_count: u64 = conn.incr(&key, 1).await
+            let new_count: u64 = conn
+                .incr(&key, 1)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             // Set expiry on first request
             if count == 0 {
-                let _: () = conn.expire(&key, window_seconds as i64).await
+                let _: () = conn
+                    .expire(&key, window_seconds as i64)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
             }
 
@@ -2394,7 +2596,9 @@ impl RedisTaskStore {
             let mut conn = pool.manager.lock().await;
 
             // Check if we're in backoff mode
-            let backoff_fields: HashMap<String, Value> = conn.hgetall(&backoff_key).await
+            let backoff_fields: HashMap<String, Value> = conn
+                .hgetall(&backoff_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if !backoff_fields.is_empty() {
@@ -2405,12 +2609,16 @@ impl RedisTaskStore {
                     return Ok((false, Some(wait_seconds)));
                 }
                 // Backoff expired, clear it
-                let _: () = conn.del(&backoff_key).await
+                let _: () = conn
+                    .del(&backoff_key)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
             }
 
             // Check standard rate limit
-            let current: Option<u64> = conn.get(&key).await
+            let current: Option<u64> = conn
+                .get(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let count = current.unwrap_or(0);
@@ -2448,7 +2656,9 @@ impl RedisTaskStore {
             let mut conn = pool.manager.lock().await;
 
             // Check if already in backoff
-            let backoff_fields: HashMap<String, Value> = conn.hgetall(&backoff_key).await
+            let backoff_fields: HashMap<String, Value> = conn
+                .hgetall(&backoff_key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let current_failed: u64 = if backoff_fields.is_empty() {
@@ -2461,7 +2671,8 @@ impl RedisTaskStore {
 
             // Check if we should enter backoff mode
             if new_failed >= failed_threshold as u64 {
-                let backoff_exponent = (new_failed.saturating_sub(failed_threshold as u64) as u32).min(7);
+                let backoff_exponent =
+                    (new_failed.saturating_sub(failed_threshold as u64) as u32).min(7);
                 let backoff_minutes = backoff_start_minutes * (1u64 << backoff_exponent);
                 let backoff_seconds = (backoff_minutes * 60).min(backoff_max_hours * 3600);
 
@@ -2478,7 +2689,9 @@ impl RedisTaskStore {
             }
 
             // Just update the failed count
-            let _: () = conn.hset(&backoff_key, "failed_count", new_failed as i64).await
+            let _: () = conn
+                .hset(&backoff_key, "failed_count", new_failed as i64)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             Ok(None)
@@ -2522,7 +2735,9 @@ impl RedisTaskStore {
             let mut conn = pool.manager.lock().await;
 
             // Check current count
-            let current: Option<u64> = conn.get(&key).await
+            let current: Option<u64> = conn
+                .get(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             let count = current.unwrap_or(0);
@@ -2553,7 +2768,9 @@ impl RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let fields: HashMap<String, Value> = conn.hgetall(&key).await
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             if fields.is_empty() {
@@ -2577,7 +2794,10 @@ impl RedisTaskStore {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
         let key_value = key.clone();
-        let redis_key = format!("{}:search_ui_scoped_key:{}", key_prefix, key_value.index_uid);
+        let redis_key = format!(
+            "{}:search_ui_scoped_key:{}",
+            key_prefix, key_value.index_uid
+        );
 
         self.block_on(async move {
             let mut pipe = pipe();
@@ -2587,12 +2807,20 @@ impl RedisTaskStore {
             pipe.hset(&redis_key, "rotated_at", key_value.rotated_at);
             pipe.hset(&redis_key, "generation", key_value.generation);
             match key_value.previous_key {
-                Some(ref v) => { pipe.hset(&redis_key, "previous_key", v); }
-                None => { pipe.hdel(&redis_key, "previous_key"); }
+                Some(ref v) => {
+                    pipe.hset(&redis_key, "previous_key", v);
+                }
+                None => {
+                    pipe.hdel(&redis_key, "previous_key");
+                }
             }
             match key_value.previous_uid {
-                Some(ref v) => { pipe.hset(&redis_key, "previous_uid", v); }
-                None => { pipe.hdel(&redis_key, "previous_uid"); }
+                Some(ref v) => {
+                    pipe.hset(&redis_key, "previous_uid", v);
+                }
+                None => {
+                    pipe.hdel(&redis_key, "previous_uid");
+                }
             }
             pool.pipeline_query::<()>(&mut pipe).await?;
             Ok(())
@@ -2610,7 +2838,10 @@ impl RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let pod_id = pod_id.to_string();
         let index_uid = index_uid.to_string();
-        let key = format!("{}:search_ui_scoped_key_observed:{}:{}", key_prefix, pod_id, index_uid);
+        let key = format!(
+            "{}:search_ui_scoped_key_observed:{}:{}",
+            key_prefix, pod_id, index_uid
+        );
 
         self.block_on(async move {
             let mut pipe = pipe();
@@ -2640,8 +2871,13 @@ impl RedisTaskStore {
             let mut conn = manager.lock().await;
 
             for pod_id in &live_pods {
-                let key = format!("{}:search_ui_scoped_key_observed:{}:{}", key_prefix, pod_id, index_uid);
-                let fields: HashMap<String, Value> = conn.hgetall(&key).await
+                let key = format!(
+                    "{}:search_ui_scoped_key_observed:{}:{}",
+                    key_prefix, pod_id, index_uid
+                );
+                let fields: HashMap<String, Value> = conn
+                    .hgetall(&key)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
                 if fields.is_empty() {
@@ -2703,7 +2939,8 @@ impl RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let pods: Vec<String> = conn.zrangebyscore(&key, cutoff, "+inf")
+            let pods: Vec<String> = conn
+                .zrangebyscore(&key, cutoff, "+inf")
                 .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
             Ok(pods)
@@ -2772,9 +3009,7 @@ impl RedisTaskStore {
             let mut conn = pool.manager.lock().await;
 
             // Read tracked byte size (atomic counter in a separate key)
-            let tracked_bytes: i64 = conn.get(&bytes_key).await
-                .unwrap_or(None)
-                .unwrap_or(0);
+            let tracked_bytes: i64 = conn.get(&bytes_key).await.unwrap_or(None).unwrap_or(0);
 
             let new_bytes = tracked_bytes + data_len as i64;
             let mut trimmed = false;
@@ -2782,7 +3017,9 @@ impl RedisTaskStore {
             // If adding this event exceeds the budget, trim from the tail (oldest)
             // until we are back under budget.
             if new_bytes > max_bytes as i64 {
-                let current_len: i64 = conn.llen(&key).await
+                let current_len: i64 = conn
+                    .llen(&key)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
                 // Estimate elements to keep: proportional to remaining budget.
@@ -2790,10 +3027,14 @@ impl RedisTaskStore {
                     let avg_element_bytes = tracked_bytes as f64 / current_len as f64;
                     let keep = ((max_bytes as f64) / avg_element_bytes).floor() as isize;
                     if keep > 0 {
-                        let _: () = conn.ltrim(&key, 0, keep - 1).await
+                        let _: () = conn
+                            .ltrim(&key, 0, keep - 1)
+                            .await
                             .map_err(|e| MiroirError::Redis(e.to_string()))?;
                     } else {
-                        let _: () = conn.del(&key).await
+                        let _: () = conn
+                            .del(&key)
+                            .await
                             .map_err(|e| MiroirError::Redis(e.to_string()))?;
                     }
                 }
@@ -2801,12 +3042,16 @@ impl RedisTaskStore {
             }
 
             // LPUSH new element to the head (newest first)
-            let _: () = conn.lpush(&key, &data).await
+            let _: () = conn
+                .lpush(&key, &data)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             // Update byte counter: recompute from LLEN * average or just add
             // the new element's bytes (exact enough for overflow purposes).
-            let final_count: i64 = conn.llen(&key).await
+            let final_count: i64 = conn
+                .llen(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             // If we trimmed, recompute tracked bytes from scratch; otherwise add.
@@ -2837,16 +3082,18 @@ impl RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
-            let data: Option<Vec<u8>> = conn.rpop(&key, None).await
+            let data: Option<Vec<u8>> = conn
+                .rpop(&key, None)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             // Adjust tracked byte counter
             if let Some(ref d) = data {
-                let tracked: i64 = conn.get(&bytes_key).await
-                    .unwrap_or(None)
-                    .unwrap_or(0);
+                let tracked: i64 = conn.get(&bytes_key).await.unwrap_or(None).unwrap_or(0);
                 let adjusted = (tracked - d.len() as i64).max(0);
-                let _: () = conn.set(&bytes_key, adjusted).await
+                let _: () = conn
+                    .set(&bytes_key, adjusted)
+                    .await
                     .map_err(|e| MiroirError::Redis(e.to_string()))?;
             }
 
@@ -2863,7 +3110,9 @@ impl RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let len: i64 = conn.llen(&key).await
+            let len: i64 = conn
+                .llen(&key)
+                .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
             Ok(len as usize)
         })
@@ -2880,20 +3129,21 @@ impl RedisTaskStore {
     where
         F: Fn(String) + Send + 'static,
     {
-        let client = Client::open(url)
-            .map_err(|e| MiroirError::Redis(e.to_string()))?;
+        let client = Client::open(url).map_err(|e| MiroirError::Redis(e.to_string()))?;
         let mut conn = client
             .get_async_pubsub()
             .await
             .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
         let channel = format!("{}:admin_session:revoked", key_prefix);
-        conn.subscribe(&channel).await
+        conn.subscribe(&channel)
+            .await
             .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
         let mut stream = conn.on_message();
         while let Some(msg) = stream.next().await {
-            let payload: String = msg.get_payload()
+            let payload: String = msg
+                .get_payload()
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
             on_revoked(payload);
         }
@@ -2930,9 +3180,18 @@ mod tests {
         fn test_key(prefix: &str, parts: &[&str]) -> String {
             format!("{}:{}", prefix, parts.join(":"))
         }
-        assert_eq!(test_key("miroir", &["tasks", "task-1"]), "miroir:tasks:task-1");
-        assert_eq!(test_key("miroir", &["lease", "scope-1"]), "miroir:lease:scope-1");
-        assert_eq!(test_key("miroir", &["canary_runs", "canary-1"]), "miroir:canary_runs:canary-1");
+        assert_eq!(
+            test_key("miroir", &["tasks", "task-1"]),
+            "miroir:tasks:task-1"
+        );
+        assert_eq!(
+            test_key("miroir", &["lease", "scope-1"]),
+            "miroir:lease:scope-1"
+        );
+        assert_eq!(
+            test_key("miroir", &["canary_runs", "canary-1"]),
+            "miroir:canary_runs:canary-1"
+        );
     }
 
     #[test]
@@ -3002,26 +3261,39 @@ mod tests {
             assert_eq!(retrieved.status, "queued");
 
             // Update status
-            store.update_task_status("task-1", "running").expect("Update should succeed");
-            let updated = store.get_task("task-1").expect("Get should succeed").unwrap();
+            store
+                .update_task_status("task-1", "running")
+                .expect("Update should succeed");
+            let updated = store
+                .get_task("task-1")
+                .expect("Get should succeed")
+                .unwrap();
             assert_eq!(updated.status, "running");
 
             // Update node task
             store
                 .update_node_task("task-1", "node-1", 123)
                 .expect("Update node task should succeed");
-            let with_node = store.get_task("task-1").expect("Get should succeed").unwrap();
+            let with_node = store
+                .get_task("task-1")
+                .expect("Get should succeed")
+                .unwrap();
             assert_eq!(with_node.node_tasks.get("node-1"), Some(&123));
 
             // Set error
             store
                 .set_task_error("task-1", "test error")
                 .expect("Set error should succeed");
-            let with_error = store.get_task("task-1").expect("Get should succeed").unwrap();
+            let with_error = store
+                .get_task("task-1")
+                .expect("Get should succeed")
+                .unwrap();
             assert_eq!(with_error.error.as_deref(), Some("test error"));
 
             // List tasks
-            let tasks = store.list_tasks(&TaskFilter::default()).expect("List should succeed");
+            let tasks = store
+                .list_tasks(&TaskFilter::default())
+                .expect("List should succeed");
             assert_eq!(tasks.len(), 1);
 
             // Task count
@@ -3132,7 +3404,11 @@ mod tests {
                     created_at: now_ms(),
                     status: if i % 3 == 0 { "succeeded" } else { "queued" }.to_string(),
                     node_tasks,
-                    error: if i % 10 == 0 { Some("test error".to_string()) } else { None },
+                    error: if i % 10 == 0 {
+                        Some("test error".to_string())
+                    } else {
+                        None
+                    },
                     started_at: None,
                     finished_at: None,
                     index_uid: None,
@@ -3150,7 +3426,9 @@ mod tests {
                     miroir_task_id: format!("task-{}", i),
                     expires_at: now_ms() + 3600_000,
                 };
-                store.insert_idempotency_entry(&entry).expect("Insert idempotency should succeed");
+                store
+                    .insert_idempotency_entry(&entry)
+                    .expect("Insert idempotency should succeed");
             }
 
             // Insert 1k sessions
@@ -3163,7 +3441,9 @@ mod tests {
                     min_settings_version: 1,
                     ttl: now_ms() + 3600_000,
                 };
-                store.upsert_session(&session).expect("Insert session should succeed");
+                store
+                    .upsert_session(&session)
+                    .expect("Insert session should succeed");
             }
 
             // Verify counts
@@ -3194,7 +3474,8 @@ mod tests {
                     move |session_id: String| {
                         revoked_clone.lock().unwrap().push(session_id);
                     },
-                ).await;
+                )
+                .await;
             });
 
             // Give subscriber time to connect
@@ -3210,10 +3491,14 @@ mod tests {
                 user_agent: None,
                 source_ip: None,
             };
-            store.insert_admin_session(&session).expect("Insert should succeed");
+            store
+                .insert_admin_session(&session)
+                .expect("Insert should succeed");
 
             let start = std::time::Instant::now();
-            store.revoke_admin_session("pubsub-test-session").expect("Revoke should succeed");
+            store
+                .revoke_admin_session("pubsub-test-session")
+                .expect("Revoke should succeed");
 
             // Wait for subscriber to receive the message (must be < 100ms)
             let deadline = tokio::time::Duration::from_millis(200);
@@ -3278,8 +3563,16 @@ mod tests {
             let key = "miroir:ratelimit:searchui:192.168.1.1";
             let mut conn = store.pool.manager.lock().await;
             let ttl: i64 = conn.ttl(key).await.expect("TTL should work");
-            assert!(ttl > 0, "Rate limit key should have EXPIRE set, got TTL={}", ttl);
-            assert!(ttl <= window_seconds as i64, "TTL should not exceed window, got {}", ttl);
+            assert!(
+                ttl > 0,
+                "Rate limit key should have EXPIRE set, got TTL={}",
+                ttl
+            );
+            assert!(
+                ttl <= window_seconds as i64,
+                "TTL should not exceed window, got {}",
+                ttl
+            );
         }
 
         // --- Rate limiting: admin_login with backoff ---
@@ -3319,7 +3612,9 @@ mod tests {
             assert!(wait.is_some(), "Should have wait time");
 
             // Reset on success
-            store.reset_rate_limit_admin_login(ip).expect("Reset should succeed");
+            store
+                .reset_rate_limit_admin_login(ip)
+                .expect("Reset should succeed");
 
             // Should be allowed again
             let (allowed, wait) = store
@@ -3380,11 +3675,12 @@ mod tests {
 
             let sink = "trim-sink";
             let event = b"short"; // 5 bytes per event
-            let max_bytes = 20;   // room for ~4 events
+            let max_bytes = 20; // room for ~4 events
 
             // Fill beyond budget
             for _ in 0..10 {
-                let _ = store.cdc_overflow_append(sink, event, max_bytes)
+                let _ = store
+                    .cdc_overflow_append(sink, event, max_bytes)
                     .expect("Append should succeed");
             }
 
@@ -3414,31 +3710,42 @@ mod tests {
                 rotated_at: now_ms(),
                 generation: 1,
             };
-            store.set_search_ui_scoped_key(&key).expect("Set should succeed");
+            store
+                .set_search_ui_scoped_key(&key)
+                .expect("Set should succeed");
 
             // Get it back
-            let retrieved = store.get_search_ui_scoped_key(index_uid)
+            let retrieved = store
+                .get_search_ui_scoped_key(index_uid)
                 .expect("Get should succeed")
                 .expect("Key should exist");
             assert_eq!(retrieved.primary_uid, "uid-abc");
             assert_eq!(retrieved.generation, 1);
 
             // Pod-1 observes generation 1
-            store.observe_search_ui_scoped_key("pod-1", index_uid, 1)
+            store
+                .observe_search_ui_scoped_key("pod-1", index_uid, 1)
                 .expect("Observe should succeed");
 
             // Pod-2 observes generation 1
-            store.observe_search_ui_scoped_key("pod-2", index_uid, 1)
+            store
+                .observe_search_ui_scoped_key("pod-2", index_uid, 1)
                 .expect("Observe should succeed");
 
             // Check observation — all observed
-            let (all, unobserved) = store.check_scoped_key_observation(index_uid, 1, &["pod-1".into(), "pod-2".into()])
+            let (all, unobserved) = store
+                .check_scoped_key_observation(index_uid, 1, &["pod-1".into(), "pod-2".into()])
                 .expect("Check should succeed");
             assert!(all, "All pods should have observed");
             assert!(unobserved.is_empty());
 
             // Pod-3 hasn't observed
-            let (all, unobserved) = store.check_scoped_key_observation(index_uid, 1, &["pod-1".into(), "pod-2".into(), "pod-3".into()])
+            let (all, unobserved) = store
+                .check_scoped_key_observation(
+                    index_uid,
+                    1,
+                    &["pod-1".into(), "pod-2".into(), "pod-3".into()],
+                )
                 .expect("Check should succeed");
             assert!(!all, "Pod-3 hasn't observed");
             assert!(unobserved.contains(&"pod-3".to_string()));
@@ -3453,17 +3760,24 @@ mod tests {
                 rotated_at: now_ms(),
                 generation: 2,
             };
-            store.set_search_ui_scoped_key(&key2).expect("Set gen2 should succeed");
-            store.clear_scoped_key_previous(index_uid).expect("Clear should succeed");
+            store
+                .set_search_ui_scoped_key(&key2)
+                .expect("Set gen2 should succeed");
+            store
+                .clear_scoped_key_previous(index_uid)
+                .expect("Clear should succeed");
 
-            let retrieved = store.get_search_ui_scoped_key(index_uid)
+            let retrieved = store
+                .get_search_ui_scoped_key(index_uid)
                 .expect("Get should succeed")
                 .expect("Key should exist");
             assert!(retrieved.previous_uid.is_none());
             assert!(retrieved.previous_key.is_none());
 
             // List indexes
-            let indexes = store.list_scoped_key_indexes().expect("List should succeed");
+            let indexes = store
+                .list_scoped_key_indexes()
+                .expect("List should succeed");
             assert!(indexes.contains(&index_uid.to_string()));
         }
 
@@ -3607,7 +3921,9 @@ mod tests {
                 min_settings_version: 5,
                 ttl: now_ms() + 60000, // expires in 60s
             };
-            store.upsert_session(&session).expect("Upsert should succeed");
+            store
+                .upsert_session(&session)
+                .expect("Upsert should succeed");
 
             let got = store
                 .get_session("sess-1")
@@ -3625,7 +3941,9 @@ mod tests {
                 min_settings_version: 6,
                 ttl: now_ms() + 120000,
             };
-            store.upsert_session(&updated).expect("Upsert should succeed");
+            store
+                .upsert_session(&updated)
+                .expect("Upsert should succeed");
             let got = store
                 .get_session("sess-1")
                 .expect("Get should succeed")
@@ -3653,7 +3971,9 @@ mod tests {
                 min_settings_version: 1,
                 ttl: now_ms() + 1000, // expires in 1 second
             };
-            store.upsert_session(&session).expect("Upsert should succeed");
+            store
+                .upsert_session(&session)
+                .expect("Upsert should succeed");
 
             // Verify session exists immediately
             let got = store
@@ -3666,8 +3986,16 @@ mod tests {
             let key = "miroir:session:sess-expire";
             let mut conn = store.pool.manager.lock().await;
             let ttl: i64 = conn.ttl(key).await.expect("TTL should work");
-            assert!(ttl > 0, "Session key should have EXPIRE set, got TTL={}", ttl);
-            assert!(ttl <= 2, "TTL should be approximately 1 second, got {}", ttl);
+            assert!(
+                ttl > 0,
+                "Session key should have EXPIRE set, got TTL={}",
+                ttl
+            );
+            assert!(
+                ttl <= 2,
+                "TTL should be approximately 1 second, got {}",
+                ttl
+            );
             drop(conn);
 
             // Wait for expiration (2 seconds to be safe, allowing for Redis timing granularity)
@@ -3677,7 +4005,10 @@ mod tests {
             let got = store
                 .get_session("sess-expire")
                 .expect("Get should succeed");
-            assert!(got.is_none(), "Session should be expired and gone after TTL");
+            assert!(
+                got.is_none(),
+                "Session should be expired and gone after TTL"
+            );
         }
 
         // --- Table 5: idempotency tests ---
@@ -3835,9 +4166,7 @@ mod tests {
             assert!(canary.enabled);
 
             // List all canaries
-            let canaries = store
-                .list_canaries()
-                .expect("List should succeed");
+            let canaries = store.list_canaries().expect("List should succeed");
             assert_eq!(canaries.len(), 1);
 
             // Upsert (update)
@@ -3893,7 +4222,10 @@ mod tests {
                             status: if i == 2 { "fail" } else { "pass" }.to_string(),
                             latency_ms: 50 + i * 10,
                             failed_assertions_json: if i == 2 {
-                                Some(r#"[{"assertion": "min_hits", "reason": "no hits"}]"#.to_string())
+                                Some(
+                                    r#"[{"assertion": "min_hits", "reason": "no hits"}]"#
+                                        .to_string(),
+                                )
                             } else {
                                 None
                             },
@@ -4068,7 +4400,8 @@ mod tests {
                     pattern: "logs-{YYYY-MM-DD}".to_string(),
                     triggers_json: r#"{"max_age": "1d", "max_docs": 1000000}"#.to_string(),
                     retention_json: r#"{"keep_indexes": 30}"#.to_string(),
-                    template_json: r#"{"primary_key": "id", "settings_ref": "logs-template"}"#.to_string(),
+                    template_json: r#"{"primary_key": "id", "settings_ref": "logs-template"}"#
+                        .to_string(),
                     enabled: true,
                 })
                 .expect("Upsert should succeed");
@@ -4083,9 +4416,7 @@ mod tests {
             assert!(policy.enabled);
 
             // List
-            let policies = store
-                .list_rollover_policies()
-                .expect("List should succeed");
+            let policies = store.list_rollover_policies().expect("List should succeed");
             assert_eq!(policies.len(), 1);
 
             // Upsert (update)
@@ -4097,7 +4428,8 @@ mod tests {
                     pattern: "logs-{YYYY-MM-DD}".to_string(),
                     triggers_json: r#"{"max_age": "1d", "max_docs": 2000000}"#.to_string(),
                     retention_json: r#"{"keep_indexes": 30}"#.to_string(),
-                    template_json: r#"{"primary_key": "id", "settings_ref": "logs-template"}"#.to_string(),
+                    template_json: r#"{"primary_key": "id", "settings_ref": "logs-template"}"#
+                        .to_string(),
                     enabled: false,
                 })
                 .expect("Update should succeed");
@@ -4370,7 +4702,10 @@ mod tests {
     fn test_redis_helper_functions() {
         // Test the helper functions directly
         let mut fields = std::collections::HashMap::new();
-        fields.insert("name".to_string(), redis::Value::BulkString(b"test-name".to_vec()));
+        fields.insert(
+            "name".to_string(),
+            redis::Value::BulkString(b"test-name".to_vec()),
+        );
         fields.insert("version".to_string(), redis::Value::Int(42));
         fields.insert("enabled".to_string(), redis::Value::Int(1));
 
@@ -4396,10 +4731,19 @@ mod tests {
     #[test]
     fn test_task_from_hash() {
         let mut fields = std::collections::HashMap::new();
-        fields.insert("miroir_id".to_string(), redis::Value::BulkString(b"task-1".to_vec()));
+        fields.insert(
+            "miroir_id".to_string(),
+            redis::Value::BulkString(b"task-1".to_vec()),
+        );
         fields.insert("created_at".to_string(), redis::Value::Int(1000));
-        fields.insert("status".to_string(), redis::Value::BulkString(b"queued".to_vec()));
-        fields.insert("node_tasks".to_string(), redis::Value::BulkString(br#"{"node-1":123}"#.to_vec()));
+        fields.insert(
+            "status".to_string(),
+            redis::Value::BulkString(b"queued".to_vec()),
+        );
+        fields.insert(
+            "node_tasks".to_string(),
+            redis::Value::BulkString(br#"{"node-1":123}"#.to_vec()),
+        );
         // error field is optional
 
         let task = RedisTaskStore::task_from_hash("task-1".to_string(), &fields)
@@ -4414,12 +4758,27 @@ mod tests {
     #[test]
     fn test_canary_from_hash() {
         let mut fields = std::collections::HashMap::new();
-        fields.insert("id".to_string(), redis::Value::BulkString(b"canary-1".to_vec()));
-        fields.insert("name".to_string(), redis::Value::BulkString(b"Test Canary".to_vec()));
-        fields.insert("index_uid".to_string(), redis::Value::BulkString(b"logs".to_vec()));
+        fields.insert(
+            "id".to_string(),
+            redis::Value::BulkString(b"canary-1".to_vec()),
+        );
+        fields.insert(
+            "name".to_string(),
+            redis::Value::BulkString(b"Test Canary".to_vec()),
+        );
+        fields.insert(
+            "index_uid".to_string(),
+            redis::Value::BulkString(b"logs".to_vec()),
+        );
         fields.insert("interval_s".to_string(), redis::Value::Int(60));
-        fields.insert("query_json".to_string(), redis::Value::BulkString(br#"{"q":"test"}"#.to_vec()));
-        fields.insert("assertions_json".to_string(), redis::Value::BulkString(b"[]".to_vec()));
+        fields.insert(
+            "query_json".to_string(),
+            redis::Value::BulkString(br#"{"q":"test"}"#.to_vec()),
+        );
+        fields.insert(
+            "assertions_json".to_string(),
+            redis::Value::BulkString(b"[]".to_vec()),
+        );
         fields.insert("enabled".to_string(), redis::Value::Int(1));
         fields.insert("created_at".to_string(), redis::Value::Int(1000));
 

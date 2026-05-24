@@ -58,20 +58,11 @@ pub enum ShardSyncState {
     /// Waiting for sync to begin.
     Pending,
     /// Syncing documents from source group.
-    Syncing {
-        docs_copied: u64,
-        source_group: u32,
-    },
+    Syncing { docs_copied: u64, source_group: u32 },
     /// Sync complete for this shard.
-    Complete {
-        docs_copied: u64,
-        source_group: u32,
-    },
+    Complete { docs_copied: u64, source_group: u32 },
     /// Sync failed for this shard.
-    Failed {
-        reason: String,
-        source_group: u32,
-    },
+    Failed { reason: String, source_group: u32 },
 }
 
 impl fmt::Display for ShardSyncState {
@@ -82,10 +73,7 @@ impl fmt::Display for ShardSyncState {
                 docs_copied,
                 source_group,
             } => {
-                write!(
-                    f,
-                    "syncing({docs_copied} copied from group {source_group})"
-                )
+                write!(f, "syncing({docs_copied} copied from group {source_group})")
             }
             Self::Complete {
                 docs_copied,
@@ -222,10 +210,7 @@ impl GroupAdditionCoordinator {
     }
 
     /// Start background sync for a group addition.
-    pub fn begin_sync(
-        &mut self,
-        id: GroupAdditionId,
-    ) -> Result<(), GroupAdditionError> {
+    pub fn begin_sync(&mut self, id: GroupAdditionId) -> Result<(), GroupAdditionError> {
         let state = self
             .additions
             .get_mut(&id)
@@ -265,10 +250,9 @@ impl GroupAdditionCoordinator {
             .get_mut(&id)
             .ok_or(GroupAdditionError::NotFound(id))?;
 
-        let shard_state = state
-            .shard_states
-            .get_mut(&shard)
-            .ok_or_else(|| GroupAdditionError::InvalidTransition(shard, "shard not in addition".into()))?;
+        let shard_state = state.shard_states.get_mut(&shard).ok_or_else(|| {
+            GroupAdditionError::InvalidTransition(shard, "shard not in addition".into())
+        })?;
 
         match shard_state {
             ShardSyncState::Syncing { docs_copied: d, .. } => {
@@ -297,15 +281,13 @@ impl GroupAdditionCoordinator {
             .get_mut(&id)
             .ok_or(GroupAdditionError::NotFound(id))?;
 
-        let source_group = *state
-            .shard_sources
-            .get(&shard)
-            .ok_or_else(|| GroupAdditionError::InvalidTransition(shard, "no source group".into()))?;
+        let source_group = *state.shard_sources.get(&shard).ok_or_else(|| {
+            GroupAdditionError::InvalidTransition(shard, "no source group".into())
+        })?;
 
-        let shard_state = state
-            .shard_states
-            .get_mut(&shard)
-            .ok_or_else(|| GroupAdditionError::InvalidTransition(shard, "shard not in addition".into()))?;
+        let shard_state = state.shard_states.get_mut(&shard).ok_or_else(|| {
+            GroupAdditionError::InvalidTransition(shard, "shard not in addition".into())
+        })?;
 
         match shard_state {
             ShardSyncState::Syncing { .. } => {
@@ -347,15 +329,13 @@ impl GroupAdditionCoordinator {
             .get_mut(&id)
             .ok_or(GroupAdditionError::NotFound(id))?;
 
-        let source_group = *state
-            .shard_sources
-            .get(&shard)
-            .ok_or_else(|| GroupAdditionError::InvalidTransition(shard, "no source group".into()))?;
+        let source_group = *state.shard_sources.get(&shard).ok_or_else(|| {
+            GroupAdditionError::InvalidTransition(shard, "no source group".into())
+        })?;
 
-        let shard_state = state
-            .shard_states
-            .get_mut(&shard)
-            .ok_or_else(|| GroupAdditionError::InvalidTransition(shard, "shard not in addition".into()))?;
+        let shard_state = state.shard_states.get_mut(&shard).ok_or_else(|| {
+            GroupAdditionError::InvalidTransition(shard, "shard not in addition".into())
+        })?;
 
         *shard_state = ShardSyncState::Failed {
             reason,
@@ -366,10 +346,7 @@ impl GroupAdditionCoordinator {
     }
 
     /// Mark the group as active after sync is complete and verified.
-    pub fn mark_group_active(
-        &mut self,
-        id: GroupAdditionId,
-    ) -> Result<(), GroupAdditionError> {
+    pub fn mark_group_active(&mut self, id: GroupAdditionId) -> Result<(), GroupAdditionError> {
         let state = self
             .additions
             .get_mut(&id)
@@ -493,7 +470,10 @@ mod tests {
         let mut coord = GroupAdditionCoordinator::new(config);
 
         let result = coord.begin_addition(1, 64, &[]);
-        assert!(matches!(result, Err(GroupAdditionError::NoHealthySourceGroups)));
+        assert!(matches!(
+            result,
+            Err(GroupAdditionError::NoHealthySourceGroups)
+        ));
     }
 
     #[test]
@@ -543,24 +523,16 @@ mod tests {
         coord.begin_sync(id).unwrap();
 
         // Complete 3 out of 4 shards
-        coord
-            .shard_sync_complete(id, shard(0), 500)
-            .unwrap();
-        coord
-            .shard_sync_complete(id, shard(1), 600)
-            .unwrap();
-        coord
-            .shard_sync_complete(id, shard(2), 400)
-            .unwrap();
+        coord.shard_sync_complete(id, shard(0), 500).unwrap();
+        coord.shard_sync_complete(id, shard(1), 600).unwrap();
+        coord.shard_sync_complete(id, shard(2), 400).unwrap();
 
         let state = coord.get_state(id).unwrap();
         // Phase should still be syncing (not all complete)
         assert_eq!(state.phase, GroupAdditionPhase::Syncing);
 
         // Complete the last shard
-        coord
-            .shard_sync_complete(id, shard(3), 550)
-            .unwrap();
+        coord.shard_sync_complete(id, shard(3), 550).unwrap();
 
         let state = coord.get_state(id).unwrap();
         // Phase should now be sync_complete
@@ -577,9 +549,7 @@ mod tests {
 
         // Complete all shards
         for s in 0..4 {
-            coord
-                .shard_sync_complete(id, shard(s), 100)
-                .unwrap();
+            coord.shard_sync_complete(id, shard(s), 100).unwrap();
         }
 
         coord.mark_group_active(id).unwrap();
@@ -618,9 +588,7 @@ mod tests {
             .unwrap();
 
         let state = coord.get_state(id).unwrap();
-        if let ShardSyncState::Failed { reason, .. } =
-            state.shard_states.get(&shard(1)).unwrap()
-        {
+        if let ShardSyncState::Failed { reason, .. } = state.shard_states.get(&shard(1)).unwrap() {
             assert_eq!(reason, "source unavailable");
         } else {
             panic!("Expected Failed state");
@@ -662,9 +630,7 @@ mod tests {
 
         // After marking complete, no longer adding
         for s in 0..4 {
-            coord
-                .shard_sync_complete(id, shard(s), 100)
-                .unwrap();
+            coord.shard_sync_complete(id, shard(s), 100).unwrap();
         }
         coord.mark_group_active(id).unwrap();
         assert!(!coord.is_group_adding(2));
@@ -682,18 +648,14 @@ mod tests {
 
         // Complete 5 out of 10 shards
         for s in 0..5 {
-            coord
-                .shard_sync_complete(id, shard(s), 100)
-                .unwrap();
+            coord.shard_sync_complete(id, shard(s), 100).unwrap();
         }
 
         assert_eq!(coord.sync_progress(id), Some(50.0));
 
         // Complete remaining shards
         for s in 5..10 {
-            coord
-                .shard_sync_complete(id, shard(s), 100)
-                .unwrap();
+            coord.shard_sync_complete(id, shard(s), 100).unwrap();
         }
 
         assert_eq!(coord.sync_progress(id), Some(100.0));
@@ -702,7 +664,10 @@ mod tests {
     #[test]
     fn test_display_impls() {
         assert_eq!(format!("{}", GroupAdditionId(42)), "42");
-        assert_eq!(format!("{}", GroupAdditionPhase::Initializing), "initializing");
+        assert_eq!(
+            format!("{}", GroupAdditionPhase::Initializing),
+            "initializing"
+        );
         assert_eq!(format!("{}", GroupAdditionPhase::Syncing), "syncing");
         assert_eq!(
             format!("{}", GroupAdditionPhase::SyncComplete),
@@ -756,10 +721,7 @@ mod tests {
 
         // shard_sync_progress before syncing should fail
         let err = coord.shard_sync_progress(id, shard(0), 100).unwrap_err();
-        assert!(matches!(
-            err,
-            GroupAdditionError::InvalidTransition(_, _)
-        ));
+        assert!(matches!(err, GroupAdditionError::InvalidTransition(_, _)));
 
         // NotFound for invalid addition
         let err = coord.begin_sync(GroupAdditionId(999)).unwrap_err();

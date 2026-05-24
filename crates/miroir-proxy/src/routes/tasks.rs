@@ -9,7 +9,7 @@ use axum::extract::{FromRef, Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Json, Router};
 use miroir_core::scatter::{NodeClient, TaskStatusRequest};
-use miroir_core::task::{MiroirTask, TaskRegistry, TaskStatus, NodeTaskStatus};
+use miroir_core::task::{MiroirTask, NodeTaskStatus, TaskRegistry, TaskStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -126,18 +126,16 @@ where
     });
 
     // Parse indexUids filter (supports comma-separated values, takes first)
-    let index_uid_filter = query.indexUids.as_ref().and_then(|s| {
-        s.split(',')
-            .next()
-            .map(|uid| uid.trim().to_string())
-    });
+    let index_uid_filter = query
+        .indexUids
+        .as_ref()
+        .and_then(|s| s.split(',').next().map(|uid| uid.trim().to_string()));
 
     // Parse types filter (supports comma-separated values, takes first)
-    let task_type_filter = query.types.as_ref().and_then(|s| {
-        s.split(',')
-            .next()
-            .map(|ty| ty.trim().to_string())
-    });
+    let task_type_filter = query
+        .types
+        .as_ref()
+        .and_then(|s| s.split(',').next().map(|ty| ty.trim().to_string()));
 
     // Build filter with all parameters
     let filter = miroir_core::task::TaskFilter {
@@ -156,9 +154,7 @@ where
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Get total count (without limit/offset)
-    let total = state
-        .task_registry
-        .count();
+    let total = state.task_registry.count();
 
     // Convert to Meilisearch-compatible response
     let results = tasks.into_iter().map(task_to_response).collect();
@@ -199,7 +195,10 @@ where
         .ok_or(StatusCode::NOT_FOUND)?;
 
     // Poll nodes for current status if task is not terminal
-    if !matches!(task.status, TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled) {
+    if !matches!(
+        task.status,
+        TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled
+    ) {
         let topology = state.topology.read().await;
         let client = HttpClient::new(
             state.config.node_master_key.clone(),
@@ -216,7 +215,10 @@ where
             let node_id = miroir_core::topology::NodeId::new(node_id_str.clone());
 
             // Skip polling if node task is already terminal
-            if matches!(node_task.status, NodeTaskStatus::Succeeded | NodeTaskStatus::Failed) {
+            if matches!(
+                node_task.status,
+                NodeTaskStatus::Succeeded | NodeTaskStatus::Failed
+            ) {
                 if matches!(node_task.status, NodeTaskStatus::Failed) {
                     any_failed = true;
                     all_succeeded = false;
@@ -228,7 +230,10 @@ where
             let node = match topology.node(&node_id) {
                 Some(n) => n,
                 None => {
-                    node_errors.insert(node_id_str.clone(), "node not found in topology".to_string());
+                    node_errors.insert(
+                        node_id_str.clone(),
+                        "node not found in topology".to_string(),
+                    );
                     any_failed = true;
                     all_succeeded = false;
                     continue;
@@ -236,12 +241,16 @@ where
             };
 
             // Poll this node for task status
-            let req = TaskStatusRequest { task_uid: node_task.task_uid };
+            let req = TaskStatusRequest {
+                task_uid: node_task.task_uid,
+            };
             match client.get_task_status(&node_id, &node.address, &req).await {
                 Ok(resp) => {
                     let new_status = resp.to_node_status();
                     // Update the node task status in the registry
-                    let _ = state.task_registry.update_node_task(&id, node_id_str, new_status);
+                    let _ = state
+                        .task_registry
+                        .update_node_task(&id, node_id_str, new_status);
 
                     // Track overall status
                     match new_status {
@@ -282,7 +291,10 @@ where
         };
 
         // Record terminal task status in Prometheus (§10 task metrics)
-        if matches!(new_status, TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled) {
+        if matches!(
+            new_status,
+            TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled
+        ) {
             let status_str = match new_status {
                 TaskStatus::Succeeded => "succeeded",
                 TaskStatus::Failed => "failed",
@@ -299,7 +311,9 @@ where
                     .as_millis() as u64;
                 now_ms.saturating_sub(task.created_at)
             };
-            state.metrics.observe_task_processing_age(age_ms as f64 / 1000.0);
+            state
+                .metrics
+                .observe_task_processing_age(age_ms as f64 / 1000.0);
         }
 
         // Update the task status in the registry
@@ -311,17 +325,25 @@ where
 
         // Set timestamps
         if matches!(new_status, TaskStatus::Processing) && task.started_at.is_none() {
-            task.started_at = Some(std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64);
+            task.started_at = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
+            );
         }
 
-        if matches!(new_status, TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled) && task.finished_at.is_none() {
-            task.finished_at = Some(std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64);
+        if matches!(
+            new_status,
+            TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled
+        ) && task.finished_at.is_none()
+        {
+            task.finished_at = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
+            );
         }
     }
 
@@ -502,11 +524,20 @@ mod tests {
         assert_eq!(response.status, "succeeded");
         assert!(response.error.is_none());
         assert_eq!(response.indexUid, Some("test-index".to_string()));
-        assert_eq!(response.task_type, Some("documentAdditionOrUpdate".to_string()));
+        assert_eq!(
+            response.task_type,
+            Some("documentAdditionOrUpdate".to_string())
+        );
         assert!(response.startedAt.is_some());
         assert!(response.finishedAt.is_some());
         assert_eq!(
-            response.details.unwrap().nodes.get("node-0").unwrap().task_uid,
+            response
+                .details
+                .unwrap()
+                .nodes
+                .get("node-0")
+                .unwrap()
+                .task_uid,
             1
         );
     }

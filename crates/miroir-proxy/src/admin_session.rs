@@ -122,8 +122,8 @@ pub struct SealedCookie {
 impl SealedCookie {
     /// Seal a session ID using the given key.
     pub fn seal(session_id: &str, key: &SealKey) -> Result<Self, SealError> {
-        let cipher = XChaCha20Poly1305::new_from_slice(&key.key)
-            .map_err(|_| SealError::KeyError)?;
+        let cipher =
+            XChaCha20Poly1305::new_from_slice(&key.key).map_err(|_| SealError::KeyError)?;
 
         let mut nonce_bytes = [0u8; NONCE_LEN];
         rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
@@ -141,8 +141,8 @@ impl SealedCookie {
 
     /// Unseal a cookie value, returning the plaintext session ID.
     pub fn unseal(&self, key: &SealKey) -> Result<String, SealError> {
-        let cipher = XChaCha20Poly1305::new_from_slice(&key.key)
-            .map_err(|_| SealError::KeyError)?;
+        let cipher =
+            XChaCha20Poly1305::new_from_slice(&key.key).map_err(|_| SealError::KeyError)?;
 
         let nonce = XNonce::from_slice(&self.nonce);
         let plaintext = cipher
@@ -211,7 +211,9 @@ impl std::fmt::Display for SealError {
         match self {
             SealError::KeyError => write!(f, "invalid seal key"),
             SealError::EncryptError => write!(f, "encryption failed"),
-            SealError::DecryptError => write!(f, "decryption failed — wrong key or tampered cookie"),
+            SealError::DecryptError => {
+                write!(f, "decryption failed — wrong key or tampered cookie")
+            }
             SealError::MalformedCookie => write!(f, "malformed cookie value"),
             SealError::InvalidUtf8 => write!(f, "decrypted value is not valid UTF-8"),
         }

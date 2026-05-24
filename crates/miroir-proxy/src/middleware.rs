@@ -3,27 +3,26 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
+use axum::http::request::Parts;
 use axum::{
     extract::{FromRequestParts, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     middleware::Next,
-    response::{Response, IntoResponse},
+    response::{IntoResponse, Response},
     routing::get,
-    Router,
-    Extension,
+    Extension, Router,
 };
-use axum::http::request::Parts;
 
+use hex;
 use miroir_core::config::MiroirConfig;
 use prometheus::{
     Counter, CounterVec, Encoder, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts,
     Registry, TextEncoder,
 };
-use tracing::info_span;
-use uuid::Uuid;
-use hex;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use tracing::info_span;
+use uuid::Uuid;
 
 /// Request ID wrapper type for storing in axum Request extensions.
 ///
@@ -107,11 +106,10 @@ where
 {
     type Rejection = std::convert::Infallible;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        Ok(OptionalSessionId(parts.extensions.get::<SessionId>().cloned()))
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(OptionalSessionId(
+            parts.extensions.get::<SessionId>().cloned(),
+        ))
     }
 }
 
@@ -127,10 +125,7 @@ where
 {
     type Rejection = std::convert::Infallible;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         let version = parts
             .headers
             .get("x-miroir-min-settings-version")
@@ -140,10 +135,7 @@ where
     }
 }
 
-pub async fn request_id_middleware(
-    mut req: Request,
-    next: Next,
-) -> Response {
+pub async fn request_id_middleware(mut req: Request, next: Next) -> Response {
     // Check for existing request ID in headers
     let request_id = req
         .headers()
@@ -175,10 +167,7 @@ pub async fn request_id_middleware(
 ///
 /// Extracts the `X-Miroir-Session` header and stores it in request extensions
 /// for handlers to access via `Request.extensions().get::<SessionId>()`.
-pub async fn session_pinning_middleware(
-    mut req: Request,
-    next: Next,
-) -> Response {
+pub async fn session_pinning_middleware(mut req: Request, next: Next) -> Response {
     // Extract session ID from header if present
     let session_id = req
         .headers()
@@ -193,7 +182,6 @@ pub async fn session_pinning_middleware(
 
     next.run(req).await
 }
-
 
 /// Telemetry state combining metrics and pod_id for middleware.
 #[derive(Clone)]
@@ -380,7 +368,9 @@ impl Clone for Metrics {
             multisearch_queries_per_batch: self.multisearch_queries_per_batch.clone(),
             multisearch_batches_total: self.multisearch_batches_total.clone(),
             multisearch_partial_failures_total: self.multisearch_partial_failures_total.clone(),
-            multisearch_tenant_session_pin_override_total: self.multisearch_tenant_session_pin_override_total.clone(),
+            multisearch_tenant_session_pin_override_total: self
+                .multisearch_tenant_session_pin_override_total
+                .clone(),
             vector_search_over_fetched_total: self.vector_search_over_fetched_total.clone(),
             vector_merge_strategy: self.vector_merge_strategy.clone(),
             vector_embedder_drift_total: self.vector_embedder_drift_total.clone(),
@@ -441,7 +431,9 @@ impl Clone for Metrics {
             antientropy_shards_scanned_total: self.antientropy_shards_scanned_total.clone(),
             antientropy_mismatches_found_total: self.antientropy_mismatches_found_total.clone(),
             antientropy_docs_repaired_total: self.antientropy_docs_repaired_total.clone(),
-            antientropy_last_scan_completed_seconds: self.antientropy_last_scan_completed_seconds.clone(),
+            antientropy_last_scan_completed_seconds: self
+                .antientropy_last_scan_completed_seconds
+                .clone(),
             replica_selection_score: self.replica_selection_score.clone(),
             replica_selection_exploration_total: self.replica_selection_exploration_total.clone(),
             idempotency_hits_total: self.idempotency_hits_total.clone(),
@@ -464,8 +456,13 @@ impl Metrics {
 
         // ── Request metrics ──
         let request_duration = HistogramVec::new(
-            HistogramOpts::new("miroir_request_duration_seconds", "Request latency in seconds")
-                .buckets(vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]),
+            HistogramOpts::new(
+                "miroir_request_duration_seconds",
+                "Request latency in seconds",
+            )
+            .buckets(vec![
+                0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+            ]),
             &["method", "path_template", "status"],
         )
         .expect("failed to create request_duration histogram");
@@ -476,52 +473,72 @@ impl Metrics {
         )
         .expect("failed to create requests_total counter");
 
-        let requests_in_flight = Gauge::with_opts(
-            Opts::new("miroir_requests_in_flight", "Number of requests currently being processed"),
-        )
+        let requests_in_flight = Gauge::with_opts(Opts::new(
+            "miroir_requests_in_flight",
+            "Number of requests currently being processed",
+        ))
         .expect("failed to create requests_in_flight gauge");
 
         // ── Node health metrics ──
         let node_healthy = GaugeVec::new(
-            Opts::new("miroir_node_healthy", "Health status of backend nodes (1=healthy, 0=unhealthy)"),
+            Opts::new(
+                "miroir_node_healthy",
+                "Health status of backend nodes (1=healthy, 0=unhealthy)",
+            ),
             &["node_id"],
         )
         .expect("failed to create node_healthy gauge");
 
         let node_request_duration = HistogramVec::new(
-            HistogramOpts::new("miroir_node_request_duration_seconds", "Latency of individual node requests")
-                .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.5, 1.0]),
+            HistogramOpts::new(
+                "miroir_node_request_duration_seconds",
+                "Latency of individual node requests",
+            )
+            .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.5, 1.0]),
             &["node_id", "operation"],
         )
         .expect("failed to create node_request_duration histogram");
 
         let node_errors = CounterVec::new(
-            Opts::new("miroir_node_errors_total", "Number of errors from backend nodes"),
+            Opts::new(
+                "miroir_node_errors_total",
+                "Number of errors from backend nodes",
+            ),
             &["node_id", "error_type"],
         )
         .expect("failed to create node_errors counter");
 
         // ── Shard metrics ──
-        let shard_coverage = Gauge::with_opts(
-            Opts::new("miroir_shard_coverage", "Fraction of shards with at least one healthy replica"),
-        )
+        let shard_coverage = Gauge::with_opts(Opts::new(
+            "miroir_shard_coverage",
+            "Fraction of shards with at least one healthy replica",
+        ))
         .expect("failed to create shard_coverage gauge");
 
-        let degraded_shards = Gauge::with_opts(
-            Opts::new("miroir_degraded_shards_total", "Number of shards with reduced replica availability"),
-        )
+        let degraded_shards = Gauge::with_opts(Opts::new(
+            "miroir_degraded_shards_total",
+            "Number of shards with reduced replica availability",
+        ))
         .expect("failed to create degraded_shards gauge");
 
         let shard_distribution = GaugeVec::new(
-            Opts::new("miroir_shard_distribution", "Number of shards assigned to each node"),
+            Opts::new(
+                "miroir_shard_distribution",
+                "Number of shards assigned to each node",
+            ),
             &["node_id"],
         )
         .expect("failed to create shard_distribution gauge");
 
         // ── Task metrics ──
         let task_processing_age = Histogram::with_opts(
-            HistogramOpts::new("miroir_task_processing_age_seconds", "Time between task creation and processing start")
-                .buckets(vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0]),
+            HistogramOpts::new(
+                "miroir_task_processing_age_seconds",
+                "Time between task creation and processing start",
+            )
+            .buckets(vec![
+                0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
+            ]),
         )
         .expect("failed to create task_processing_age histogram");
 
@@ -531,49 +548,64 @@ impl Metrics {
         )
         .expect("failed to create tasks_total counter");
 
-        let task_registry_size = Gauge::with_opts(
-            Opts::new("miroir_task_registry_size", "Current number of tasks in the registry"),
-        )
+        let task_registry_size = Gauge::with_opts(Opts::new(
+            "miroir_task_registry_size",
+            "Current number of tasks in the registry",
+        ))
         .expect("failed to create task_registry_size gauge");
 
         // ── Scatter-gather metrics ──
         let scatter_fan_out_size = Histogram::with_opts(
-            HistogramOpts::new("miroir_scatter_fan_out_size", "Number of nodes in scatter operations")
-                .buckets(vec![1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 50.0]),
+            HistogramOpts::new(
+                "miroir_scatter_fan_out_size",
+                "Number of nodes in scatter operations",
+            )
+            .buckets(vec![1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 50.0]),
         )
         .expect("failed to create scatter_fan_out_size histogram");
 
-        let scatter_partial_responses = Counter::with_opts(
-            Opts::new("miroir_scatter_partial_responses_total", "Number of scatter responses that were partial (some nodes failed)"),
-        )
+        let scatter_partial_responses = Counter::with_opts(Opts::new(
+            "miroir_scatter_partial_responses_total",
+            "Number of scatter responses that were partial (some nodes failed)",
+        ))
         .expect("failed to create scatter_partial_responses counter");
 
-        let scatter_retries = Counter::with_opts(
-            Opts::new("miroir_scatter_retries_total", "Number of scatter retry attempts due to node failures"),
-        )
+        let scatter_retries = Counter::with_opts(Opts::new(
+            "miroir_scatter_retries_total",
+            "Number of scatter retry attempts due to node failures",
+        ))
         .expect("failed to create scatter_retries counter");
 
         // ── Rebalancer metrics ──
-        let rebalance_in_progress = Gauge::with_opts(
-            Opts::new("miroir_rebalance_in_progress", "Whether a rebalance is currently running (1=yes, 0=no)"),
-        )
+        let rebalance_in_progress = Gauge::with_opts(Opts::new(
+            "miroir_rebalance_in_progress",
+            "Whether a rebalance is currently running (1=yes, 0=no)",
+        ))
         .expect("failed to create rebalance_in_progress gauge");
 
-        let rebalance_documents_migrated = Counter::with_opts(
-            Opts::new("miroir_rebalance_documents_migrated_total", "Total number of documents migrated during rebalance"),
-        )
+        let rebalance_documents_migrated = Counter::with_opts(Opts::new(
+            "miroir_rebalance_documents_migrated_total",
+            "Total number of documents migrated during rebalance",
+        ))
         .expect("failed to create rebalance_documents_migrated counter");
 
         let rebalance_duration = Histogram::with_opts(
-            HistogramOpts::new("miroir_rebalance_duration_seconds", "Duration of rebalance operations")
-                .buckets(vec![1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0]),
+            HistogramOpts::new(
+                "miroir_rebalance_duration_seconds",
+                "Duration of rebalance operations",
+            )
+            .buckets(vec![
+                1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0,
+            ]),
         )
         .expect("failed to create rebalance_duration histogram");
 
         // Register all metrics
         macro_rules! reg {
             ($m:expr) => {
-                registry.register(Box::new($m.clone())).expect(concat!("failed to register ", stringify!($m)));
+                registry
+                    .register(Box::new($m.clone()))
+                    .expect(concat!("failed to register ", stringify!($m)));
             };
         }
 
@@ -604,46 +636,68 @@ impl Metrics {
             multisearch_tenant_session_pin_override_total,
         ) = if config.multi_search.enabled {
             let q = Histogram::with_opts(
-                HistogramOpts::new("miroir_multisearch_queries_per_batch", "Number of queries in each multi-search batch")
-                    .buckets(vec![1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0]),
-            ).expect("create multisearch_queries_per_batch");
-            let b = Counter::with_opts(
-                Opts::new("miroir_multisearch_batches_total", "Total number of multi-search batches processed"),
-            ).expect("create multisearch_batches_total");
-            let p = Counter::with_opts(
-                Opts::new("miroir_multisearch_partial_failures_total", "Number of multi-search batches with at least one query failure"),
-            ).expect("create multisearch_partial_failures_total");
+                HistogramOpts::new(
+                    "miroir_multisearch_queries_per_batch",
+                    "Number of queries in each multi-search batch",
+                )
+                .buckets(vec![1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0]),
+            )
+            .expect("create multisearch_queries_per_batch");
+            let b = Counter::with_opts(Opts::new(
+                "miroir_multisearch_batches_total",
+                "Total number of multi-search batches processed",
+            ))
+            .expect("create multisearch_batches_total");
+            let p = Counter::with_opts(Opts::new(
+                "miroir_multisearch_partial_failures_total",
+                "Number of multi-search batches with at least one query failure",
+            ))
+            .expect("create multisearch_partial_failures_total");
             let t = CounterVec::new(
-                Opts::new("miroir_tenant_session_pin_override_total", "Session pin overrides triggered by multi-search tenant routing"),
+                Opts::new(
+                    "miroir_tenant_session_pin_override_total",
+                    "Session pin overrides triggered by multi-search tenant routing",
+                ),
                 &["tenant"],
-            ).expect("create multisearch_tenant_session_pin_override_total");
-            reg!(q); reg!(b); reg!(p); reg!(t);
+            )
+            .expect("create multisearch_tenant_session_pin_override_total");
+            reg!(q);
+            reg!(b);
+            reg!(p);
+            reg!(t);
             (Some(q), Some(b), Some(p), Some(t))
         } else {
             (None, None, None, None)
         };
 
         // ── §13.12 Vector search metrics ──
-        let (
-            vector_search_over_fetched_total,
-            vector_merge_strategy,
-            vector_embedder_drift_total,
-        ) = if config.vector_search.enabled {
-            let o = Counter::with_opts(
-                Opts::new("miroir_vector_search_over_fetched_total", "Number of vector searches that over-fetched candidates"),
-            ).expect("create vector_search_over_fetched_total");
-            let m = CounterVec::new(
-                Opts::new("miroir_vector_merge_strategy", "Count of hybrid merge strategy selections"),
-                &["strategy"],
-            ).expect("create vector_merge_strategy");
-            let d = Counter::with_opts(
-                Opts::new("miroir_vector_embedder_drift_total", "Number of embedder drift detections"),
-            ).expect("create vector_embedder_drift_total");
-            reg!(o); reg!(m); reg!(d);
-            (Some(o), Some(m), Some(d))
-        } else {
-            (None, None, None)
-        };
+        let (vector_search_over_fetched_total, vector_merge_strategy, vector_embedder_drift_total) =
+            if config.vector_search.enabled {
+                let o = Counter::with_opts(Opts::new(
+                    "miroir_vector_search_over_fetched_total",
+                    "Number of vector searches that over-fetched candidates",
+                ))
+                .expect("create vector_search_over_fetched_total");
+                let m = CounterVec::new(
+                    Opts::new(
+                        "miroir_vector_merge_strategy",
+                        "Count of hybrid merge strategy selections",
+                    ),
+                    &["strategy"],
+                )
+                .expect("create vector_merge_strategy");
+                let d = Counter::with_opts(Opts::new(
+                    "miroir_vector_embedder_drift_total",
+                    "Number of embedder drift detections",
+                ))
+                .expect("create vector_embedder_drift_total");
+                reg!(o);
+                reg!(m);
+                reg!(d);
+                (Some(o), Some(m), Some(d))
+            } else {
+                (None, None, None)
+            };
 
         // ── §13.13 CDC metrics (cardinality cap: top 100 sinks, rest bucketed) ──
         let (
@@ -654,79 +708,119 @@ impl Metrics {
             cdc_events_suppressed_total,
         ) = if config.cdc.enabled {
             let e = CounterVec::new(
-                Opts::new("miroir_cdc_events_published_total", "Total CDC events published"),
+                Opts::new(
+                    "miroir_cdc_events_published_total",
+                    "Total CDC events published",
+                ),
                 &["sink", "index"],
-            ).expect("create cdc_events_published_total");
+            )
+            .expect("create cdc_events_published_total");
             let l = GaugeVec::new(
                 Opts::new("miroir_cdc_lag_seconds", "CDC delivery lag in seconds"),
                 &["sink"],
-            ).expect("create cdc_lag_seconds");
+            )
+            .expect("create cdc_lag_seconds");
             let b = GaugeVec::new(
                 Opts::new("miroir_cdc_buffer_bytes", "CDC buffer size in bytes"),
                 &["sink"],
-            ).expect("create cdc_buffer_bytes");
+            )
+            .expect("create cdc_buffer_bytes");
             let d = CounterVec::new(
-                Opts::new("miroir_cdc_dropped_total", "CDC events dropped due to buffer overflow"),
+                Opts::new(
+                    "miroir_cdc_dropped_total",
+                    "CDC events dropped due to buffer overflow",
+                ),
                 &["sink"],
-            ).expect("create cdc_dropped_total");
+            )
+            .expect("create cdc_dropped_total");
             let s = CounterVec::new(
-                Opts::new("miroir_cdc_events_suppressed_total", "CDC events suppressed by origin deduplication"),
+                Opts::new(
+                    "miroir_cdc_events_suppressed_total",
+                    "CDC events suppressed by origin deduplication",
+                ),
                 &["origin"],
-            ).expect("create cdc_events_suppressed_total");
-            reg!(e); reg!(l); reg!(b); reg!(d); reg!(s);
+            )
+            .expect("create cdc_events_suppressed_total");
+            reg!(e);
+            reg!(l);
+            reg!(b);
+            reg!(d);
+            reg!(s);
             (Some(e), Some(l), Some(b), Some(d), Some(s))
         } else {
             (None, None, None, None, None)
         };
 
         // ── §13.14 TTL metrics (cardinality cap: top 100 indexes, rest bucketed) ──
-        let (
-            ttl_documents_expired_total,
-            ttl_sweep_duration_seconds,
-            ttl_pending_estimate,
-        ) = if config.ttl.enabled {
-            let e = CounterVec::new(
-                Opts::new("miroir_ttl_documents_expired_total", "Documents expired by TTL sweeper"),
-                &["index"],
-            ).expect("create ttl_documents_expired_total");
-            let d = HistogramVec::new(
-                HistogramOpts::new("miroir_ttl_sweep_duration_seconds", "Duration of TTL sweep cycles")
+        let (ttl_documents_expired_total, ttl_sweep_duration_seconds, ttl_pending_estimate) =
+            if config.ttl.enabled {
+                let e = CounterVec::new(
+                    Opts::new(
+                        "miroir_ttl_documents_expired_total",
+                        "Documents expired by TTL sweeper",
+                    ),
+                    &["index"],
+                )
+                .expect("create ttl_documents_expired_total");
+                let d = HistogramVec::new(
+                    HistogramOpts::new(
+                        "miroir_ttl_sweep_duration_seconds",
+                        "Duration of TTL sweep cycles",
+                    )
                     .buckets(vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]),
-                &["index"],
-            ).expect("create ttl_sweep_duration_seconds");
-            let p = GaugeVec::new(
-                Opts::new("miroir_ttl_pending_estimate", "Estimated documents pending TTL expiry"),
-                &["index"],
-            ).expect("create ttl_pending_estimate");
-            reg!(e); reg!(d); reg!(p);
-            (Some(e), Some(d), Some(p))
-        } else {
-            (None, None, None)
-        };
+                    &["index"],
+                )
+                .expect("create ttl_sweep_duration_seconds");
+                let p = GaugeVec::new(
+                    Opts::new(
+                        "miroir_ttl_pending_estimate",
+                        "Estimated documents pending TTL expiry",
+                    ),
+                    &["index"],
+                )
+                .expect("create ttl_pending_estimate");
+                reg!(e);
+                reg!(d);
+                reg!(p);
+                (Some(e), Some(d), Some(p))
+            } else {
+                (None, None, None)
+            };
 
         // ── §13.15 Tenant affinity metrics (cardinality cap: top 100 tenants, rest bucketed) ──
-        let (
-            tenant_queries_total,
-            tenant_pinned_groups,
-            tenant_fallback_total,
-        ) = if config.tenant_affinity.enabled {
-            let q = CounterVec::new(
-                Opts::new("miroir_tenant_queries_total", "Queries routed per tenant and group"),
-                &["tenant", "group"],
-            ).expect("create tenant_queries_total");
-            let p = GaugeVec::new(
-                Opts::new("miroir_tenant_pinned_groups", "Current pinned group per tenant"),
-                &["tenant"],
-            ).expect("create tenant_pinned_groups");
-            let f = CounterVec::new(
-                Opts::new("miroir_tenant_fallback_total", "Tenant affinity fallback invocations"),
-                &["reason"],
-            ).expect("create tenant_fallback_total");
-            reg!(q); reg!(p); reg!(f);
-            (Some(q), Some(p), Some(f))
-        } else {
-            (None, None, None)
-        };
+        let (tenant_queries_total, tenant_pinned_groups, tenant_fallback_total) =
+            if config.tenant_affinity.enabled {
+                let q = CounterVec::new(
+                    Opts::new(
+                        "miroir_tenant_queries_total",
+                        "Queries routed per tenant and group",
+                    ),
+                    &["tenant", "group"],
+                )
+                .expect("create tenant_queries_total");
+                let p = GaugeVec::new(
+                    Opts::new(
+                        "miroir_tenant_pinned_groups",
+                        "Current pinned group per tenant",
+                    ),
+                    &["tenant"],
+                )
+                .expect("create tenant_pinned_groups");
+                let f = CounterVec::new(
+                    Opts::new(
+                        "miroir_tenant_fallback_total",
+                        "Tenant affinity fallback invocations",
+                    ),
+                    &["reason"],
+                )
+                .expect("create tenant_fallback_total");
+                reg!(q);
+                reg!(p);
+                reg!(f);
+                (Some(q), Some(p), Some(f))
+            } else {
+                (None, None, None)
+            };
 
         // ── §13.16 Shadow traffic metrics ──
         let (
@@ -736,21 +830,35 @@ impl Metrics {
             shadow_errors_total,
         ) = if config.shadow.enabled {
             let d = CounterVec::new(
-                Opts::new("miroir_shadow_diff_total", "Shadow comparison diffs by kind"),
+                Opts::new(
+                    "miroir_shadow_diff_total",
+                    "Shadow comparison diffs by kind",
+                ),
                 &["kind"],
-            ).expect("create shadow_diff_total");
-            let k = Gauge::with_opts(
-                Opts::new("miroir_shadow_kendall_tau", "Kendall tau rank correlation between shadow and primary"),
-            ).expect("create shadow_kendall_tau");
+            )
+            .expect("create shadow_diff_total");
+            let k = Gauge::with_opts(Opts::new(
+                "miroir_shadow_kendall_tau",
+                "Kendall tau rank correlation between shadow and primary",
+            ))
+            .expect("create shadow_kendall_tau");
             let l = Histogram::with_opts(
-                HistogramOpts::new("miroir_shadow_latency_delta_seconds", "Latency difference between shadow and primary")
-                    .buckets(vec![-1.0, -0.5, -0.1, -0.01, 0.0, 0.01, 0.1, 0.5, 1.0]),
-            ).expect("create shadow_latency_delta_seconds");
+                HistogramOpts::new(
+                    "miroir_shadow_latency_delta_seconds",
+                    "Latency difference between shadow and primary",
+                )
+                .buckets(vec![-1.0, -0.5, -0.1, -0.01, 0.0, 0.01, 0.1, 0.5, 1.0]),
+            )
+            .expect("create shadow_latency_delta_seconds");
             let e = CounterVec::new(
                 Opts::new("miroir_shadow_errors_total", "Shadow pipeline errors"),
                 &["target", "side"],
-            ).expect("create shadow_errors_total");
-            reg!(d); reg!(k); reg!(l); reg!(e);
+            )
+            .expect("create shadow_errors_total");
+            reg!(d);
+            reg!(k);
+            reg!(l);
+            reg!(e);
             (Some(d), Some(k), Some(l), Some(e))
         } else {
             (None, None, None, None)
@@ -766,94 +874,127 @@ impl Metrics {
             let e = CounterVec::new(
                 Opts::new("miroir_rollover_events_total", "ILM rollover events"),
                 &["policy"],
-            ).expect("create rollover_events_total");
+            )
+            .expect("create rollover_events_total");
             let a = GaugeVec::new(
-                Opts::new("miroir_rollover_active_indexes", "Active write indexes per alias"),
+                Opts::new(
+                    "miroir_rollover_active_indexes",
+                    "Active write indexes per alias",
+                ),
                 &["alias"],
-            ).expect("create rollover_active_indexes");
+            )
+            .expect("create rollover_active_indexes");
             let d = CounterVec::new(
-                Opts::new("miroir_rollover_documents_expired_total", "Documents expired by ILM retention policies"),
+                Opts::new(
+                    "miroir_rollover_documents_expired_total",
+                    "Documents expired by ILM retention policies",
+                ),
                 &["policy"],
-            ).expect("create rollover_documents_expired_total");
+            )
+            .expect("create rollover_documents_expired_total");
             let l = GaugeVec::new(
-                Opts::new("miroir_rollover_last_action_seconds", "Seconds since last rollover action per policy"),
+                Opts::new(
+                    "miroir_rollover_last_action_seconds",
+                    "Seconds since last rollover action per policy",
+                ),
                 &["policy"],
-            ).expect("create rollover_last_action_seconds");
-            reg!(e); reg!(a); reg!(d); reg!(l);
+            )
+            .expect("create rollover_last_action_seconds");
+            reg!(e);
+            reg!(a);
+            reg!(d);
+            reg!(l);
             (Some(e), Some(a), Some(d), Some(l))
         } else {
             (None, None, None, None)
         };
 
         // ── §13.18 Canary metrics (cardinality cap: top 100 canaries, rest bucketed) ──
-        let (
-            canary_runs_total,
-            canary_latency_ms,
-            canary_assertion_failures_total,
-        ) = if config.canary_runner.enabled {
-            let r = CounterVec::new(
-                Opts::new("miroir_canary_runs_total", "Canary run results"),
-                &["canary", "result"],
-            ).expect("create canary_runs_total");
-            let l = HistogramVec::new(
-                HistogramOpts::new("miroir_canary_latency_ms", "Canary execution latency")
-                    .buckets(vec![1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0]),
-                &["canary"],
-            ).expect("create canary_latency_ms");
-            let a = CounterVec::new(
-                Opts::new("miroir_canary_assertion_failures_total", "Canary assertion failures"),
-                &["canary", "assertion_type"],
-            ).expect("create canary_assertion_failures_total");
-            reg!(r); reg!(l); reg!(a);
-            (Some(r), Some(l), Some(a))
-        } else {
-            (None, None, None)
-        };
+        let (canary_runs_total, canary_latency_ms, canary_assertion_failures_total) =
+            if config.canary_runner.enabled {
+                let r = CounterVec::new(
+                    Opts::new("miroir_canary_runs_total", "Canary run results"),
+                    &["canary", "result"],
+                )
+                .expect("create canary_runs_total");
+                let l = HistogramVec::new(
+                    HistogramOpts::new("miroir_canary_latency_ms", "Canary execution latency")
+                        .buckets(vec![
+                            1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0,
+                        ]),
+                    &["canary"],
+                )
+                .expect("create canary_latency_ms");
+                let a = CounterVec::new(
+                    Opts::new(
+                        "miroir_canary_assertion_failures_total",
+                        "Canary assertion failures",
+                    ),
+                    &["canary", "assertion_type"],
+                )
+                .expect("create canary_assertion_failures_total");
+                reg!(r);
+                reg!(l);
+                reg!(a);
+                (Some(r), Some(l), Some(a))
+            } else {
+                (None, None, None)
+            };
 
         // ── §13.19 Admin UI metrics ──
-        let (
-            admin_ui_sessions_total,
-            admin_ui_action_total,
-            admin_ui_destructive_action_total,
-        ) = if config.admin_ui.enabled {
-            let s = Counter::with_opts(
-                Opts::new("miroir_admin_ui_sessions_total", "Admin UI sessions started"),
-            ).expect("create admin_ui_sessions_total");
-            let a = CounterVec::new(
-                Opts::new("miroir_admin_ui_action_total", "Admin UI actions by type"),
-                &["action"],
-            ).expect("create admin_ui_action_total");
-            let d = CounterVec::new(
-                Opts::new("miroir_admin_ui_destructive_action_total", "Admin UI destructive actions (delete, drop, etc.)"),
-                &["action"],
-            ).expect("create admin_ui_destructive_action_total");
-            reg!(s); reg!(a); reg!(d);
-            (Some(s), Some(a), Some(d))
-        } else {
-            (None, None, None)
-        };
+        let (admin_ui_sessions_total, admin_ui_action_total, admin_ui_destructive_action_total) =
+            if config.admin_ui.enabled {
+                let s = Counter::with_opts(Opts::new(
+                    "miroir_admin_ui_sessions_total",
+                    "Admin UI sessions started",
+                ))
+                .expect("create admin_ui_sessions_total");
+                let a = CounterVec::new(
+                    Opts::new("miroir_admin_ui_action_total", "Admin UI actions by type"),
+                    &["action"],
+                )
+                .expect("create admin_ui_action_total");
+                let d = CounterVec::new(
+                    Opts::new(
+                        "miroir_admin_ui_destructive_action_total",
+                        "Admin UI destructive actions (delete, drop, etc.)",
+                    ),
+                    &["action"],
+                )
+                .expect("create admin_ui_destructive_action_total");
+                reg!(s);
+                reg!(a);
+                reg!(d);
+                (Some(s), Some(a), Some(d))
+            } else {
+                (None, None, None)
+            };
 
         // ── §13.20 Explain metrics ──
-        let (
-            explain_requests_total,
-            explain_warnings_total,
-            explain_execute_total,
-        ) = if config.explain.enabled {
-            let r = Counter::with_opts(
-                Opts::new("miroir_explain_requests_total", "Explain API requests"),
-            ).expect("create explain_requests_total");
-            let w = CounterVec::new(
-                Opts::new("miroir_explain_warnings_total", "Explain warnings by type"),
-                &["warning_type"],
-            ).expect("create explain_warnings_total");
-            let e = Counter::with_opts(
-                Opts::new("miroir_explain_execute_total", "Explain requests with execute=true"),
-            ).expect("create explain_execute_total");
-            reg!(r); reg!(w); reg!(e);
-            (Some(r), Some(w), Some(e))
-        } else {
-            (None, None, None)
-        };
+        let (explain_requests_total, explain_warnings_total, explain_execute_total) =
+            if config.explain.enabled {
+                let r = Counter::with_opts(Opts::new(
+                    "miroir_explain_requests_total",
+                    "Explain API requests",
+                ))
+                .expect("create explain_requests_total");
+                let w = CounterVec::new(
+                    Opts::new("miroir_explain_warnings_total", "Explain warnings by type"),
+                    &["warning_type"],
+                )
+                .expect("create explain_warnings_total");
+                let e = Counter::with_opts(Opts::new(
+                    "miroir_explain_execute_total",
+                    "Explain requests with execute=true",
+                ))
+                .expect("create explain_execute_total");
+                reg!(r);
+                reg!(w);
+                reg!(e);
+                (Some(r), Some(w), Some(e))
+            } else {
+                (None, None, None)
+            };
 
         // ── §13.21 Search UI metrics (cardinality cap: top 100 indexes, rest bucketed) ──
         let (
@@ -863,55 +1004,95 @@ impl Metrics {
             search_ui_click_through_total,
             search_ui_p95_ms,
         ) = if config.search_ui.enabled {
-            let s = Counter::with_opts(
-                Opts::new("miroir_search_ui_sessions_total", "Search UI sessions"),
-            ).expect("create search_ui_sessions_total");
+            let s = Counter::with_opts(Opts::new(
+                "miroir_search_ui_sessions_total",
+                "Search UI sessions",
+            ))
+            .expect("create search_ui_sessions_total");
             let q = CounterVec::new(
-                Opts::new("miroir_search_ui_queries_total", "Search UI queries per index"),
+                Opts::new(
+                    "miroir_search_ui_queries_total",
+                    "Search UI queries per index",
+                ),
                 &["index"],
-            ).expect("create search_ui_queries_total");
+            )
+            .expect("create search_ui_queries_total");
             let z = CounterVec::new(
-                Opts::new("miroir_search_ui_zero_hits_total", "Search UI zero-hit queries per index"),
+                Opts::new(
+                    "miroir_search_ui_zero_hits_total",
+                    "Search UI zero-hit queries per index",
+                ),
                 &["index"],
-            ).expect("create search_ui_zero_hits_total");
+            )
+            .expect("create search_ui_zero_hits_total");
             let c = CounterVec::new(
-                Opts::new("miroir_search_ui_click_through_total", "Search UI click-through events per index"),
+                Opts::new(
+                    "miroir_search_ui_click_through_total",
+                    "Search UI click-through events per index",
+                ),
                 &["index"],
-            ).expect("create search_ui_click_through_total");
+            )
+            .expect("create search_ui_click_through_total");
             let p = GaugeVec::new(
-                Opts::new("miroir_search_ui_p95_ms", "Search UI p95 query latency per index"),
+                Opts::new(
+                    "miroir_search_ui_p95_ms",
+                    "Search UI p95 query latency per index",
+                ),
                 &["index"],
-            ).expect("create search_ui_p95_ms");
-            reg!(s); reg!(q); reg!(z); reg!(c); reg!(p);
+            )
+            .expect("create search_ui_p95_ms");
+            reg!(s);
+            reg!(q);
+            reg!(z);
+            reg!(c);
+            reg!(p);
             (Some(s), Some(q), Some(z), Some(c), Some(p))
         } else {
             (None, None, None, None, None)
         };
 
         // ── §14.9 Resource-pressure metrics (always present) ──
-        let memory_pressure = Gauge::with_opts(
-            Opts::new("miroir_memory_pressure", "Memory pressure level (0=none, 1=low, 2=moderate/high)")
-        ).expect("create memory_pressure");
-        let cpu_throttled_seconds_total = Counter::with_opts(
-            Opts::new("miroir_cpu_throttled_seconds_total", "Total seconds of CPU throttling")
-        ).expect("create cpu_throttled_seconds_total");
-        let request_queue_depth = Gauge::with_opts(
-            Opts::new("miroir_request_queue_depth", "Number of requests queued waiting for processing")
-        ).expect("create request_queue_depth");
+        let memory_pressure = Gauge::with_opts(Opts::new(
+            "miroir_memory_pressure",
+            "Memory pressure level (0=none, 1=low, 2=moderate/high)",
+        ))
+        .expect("create memory_pressure");
+        let cpu_throttled_seconds_total = Counter::with_opts(Opts::new(
+            "miroir_cpu_throttled_seconds_total",
+            "Total seconds of CPU throttling",
+        ))
+        .expect("create cpu_throttled_seconds_total");
+        let request_queue_depth = Gauge::with_opts(Opts::new(
+            "miroir_request_queue_depth",
+            "Number of requests queued waiting for processing",
+        ))
+        .expect("create request_queue_depth");
         let background_queue_depth = GaugeVec::new(
-            Opts::new("miroir_background_queue_depth", "Number of background jobs queued by type"),
+            Opts::new(
+                "miroir_background_queue_depth",
+                "Number of background jobs queued by type",
+            ),
             &["job_type"],
-        ).expect("create background_queue_depth");
-        let peer_pod_count = Gauge::with_opts(
-            Opts::new("miroir_peer_pod_count", "Number of peer miroir pods discovered")
-        ).expect("create peer_pod_count");
+        )
+        .expect("create background_queue_depth");
+        let peer_pod_count = Gauge::with_opts(Opts::new(
+            "miroir_peer_pod_count",
+            "Number of peer miroir pods discovered",
+        ))
+        .expect("create peer_pod_count");
         let leader = GaugeVec::new(
-            Opts::new("miroir_leader", "Whether this pod holds the leader lease (1=yes, 0=no)"),
+            Opts::new(
+                "miroir_leader",
+                "Whether this pod holds the leader lease (1=yes, 0=no)",
+            ),
             &["scope"],
-        ).expect("create leader");
-        let owned_shards_count = Gauge::with_opts(
-            Opts::new("miroir_owned_shards_count", "Number of shards owned by this pod")
-        ).expect("create owned_shards_count");
+        )
+        .expect("create leader");
+        let owned_shards_count = Gauge::with_opts(Opts::new(
+            "miroir_owned_shards_count",
+            "Number of shards owned by this pod",
+        ))
+        .expect("create owned_shards_count");
         reg!(memory_pressure);
         reg!(cpu_throttled_seconds_total);
         reg!(request_queue_depth);
@@ -921,36 +1102,54 @@ impl Metrics {
         reg!(owned_shards_count);
 
         // ── Admin session sealing metrics (always present) ──
-        let admin_session_key_generated = Gauge::with_opts(
-            Opts::new("miroir_admin_session_key_generated",
-                "Whether ADMIN_SESSION_SEAL_KEY was generated at startup (1=yes, 0=set via env)")
-        ).expect("create admin_session_key_generated");
-        let admin_session_revoked_total = Counter::with_opts(
-            Opts::new("miroir_admin_session_revoked_total",
-                "Admin sessions revoked via logout")
-        ).expect("create admin_session_revoked_total");
+        let admin_session_key_generated = Gauge::with_opts(Opts::new(
+            "miroir_admin_session_key_generated",
+            "Whether ADMIN_SESSION_SEAL_KEY was generated at startup (1=yes, 0=set via env)",
+        ))
+        .expect("create admin_session_key_generated");
+        let admin_session_revoked_total = Counter::with_opts(Opts::new(
+            "miroir_admin_session_revoked_total",
+            "Admin sessions revoked via logout",
+        ))
+        .expect("create admin_session_revoked_total");
         reg!(admin_session_key_generated);
         reg!(admin_session_revoked_total);
 
         // ── §13.5 Two-phase settings broadcast metrics (always present) ──
         let settings_broadcast_phase = GaugeVec::new(
-            Opts::new("miroir_settings_broadcast_phase", "Current phase of settings broadcast (0=idle, 1=propose, 2=verify, 3=commit)"),
+            Opts::new(
+                "miroir_settings_broadcast_phase",
+                "Current phase of settings broadcast (0=idle, 1=propose, 2=verify, 3=commit)",
+            ),
             &["index"],
-        ).expect("create settings_broadcast_phase");
-        let settings_hash_mismatch_total = Counter::with_opts(
-            Opts::new("miroir_settings_hash_mismatch_total", "Settings hash mismatches detected during verify phase"),
-        ).expect("create settings_hash_mismatch_total");
+        )
+        .expect("create settings_broadcast_phase");
+        let settings_hash_mismatch_total = Counter::with_opts(Opts::new(
+            "miroir_settings_hash_mismatch_total",
+            "Settings hash mismatches detected during verify phase",
+        ))
+        .expect("create settings_hash_mismatch_total");
         let settings_drift_repair_total = CounterVec::new(
-            Opts::new("miroir_settings_drift_repair_total", "Settings drift repairs performed by drift reconciler"),
+            Opts::new(
+                "miroir_settings_drift_repair_total",
+                "Settings drift repairs performed by drift reconciler",
+            ),
             &["index"],
-        ).expect("create settings_drift_repair_total");
+        )
+        .expect("create settings_drift_repair_total");
         let settings_version = GaugeVec::new(
-            Opts::new("miroir_settings_version", "Current settings version per index"),
+            Opts::new(
+                "miroir_settings_version",
+                "Current settings version per index",
+            ),
             &["index"],
-        ).expect("create settings_version");
-        let settings_divergence_alert_total = Counter::with_opts(
-            Opts::new("miroir_settings_divergence_alert_total", "Settings divergence alerts raised after max repair retries exceeded"),
-        ).expect("create settings_divergence_alert_total");
+        )
+        .expect("create settings_version");
+        let settings_divergence_alert_total = Counter::with_opts(Opts::new(
+            "miroir_settings_divergence_alert_total",
+            "Settings divergence alerts raised after max repair retries exceeded",
+        ))
+        .expect("create settings_divergence_alert_total");
         let frozen_indexes = GaugeVec::new(
             Opts::new("miroir_frozen_indexes", "Indexes with writes frozen due to unrepairable settings divergence (1=frozen, 0=not frozen)"),
             &["index"],
@@ -964,54 +1163,77 @@ impl Metrics {
 
         // ── §13.7 Alias metrics (always present) ──
         let alias_resolutions_total = CounterVec::new(
-            Opts::new("miroir_alias_resolutions_total", "Number of alias resolutions"),
+            Opts::new(
+                "miroir_alias_resolutions_total",
+                "Number of alias resolutions",
+            ),
             &["alias"],
-        ).expect("create alias_resolutions_total");
+        )
+        .expect("create alias_resolutions_total");
         let alias_flips_total = CounterVec::new(
             Opts::new("miroir_alias_flips_total", "Number of alias flips"),
             &["alias"],
-        ).expect("create alias_flips_total");
+        )
+        .expect("create alias_flips_total");
         reg!(alias_resolutions_total);
         reg!(alias_flips_total);
 
         // ── §13.6 Session pinning metrics (always present) ──
-        let session_active_count = Gauge::new(
-            "miroir_session_active_count",
-            "Number of active sessions",
-        ).expect("create session_active_count");
+        let session_active_count =
+            Gauge::new("miroir_session_active_count", "Number of active sessions")
+                .expect("create session_active_count");
         let session_pin_enforced_total = CounterVec::new(
-            Opts::new("miroir_session_pin_enforced_total", "Number of times session pin was enforced"),
+            Opts::new(
+                "miroir_session_pin_enforced_total",
+                "Number of times session pin was enforced",
+            ),
             &["strategy"],
-        ).expect("create session_pin_enforced_total");
+        )
+        .expect("create session_pin_enforced_total");
         let session_wait_duration_seconds = Histogram::with_opts(
             HistogramOpts::new(
                 "miroir_session_wait_duration_seconds",
                 "Duration of session pin wait operations",
             )
-            .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]),
-        ).expect("create session_wait_duration_seconds");
+            .buckets(vec![
+                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+            ]),
+        )
+        .expect("create session_wait_duration_seconds");
         let session_wait_timeout_total = CounterVec::new(
-            Opts::new("miroir_session_wait_timeout_total", "Number of session pin wait timeouts"),
+            Opts::new(
+                "miroir_session_wait_timeout_total",
+                "Number of session pin wait timeouts",
+            ),
             &["strategy"],
-        ).expect("create session_wait_timeout_total");
+        )
+        .expect("create session_wait_timeout_total");
         reg!(session_active_count);
         reg!(session_pin_enforced_total);
         reg!(session_wait_duration_seconds);
         reg!(session_wait_timeout_total);
 
         // ── §13.8 Anti-entropy metrics ──
-        let antientropy_shards_scanned_total = Counter::with_opts(
-            Opts::new("miroir_antientropy_shards_scanned_total", "Total number of shards scanned by anti-entropy")
-        ).expect("create antientropy_shards_scanned_total");
-        let antientropy_mismatches_found_total = Counter::with_opts(
-            Opts::new("miroir_antientropy_mismatches_found_total", "Total number of mismatches found by anti-entropy")
-        ).expect("create antientropy_mismatches_found_total");
-        let antientropy_docs_repaired_total = Counter::with_opts(
-            Opts::new("miroir_antientropy_docs_repaired_total", "Total number of documents repaired by anti-entropy")
-        ).expect("create antientropy_docs_repaired_total");
-        let antientropy_last_scan_completed_seconds = Gauge::with_opts(
-            Opts::new("miroir_antientropy_last_scan_completed_seconds", "UNIX timestamp of last anti-entropy scan completion")
-        ).expect("create antientropy_last_scan_completed_seconds");
+        let antientropy_shards_scanned_total = Counter::with_opts(Opts::new(
+            "miroir_antientropy_shards_scanned_total",
+            "Total number of shards scanned by anti-entropy",
+        ))
+        .expect("create antientropy_shards_scanned_total");
+        let antientropy_mismatches_found_total = Counter::with_opts(Opts::new(
+            "miroir_antientropy_mismatches_found_total",
+            "Total number of mismatches found by anti-entropy",
+        ))
+        .expect("create antientropy_mismatches_found_total");
+        let antientropy_docs_repaired_total = Counter::with_opts(Opts::new(
+            "miroir_antientropy_docs_repaired_total",
+            "Total number of documents repaired by anti-entropy",
+        ))
+        .expect("create antientropy_docs_repaired_total");
+        let antientropy_last_scan_completed_seconds = Gauge::with_opts(Opts::new(
+            "miroir_antientropy_last_scan_completed_seconds",
+            "UNIX timestamp of last anti-entropy scan completion",
+        ))
+        .expect("create antientropy_last_scan_completed_seconds");
         reg!(antientropy_shards_scanned_total);
         reg!(antientropy_mismatches_found_total);
         reg!(antientropy_docs_repaired_total);
@@ -1019,33 +1241,49 @@ impl Metrics {
 
         // ── §13.3 Adaptive replica selection metrics (always present) ──
         let replica_selection_score = GaugeVec::new(
-            Opts::new("miroir_replica_selection_score", "Adaptive replica selection score (lower is better)"),
+            Opts::new(
+                "miroir_replica_selection_score",
+                "Adaptive replica selection score (lower is better)",
+            ),
             &["node_id"],
-        ).expect("create replica_selection_score");
-        let replica_selection_exploration_total = Counter::with_opts(
-            Opts::new("miroir_replica_selection_exploration_total", "Exploration selections (epsilon-greedy random picks)")
-        ).expect("create replica_selection_exploration_total");
+        )
+        .expect("create replica_selection_score");
+        let replica_selection_exploration_total = Counter::with_opts(Opts::new(
+            "miroir_replica_selection_exploration_total",
+            "Exploration selections (epsilon-greedy random picks)",
+        ))
+        .expect("create replica_selection_exploration_total");
         reg!(replica_selection_score);
         reg!(replica_selection_exploration_total);
 
         // ── §13.10 Idempotency metrics (always present) ──
         let idempotency_hits_total = CounterVec::new(
-            Opts::new("miroir_idempotency_hits_total", "Idempotency key hits by outcome"),
+            Opts::new(
+                "miroir_idempotency_hits_total",
+                "Idempotency key hits by outcome",
+            ),
             &["outcome"],
-        ).expect("create idempotency_hits_total");
-        let idempotency_cache_size = Gauge::with_opts(
-            Opts::new("miroir_idempotency_cache_size", "Current number of entries in idempotency cache")
-        ).expect("create idempotency_cache_size");
+        )
+        .expect("create idempotency_hits_total");
+        let idempotency_cache_size = Gauge::with_opts(Opts::new(
+            "miroir_idempotency_cache_size",
+            "Current number of entries in idempotency cache",
+        ))
+        .expect("create idempotency_cache_size");
         reg!(idempotency_hits_total);
         reg!(idempotency_cache_size);
 
         // ── §13.10 Query coalescing metrics (always present) ──
-        let query_coalesce_subscribers_total = Counter::with_opts(
-            Opts::new("miroir_query_coalesce_subscribers_total", "Total number of subscribers to coalesced queries")
-        ).expect("create query_coalesce_subscribers_total");
-        let query_coalesce_hits_total = Counter::with_opts(
-            Opts::new("miroir_query_coalesce_hits_total", "Total number of queries that hit an in-flight coalesced query")
-        ).expect("create query_coalesce_hits_total");
+        let query_coalesce_subscribers_total = Counter::with_opts(Opts::new(
+            "miroir_query_coalesce_subscribers_total",
+            "Total number of subscribers to coalesced queries",
+        ))
+        .expect("create query_coalesce_subscribers_total");
+        let query_coalesce_hits_total = Counter::with_opts(Opts::new(
+            "miroir_query_coalesce_hits_total",
+            "Total number of queries that hit an in-flight coalesced query",
+        ))
+        .expect("create query_coalesce_hits_total");
         reg!(query_coalesce_subscribers_total);
         reg!(query_coalesce_hits_total);
 
@@ -1218,7 +1456,10 @@ impl InFlightGuard {
             requests_in_flight = metrics.requests_in_flight.get(),
             "request started"
         );
-        Self { metrics, request_id }
+        Self {
+            metrics,
+            request_id,
+        }
     }
 }
 
@@ -1382,12 +1623,22 @@ async fn metrics_handler(State(metrics): State<Metrics>) -> Response {
 impl Metrics {
     // ── Request metrics ──
 
-    pub fn record_request_duration(&self, method: &str, path_template: &str, status: u16, duration_secs: f64) {
-        self.request_duration.with_label_values(&[method, path_template, &status.to_string()]).observe(duration_secs);
+    pub fn record_request_duration(
+        &self,
+        method: &str,
+        path_template: &str,
+        status: u16,
+        duration_secs: f64,
+    ) {
+        self.request_duration
+            .with_label_values(&[method, path_template, &status.to_string()])
+            .observe(duration_secs);
     }
 
     pub fn inc_requests_total(&self, method: &str, path_template: &str, status: u16) {
-        self.requests_total.with_label_values(&[method, path_template, &status.to_string()]).inc();
+        self.requests_total
+            .with_label_values(&[method, path_template, &status.to_string()])
+            .inc();
     }
 
     // ── Scatter-gather ──
@@ -1407,15 +1658,21 @@ impl Metrics {
     // ── Node health ──
 
     pub fn set_node_healthy(&self, node_id: &str, healthy: bool) {
-        self.node_healthy.with_label_values(&[node_id]).set(if healthy { 1.0 } else { 0.0 });
+        self.node_healthy
+            .with_label_values(&[node_id])
+            .set(if healthy { 1.0 } else { 0.0 });
     }
 
     pub fn record_node_request_duration(&self, node_id: &str, operation: &str, duration_secs: f64) {
-        self.node_request_duration.with_label_values(&[node_id, operation]).observe(duration_secs);
+        self.node_request_duration
+            .with_label_values(&[node_id, operation])
+            .observe(duration_secs);
     }
 
     pub fn inc_node_errors(&self, node_id: &str, error_type: &str) {
-        self.node_errors.with_label_values(&[node_id, error_type]).inc();
+        self.node_errors
+            .with_label_values(&[node_id, error_type])
+            .inc();
     }
 
     // ── Shards ──
@@ -1429,7 +1686,9 @@ impl Metrics {
     }
 
     pub fn set_shard_distribution(&self, node_id: &str, count: f64) {
-        self.shard_distribution.with_label_values(&[node_id]).set(count);
+        self.shard_distribution
+            .with_label_values(&[node_id])
+            .set(count);
     }
 
     // ── Tasks ──
@@ -1737,7 +1996,8 @@ impl Metrics {
     }
 
     pub fn set_antientropy_last_scan_completed(&self, timestamp: u64) {
-        self.antientropy_last_scan_completed_seconds.set(timestamp as f64);
+        self.antientropy_last_scan_completed_seconds
+            .set(timestamp as f64);
     }
 
     // ── §14.9 Resource-pressure ──
@@ -1755,7 +2015,9 @@ impl Metrics {
     }
 
     pub fn set_background_queue_depth(&self, job_type: &str, depth: u64) {
-        self.background_queue_depth.with_label_values(&[job_type]).set(depth as f64);
+        self.background_queue_depth
+            .with_label_values(&[job_type])
+            .set(depth as f64);
     }
 
     pub fn set_peer_pod_count(&self, count: u64) {
@@ -1763,7 +2025,9 @@ impl Metrics {
     }
 
     pub fn set_leader(&self, scope: &str, is_leader: bool) {
-        self.leader.with_label_values(&[scope]).set(if is_leader { 1.0 } else { 0.0 });
+        self.leader
+            .with_label_values(&[scope])
+            .set(if is_leader { 1.0 } else { 0.0 });
     }
 
     pub fn set_owned_shards_count(&self, count: u64) {
@@ -1773,11 +2037,15 @@ impl Metrics {
     // ── §13.5 Two-phase settings broadcast metrics ──
 
     pub fn set_settings_broadcast_phase(&self, index: &str, phase: u8) {
-        self.settings_broadcast_phase.with_label_values(&[index]).set(phase as f64);
+        self.settings_broadcast_phase
+            .with_label_values(&[index])
+            .set(phase as f64);
     }
 
     pub fn clear_settings_broadcast_phase(&self, index: &str) {
-        self.settings_broadcast_phase.with_label_values(&[index]).set(0.0);
+        self.settings_broadcast_phase
+            .with_label_values(&[index])
+            .set(0.0);
     }
 
     pub fn inc_settings_hash_mismatch(&self) {
@@ -1785,11 +2053,15 @@ impl Metrics {
     }
 
     pub fn inc_settings_drift_repair(&self, index: &str) {
-        self.settings_drift_repair_total.with_label_values(&[index]).inc();
+        self.settings_drift_repair_total
+            .with_label_values(&[index])
+            .inc();
     }
 
     pub fn set_settings_version(&self, index: &str, version: u64) {
-        self.settings_version.with_label_values(&[index]).set(version as f64);
+        self.settings_version
+            .with_label_values(&[index])
+            .set(version as f64);
     }
 
     pub fn get_settings_version(&self, index: &str) -> f64 {
@@ -1815,7 +2087,9 @@ impl Metrics {
     // ── §13.7 Alias metrics ──
 
     pub fn inc_alias_resolution(&self, alias: &str) {
-        self.alias_resolutions_total.with_label_values(&[alias]).inc();
+        self.alias_resolutions_total
+            .with_label_values(&[alias])
+            .inc();
     }
 
     pub fn inc_alias_flip(&self, alias: &str) {
@@ -1829,7 +2103,9 @@ impl Metrics {
     }
 
     pub fn inc_session_pin_enforced(&self, strategy: &str) {
-        self.session_pin_enforced_total.with_label_values(&[strategy]).inc();
+        self.session_pin_enforced_total
+            .with_label_values(&[strategy])
+            .inc();
     }
 
     pub fn observe_session_wait_duration(&self, duration_seconds: f64) {
@@ -1837,13 +2113,17 @@ impl Metrics {
     }
 
     pub fn inc_session_wait_timeout(&self, strategy: &str) {
-        self.session_wait_timeout_total.with_label_values(&[strategy]).inc();
+        self.session_wait_timeout_total
+            .with_label_values(&[strategy])
+            .inc();
     }
 
     // ── §13.3 Adaptive replica selection metrics ──
 
     pub fn set_replica_selection_score(&self, node_id: &str, score: f64) {
-        self.replica_selection_score.with_label_values(&[node_id]).set(score);
+        self.replica_selection_score
+            .with_label_values(&[node_id])
+            .set(score);
     }
 
     pub fn inc_replica_selection_exploration(&self) {
@@ -1853,7 +2133,9 @@ impl Metrics {
     // ── §13.10 Idempotency metrics ──
 
     pub fn inc_idempotency_hit(&self, outcome: &str) {
-        self.idempotency_hits_total.with_label_values(&[outcome]).inc();
+        self.idempotency_hits_total
+            .with_label_values(&[outcome])
+            .inc();
     }
 
     pub fn set_idempotency_cache_size(&self, size: u64) {
@@ -1907,15 +2189,33 @@ mod tests {
         let metrics = Metrics::new(&MiroirConfig::default());
 
         // Add some sample data to ensure metrics show up in output
-        metrics.request_duration.with_label_values(&["GET", "/test", "200"]).observe(0.1);
-        metrics.requests_total.with_label_values(&["GET", "/test", "200"]).inc();
+        metrics
+            .request_duration
+            .with_label_values(&["GET", "/test", "200"])
+            .observe(0.1);
+        metrics
+            .requests_total
+            .with_label_values(&["GET", "/test", "200"])
+            .inc();
         metrics.requests_in_flight.inc();
-        metrics.node_healthy.with_label_values(&["test-node"]).set(1.0);
-        metrics.node_request_duration.with_label_values(&["test-node", "search"]).observe(0.05);
-        metrics.node_errors.with_label_values(&["test-node", "timeout"]).inc();
+        metrics
+            .node_healthy
+            .with_label_values(&["test-node"])
+            .set(1.0);
+        metrics
+            .node_request_duration
+            .with_label_values(&["test-node", "search"])
+            .observe(0.05);
+        metrics
+            .node_errors
+            .with_label_values(&["test-node", "timeout"])
+            .inc();
         metrics.shard_coverage.set(1.0);
         metrics.degraded_shards.set(0.0);
-        metrics.shard_distribution.with_label_values(&["test-node"]).set(32.0);
+        metrics
+            .shard_distribution
+            .with_label_values(&["test-node"])
+            .set(32.0);
         metrics.task_processing_age.observe(0.1);
         metrics.tasks_total.with_label_values(&["completed"]).inc();
         metrics.task_registry_size.set(5.0);
@@ -2081,7 +2381,10 @@ mod tests {
         let metrics = Metrics::new(&config);
 
         // Write to core Vec metrics so they appear in output
-        metrics.request_duration.with_label_values(&["GET", "/test", "200"]).observe(0.1);
+        metrics
+            .request_duration
+            .with_label_values(&["GET", "/test", "200"])
+            .observe(0.1);
 
         let encoded = metrics.encode_metrics().unwrap();
 
@@ -2104,7 +2407,11 @@ mod tests {
             "miroir_search_ui_sessions_total",
         ];
         for name in &advanced_names {
-            assert!(!encoded.contains(name), "advanced metric should not appear when disabled: {}", name);
+            assert!(
+                !encoded.contains(name),
+                "advanced metric should not appear when disabled: {}",
+                name
+            );
         }
     }
 
@@ -2257,11 +2564,7 @@ mod tests {
         let header_value = header.to_str().unwrap();
 
         // Verify it's 8 hex characters
-        assert_eq!(
-            header_value.len(),
-            8,
-            "X-Request-Id should be 8 characters"
-        );
+        assert_eq!(header_value.len(), 8, "X-Request-Id should be 8 characters");
         assert!(
             header_value.chars().all(|c| c.is_ascii_hexdigit()),
             "X-Request-Id should be hexadecimal"

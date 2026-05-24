@@ -80,11 +80,14 @@ impl IdempotencyCache {
             .as_secs();
         let expires_at = now + self.ttl_secs;
 
-        cache.insert(key, IdempotencyEntry {
-            body_hash,
-            mtask_id,
-            expires_at,
-        });
+        cache.insert(
+            key,
+            IdempotencyEntry {
+                body_hash,
+                mtask_id,
+                expires_at,
+            },
+        );
     }
 
     /// Prune expired entries (must hold write lock).
@@ -218,10 +221,13 @@ impl QueryCoalescer {
         }
 
         let (tx, _) = broadcast::channel(self.max_subscribers);
-        pending.insert(fingerprint, PendingQuery {
-            tx: tx.clone(),
-            started_at: Instant::now(),
-        });
+        pending.insert(
+            fingerprint,
+            PendingQuery {
+                tx: tx.clone(),
+                started_at: Instant::now(),
+            },
+        );
         Ok(tx)
     }
 
@@ -257,7 +263,9 @@ mod tests {
         assert!(result.is_none());
 
         // Insert.
-        cache.insert("key1".into(), "hash1".into(), "mtask-1".into()).await;
+        cache
+            .insert("key1".into(), "hash1".into(), "mtask-1".into())
+            .await;
 
         // Second check should hit.
         let result = cache.check("key1", "hash1").await.unwrap();
@@ -268,7 +276,9 @@ mod tests {
     async fn test_idempotency_conflict() {
         let cache = IdempotencyCache::new(100, 3600);
 
-        cache.insert("key1".into(), "hash1".into(), "mtask-1".into()).await;
+        cache
+            .insert("key1".into(), "hash1".into(), "mtask-1".into())
+            .await;
 
         // Different body hash should error.
         let result = cache.check("key1", "hash2").await;
@@ -279,15 +289,23 @@ mod tests {
     async fn test_idempotency_max_entries() {
         let cache = IdempotencyCache::new(3, 3600);
 
-        cache.insert("key1".into(), "hash1".into(), "mtask-1".into()).await;
-        cache.insert("key2".into(), "hash2".into(), "mtask-2".into()).await;
-        cache.insert("key3".into(), "hash3".into(), "mtask-3".into()).await;
+        cache
+            .insert("key1".into(), "hash1".into(), "mtask-1".into())
+            .await;
+        cache
+            .insert("key2".into(), "hash2".into(), "mtask-2".into())
+            .await;
+        cache
+            .insert("key3".into(), "hash3".into(), "mtask-3".into())
+            .await;
 
         // At max.
         assert_eq!(cache.size().await, 3);
 
         // Adding a 4th should evict some entry to maintain max size.
-        cache.insert("key4".into(), "hash4".into(), "mtask-4".into()).await;
+        cache
+            .insert("key4".into(), "hash4".into(), "mtask-4".into())
+            .await;
         assert_eq!(cache.size().await, 3);
         // At least one of the original keys should be evicted.
         let remaining = [
@@ -295,7 +313,10 @@ mod tests {
             cache.check("key2", "hash2").await.unwrap().is_some(),
             cache.check("key3", "hash3").await.unwrap().is_some(),
         ];
-        assert!(remaining.iter().filter(|&&x| x).count() < 3, "expected at least one eviction");
+        assert!(
+            remaining.iter().filter(|&&x| x).count() < 3,
+            "expected at least one eviction"
+        );
     }
 
     #[test]

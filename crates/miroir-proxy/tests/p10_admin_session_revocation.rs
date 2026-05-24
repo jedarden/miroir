@@ -24,10 +24,7 @@ use testcontainers_modules::redis::Redis;
 async fn redis_store() -> (RedisTaskStore, String) {
     let node = Redis::default();
     let container = node.start().await.expect("start redis");
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("get port");
+    let port = container.get_host_port_ipv4(6379).await.expect("get port");
     let url = format!("redis://localhost:{port}");
     let store = RedisTaskStore::open(&url).await.expect("redis connect");
     (store, url)
@@ -165,9 +162,7 @@ async fn test_cross_pod_revocation_via_pubsub() {
         if start.elapsed() > deadline {
             panic!(
                 "Pub/Sub propagation did not complete within {:?}: pod_a={}, pod_b={}",
-                deadline,
-                a_has,
-                b_has
+                deadline, a_has, b_has
             );
         }
 
@@ -245,7 +240,9 @@ async fn test_expired_session_is_invalid() {
     let mut session = make_session("sess-expired");
     session.expires_at = now_ms() - 1000; // expired 1 second ago
 
-    store.insert_admin_session(&session).expect("insert expired");
+    store
+        .insert_admin_session(&session)
+        .expect("insert expired");
 
     let loaded = store
         .get_admin_session(&session.session_id)
@@ -304,8 +301,7 @@ async fn test_csrf_refresh_preserves_revocation() {
 async fn test_pubsub_multiple_revocations() {
     let (store, redis_url) = redis_store().await;
 
-    let received: Arc<std::sync::Mutex<Vec<String>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let received: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let received_clone = received.clone();
 
     let sub = tokio::spawn(async move {

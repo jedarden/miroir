@@ -3,9 +3,8 @@
 use axum::{
     extract::{FromRef, Path, State},
     http::StatusCode,
-    Json,
-    Router,
     routing::post,
+    Json, Router,
 };
 use miroir_core::{
     config::MiroirConfig,

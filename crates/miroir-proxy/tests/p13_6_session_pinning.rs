@@ -8,9 +8,9 @@
 //! - Session TTL and LRU eviction
 //! - Pinned group failure handling
 
+use miroir_core::session_pinning::{SessionManager, SessionPinningConfig, WaitStrategy};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
-use miroir_core::session_pinning::{SessionManager, SessionPinningConfig, WaitStrategy};
 
 /// Helper to create a test session manager with custom config.
 fn test_manager(config: SessionPinningConfig) -> SessionManager {
@@ -85,13 +85,21 @@ async fn test_write_without_clearing_pending_write() {
         .unwrap();
 
     // Verify pending write exists
-    assert!(manager.get_session(session_id).await.unwrap().has_pending_write());
+    assert!(manager
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .has_pending_write());
 
     // Clear pending write (simulating task completion)
     manager.clear_pending_write(session_id).await;
 
     // Verify no pending write
-    assert!(!manager.get_session(session_id).await.unwrap().has_pending_write());
+    assert!(!manager
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .has_pending_write());
 
     // Read should not return pinned group (no pending write)
     let pinned_group = manager.get_pinned_group(session_id).await;
@@ -385,9 +393,11 @@ async fn test_enabled_flag() {
 // Integration tests: read-your-writes with task registry (plan §13.6)
 // ---------------------------------------------------------------------------
 
-use miroir_core::task::{MiroirTask, TaskRegistry, TaskStatus, NodeTask, NodeTaskStatus, TaskFilter};
-use miroir_core::error::Result;
 use miroir_core::error::MiroirError;
+use miroir_core::error::Result;
+use miroir_core::task::{
+    MiroirTask, NodeTask, NodeTaskStatus, TaskFilter, TaskRegistry, TaskStatus,
+};
 use std::collections::HashMap;
 
 /// Mock task registry for testing session pinning wait behavior.
@@ -455,12 +465,16 @@ impl TaskRegistry for MockTaskRegistry {
         rt.block_on(async {
             let mtask_id = format!("mtask-{}", uuid::Uuid::new_v4());
             // Convert u64 node task IDs to NodeTask structures
-            let node_tasks_mapped = node_tasks.into_iter()
+            let node_tasks_mapped = node_tasks
+                .into_iter()
                 .map(|(node_id, task_uid)| {
-                    (node_id, NodeTask {
-                        task_uid,
-                        status: NodeTaskStatus::Enqueued,
-                    })
+                    (
+                        node_id,
+                        NodeTask {
+                            task_uid,
+                            status: NodeTaskStatus::Enqueued,
+                        },
+                    )
                 })
                 .collect();
 
@@ -541,10 +555,7 @@ async fn acceptance_write_session_read_with_block_strategy() {
         .unwrap();
 
     // Verify the session is pinned
-    assert_eq!(
-        manager.get_pinned_group(session_id).await,
-        Some(0)
-    );
+    assert_eq!(manager.get_pinned_group(session_id).await, Some(0));
 
     // Verify the wait strategy is block
     assert_eq!(manager.wait_strategy(), WaitStrategy::Block);
@@ -579,17 +590,18 @@ async fn acceptance_write_session_read_with_route_pin_strategy() {
         .unwrap();
 
     // Verify the session is pinned to group 1
-    assert_eq!(
-        manager.get_pinned_group(session_id).await,
-        Some(1)
-    );
+    assert_eq!(manager.get_pinned_group(session_id).await, Some(1));
 
     // With route_pin strategy, we don't wait - just check the pinned group
     let pinned_group = manager.get_pinned_group(session_id).await;
     assert_eq!(pinned_group, Some(1));
 
     // The pending write should still be present (not cleared by just reading)
-    assert!(manager.get_session(session_id).await.unwrap().has_pending_write());
+    assert!(manager
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .has_pending_write());
 }
 
 /// Acceptance test 3: Pinned group fails mid-session → pin cleared; read succeeds via another group.
@@ -633,7 +645,11 @@ async fn acceptance_pinned_group_failure_clears_pin() {
     // The session should still exist, but with no pin
     let session = manager.get_session(session_id).await;
     assert!(session.is_some(), "Session should still exist");
-    assert_eq!(session.unwrap().pinned_group, None, "Session should have no pinned group");
+    assert_eq!(
+        session.unwrap().pinned_group,
+        None,
+        "Session should have no pinned group"
+    );
 }
 
 /// Acceptance test 4: Session TTL expiry and LRU eviction.
@@ -748,7 +764,10 @@ async fn integration_session_pin_with_scatter_plan() {
     let plan = plan.unwrap();
 
     // Verify the plan targets the pinned group
-    assert_eq!(plan.chosen_group, 1, "Chosen group should be the pinned group");
+    assert_eq!(
+        plan.chosen_group, 1,
+        "Chosen group should be the pinned group"
+    );
 
     // Verify all shards are targeted
     assert_eq!(plan.target_shards.len(), 4, "All shards should be targeted");
@@ -756,7 +775,10 @@ async fn integration_session_pin_with_scatter_plan() {
     // Verify all selected nodes are from group 1
     for (_shard_id, node_id) in &plan.shard_to_node {
         let node = topo.node(node_id).unwrap();
-        assert_eq!(node.replica_group, 1, "All nodes should be from pinned group 1");
+        assert_eq!(
+            node.replica_group, 1,
+            "All nodes should be from pinned group 1"
+        );
     }
 }
 

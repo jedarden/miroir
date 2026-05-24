@@ -1,9 +1,9 @@
 //! HTTP client for communicating with Meilisearch nodes.
 
 use miroir_core::scatter::{
-    DeleteByIdsRequest, DeleteByFilterRequest, DeleteResponse, FetchDocumentsRequest, NodeClient, NodeError,
-    PreflightRequest, PreflightResponse, SearchRequest, TaskStatusRequest, TaskStatusResponse,
-    TermStats, WriteRequest, WriteResponse,
+    DeleteByFilterRequest, DeleteByIdsRequest, DeleteResponse, FetchDocumentsRequest, NodeClient,
+    NodeError, PreflightRequest, PreflightResponse, SearchRequest, TaskStatusRequest,
+    TaskStatusResponse, TermStats, WriteRequest, WriteResponse,
 };
 use miroir_core::topology::NodeId;
 use reqwest::Client;
@@ -30,13 +30,21 @@ impl HttpClient {
 
     /// Build the search URL for a node and index.
     fn search_url(&self, address: &str, index_uid: &str) -> String {
-        format!("{}/indexes/{}/search", address.trim_end_matches('/'), index_uid)
+        format!(
+            "{}/indexes/{}/search",
+            address.trim_end_matches('/'),
+            index_uid
+        )
     }
 
     /// Build the preflight URL for a node and index.
     #[allow(dead_code)]
     fn preflight_url(&self, address: &str, index_uid: &str) -> String {
-        format!("{}/indexes/{}/_preflight", address.trim_end_matches('/'), index_uid)
+        format!(
+            "{}/indexes/{}/_preflight",
+            address.trim_end_matches('/'),
+            index_uid
+        )
     }
 
     /// Build the documents URL for a node and index.
@@ -82,8 +90,9 @@ impl NodeClient for HttpClient {
         let mut body = request.to_node_body();
 
         if let Some(global_idf) = &request.global_idf {
-            body["_miroir_global_idf"] = serde_json::to_value(global_idf)
-                .map_err(|e| NodeError::NetworkError(format!("Failed to serialize global_idf: {}", e)))?;
+            body["_miroir_global_idf"] = serde_json::to_value(global_idf).map_err(|e| {
+                NodeError::NetworkError(format!("Failed to serialize global_idf: {}", e))
+            })?;
         }
 
         let response = self
@@ -130,9 +139,8 @@ impl NodeClient for HttpClient {
             "node call completed"
         );
 
-        serde_json::from_str(&body_text).map_err(|e| {
-            NodeError::NetworkError(format!("Failed to parse JSON response: {}", e))
-        })
+        serde_json::from_str(&body_text)
+            .map_err(|e| NodeError::NetworkError(format!("Failed to parse JSON response: {}", e)))
     }
 
     async fn write_documents(
@@ -185,9 +193,18 @@ impl NodeClient for HttpClient {
                 return Ok(WriteResponse {
                     success: false,
                     task_uid: None,
-                    message: meili_err.get("message").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    code: meili_err.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    error_type: meili_err.get("type").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    message: meili_err
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    code: meili_err
+                        .get("code")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    error_type: meili_err
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                 });
             }
             return Err(NodeError::HttpError {
@@ -271,9 +288,18 @@ impl NodeClient for HttpClient {
                 return Ok(DeleteResponse {
                     success: false,
                     task_uid: None,
-                    message: meili_err.get("message").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    code: meili_err.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    error_type: meili_err.get("type").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    message: meili_err
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    code: meili_err
+                        .get("code")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    error_type: meili_err
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                 });
             }
             return Err(NodeError::HttpError {
@@ -350,9 +376,18 @@ impl NodeClient for HttpClient {
                 return Ok(DeleteResponse {
                     success: false,
                     task_uid: None,
-                    message: meili_err.get("message").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    code: meili_err.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    error_type: meili_err.get("type").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    message: meili_err
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    code: meili_err
+                        .get("code")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    error_type: meili_err
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                 });
             }
             return Err(NodeError::HttpError {
@@ -439,10 +474,9 @@ impl NodeClient for HttpClient {
                 .map_err(|e| NodeError::NetworkError(format!("DF search failed: {}", e)))?;
 
             if search_resp.status().is_success() {
-                let body: Value = search_resp
-                    .json()
-                    .await
-                    .map_err(|e| NodeError::NetworkError(format!("Failed to parse DF response: {}", e)))?;
+                let body: Value = search_resp.json().await.map_err(|e| {
+                    NodeError::NetworkError(format!("Failed to parse DF response: {}", e))
+                })?;
                 let df = body
                     .get("estimatedTotalHits")
                     .and_then(|v| v.as_u64())
@@ -478,7 +512,8 @@ impl NodeClient for HttpClient {
         node: &NodeId,
         address: &str,
         request: &TaskStatusRequest,
-    ) -> impl std::future::Future<Output = std::result::Result<TaskStatusResponse, NodeError>> + Send {
+    ) -> impl std::future::Future<Output = std::result::Result<TaskStatusResponse, NodeError>> + Send
+    {
         let task_uid = request.task_uid;
         let url = Self::task_url_static(address, task_uid);
         let master_key = self.master_key.clone();
@@ -512,15 +547,18 @@ impl NodeClient for HttpClient {
 
             Ok(TaskStatusResponse {
                 task_uid,
-                status: json.get("status")
+                status: json
+                    .get("status")
                     .and_then(|v| v.as_str())
                     .unwrap_or("enqueued")
                     .to_string(),
-                error: json.get("error")
+                error: json
+                    .get("error")
                     .and_then(|v| v.get("message"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string()),
-                error_type: json.get("error")
+                error_type: json
+                    .get("error")
                     .and_then(|v| v.get("type"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string()),
@@ -563,8 +601,7 @@ impl miroir_core::group_sync_worker::SyncNodeClient for HttpClient {
             return Err(format!("HTTP {}: {}", status.as_u16(), body_text));
         }
 
-        serde_json::from_str(&body_text)
-            .map_err(|e| format!("Failed to parse JSON: {}", e))
+        serde_json::from_str(&body_text).map_err(|e| format!("Failed to parse JSON: {}", e))
     }
 
     async fn write_documents(

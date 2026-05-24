@@ -1,9 +1,9 @@
 //! Search route handler with DFS (Distributed Frequency Search) support.
 
+use axum::body::Body;
 use axum::extract::{Extension, Path};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::body::Body;
 use axum::Json;
 use miroir_core::api_error::{MeilisearchError, MiroirCode};
 use miroir_core::config::UnavailableShardPolicy;
@@ -11,7 +11,8 @@ use miroir_core::idempotency::QueryFingerprint;
 use miroir_core::merger::ScoreMergeStrategy;
 use miroir_core::replica_selection::SelectionObserver;
 use miroir_core::scatter::{
-    dfs_query_then_fetch_search, plan_search_scatter, plan_search_scatter_for_group, plan_search_scatter_with_version_floor, SearchRequest, NodeClient,
+    dfs_query_then_fetch_search, plan_search_scatter, plan_search_scatter_for_group,
+    plan_search_scatter_with_version_floor, NodeClient, SearchRequest,
 };
 use miroir_core::session_pinning::WaitStrategy;
 use serde::{Deserialize, Serialize};
@@ -20,7 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
-use crate::routes::admin_endpoints::{AppState, parse_rate_limit};
+use crate::routes::admin_endpoints::{parse_rate_limit, AppState};
 
 /// Metrics observer for replica selection events.
 ///
@@ -63,7 +64,11 @@ impl ProxyNodeClient {
         metrics: crate::middleware::Metrics,
         replica_selector: Option<Arc<miroir_core::replica_selection::ReplicaSelector>>,
     ) -> Self {
-        Self { client, metrics, replica_selector }
+        Self {
+            client,
+            metrics,
+            replica_selector,
+        }
     }
 }
 
@@ -78,7 +83,8 @@ impl NodeClient for ProxyNodeClient {
         let start = Instant::now();
         let result = self.client.search_node(node, address, request).await;
         let elapsed = start.elapsed().as_secs_f64();
-        self.metrics.record_node_request_duration(node.as_str(), "search", elapsed);
+        self.metrics
+            .record_node_request_duration(node.as_str(), "search", elapsed);
         if let Err(ref e) = result {
             self.metrics.inc_node_errors(node.as_str(), error_label(e));
         }
@@ -90,11 +96,13 @@ impl NodeClient for ProxyNodeClient {
         node: &miroir_core::topology::NodeId,
         address: &str,
         request: &miroir_core::scatter::PreflightRequest,
-    ) -> std::result::Result<miroir_core::scatter::PreflightResponse, miroir_core::scatter::NodeError> {
+    ) -> std::result::Result<miroir_core::scatter::PreflightResponse, miroir_core::scatter::NodeError>
+    {
         let start = Instant::now();
         let result = self.client.preflight_node(node, address, request).await;
         let elapsed = start.elapsed().as_secs_f64();
-        self.metrics.record_node_request_duration(node.as_str(), "preflight", elapsed);
+        self.metrics
+            .record_node_request_duration(node.as_str(), "preflight", elapsed);
         if let Err(ref e) = result {
             self.metrics.inc_node_errors(node.as_str(), error_label(e));
         }
@@ -114,8 +122,7 @@ pub fn router<S>() -> axum::Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    axum::Router::new()
-        .route("/:index", axum::routing::post(search_handler))
+    axum::Router::new().route("/:index", axum::routing::post(search_handler))
 }
 
 /// Search request body.
@@ -171,13 +178,16 @@ async fn search_handler(
     let client_requested_score = body.ranking_score.unwrap_or(false);
 
     // Extract session ID from request extensions (set by session_pinning_middleware)
-    let sid = session_id.map(|ext| ext.0).filter(|s| !s.as_str().is_empty());
+    let sid = session_id
+        .map(|ext| ext.0)
+        .filter(|s| !s.as_str().is_empty());
 
     // TODO: Extract source IP from headers - need to add back HeaderMap extraction
     let source_ip = "unknown".to_string();
 
     // Check rate limit for search UI (plan §4)
-    let (limit, window_seconds) = match parse_rate_limit(&state.config.search_ui.rate_limit.per_ip) {
+    let (limit, window_seconds) = match parse_rate_limit(&state.config.search_ui.rate_limit.per_ip)
+    {
         Ok(parsed) => parsed,
         Err(e) => {
             warn!(error = %e, "invalid search_ui.rate_limit.per_ip config, using default");
@@ -196,9 +206,9 @@ async fn search_handler(
                             "search UI rate limited (redis)"
                         );
                         return Response::builder()
-                .status(StatusCode::TOO_MANY_REQUESTS)
-                .body(axum::body::Body::empty())
-                .unwrap();
+                            .status(StatusCode::TOO_MANY_REQUESTS)
+                            .body(axum::body::Body::empty())
+                            .unwrap();
                     }
                     // Allowed, proceed
                 }
@@ -209,11 +219,10 @@ async fn search_handler(
             }
         }
     } else if backend == "local" {
-        let (allowed, _wait_seconds) = state.local_search_ui_rate_limiter.check(
-            &source_ip,
-            limit,
-            window_seconds * 1000,
-        );
+        let (allowed, _wait_seconds) =
+            state
+                .local_search_ui_rate_limiter
+                .check(&source_ip, limit, window_seconds * 1000);
         if !allowed {
             warn!(
                 source_ip_hash = hash_for_log(&source_ip),
@@ -253,11 +262,11 @@ async fn search_handler(
                     // Block until write completes or timeout
                     let max_wait = state.session_manager.max_wait_duration();
                     let wait_start = std::time::Instant::now();
-                    match state.session_manager.wait_for_write_completion(
-                        sid.as_str(),
-                        &state.task_registry,
-                        max_wait,
-                    ).await {
+                    match state
+                        .session_manager
+                        .wait_for_write_completion(sid.as_str(), &state.task_registry, max_wait)
+                        .await
+                    {
                         Ok(true) => {
                             // Write succeeded, clear pin and use normal routing
                             let wait_duration = wait_start.elapsed().as_secs_f64();
@@ -319,7 +328,11 @@ async fn search_handler(
         };
 
         // Try to coalesce with an existing in-flight query
-        if let Some(mut rx) = state.query_coalescer.try_coalesce(fingerprint.clone()).await {
+        if let Some(mut rx) = state
+            .query_coalescer
+            .try_coalesce(fingerprint.clone())
+            .await
+        {
             // Successfully subscribed to an in-flight query - wait for its result
             state.metrics.inc_query_coalesce_hits();
             debug!(
@@ -329,9 +342,8 @@ async fn search_handler(
 
             // Wait for the response (with timeout matching the scatter timeout)
             let timeout = Duration::from_millis(state.config.scatter.node_timeout_ms);
-            let response_bytes = tokio::time::timeout(timeout, async move {
-                rx.recv().await
-            }).await;
+            let response_bytes =
+                tokio::time::timeout(timeout, async move { rx.recv().await }).await;
 
             match response_bytes {
                 Ok(Ok(response_bytes)) => {
@@ -353,15 +365,22 @@ async fn search_handler(
                         .header("content-type", "application/json");
 
                     // Add settings headers
-                    if state.settings_broadcast.is_in_flight(&effective_index).await {
+                    if state
+                        .settings_broadcast
+                        .is_in_flight(&effective_index)
+                        .await
+                    {
                         response = response.header("X-Miroir-Settings-Inconsistent", "true");
                     }
                     if settings_version > 0 {
-                        response = response.header("X-Miroir-Settings-Version", settings_version.to_string());
+                        response = response
+                            .header("X-Miroir-Settings-Version", settings_version.to_string());
                     }
 
                     let response = response
-                        .body(axum::body::Body::from(serde_json::to_string(&response_body).unwrap()))
+                        .body(axum::body::Body::from(
+                            serde_json::to_string(&response_body).unwrap(),
+                        ))
                         .unwrap();
 
                     tracing::info!(
@@ -405,7 +424,8 @@ async fn search_handler(
             sid.map(|s| s.as_str().to_string()),
             client_requested_score,
             min_settings_version,
-        ).await;
+        )
+        .await;
     }
 
     // Get the scoped key for this index (plan §13.21).
@@ -415,11 +435,7 @@ async fn search_handler(
         if let Ok(Some(sk)) = redis.get_search_ui_scoped_key(&effective_index) {
             // Refresh scoped-key beacon so the rotation leader knows this pod is serving
             // requests for this index at the current generation (plan §13.21).
-            let _ = redis.observe_search_ui_scoped_key(
-                &state.pod_id,
-                &index,
-                sk.generation,
-            );
+            let _ = redis.observe_search_ui_scoped_key(&state.pod_id, &index, sk.generation);
 
             // Use primary_key; previous_key is the overlap fallback (both are valid in Meilisearch)
             sk.primary_key
@@ -444,10 +460,12 @@ async fn search_handler(
         "partial" => UnavailableShardPolicy::Partial,
         "error" => UnavailableShardPolicy::Error,
         "fallback" => UnavailableShardPolicy::Fallback,
-        _ => return Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(axum::body::Body::empty())
-            .unwrap(),
+        _ => {
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        }
     };
 
     // Plan scatter using live topology (span for plan construction)
@@ -470,7 +488,8 @@ async fn search_handler(
                 min_settings_version,
                 pinned_group = ?pinned_group,
                 strategy = %state.config.replica_selection.strategy,
-            ).entered();
+            )
+            .entered();
             drop(_plan_span); // Drop span before await
             match plan_search_scatter_for_group(
                 &topo,
@@ -479,7 +498,9 @@ async fn search_handler(
                 state.config.shards,
                 group,
                 replica_selector_ref,
-            ).await {
+            )
+            .await
+            {
                 Some(p) => p,
                 None => {
                     // Pinned group not available - fall back to normal planning
@@ -488,7 +509,14 @@ async fn search_handler(
                         pinned_group = group,
                         "pinned group unavailable, falling back to normal routing"
                     );
-                    plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, replica_selector_ref).await
+                    plan_search_scatter(
+                        &topo,
+                        0,
+                        state.config.replication_factor as usize,
+                        state.config.shards,
+                        replica_selector_ref,
+                    )
+                    .await
                 }
             }
         } else if let Some(floor) = min_settings_version {
@@ -508,13 +536,13 @@ async fn search_handler(
                     let idx = idx.to_string();
                     let node_id = node_id.to_string();
                     tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(async {
-                            sb.node_version(&idx, &node_id).await
-                        })
+                        tokio::runtime::Handle::current()
+                            .block_on(async { sb.node_version(&idx, &node_id).await })
                     })
                 },
                 replica_selector_ref,
-            ).await;
+            )
+            .await;
 
             match plan_result {
                 Some(p) => p,
@@ -535,7 +563,14 @@ async fn search_handler(
             }
         } else {
             // No version floor requested, use normal planning
-            plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, replica_selector_ref).await
+            plan_search_scatter(
+                &topo,
+                0,
+                state.config.replication_factor as usize,
+                state.config.shards,
+                replica_selector_ref,
+            )
+            .await
         }
     };
     let node_count = plan.shard_to_node.len() as u64;
@@ -571,7 +606,8 @@ async fn search_handler(
 
     // Register for query coalescing (plan §13.10) - after try_coalesce, before scatter
     // Only register if coalescing is enabled and this is a single-target query
-    let (tx, fingerprint) = if state.config.query_coalescing.enabled && resolved_targets.len() == 1 {
+    let (tx, fingerprint) = if state.config.query_coalescing.enabled && resolved_targets.len() == 1
+    {
         let settings_version = state.settings_broadcast.current_version().await;
         // Reconstruct body for fingerprinting (use cloned facets)
         let fingerprint_body = SearchRequestBody {
@@ -607,12 +643,7 @@ async fn search_handler(
 
     // Execute DFS query-then-fetch
     let mut result = match dfs_query_then_fetch_search(
-        plan,
-        &client,
-        search_req,
-        &topo,
-        policy,
-        &strategy,
+        plan, &client, search_req, &topo, policy, &strategy,
     )
     .await
     {
@@ -653,7 +684,9 @@ async fn search_handler(
         let subscriber_count = broadcast_tx.receiver_count();
         if subscriber_count > 1 {
             // There are other queries waiting for this result - broadcast to them
-            state.metrics.inc_query_coalesce_subscribers(subscriber_count as u64 - 1);
+            state
+                .metrics
+                .inc_query_coalesce_subscribers(subscriber_count as u64 - 1);
             let _ = broadcast_tx.send(response_bytes.clone());
             debug!(
                 index = %effective_index,
@@ -671,7 +704,11 @@ async fn search_handler(
         .header("content-type", "application/json");
 
     // Add X-Miroir-Settings-Inconsistent header if a broadcast is in flight (plan §13.5)
-    if state.settings_broadcast.is_in_flight(&effective_index).await {
+    if state
+        .settings_broadcast
+        .is_in_flight(&effective_index)
+        .await
+    {
         response = response.header("X-Miroir-Settings-Inconsistent", "true");
     }
 
@@ -688,7 +725,8 @@ async fn search_handler(
     if result.degraded && !result.failed_shards.is_empty() {
         let mut sorted_shards = result.failed_shards.clone();
         sorted_shards.sort();
-        let shard_ids = sorted_shards.iter()
+        let shard_ids = sorted_shards
+            .iter()
             .map(|id| id.to_string())
             .collect::<Vec<_>>()
             .join(",");
@@ -698,7 +736,9 @@ async fn search_handler(
     }
 
     let response = response
-        .body(axum::body::Body::from(serde_json::to_string(&body).unwrap()))
+        .body(axum::body::Body::from(
+            serde_json::to_string(&body).unwrap(),
+        ))
         .unwrap();
 
     // Structured log entry (plan §10 shape)
@@ -735,7 +775,8 @@ async fn search_multi_targets(
     let source_ip = "unknown".to_string();
 
     // Check rate limit for search UI (plan §4)
-    let (limit, window_seconds) = match parse_rate_limit(&state.config.search_ui.rate_limit.per_ip) {
+    let (limit, window_seconds) = match parse_rate_limit(&state.config.search_ui.rate_limit.per_ip)
+    {
         Ok(parsed) => parsed,
         Err(e) => {
             warn!(error = %e, "invalid search_ui.rate_limit.per_ip config, using default");
@@ -754,9 +795,9 @@ async fn search_multi_targets(
                             "search UI rate limited (redis)"
                         );
                         return Response::builder()
-                .status(StatusCode::TOO_MANY_REQUESTS)
-                .body(axum::body::Body::empty())
-                .unwrap();
+                            .status(StatusCode::TOO_MANY_REQUESTS)
+                            .body(axum::body::Body::empty())
+                            .unwrap();
                     }
                     // Allowed, proceed
                 }
@@ -767,11 +808,10 @@ async fn search_multi_targets(
             }
         }
     } else if backend == "local" {
-        let (allowed, _wait_seconds) = state.local_search_ui_rate_limiter.check(
-            &source_ip,
-            limit,
-            window_seconds * 1000,
-        );
+        let (allowed, _wait_seconds) =
+            state
+                .local_search_ui_rate_limiter
+                .check(&source_ip, limit, window_seconds * 1000);
         if !allowed {
             warn!(
                 source_ip_hash = hash_for_log(&source_ip),
@@ -794,11 +834,11 @@ async fn search_multi_targets(
                     // Block until write completes or timeout
                     let max_wait = state.session_manager.max_wait_duration();
                     let wait_start = std::time::Instant::now();
-                    match state.session_manager.wait_for_write_completion(
-                        sid.as_str(),
-                        &state.task_registry,
-                        max_wait,
-                    ).await {
+                    match state
+                        .session_manager
+                        .wait_for_write_completion(sid.as_str(), &state.task_registry, max_wait)
+                        .await
+                    {
                         Ok(true) => {
                             // Write succeeded, clear pin and use normal routing
                             let wait_duration = wait_start.elapsed().as_secs_f64();
@@ -854,11 +894,8 @@ async fn search_multi_targets(
     let search_key = if let Some(ref redis) = state.redis_store {
         if let Ok(Some(sk)) = redis.get_search_ui_scoped_key(primary_target) {
             // Refresh scoped-key beacon
-            let _ = redis.observe_search_ui_scoped_key(
-                &state.pod_id,
-                primary_target,
-                sk.generation,
-            );
+            let _ =
+                redis.observe_search_ui_scoped_key(&state.pod_id, primary_target, sk.generation);
             sk.primary_key
         } else {
             state.config.node_master_key.clone()
@@ -873,10 +910,12 @@ async fn search_multi_targets(
         "partial" => UnavailableShardPolicy::Partial,
         "error" => UnavailableShardPolicy::Error,
         "fallback" => UnavailableShardPolicy::Fallback,
-        _ => return Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(axum::body::Body::empty())
-            .unwrap(),
+        _ => {
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        }
     };
 
     // Plan scatter for primary target (for ILM read aliases, all targets
@@ -891,7 +930,8 @@ async fn search_multi_targets(
             min_settings_version,
             pinned_group = ?pinned_group,
             target_count = targets.len(),
-        ).entered();
+        )
+        .entered();
         drop(_plan_span); // Drop span before await
 
         if let Some(group) = pinned_group {
@@ -902,14 +942,23 @@ async fn search_multi_targets(
                 state.config.shards,
                 group,
                 None,
-            ).await {
+            )
+            .await
+            {
                 Some(p) => p,
                 None => {
                     warn!(
                         pinned_group = group,
                         "pinned group unavailable, falling back to normal routing"
                     );
-                    plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, None).await
+                    plan_search_scatter(
+                        &topo,
+                        0,
+                        state.config.replication_factor as usize,
+                        state.config.shards,
+                        None,
+                    )
+                    .await
                 }
             }
         } else if let Some(floor) = min_settings_version {
@@ -926,13 +975,13 @@ async fn search_multi_targets(
                     let idx = idx.to_string();
                     let node_id = node_id.to_string();
                     tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(async {
-                            sb.node_version(&idx, &node_id).await
-                        })
+                        tokio::runtime::Handle::current()
+                            .block_on(async { sb.node_version(&idx, &node_id).await })
                     })
                 },
                 None,
-            ).await;
+            )
+            .await;
 
             match plan_result {
                 Some(p) => p,
@@ -951,7 +1000,14 @@ async fn search_multi_targets(
                 }
             }
         } else {
-            plan_search_scatter(&topo, 0, state.config.replication_factor as usize, state.config.shards, None).await
+            plan_search_scatter(
+                &topo,
+                0,
+                state.config.replication_factor as usize,
+                state.config.shards,
+                None,
+            )
+            .await
         }
     };
     let node_count = plan.shard_to_node.len() as u64;
@@ -984,12 +1040,7 @@ async fn search_multi_targets(
 
     // Execute search
     let mut result = match dfs_query_then_fetch_search(
-        plan,
-        &client,
-        search_req,
-        &topo,
-        policy,
-        &strategy,
+        plan, &client, search_req, &topo, policy, &strategy,
     )
     .await
     {
@@ -1045,7 +1096,8 @@ async fn search_multi_targets(
     if result.degraded && !result.failed_shards.is_empty() {
         let mut sorted_shards = result.failed_shards.clone();
         sorted_shards.sort();
-        let shard_ids = sorted_shards.iter()
+        let shard_ids = sorted_shards
+            .iter()
             .map(|id| id.to_string())
             .collect::<Vec<_>>()
             .join(",");
@@ -1055,7 +1107,9 @@ async fn search_multi_targets(
     }
 
     let response = response
-        .body(axum::body::Body::from(serde_json::to_string(&response_body).unwrap()))
+        .body(axum::body::Body::from(
+            serde_json::to_string(&response_body).unwrap(),
+        ))
         .unwrap();
 
     // Structured log entry

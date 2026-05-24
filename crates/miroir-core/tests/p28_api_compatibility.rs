@@ -20,16 +20,35 @@ fn test_all_miroir_error_codes_have_correct_shape() {
         let json_val = serde_json::to_value(&err).expect("failed to serialize error");
 
         // Verify all required fields exist
-        assert!(json_val.get("message").is_some(), "message field missing for {:?}", code);
-        assert!(json_val.get("code").is_some(), "code field missing for {:?}", code);
-        assert!(json_val.get("type").is_some(), "type field missing for {:?}", code);
-        assert!(json_val.get("link").is_some(), "link field missing for {:?}", code);
+        assert!(
+            json_val.get("message").is_some(),
+            "message field missing for {:?}",
+            code
+        );
+        assert!(
+            json_val.get("code").is_some(),
+            "code field missing for {:?}",
+            code
+        );
+        assert!(
+            json_val.get("type").is_some(),
+            "type field missing for {:?}",
+            code
+        );
+        assert!(
+            json_val.get("link").is_some(),
+            "link field missing for {:?}",
+            code
+        );
 
         // Verify field types
         assert_eq!(json_val["message"], "test error message");
         assert_eq!(json_val["code"], code.as_str());
         assert_eq!(json_val["type"], code.error_type().to_string());
-        assert!(json_val["link"].as_str().unwrap().starts_with("https://github.com/jedarden/miroir"));
+        assert!(json_val["link"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://github.com/jedarden/miroir"));
     }
 }
 
@@ -81,11 +100,26 @@ fn test_http_status_codes_match_meilisearch_conventions() {
 #[test]
 fn test_error_type_categories_match_meilisearch() {
     // InvalidRequest errors
-    assert_eq!(MiroirCode::PrimaryKeyRequired.error_type(), ErrorType::InvalidRequest);
-    assert_eq!(MiroirCode::ReservedField.error_type(), ErrorType::InvalidRequest);
-    assert_eq!(MiroirCode::IdempotencyKeyReused.error_type(), ErrorType::InvalidRequest);
-    assert_eq!(MiroirCode::MultiAliasNotWritable.error_type(), ErrorType::InvalidRequest);
-    assert_eq!(MiroirCode::IndexAlreadyExists.error_type(), ErrorType::InvalidRequest);
+    assert_eq!(
+        MiroirCode::PrimaryKeyRequired.error_type(),
+        ErrorType::InvalidRequest
+    );
+    assert_eq!(
+        MiroirCode::ReservedField.error_type(),
+        ErrorType::InvalidRequest
+    );
+    assert_eq!(
+        MiroirCode::IdempotencyKeyReused.error_type(),
+        ErrorType::InvalidRequest
+    );
+    assert_eq!(
+        MiroirCode::MultiAliasNotWritable.error_type(),
+        ErrorType::InvalidRequest
+    );
+    assert_eq!(
+        MiroirCode::IndexAlreadyExists.error_type(),
+        ErrorType::InvalidRequest
+    );
 
     // Auth errors
     assert_eq!(MiroirCode::JwtInvalid.error_type(), ErrorType::Auth);
@@ -97,7 +131,10 @@ fn test_error_type_categories_match_meilisearch() {
     // System errors
     assert_eq!(MiroirCode::NoQuorum.error_type(), ErrorType::System);
     assert_eq!(MiroirCode::ShardUnavailable.error_type(), ErrorType::System);
-    assert_eq!(MiroirCode::SettingsVersionStale.error_type(), ErrorType::System);
+    assert_eq!(
+        MiroirCode::SettingsVersionStale.error_type(),
+        ErrorType::System
+    );
     assert_eq!(MiroirCode::Timeout.error_type(), ErrorType::System);
 }
 
@@ -145,10 +182,7 @@ fn test_error_with_custom_metadata_preserves_shape() {
 /// Test 7: Verify no_quorum error has the correct shape for degraded writes.
 #[test]
 fn test_no_quorum_error_shape_for_degraded_writes() {
-    let err = MeilisearchError::new(
-        MiroirCode::NoQuorum,
-        "no quorum reached for shard 7",
-    );
+    let err = MeilisearchError::new(MiroirCode::NoQuorum, "no quorum reached for shard 7");
 
     let json_val = serde_json::to_value(&err).expect("failed to serialize");
 
@@ -189,19 +223,13 @@ fn test_reserved_field_error_includes_field_name() {
 
     assert_eq!(json_val["code"], "miroir_reserved_field");
     assert_eq!(json_val["type"], "invalid_request");
-    assert!(json_val["message"]
-        .as_str()
-        .unwrap()
-        .contains(field_name));
+    assert!(json_val["message"].as_str().unwrap().contains(field_name));
 }
 
 /// Test 10: Verify timeout error shape.
 #[test]
 fn test_timeout_error_shape() {
-    let err = MeilisearchError::new(
-        MiroirCode::Timeout,
-        "request timed out after 30s",
-    );
+    let err = MeilisearchError::new(MiroirCode::Timeout, "request timed out after 30s");
 
     let json_val = serde_json::to_value(&err).expect("failed to serialize");
 
@@ -217,7 +245,8 @@ fn test_all_errors_round_trip_through_json() {
     for code in MiroirCode::ALL {
         let err = MeilisearchError::new(code, "test message");
         let json_str = serde_json::to_string(&err).expect("failed to serialize");
-        let parsed: MeilisearchError = serde_json::from_str(&json_str).expect("failed to deserialize");
+        let parsed: MeilisearchError =
+            serde_json::from_str(&json_str).expect("failed to deserialize");
 
         // Verify the parsed error has the same properties
         assert_eq!(parsed.code, code.as_str());

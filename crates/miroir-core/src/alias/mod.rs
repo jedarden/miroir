@@ -89,13 +89,15 @@ impl Alias {
     pub fn targets(&self) -> Result<Vec<String>> {
         match self.kind {
             AliasKind::Single => {
-                let uid = self.current_uid.as_ref()
-                    .ok_or_else(|| MiroirError::InvalidState("single alias missing current_uid".into()))?;
+                let uid = self.current_uid.as_ref().ok_or_else(|| {
+                    MiroirError::InvalidState("single alias missing current_uid".into())
+                })?;
                 Ok(vec![uid.clone()])
             }
             AliasKind::Multi => {
-                let uids = self.target_uids.as_ref()
-                    .ok_or_else(|| MiroirError::InvalidState("multi alias missing target_uids".into()))?;
+                let uids = self.target_uids.as_ref().ok_or_else(|| {
+                    MiroirError::InvalidState("multi alias missing target_uids".into())
+                })?;
                 Ok(uids.clone())
             }
         }
@@ -104,28 +106,36 @@ impl Alias {
     /// Flip this alias to a new target (single-target only).
     pub fn flip(&mut self, new_target: String) -> Result<()> {
         if self.kind != AliasKind::Single {
-            return Err(MiroirError::InvalidState("cannot flip multi-target alias".into()));
+            return Err(MiroirError::InvalidState(
+                "cannot flip multi-target alias".into(),
+            ));
         }
         self.current_uid = Some(new_target);
         self.generation += 1;
-        self.updated_at = Some(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs());
+        self.updated_at = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
         Ok(())
     }
 
     /// Update multi-target alias UIDs (ILM-only).
     pub fn update_targets(&mut self, new_targets: Vec<String>) -> Result<()> {
         if self.kind != AliasKind::Multi {
-            return Err(MiroirError::InvalidState("cannot update_targets on single-target alias".into()));
+            return Err(MiroirError::InvalidState(
+                "cannot update_targets on single-target alias".into(),
+            ));
         }
         self.target_uids = Some(new_targets);
         self.generation += 1;
-        self.updated_at = Some(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs());
+        self.updated_at = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
         Ok(())
     }
 }
@@ -164,7 +174,12 @@ impl AliasRegistry {
                 kind: match row.kind.as_str() {
                     "single" => AliasKind::Single,
                     "multi" => AliasKind::Multi,
-                    _ => return Err(MiroirError::InvalidState(format!("invalid alias kind: {}", row.kind))),
+                    _ => {
+                        return Err(MiroirError::InvalidState(format!(
+                            "invalid alias kind: {}",
+                            row.kind
+                        )))
+                    }
                 },
                 current_uid: row.current_uid,
                 target_uids: row.target_uids,
@@ -197,7 +212,9 @@ impl AliasRegistry {
 
     /// Check if an input is a multi-target alias (for write rejection).
     pub async fn is_multi_target_alias(&self, input: &str) -> bool {
-        self.aliases.read().await
+        self.aliases
+            .read()
+            .await
             .get(input)
             .map(|a| a.is_multi_target())
             .unwrap_or(false)
@@ -229,7 +246,8 @@ impl AliasRegistry {
     /// Flip a single-target alias atomically.
     pub async fn flip(&self, name: &str, new_target: String) -> Result<()> {
         let mut aliases = self.aliases.write().await;
-        let alias = aliases.get_mut(name)
+        let alias = aliases
+            .get_mut(name)
             .ok_or_else(|| MiroirError::NotFound(format!("alias '{}' not found", name)))?;
         alias.flip(new_target)?;
         Ok(())
@@ -238,7 +256,8 @@ impl AliasRegistry {
     /// Update a multi-target alias (ILM use only).
     pub async fn update_multi(&self, name: &str, new_targets: Vec<String>) -> Result<()> {
         let mut aliases = self.aliases.write().await;
-        let alias = aliases.get_mut(name)
+        let alias = aliases
+            .get_mut(name)
             .ok_or_else(|| MiroirError::NotFound(format!("alias '{}' not found", name)))?;
         alias.update_targets(new_targets)?;
         Ok(())

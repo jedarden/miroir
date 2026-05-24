@@ -144,15 +144,16 @@ impl ShadowManager {
         let start = std::time::Instant::now();
 
         // Build shadow request URL
-        let url = format!("{}/indexes/{}/search", target.url.trim_end_matches('/'), index_uid);
+        let url = format!(
+            "{}/indexes/{}/search",
+            target.url.trim_end_matches('/'),
+            index_uid
+        );
 
         // Send shadow request with timeout
         let result = tokio::time::timeout(
             tokio::time::Duration::from_millis(self.config.max_shadow_latency_ms),
-            self.client
-                .post(&url)
-                .json(request_body)
-                .send(),
+            self.client.post(&url).json(request_body).send(),
         )
         .await;
 
@@ -162,8 +163,15 @@ impl ShadowManager {
             Ok(Ok(response)) => {
                 let shadow_success = response.status().is_success();
                 let shadow_hit_count = if shadow_success {
-                    response.json::<serde_json::Value>().await
-                        .and_then(|v| Ok(v.get("hits").and_then(|h| h.as_array()).map(|a| a.len()).unwrap_or(0)))
+                    response
+                        .json::<serde_json::Value>()
+                        .await
+                        .and_then(|v| {
+                            Ok(v.get("hits")
+                                .and_then(|h| h.as_array())
+                                .map(|a| a.len())
+                                .unwrap_or(0))
+                        })
                         .unwrap_or(0)
                 } else {
                     0
@@ -215,7 +223,13 @@ impl ShadowManager {
     /// Get recent shadow diffs.
     pub async fn recent_diffs(&self, limit: usize) -> Vec<ShadowDiff> {
         let state = self.state.read().await;
-        state.recent_diffs.iter().rev().take(limit).cloned().collect()
+        state
+            .recent_diffs
+            .iter()
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect()
     }
 
     /// Get shadow statistics.
@@ -235,7 +249,7 @@ impl ShadowManager {
 
     /// Generate a fingerprint for a request body (for deduplication).
     fn fingerprint_request(body: &serde_json::Value) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let json = serde_json::to_string(body).unwrap_or_default();
         let hash = Sha256::digest(json.as_bytes());
         format!("{:x}", hash)

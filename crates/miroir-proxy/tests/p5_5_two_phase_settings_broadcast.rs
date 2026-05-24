@@ -8,8 +8,8 @@
 //! - Legacy strategy: sequential still works for rollback compatibility
 
 use miroir_core::config::MiroirConfig;
-use miroir_core::settings::{SettingsBroadcast, BroadcastPhase};
-use miroir_core::task_store::{TaskStore, SqliteTaskStore};
+use miroir_core::settings::{BroadcastPhase, SettingsBroadcast};
+use miroir_core::task_store::{SqliteTaskStore, TaskStore};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,7 +35,10 @@ async fn test_two_phase_settings_broadcast_normal_flow() {
     });
 
     // Start propose phase
-    broadcast.start_propose(index.clone(), &settings).await.unwrap();
+    broadcast
+        .start_propose(index.clone(), &settings)
+        .await
+        .unwrap();
 
     // Enter verify phase with node task UIDs
     let mut node_tasks = HashMap::new();
@@ -48,12 +51,18 @@ async fn test_two_phase_settings_broadcast_normal_flow() {
     let mut node_hashes = HashMap::new();
     node_hashes.insert("node-1".to_string(), expected_fingerprint.clone());
     node_hashes.insert("node-2".to_string(), expected_fingerprint.clone());
-    broadcast.verify_hashes(&index, node_hashes, &expected_fingerprint).await.unwrap();
+    broadcast
+        .verify_hashes(&index, node_hashes, &expected_fingerprint)
+        .await
+        .unwrap();
 
     // Commit phase - should increment settings version
     let new_version = broadcast.commit(&index).await.unwrap();
 
-    assert_eq!(new_version, 1, "settings_version should be 1 after first commit");
+    assert_eq!(
+        new_version, 1,
+        "settings_version should be 1 after first commit"
+    );
 
     // Complete the broadcast
     broadcast.complete(&index).await.unwrap();
@@ -77,7 +86,10 @@ async fn test_two_phase_settings_broadcast_hash_mismatch_retry() {
     });
 
     // Start propose phase
-    broadcast.start_propose(index.clone(), &settings).await.unwrap();
+    broadcast
+        .start_propose(index.clone(), &settings)
+        .await
+        .unwrap();
 
     // Enter verify phase
     let mut node_tasks = HashMap::new();
@@ -90,7 +102,9 @@ async fn test_two_phase_settings_broadcast_hash_mismatch_retry() {
     let mut node_hashes = HashMap::new();
     node_hashes.insert("node-1".to_string(), "wrong_hash".to_string());
 
-    let result = broadcast.verify_hashes(&index, node_hashes.clone(), &expected_fingerprint).await;
+    let result = broadcast
+        .verify_hashes(&index, node_hashes.clone(), &expected_fingerprint)
+        .await;
     assert!(result.is_err(), "verify should fail with hash mismatch");
 
     // Check status reflects the error
@@ -101,7 +115,10 @@ async fn test_two_phase_settings_broadcast_hash_mismatch_retry() {
     let mut node_hashes = HashMap::new();
     node_hashes.insert("node-1".to_string(), expected_fingerprint.clone());
 
-    broadcast.verify_hashes(&index, node_hashes, &expected_fingerprint).await.unwrap();
+    broadcast
+        .verify_hashes(&index, node_hashes, &expected_fingerprint)
+        .await
+        .unwrap();
 
     // Commit should succeed
     let new_version = broadcast.commit(&index).await.unwrap();
@@ -122,14 +139,20 @@ async fn test_node_settings_version_tracking_multiple_updates() {
     let settings1 = json!({"rankingRules": ["words"]});
     let fp1 = miroir_core::settings::fingerprint_settings(&settings1);
 
-    broadcast.start_propose(index.clone(), &settings1).await.unwrap();
+    broadcast
+        .start_propose(index.clone(), &settings1)
+        .await
+        .unwrap();
     let mut node_tasks = HashMap::new();
     node_tasks.insert("node-1".to_string(), 100);
     broadcast.enter_verify(&index, node_tasks).await.unwrap();
 
     let mut node_hashes = HashMap::new();
     node_hashes.insert("node-1".to_string(), fp1.clone());
-    broadcast.verify_hashes(&index, node_hashes, &fp1).await.unwrap();
+    broadcast
+        .verify_hashes(&index, node_hashes, &fp1)
+        .await
+        .unwrap();
 
     let v1 = broadcast.commit(&index).await.unwrap();
     assert_eq!(v1, 1);
@@ -139,14 +162,20 @@ async fn test_node_settings_version_tracking_multiple_updates() {
     let settings2 = json!({"rankingRules": ["words", "typo"]});
     let fp2 = miroir_core::settings::fingerprint_settings(&settings2);
 
-    broadcast.start_propose(index.clone(), &settings2).await.unwrap();
+    broadcast
+        .start_propose(index.clone(), &settings2)
+        .await
+        .unwrap();
     let mut node_tasks = HashMap::new();
     node_tasks.insert("node-1".to_string(), 101);
     broadcast.enter_verify(&index, node_tasks).await.unwrap();
 
     let mut node_hashes = HashMap::new();
     node_hashes.insert("node-1".to_string(), fp2.clone());
-    broadcast.verify_hashes(&index, node_hashes, &fp2).await.unwrap();
+    broadcast
+        .verify_hashes(&index, node_hashes, &fp2)
+        .await
+        .unwrap();
 
     let v2 = broadcast.commit(&index).await.unwrap();
     assert_eq!(v2, 2);
@@ -169,7 +198,10 @@ async fn test_min_node_version_calculation() {
     let fp = miroir_core::settings::fingerprint_settings(&settings);
 
     // Start and complete a broadcast with 3 nodes
-    broadcast.start_propose(index.clone(), &settings).await.unwrap();
+    broadcast
+        .start_propose(index.clone(), &settings)
+        .await
+        .unwrap();
 
     let mut node_tasks = HashMap::new();
     node_tasks.insert("node-1".to_string(), 100);
@@ -181,7 +213,10 @@ async fn test_min_node_version_calculation() {
     node_hashes.insert("node-1".to_string(), fp.clone());
     node_hashes.insert("node-2".to_string(), fp.clone());
     node_hashes.insert("node-3".to_string(), fp.clone());
-    broadcast.verify_hashes(&index, node_hashes, &fp).await.unwrap();
+    broadcast
+        .verify_hashes(&index, node_hashes, &fp)
+        .await
+        .unwrap();
 
     let v1 = broadcast.commit(&index).await.unwrap();
     assert_eq!(v1, 1);
@@ -196,9 +231,21 @@ async fn test_min_node_version_calculation() {
     assert_eq!(min_version, Some(1));
 
     // Node version meets floor
-    assert!(broadcast.node_version_meets_floor(&index, "node-1", 1).await);
-    assert!(broadcast.node_version_meets_floor(&index, "node-2", 0).await);
-    assert!(!broadcast.node_version_meets_floor(&index, "node-1", 2).await);
+    assert!(
+        broadcast
+            .node_version_meets_floor(&index, "node-1", 1)
+            .await
+    );
+    assert!(
+        broadcast
+            .node_version_meets_floor(&index, "node-2", 0)
+            .await
+    );
+    assert!(
+        !broadcast
+            .node_version_meets_floor(&index, "node-1", 2)
+            .await
+    );
 }
 
 /// Test 5: Settings persistence to task store.
@@ -214,14 +261,20 @@ async fn test_settings_version_persistence_to_task_store() {
     let broadcast = SettingsBroadcast::with_task_store(store.clone());
 
     // Complete a broadcast
-    broadcast.start_propose(index.clone(), &settings).await.unwrap();
+    broadcast
+        .start_propose(index.clone(), &settings)
+        .await
+        .unwrap();
     let mut node_tasks = HashMap::new();
     node_tasks.insert("node-1".to_string(), 100);
     broadcast.enter_verify(&index, node_tasks).await.unwrap();
 
     let mut node_hashes = HashMap::new();
     node_hashes.insert("node-1".to_string(), fp.clone());
-    broadcast.verify_hashes(&index, node_hashes, &fp).await.unwrap();
+    broadcast
+        .verify_hashes(&index, node_hashes, &fp)
+        .await
+        .unwrap();
 
     let v1 = broadcast.commit(&index).await.unwrap();
     assert_eq!(v1, 1);

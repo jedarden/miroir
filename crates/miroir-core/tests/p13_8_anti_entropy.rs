@@ -1,11 +1,7 @@
 //! Acceptance tests for P5.8 §13.8 Anti-entropy shard reconciler.
 
-use miroir_core::anti_entropy::{
-    AntiEntropyConfig, AntiEntropyReconciler, BUCKET_COUNT,
-};
-use miroir_core::scatter::{
-    FetchDocumentsResponse, MockNodeClient, WriteResponse,
-};
+use miroir_core::anti_entropy::{AntiEntropyConfig, AntiEntropyReconciler, BUCKET_COUNT};
+use miroir_core::scatter::{FetchDocumentsResponse, MockNodeClient, WriteResponse};
 use miroir_core::topology::{Node, NodeId, NodeStatus, Topology};
 use serde_json::json;
 use std::collections::HashMap;
@@ -97,7 +93,10 @@ async fn test_acceptance_1_detect_and_repair_divergence() {
     let result = reconciler.run_pass().await.unwrap();
 
     // Verify drift was detected
-    assert!(result.shards_with_drift > 0, "Expected drift to be detected");
+    assert!(
+        result.shards_with_drift > 0,
+        "Expected drift to be detected"
+    );
     assert_eq!(result.shards_scanned, 64, "Should scan all shards");
 }
 
@@ -178,7 +177,10 @@ async fn test_acceptance_2_expired_doc_no_resurrection() {
     let result = reconciler.run_pass().await.unwrap();
 
     // Verify drift was detected
-    assert!(result.shards_with_drift > 0, "Expected drift to be detected");
+    assert!(
+        result.shards_with_drift > 0,
+        "Expected drift to be detected"
+    );
 }
 
 /// Test acceptance criterion: CDC subscribers do NOT see anti-entropy writes (filtered by `_miroir_origin`).
@@ -211,7 +213,10 @@ async fn test_acceptance_3_cdc_suppression() {
     };
 
     // Publish should succeed (event is suppressed)
-    assert!(manager.publish(event).is_ok(), "Anti-entropy event should be published (suppressed)");
+    assert!(
+        manager.publish(event).is_ok(),
+        "Anti-entropy event should be published (suppressed)"
+    );
 
     // Client write should also succeed (not suppressed)
     let client_event = CdcEvent {
@@ -227,7 +232,10 @@ async fn test_acceptance_3_cdc_suppression() {
         event_id: uuid::Uuid::new_v4().to_string(),
     };
 
-    assert!(manager.publish(client_event).is_ok(), "Client write should be published");
+    assert!(
+        manager.publish(client_event).is_ok(),
+        "Client write should be published"
+    );
 }
 
 /// Test acceptance criterion: Mode A - 3 pods, each owns ~1/3 of shards; anti-entropy runs exactly once per shard.
@@ -275,7 +283,10 @@ async fn test_acceptance_4_mode_a_shard_partitioning() {
     // (exact count depends on rendezvous hashing)
     let total_scanned = result_0.shards_scanned + result_1.shards_scanned + result_2.shards_scanned;
 
-    assert_eq!(total_scanned, 64, "All shards should be scanned exactly once across all pods");
+    assert_eq!(
+        total_scanned, 64,
+        "All shards should be scanned exactly once across all pods"
+    );
 }
 
 /// Test that bucket-based diff isolates divergence to ~1/256 of PK space.
@@ -322,7 +333,10 @@ fn test_content_hash_excludes_internal_fields() {
     let hash2 = AntiEntropyReconciler::<MockNodeClient>::compute_content_hash(&doc_clean);
 
     // Same content (without internal fields) should produce same hash
-    assert_eq!(hash1, hash2, "Hashes should match after stripping internal fields");
+    assert_eq!(
+        hash1, hash2,
+        "Hashes should match after stripping internal fields"
+    );
 }
 
 /// Test that authoritative doc selection uses _miroir_updated_at.
@@ -349,7 +363,11 @@ fn test_authoritative_doc_selection() {
 
     let authoritative = reconciler.pick_authoritative_doc(&doc_old, &doc_new);
 
-    assert_eq!(authoritative, Some(&doc_new), "Should pick doc with higher updated_at");
+    assert_eq!(
+        authoritative,
+        Some(&doc_new),
+        "Should pick doc with higher updated_at"
+    );
 }
 
 /// Test that authoritative doc selection handles ties with content hash.
@@ -404,11 +422,12 @@ async fn test_metrics_tracking() {
     };
 
     let metrics_clone = metrics.clone();
-    let reconciler = AntiEntropyReconciler::new(config, topo, client)
-        .with_metrics(Arc::new(move |name: &str, value: u64| {
+    let reconciler = AntiEntropyReconciler::new(config, topo, client).with_metrics(Arc::new(
+        move |name: &str, value: u64| {
             let mut m = metrics_clone.lock().unwrap();
             m.insert(name.to_string(), value);
-        }));
+        },
+    ));
 
     // Run a pass
     let result = reconciler.run_pass().await.unwrap();

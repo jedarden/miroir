@@ -12,13 +12,13 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use miroir_core::{
+    config::UnavailableShardPolicy,
     migration::{MigrationConfig, MigrationCoordinator, NodeId as MigrationNodeId, ShardId},
     rebalancer::{HttpMigrationExecutor, MigrationExecutor, Rebalancer, RebalancerConfig},
     router::assign_shard_in_group,
-    topology::{Node, NodeId, NodeStatus, Topology},
-    scatter::{MockNodeClient, SearchRequest},
     scatter::execute_scatter,
-    config::UnavailableShardPolicy,
+    scatter::{MockNodeClient, SearchRequest},
+    topology::{Node, NodeId, NodeStatus, Topology},
 };
 
 /// Helper: create a test topology with N nodes in a single replica group.
@@ -123,7 +123,10 @@ impl MigrationExecutor for DrainTestExecutor {
 
                 // Deduplicate by document ID
                 if let Some(doc_id) = doc.get("id").and_then(|v| v.as_str()) {
-                    if !docs.iter().any(|d| d.get("id").and_then(|v| v.as_str()) == Some(doc_id)) {
+                    if !docs
+                        .iter()
+                        .any(|d| d.get("id").and_then(|v| v.as_str()) == Some(doc_id))
+                    {
                         docs.push(doc.clone());
                     }
                 }
@@ -252,13 +255,26 @@ async fn p43_drain_node_searches_still_succeed_zero_degraded() {
         global_idf: None,
     };
 
-    let result = execute_scatter(plan, &mock_client, req, &topo, UnavailableShardPolicy::Fallback).await;
+    let result = execute_scatter(
+        plan,
+        &mock_client,
+        req,
+        &topo,
+        UnavailableShardPolicy::Fallback,
+    )
+    .await;
 
     // Search should succeed without degraded results
     assert!(result.is_ok(), "Search should succeed during drain");
     let scatter_result = result.unwrap();
-    assert!(!scatter_result.partial, "Search should not be partial during drain");
-    assert!(scatter_result.failed_shards.is_empty(), "No shards should fail during drain");
+    assert!(
+        !scatter_result.partial,
+        "Search should not be partial during drain"
+    );
+    assert!(
+        scatter_result.failed_shards.is_empty(),
+        "No shards should fail during drain"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +343,11 @@ async fn p43_verify_drain_returns_zero_for_all_shards() {
         let assigned = assign_shard_in_group(shard_id, &node_ids, rf);
         if assigned.iter().any(|n| n.as_str() == "node-1") {
             let count = executor.get_stored_doc_count("node-1", shard_id);
-            assert_eq!(count, 0, "Shard {} should have 0 documents after drain, got {}", shard_id, count);
+            assert_eq!(
+                count, 0,
+                "Shard {} should have 0 documents after drain, got {}",
+                shard_id, count
+            );
         }
     }
 
@@ -344,7 +364,12 @@ async fn p43_verify_drain_returns_zero_for_all_shards() {
                 }
             }
             // We verify at least some documents were migrated (not exact count)
-            assert!(total_docs > 0, "Shard {} should have at least some docs on remaining nodes, got {}", shard_id, total_docs);
+            assert!(
+                total_docs > 0,
+                "Shard {} should have at least some docs on remaining nodes, got {}",
+                shard_id,
+                total_docs
+            );
         }
     }
 }
@@ -378,8 +403,11 @@ async fn p43_remove_without_drain_returns_conflict() {
     assert!(result.is_err(), "Remove without drain should fail");
     let err = result.unwrap_err();
     let err_msg = format!("{}", err);
-    assert!(err_msg.contains("not in draining state") || err_msg.contains("drain"),
-        "Error should mention draining: {}", err);
+    assert!(
+        err_msg.contains("not in draining state") || err_msg.contains("drain"),
+        "Error should mention draining: {}",
+        err
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -438,8 +466,14 @@ async fn p43_node_readable_during_drain() {
 
     // Verify the draining node is still readable
     let draining_node = topo.node(&drain_node_id).unwrap();
-    assert!(draining_node.status.is_readable(), "Draining node should be readable");
-    assert!(!draining_node.status.is_active(), "Draining node should not be active for writes");
+    assert!(
+        draining_node.status.is_readable(),
+        "Draining node should be readable"
+    );
+    assert!(
+        !draining_node.status.is_active(),
+        "Draining node should not be active for writes"
+    );
 }
 
 // ---------------------------------------------------------------------------

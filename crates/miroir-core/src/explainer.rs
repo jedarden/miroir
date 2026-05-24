@@ -5,7 +5,7 @@
 
 use crate::config::MiroirConfig;
 use crate::router::shard_for_key;
-use crate::topology::{Topology, NodeId};
+use crate::topology::{NodeId, Topology};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -113,9 +113,7 @@ pub enum Warning {
         suggestion: String,
     },
     /// Unbounded wildcard query.
-    UnboundedWildcard {
-        query: String,
-    },
+    UnboundedWildcard { query: String },
     /// Settings drift detected across nodes.
     SettingsDrift {
         index: String,
@@ -128,13 +126,9 @@ pub enum Warning {
         actual_group: u32,
     },
     /// Shard-aware narrowing not possible.
-    NarrowingNotPossible {
-        reason: String,
-    },
+    NarrowingNotPossible { reason: String },
     /// Settings broadcast in flight.
-    SettingsBroadcastInFlight {
-        commit_in: String,
-    },
+    SettingsBroadcastInFlight { commit_in: String },
 }
 
 /// Explainer for queries.
@@ -195,16 +189,13 @@ impl Explainer {
         let estimated_p95_ms = self.estimate_latency(topology, chosen_group.id, &target_shards);
 
         // Tenant affinity
-        let tenant_affinity_pinned = query
-            .tenant_id
-            .as_ref()
-            .and_then(|tenant| {
-                self.resolve_tenant_affinity(tenant, topology)
-                    .map(|group| GroupAffinity {
-                        tenant: tenant.clone(),
-                        group,
-                    })
-            });
+        let tenant_affinity_pinned = query.tenant_id.as_ref().and_then(|tenant| {
+            self.resolve_tenant_affinity(tenant, topology)
+                .map(|group| GroupAffinity {
+                    tenant: tenant.clone(),
+                    group,
+                })
+        });
 
         // Broadcast pending
         let broadcast_pending = broadcast_pending.cloned();
@@ -264,7 +255,8 @@ impl Explainer {
                         };
                     }
                     "explicit" => {
-                        if let Some(&group_id) = self.config.tenant_affinity.static_map.get(tenant) {
+                        if let Some(&group_id) = self.config.tenant_affinity.static_map.get(tenant)
+                        {
                             return ChosenGroup {
                                 id: group_id,
                                 reason: format!("explicit tenant mapping: {}", tenant),
@@ -308,11 +300,8 @@ impl Explainer {
 
         if let Some(group) = topology.group(group_id) {
             for &shard_id in shards {
-                let assigned = crate::router::assign_shard_in_group(
-                    shard_id,
-                    group.nodes(),
-                    topology.rf(),
-                );
+                let assigned =
+                    crate::router::assign_shard_in_group(shard_id, group.nodes(), topology.rf());
                 if let Some(node_id) = assigned.first() {
                     target_nodes.insert(shard_id.to_string(), node_id.as_str().to_string());
                 }
@@ -344,9 +333,7 @@ impl Explainer {
         // Check for unbounded wildcard
         if let Some(ref q) = query.q {
             if q == "*" || q == "%" {
-                warnings.push(Warning::UnboundedWildcard {
-                    query: q.clone(),
-                });
+                warnings.push(Warning::UnboundedWildcard { query: q.clone() });
             }
         }
     }

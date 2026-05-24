@@ -816,36 +816,84 @@ mod tests {
         assert_eq!(format!("{}", ShardId(7)), "s7");
         assert_eq!(format!("{}", ShardMigrationState::Pending), "pending");
         assert_eq!(
-            format!("{}", ShardMigrationState::Migrating { docs_copied: 100, pages_remaining: 3 }),
+            format!(
+                "{}",
+                ShardMigrationState::Migrating {
+                    docs_copied: 100,
+                    pages_remaining: 3
+                }
+            ),
             "migrating(100 copied, 3 pages left)"
         );
         assert_eq!(
-            format!("{}", ShardMigrationState::MigrationComplete { docs_copied: 500 }),
+            format!(
+                "{}",
+                ShardMigrationState::MigrationComplete { docs_copied: 500 }
+            ),
             "migration_complete(500 copied)"
         );
         assert_eq!(
-            format!("{}", ShardMigrationState::Draining { in_flight_count: 2, docs_copied: 500 }),
+            format!(
+                "{}",
+                ShardMigrationState::Draining {
+                    in_flight_count: 2,
+                    docs_copied: 500
+                }
+            ),
             "draining(2 in-flight, 500 copied)"
         );
         assert_eq!(
-            format!("{}", ShardMigrationState::DeltaPass { docs_copied: 500, delta_docs_copied: 3 }),
+            format!(
+                "{}",
+                ShardMigrationState::DeltaPass {
+                    docs_copied: 500,
+                    delta_docs_copied: 3
+                }
+            ),
             "delta_pass(500 + 3 copied)"
         );
         assert_eq!(format!("{}", ShardMigrationState::Active), "active");
         assert_eq!(
-            format!("{}", ShardMigrationState::Failed { phase: "cutover".into(), reason: "oops".into() }),
+            format!(
+                "{}",
+                ShardMigrationState::Failed {
+                    phase: "cutover".into(),
+                    reason: "oops".into()
+                }
+            ),
             "failed(cutover: oops)"
         );
 
-        assert_eq!(format!("{}", MigrationPhase::ComputingAssignments), "computing_assignments");
-        assert_eq!(format!("{}", MigrationPhase::DualWriteMigrating), "dual_write_migrating");
+        assert_eq!(
+            format!("{}", MigrationPhase::ComputingAssignments),
+            "computing_assignments"
+        );
+        assert_eq!(
+            format!("{}", MigrationPhase::DualWriteMigrating),
+            "dual_write_migrating"
+        );
         assert_eq!(format!("{}", MigrationPhase::CutoverBegin), "cutover_begin");
-        assert_eq!(format!("{}", MigrationPhase::CutoverDraining), "cutover_draining");
-        assert_eq!(format!("{}", MigrationPhase::CutoverDeltaPass), "cutover_delta_pass");
-        assert_eq!(format!("{}", MigrationPhase::CutoverActivate), "cutover_activate");
-        assert_eq!(format!("{}", MigrationPhase::CutoverCleanup), "cutover_cleanup");
+        assert_eq!(
+            format!("{}", MigrationPhase::CutoverDraining),
+            "cutover_draining"
+        );
+        assert_eq!(
+            format!("{}", MigrationPhase::CutoverDeltaPass),
+            "cutover_delta_pass"
+        );
+        assert_eq!(
+            format!("{}", MigrationPhase::CutoverActivate),
+            "cutover_activate"
+        );
+        assert_eq!(
+            format!("{}", MigrationPhase::CutoverCleanup),
+            "cutover_cleanup"
+        );
         assert_eq!(format!("{}", MigrationPhase::Complete), "complete");
-        assert_eq!(format!("{}", MigrationPhase::Failed("err".into())), "failed(err)");
+        assert_eq!(
+            format!("{}", MigrationPhase::Failed("err".into())),
+            "failed(err)"
+        );
     }
 
     #[test]
@@ -883,7 +931,9 @@ mod tests {
         let mid = coord.begin_migration(node("new-0"), 0, affected).unwrap();
 
         // shard_migration_complete on Pending shard should fail
-        let err = coord.shard_migration_complete(mid, shard(0), 10).unwrap_err();
+        let err = coord
+            .shard_migration_complete(mid, shard(0), 10)
+            .unwrap_err();
         assert!(matches!(err, MigrationError::InvalidTransition(_, _)));
 
         // NotFound for invalid migration

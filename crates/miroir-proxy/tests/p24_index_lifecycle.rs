@@ -68,7 +68,8 @@ async fn test_create_index_broadcasts_to_all_nodes() {
     let mut server1 = mockito::Server::new_async().await;
     let mut server2 = mockito::Server::new_async().await;
 
-    let mock1 = server1.mock("POST", "/indexes")
+    let mock1 = server1
+        .mock("POST", "/indexes")
         .match_header("Authorization", "Bearer test-node-master-key")
         .with_status(200)
         .with_body(json!({"uid": "test-idx", "taskUid": 1, "status": "enqueued"}).to_string())
@@ -76,7 +77,8 @@ async fn test_create_index_broadcasts_to_all_nodes() {
         .create_async()
         .await;
 
-    let mock2 = server2.mock("POST", "/indexes")
+    let mock2 = server2
+        .mock("POST", "/indexes")
         .match_header("Authorization", "Bearer test-node-master-key")
         .with_status(200)
         .with_body(json!({"uid": "test-idx", "taskUid": 1, "status": "enqueued"}).to_string())
@@ -122,7 +124,8 @@ async fn test_create_index_rollback_on_failure() {
     let mut server2 = mockito::Server::new_async().await;
 
     // Node 1: create succeeds
-    let mock1 = server1.mock("POST", "/indexes")
+    let mock1 = server1
+        .mock("POST", "/indexes")
         .with_status(200)
         .with_body(json!({"uid": "test-idx", "taskUid": 1}).to_string())
         .expect(1)
@@ -130,7 +133,8 @@ async fn test_create_index_rollback_on_failure() {
         .await;
 
     // Node 2: create fails
-    let mock2 = server2.mock("POST", "/indexes")
+    let mock2 = server2
+        .mock("POST", "/indexes")
         .with_status(500)
         .with_body(json!({"message": "internal error"}).to_string())
         .expect(1)
@@ -138,7 +142,8 @@ async fn test_create_index_rollback_on_failure() {
         .await;
 
     // Rollback: delete on node 1
-    let rollback1 = server1.mock("DELETE", "/indexes/test-idx")
+    let rollback1 = server1
+        .mock("DELETE", "/indexes/test-idx")
         .with_status(200)
         .with_body(json!({"taskUid": 2}).to_string())
         .expect(1)
@@ -162,7 +167,10 @@ async fn test_create_index_rollback_on_failure() {
                 for addr in &created_on {
                     let _ = client.delete_raw(addr, "/indexes/test-idx").await;
                 }
-                assert!(created_on.len() == 1, "first node should have been created before failure");
+                assert!(
+                    created_on.len() == 1,
+                    "first node should have been created before failure"
+                );
                 break;
             }
             Err(_) => break,
@@ -183,7 +191,8 @@ async fn test_create_index_rollback_on_failure() {
 async fn test_miroir_shard_in_filterable_attributes() {
     let mut server = mockito::Server::new_async().await;
 
-    let mock = server.mock("POST", "/indexes")
+    let mock = server
+        .mock("POST", "/indexes")
         .with_status(200)
         .with_body(json!({"uid": "test-idx", "taskUid": 1}).to_string())
         .expect(1)
@@ -191,18 +200,25 @@ async fn test_miroir_shard_in_filterable_attributes() {
         .await;
 
     // GET settings returns current filterableAttributes
-    let get_settings = server.mock("GET", "/indexes/test-idx/settings")
+    let get_settings = server
+        .mock("GET", "/indexes/test-idx/settings")
         .with_status(200)
-        .with_body(json!({"filterableAttributes": ["status"], "sortableAttributes": []}).to_string())
+        .with_body(
+            json!({"filterableAttributes": ["status"], "sortableAttributes": []}).to_string(),
+        )
         .expect(1)
         .create_async()
         .await;
 
     // PATCH settings should include both "status" and "_miroir_shard"
-    let patch_settings = server.mock("PATCH", "/indexes/test-idx/settings")
-        .match_body(mockito::Matcher::JsonString(json!({
-            "filterableAttributes": ["_miroir_shard", "status"]
-        }).to_string()))
+    let patch_settings = server
+        .mock("PATCH", "/indexes/test-idx/settings")
+        .match_body(mockito::Matcher::JsonString(
+            json!({
+                "filterableAttributes": ["_miroir_shard", "status"]
+            })
+            .to_string(),
+        ))
         .with_status(200)
         .with_body(json!({"taskUid": 2}).to_string())
         .expect(1)
@@ -220,10 +236,16 @@ async fn test_miroir_shard_in_filterable_attributes() {
 
     // Step 2: Read current settings and merge _miroir_shard
     let mut merged_attrs: Vec<serde_json::Value> = vec![json!("_miroir_shard")];
-    if let Ok((s, text)) = client.get_raw(&nodes[0], "/indexes/test-idx/settings").await {
+    if let Ok((s, text)) = client
+        .get_raw(&nodes[0], "/indexes/test-idx/settings")
+        .await
+    {
         if s >= 200 && s < 300 {
             if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(existing) = settings.get("filterableAttributes").and_then(|v| v.as_array()) {
+                if let Some(existing) = settings
+                    .get("filterableAttributes")
+                    .and_then(|v| v.as_array())
+                {
                     for attr in existing {
                         let attr_str = attr.as_str().unwrap_or("");
                         if attr_str != "_miroir_shard" && !attr_str.is_empty() {
@@ -237,7 +259,10 @@ async fn test_miroir_shard_in_filterable_attributes() {
 
     // Step 3: PATCH with merged filterableAttributes
     let patch = json!({"filterableAttributes": merged_attrs});
-    let (status, _) = client.patch_raw(&nodes[0], "/indexes/test-idx/settings", &patch).await.unwrap();
+    let (status, _) = client
+        .patch_raw(&nodes[0], "/indexes/test-idx/settings", &patch)
+        .await
+        .unwrap();
     assert!(status >= 200 && status < 300);
 
     mock.assert_async().await;
@@ -314,23 +339,32 @@ async fn test_settings_broadcast_rollback() {
     let mut server2 = mockito::Server::new_async().await;
 
     // Snapshot current settings from node 1
-    let get1 = server1.mock("GET", "/indexes/test-idx/settings")
+    let get1 = server1
+        .mock("GET", "/indexes/test-idx/settings")
         .with_status(200)
-        .with_body(json!({"filterableAttributes": ["_miroir_shard"], "rankingRules": ["words"]}).to_string())
+        .with_body(
+            json!({"filterableAttributes": ["_miroir_shard"], "rankingRules": ["words"]})
+                .to_string(),
+        )
         .expect(1)
         .create_async()
         .await;
 
     // Snapshot from node 2
-    let get2 = server2.mock("GET", "/indexes/test-idx/settings")
+    let get2 = server2
+        .mock("GET", "/indexes/test-idx/settings")
         .with_status(200)
-        .with_body(json!({"filterableAttributes": ["_miroir_shard"], "rankingRules": ["words"]}).to_string())
+        .with_body(
+            json!({"filterableAttributes": ["_miroir_shard"], "rankingRules": ["words"]})
+                .to_string(),
+        )
         .expect(1)
         .create_async()
         .await;
 
     // PATCH succeeds on node 1
-    let patch1 = server1.mock("PATCH", "/indexes/test-idx/settings")
+    let patch1 = server1
+        .mock("PATCH", "/indexes/test-idx/settings")
         .with_status(200)
         .with_body(json!({"taskUid": 10}).to_string())
         .expect(1)
@@ -338,7 +372,8 @@ async fn test_settings_broadcast_rollback() {
         .await;
 
     // PATCH fails on node 2
-    let patch2_fail = server2.mock("PATCH", "/indexes/test-idx/settings")
+    let patch2_fail = server2
+        .mock("PATCH", "/indexes/test-idx/settings")
         .with_status(500)
         .with_body(json!({"message": "internal error"}).to_string())
         .expect(1)
@@ -346,8 +381,12 @@ async fn test_settings_broadcast_rollback() {
         .await;
 
     // Rollback: restore original settings on node 1
-    let rollback1 = server1.mock("PATCH", "/indexes/test-idx/settings")
-        .match_body(mockito::Matcher::JsonString(json!({"filterableAttributes": ["_miroir_shard"], "rankingRules": ["words"]}).to_string()))
+    let rollback1 = server1
+        .mock("PATCH", "/indexes/test-idx/settings")
+        .match_body(mockito::Matcher::JsonString(
+            json!({"filterableAttributes": ["_miroir_shard"], "rankingRules": ["words"]})
+                .to_string(),
+        ))
         .with_status(200)
         .with_body(json!({"taskUid": 11}).to_string())
         .expect(1)
@@ -372,7 +411,10 @@ async fn test_settings_broadcast_rollback() {
     // Apply sequentially - node 1 succeeds, node 2 fails
     let mut applied: Vec<String> = Vec::new();
     for (address, _) in &snapshots {
-        match client.patch_raw(address, settings_path, &new_settings).await {
+        match client
+            .patch_raw(address, settings_path, &new_settings)
+            .await
+        {
             Ok((status, _)) if status >= 200 && status < 300 => {
                 applied.push(address.clone());
             }
@@ -405,14 +447,16 @@ async fn test_delete_index_broadcasts_to_all_nodes() {
     let mut server1 = mockito::Server::new_async().await;
     let mut server2 = mockito::Server::new_async().await;
 
-    let mock1 = server1.mock("DELETE", "/indexes/test-idx")
+    let mock1 = server1
+        .mock("DELETE", "/indexes/test-idx")
         .with_status(200)
         .with_body(json!({"taskUid": 1}).to_string())
         .expect(1)
         .create_async()
         .await;
 
-    let mock2 = server2.mock("DELETE", "/indexes/test-idx")
+    let mock2 = server2
+        .mock("DELETE", "/indexes/test-idx")
         .with_status(200)
         .with_body(json!({"taskUid": 1}).to_string())
         .expect(1)
@@ -425,7 +469,10 @@ async fn test_delete_index_broadcasts_to_all_nodes() {
 
     let mut success_count = 0;
     for address in &nodes {
-        let (status, _) = client.delete_raw(address, "/indexes/test-idx").await.unwrap();
+        let (status, _) = client
+            .delete_raw(address, "/indexes/test-idx")
+            .await
+            .unwrap();
         if status >= 200 && status < 300 {
             success_count += 1;
         }
@@ -446,7 +493,8 @@ async fn test_create_key_broadcasts_to_all_nodes() {
     let mut server1 = mockito::Server::new_async().await;
     let mut server2 = mockito::Server::new_async().await;
 
-    let mock1 = server1.mock("POST", "/keys")
+    let mock1 = server1
+        .mock("POST", "/keys")
         .match_header("Authorization", "Bearer test-node-master-key")
         .with_status(200)
         .with_body(json!({"key": "abc123", "name": "test-key"}).to_string())
@@ -454,7 +502,8 @@ async fn test_create_key_broadcasts_to_all_nodes() {
         .create_async()
         .await;
 
-    let mock2 = server2.mock("POST", "/keys")
+    let mock2 = server2
+        .mock("POST", "/keys")
         .match_header("Authorization", "Bearer test-node-master-key")
         .with_status(200)
         .with_body(json!({"key": "abc123", "name": "test-key"}).to_string())
@@ -486,14 +535,16 @@ async fn test_create_key_rollback_on_failure() {
     let mut server1 = mockito::Server::new_async().await;
     let mut server2 = mockito::Server::new_async().await;
 
-    let mock1 = server1.mock("POST", "/keys")
+    let mock1 = server1
+        .mock("POST", "/keys")
         .with_status(200)
         .with_body(json!({"key": "abc123", "name": "test-key"}).to_string())
         .expect(1)
         .create_async()
         .await;
 
-    let mock2 = server2.mock("POST", "/keys")
+    let mock2 = server2
+        .mock("POST", "/keys")
         .with_status(500)
         .with_body(json!({"message": "internal error"}).to_string())
         .expect(1)
@@ -501,7 +552,8 @@ async fn test_create_key_rollback_on_failure() {
         .await;
 
     // Rollback: delete key from node 1
-    let rollback1 = server1.mock("DELETE", "/keys/test-key")
+    let rollback1 = server1
+        .mock("DELETE", "/keys/test-key")
         .with_status(200)
         .with_body(json!({}).to_string())
         .expect(1)
@@ -546,14 +598,16 @@ async fn test_update_index_snapshot_and_rollback() {
     let mut server2 = mockito::Server::new_async().await;
 
     // Snapshot from both nodes
-    let get1 = server1.mock("GET", "/indexes/test-idx")
+    let get1 = server1
+        .mock("GET", "/indexes/test-idx")
         .with_status(200)
         .with_body(json!({"uid": "test-idx", "primaryKey": "id"}).to_string())
         .expect(1)
         .create_async()
         .await;
 
-    let get2 = server2.mock("GET", "/indexes/test-idx")
+    let get2 = server2
+        .mock("GET", "/indexes/test-idx")
         .with_status(200)
         .with_body(json!({"uid": "test-idx", "primaryKey": "id"}).to_string())
         .expect(1)
@@ -561,7 +615,8 @@ async fn test_update_index_snapshot_and_rollback() {
         .await;
 
     // PATCH succeeds on node 1
-    let patch1 = server1.mock("PATCH", "/indexes/test-idx")
+    let patch1 = server1
+        .mock("PATCH", "/indexes/test-idx")
         .with_status(200)
         .with_body(json!({"uid": "test-idx", "primaryKey": "new_id"}).to_string())
         .expect(1)
@@ -569,7 +624,8 @@ async fn test_update_index_snapshot_and_rollback() {
         .await;
 
     // PATCH fails on node 2
-    let patch2 = server2.mock("PATCH", "/indexes/test-idx")
+    let patch2 = server2
+        .mock("PATCH", "/indexes/test-idx")
         .with_status(500)
         .with_body(json!({"message": "error"}).to_string())
         .expect(1)
@@ -577,8 +633,11 @@ async fn test_update_index_snapshot_and_rollback() {
         .await;
 
     // Rollback on node 1
-    let rollback1 = server1.mock("PATCH", "/indexes/test-idx")
-        .match_body(mockito::Matcher::JsonString(json!({"uid": "test-idx", "primaryKey": "id"}).to_string()))
+    let rollback1 = server1
+        .mock("PATCH", "/indexes/test-idx")
+        .match_body(mockito::Matcher::JsonString(
+            json!({"uid": "test-idx", "primaryKey": "id"}).to_string(),
+        ))
         .with_status(200)
         .with_body(json!({"uid": "test-idx"}).to_string())
         .expect(1)
@@ -602,7 +661,10 @@ async fn test_update_index_snapshot_and_rollback() {
     // Apply sequentially
     let mut applied: Vec<String> = Vec::new();
     for (address, _) in &snapshots {
-        match client.patch_raw(address, "/indexes/test-idx", &update_body).await {
+        match client
+            .patch_raw(address, "/indexes/test-idx", &update_body)
+            .await
+        {
             Ok((status, _)) if status >= 200 && status < 300 => {
                 applied.push(address.clone());
             }
@@ -668,7 +730,10 @@ async fn test_stats_fan_out_logical_count() {
     let rf = config.replication_factor as u64;
     let logical = total_docs / (rg * rf);
 
-    assert_eq!(logical, 100, "logical doc count should be total/2 for RG=2 RF=1");
+    assert_eq!(
+        logical, 100,
+        "logical doc count should be total/2 for RG=2 RF=1"
+    );
 
     stats1.assert_async().await;
     stats2.assert_async().await;

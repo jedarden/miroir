@@ -9,20 +9,20 @@
 //! - Metrics server on :9090
 //! - High-cardinality defense: path_template instead of path
 
-use std::sync::{Arc, Mutex};
 use axum::{
-    body::{Body, to_bytes},
-    extract::{Request, Extension},
+    body::{to_bytes, Body},
+    extract::{Extension, Request},
     http::{HeaderMap, StatusCode},
     routing::{get, post},
     Router,
 };
-use miroir_proxy::middleware::{
-    Metrics, TelemetryState, metrics_router, request_id_middleware,
-    telemetry_middleware, RequestId, RequestIdExt,
-};
 use miroir_core::config::MiroirConfig;
+use miroir_proxy::middleware::{
+    metrics_router, request_id_middleware, telemetry_middleware, Metrics, RequestId, RequestIdExt,
+    TelemetryState,
+};
 use serde_json::Value;
+use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 
 /// Helper: check if a string is a valid 8-char hex request ID (from RequestId::new)
@@ -33,7 +33,8 @@ fn is_valid_request_id(s: &str) -> bool {
 /// Helper: check if a string contains a UUID or high-cardinality identifier
 fn contains_high_cardinality_id(s: &str) -> bool {
     // Check for UUID pattern (8-4-4-4-12 hex digits)
-    let uuid_pattern = regex::Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap();
+    let uuid_pattern =
+        regex::Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap();
     if uuid_pattern.is_match(s) {
         return true;
     }
@@ -116,7 +117,8 @@ async fn test_metrics_endpoint_returns_all_metrics() {
     // Verify at least one sample exists for each metric (non-zero value or explicit zero)
     for metric_name in &required_metrics {
         // Look for the metric definition line (TYPE or HELP)
-        let has_definition = output.lines()
+        let has_definition = output
+            .lines()
             .any(|line| line.starts_with("#") && line.contains(metric_name));
 
         assert!(
@@ -163,9 +165,7 @@ async fn test_metrics_server_on_9090() {
     );
 
     // Verify body contains valid Prometheus format
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let body_str = String::from_utf8(body.to_vec()).unwrap();
 
     // Should contain metric definitions
@@ -228,7 +228,10 @@ fn test_log_format_matches_plan_section_10() {
     assert!(parsed.get("index").is_some(), "missing index");
     assert!(parsed.get("duration_ms").is_some(), "missing duration_ms");
     assert!(parsed.get("node_count").is_some(), "missing node_count");
-    assert!(parsed.get("estimated_hits").is_some(), "missing estimated_hits");
+    assert!(
+        parsed.get("estimated_hits").is_some(),
+        "missing estimated_hits"
+    );
     assert!(parsed.get("degraded").is_some(), "missing degraded");
 }
 
@@ -243,12 +246,7 @@ async fn test_request_id_in_response_header() {
         .layer(axum::middleware::from_fn(request_id_middleware));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/test")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -319,11 +317,19 @@ async fn test_path_template_prevents_high_cardinality() {
     let captured = captured_templates.clone();
 
     let app = Router::new()
-        .route("/indexes/{uid}/search", post(|axum::extract::Path(uid): axum::extract::Path<String>| async move {
-            // Capture the path template from metrics
-            captured.lock().unwrap().push(format!("/indexes/{{uid}}/search (uid={})", uid));
-            "ok"
-        }))
+        .route(
+            "/indexes/{uid}/search",
+            post(
+                |axum::extract::Path(uid): axum::extract::Path<String>| async move {
+                    // Capture the path template from metrics
+                    captured
+                        .lock()
+                        .unwrap()
+                        .push(format!("/indexes/{{uid}}/search (uid={})", uid));
+                    "ok"
+                },
+            ),
+        )
         .layer(axum::middleware::from_fn_with_state(
             telemetry.clone(),
             telemetry_middleware,
@@ -355,16 +361,15 @@ async fn test_path_template_prevents_high_cardinality() {
     // long hex strings that would cause Prometheus cardinality explosion.
 
     // Verify no high-cardinality values (UUIDs, long hex strings) in labels
-    let found_high_cardinality = output.lines()
-        .any(|line| {
-            if let Some((_, labels, _)) = parse_metric_line(line) {
-                labels.iter().any(|(key, value)| {
-                    key == "path_template" && contains_high_cardinality_id(value)
-                })
-            } else {
-                false
-            }
-        });
+    let found_high_cardinality = output.lines().any(|line| {
+        if let Some((_, labels, _)) = parse_metric_line(line) {
+            labels
+                .iter()
+                .any(|(key, value)| key == "path_template" && contains_high_cardinality_id(value))
+        } else {
+            false
+        }
+    });
 
     assert!(
         !found_high_cardinality,
@@ -413,11 +418,7 @@ fn test_request_id_uniqueness() {
     }
 
     // Should have 1000 unique IDs
-    assert_eq!(
-        ids.len(),
-        1000,
-        "All generated RequestIds should be unique"
-    );
+    assert_eq!(ids.len(), 1000, "All generated RequestIds should be unique");
 }
 
 #[tokio::test]
@@ -441,12 +442,7 @@ async fn test_telemetry_middleware_updates_metrics() {
     // Make a request
     let _ = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/test")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -494,12 +490,7 @@ async fn test_in_flight_gauge_increments_and_decrements() {
     // Spawn a request in the background
     let handle = tokio::spawn(async move {
         let _ = app
-            .oneshot(
-                Request::builder()
-                    .uri("/slow")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/slow").body(Body::empty()).unwrap())
             .await
             .unwrap();
     });
@@ -626,12 +617,7 @@ async fn test_full_middleware_stack_integration() {
     // Make a request
     let response = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/test")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -674,8 +660,5 @@ async fn test_header_map_extensions() {
 
     // Override existing
     headers.set_request_id("override5678");
-    assert_eq!(
-        headers.get_request_id(),
-        Some("override5678".to_string())
-    );
+    assert_eq!(headers.get_request_id(), Some("override5678".to_string()));
 }

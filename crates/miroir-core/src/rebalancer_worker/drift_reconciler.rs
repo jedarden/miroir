@@ -10,9 +10,29 @@
 //! The pair key for rendezvous is "index_uid:node_address" to ensure even distribution.
 
 use crate::error::{MiroirError, Result};
-use crate::mode_a_coordinator::ModeACoordinator;
+#[cfg(feature = "peer-discovery")]
+use crate::mode_a_coordinator::ModeACoordinator as ActualModeACoordinator;
 use crate::settings::{fingerprint_settings, SettingsBroadcast};
 use crate::task_store::TaskStore;
+
+// Type alias for ModeACoordinator that becomes a dummy type when feature is disabled
+#[cfg(feature = "peer-discovery")]
+type ModeACoordinator = ActualModeACoordinator;
+
+#[cfg(not(feature = "peer-discovery"))]
+struct ModeACoordinator;
+
+#[cfg(not(feature = "peer-discovery"))]
+impl ModeACoordinator {
+    // Dummy methods for when peer-discovery is disabled
+    pub async fn refresh_peers(&self) -> std::result::Result<usize, String> {
+        Ok(1)
+    }
+
+    pub async fn owns_task(&self, _miroir_id: &str) -> std::result::Result<bool, String> {
+        Ok(true)
+    }
+}
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -33,7 +53,7 @@ pub struct DriftReconcilerConfig {
 impl Default for DriftReconcilerConfig {
     fn default() -> Self {
         Self {
-            interval_s: 300,     // 5 minutes
+            interval_s: 300, // 5 minutes
             auto_repair: true,
         }
     }
@@ -129,7 +149,9 @@ impl DriftReconciler {
     /// owned by this pod via rendezvous hashing.
     async fn check_and_repair_all_indexes(&self, client: &Client) -> Result<()> {
         // Get all indexes from the first node
-        let first_address = self.node_addresses.first()
+        let first_address = self
+            .node_addresses
+            .first()
             .ok_or_else(|| MiroirError::InvalidState("no nodes configured".into()))?;
 
         let indexes = self.list_indexes(client, first_address).await?;
@@ -229,7 +251,10 @@ impl DriftReconciler {
                 if let Some(consensus_settings) = consensus_settings {
                     // Repair drifted nodes
                     for address in &drifted_nodes {
-                        if let Err(e) = self.repair_node_settings(client, address, index, &consensus_settings).await {
+                        if let Err(e) = self
+                            .repair_node_settings(client, address, index, &consensus_settings)
+                            .await
+                        {
                             error!(node = %address, index = %index, error = %e, "failed to repair settings");
                         } else {
                             info!(node = %address, index = %index, "repaired settings drift");

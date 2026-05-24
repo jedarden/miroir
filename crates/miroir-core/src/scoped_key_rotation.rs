@@ -165,34 +165,54 @@ impl ScopedKeyRotationCoordinator {
     /// Set the old key hash and advance to generating phase.
     pub async fn start_rotation(&mut self, old_key_hash: String) -> Result<()> {
         self.leader.extra_state().old_key_hash = Some(old_key_hash);
-        self.leader.persist_phase(RotationPhase::GeneratingNewKey.name().to_string()).await
+        self.leader
+            .persist_phase(RotationPhase::GeneratingNewKey.name().to_string())
+            .await
     }
 
     /// Update distribution progress for a node.
-    pub async fn update_distribution_progress(&mut self, node_id: String, received: bool) -> Result<()> {
-        self.leader.extra_state().distribution_progress.insert(node_id, received);
-        self.leader.persist_phase(RotationPhase::DistributingNewKey.name().to_string()).await
+    pub async fn update_distribution_progress(
+        &mut self,
+        node_id: String,
+        received: bool,
+    ) -> Result<()> {
+        self.leader
+            .extra_state()
+            .distribution_progress
+            .insert(node_id, received);
+        self.leader
+            .persist_phase(RotationPhase::DistributingNewKey.name().to_string())
+            .await
     }
 
     /// Check if all nodes have received the new key.
     pub fn distribution_complete(&self) -> bool {
-        self.leader.extra_state_ref().distribution_progress.values().all(|&v| v)
+        self.leader
+            .extra_state_ref()
+            .distribution_progress
+            .values()
+            .all(|&v| v)
     }
 
     /// Update drain progress and persist.
     pub async fn update_drain_progress(&mut self, progress_s: u64) -> Result<()> {
         self.leader.extra_state().drain_progress_s = progress_s;
-        self.leader.persist_phase(RotationPhase::DrainingOldKey.name().to_string()).await
+        self.leader
+            .persist_phase(RotationPhase::DrainingOldKey.name().to_string())
+            .await
     }
 
     /// Check if drain is complete.
     pub fn drain_complete(&self) -> bool {
-        self.leader.extra_state_ref().drain_progress_s >= self.leader.extra_state_ref().drain_target_s
+        self.leader.extra_state_ref().drain_progress_s
+            >= self.leader.extra_state_ref().drain_target_s
     }
 
     /// Mark the operation as failed and step down from leadership.
     pub async fn fail(&mut self, error: String) -> Result<()> {
-        self.leader.persist_phase(RotationPhase::Failed.name().to_string()).await?;
+        self.leader
+            .persist_phase(RotationPhase::Failed.name().to_string())
+            .await?;
         self.leader.fail(error).await
     }
 
@@ -240,7 +260,10 @@ mod tests {
     fn test_rotation_phase_names() {
         assert_eq!(RotationPhase::Idle.name(), "idle");
         assert_eq!(RotationPhase::GeneratingNewKey.name(), "generating_new_key");
-        assert_eq!(RotationPhase::DistributingNewKey.name(), "distributing_new_key");
+        assert_eq!(
+            RotationPhase::DistributingNewKey.name(),
+            "distributing_new_key"
+        );
         assert_eq!(RotationPhase::DrainingOldKey.name(), "draining_old_key");
         assert_eq!(RotationPhase::CleaningUp.name(), "cleaning_up");
         assert_eq!(RotationPhase::Complete.name(), "complete");
@@ -250,11 +273,26 @@ mod tests {
     #[test]
     fn test_rotation_phase_from_name() {
         assert_eq!(RotationPhase::from_name("idle"), RotationPhase::Idle);
-        assert_eq!(RotationPhase::from_name("GENERATING_NEW_KEY"), RotationPhase::GeneratingNewKey);
-        assert_eq!(RotationPhase::from_name("distributing_new_key"), RotationPhase::DistributingNewKey);
-        assert_eq!(RotationPhase::from_name("draining_old_key"), RotationPhase::DrainingOldKey);
-        assert_eq!(RotationPhase::from_name("cleaning_up"), RotationPhase::CleaningUp);
-        assert_eq!(RotationPhase::from_name("complete"), RotationPhase::Complete);
+        assert_eq!(
+            RotationPhase::from_name("GENERATING_NEW_KEY"),
+            RotationPhase::GeneratingNewKey
+        );
+        assert_eq!(
+            RotationPhase::from_name("distributing_new_key"),
+            RotationPhase::DistributingNewKey
+        );
+        assert_eq!(
+            RotationPhase::from_name("draining_old_key"),
+            RotationPhase::DrainingOldKey
+        );
+        assert_eq!(
+            RotationPhase::from_name("cleaning_up"),
+            RotationPhase::CleaningUp
+        );
+        assert_eq!(
+            RotationPhase::from_name("complete"),
+            RotationPhase::Complete
+        );
         assert_eq!(RotationPhase::from_name("failed"), RotationPhase::Failed);
     }
 
@@ -289,12 +327,21 @@ mod tests {
         assert!(coordinator.is_leader());
 
         // Start rotation
-        coordinator.start_rotation("old_key_hash".to_string()).await.unwrap();
+        coordinator
+            .start_rotation("old_key_hash".to_string())
+            .await
+            .unwrap();
         assert_eq!(coordinator.phase(), RotationPhase::GeneratingNewKey.name());
 
         // Update distribution progress
-        coordinator.update_distribution_progress("node-1".to_string(), true).await.unwrap();
-        coordinator.update_distribution_progress("node-2".to_string(), true).await.unwrap();
+        coordinator
+            .update_distribution_progress("node-1".to_string(), true)
+            .await
+            .unwrap();
+        coordinator
+            .update_distribution_progress("node-2".to_string(), true)
+            .await
+            .unwrap();
 
         // Check distribution complete
         assert!(coordinator.distribution_complete());

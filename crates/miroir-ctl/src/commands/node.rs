@@ -100,9 +100,7 @@ pub async fn run(
     admin_key: &str,
     api_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
 
     match cmd {
         NodeSubcommand::Add(args) => add_node(client, args, admin_key, api_url).await,
@@ -163,7 +161,9 @@ async fn remove_node(
     if !args.yes {
         println!("Removing node {} from the cluster", args.node_id);
         if args.force {
-            println!("WARNING: --force flag is set. Node will be removed immediately without draining.");
+            println!(
+                "WARNING: --force flag is set. Node will be removed immediately without draining."
+            );
         }
         print!("Continue? [y/N] ");
         use std::io::Write;
@@ -247,7 +247,10 @@ async fn drain_node(
     println!("Operation ID: {}", result.operation_id);
     println!("Migrations started: {}", result.migrations_count);
     println!("\nTrack progress with: miroir-ctl rebalance status");
-    println!("After drain completes, remove the node with: miroir-ctl node remove {}", args.node_id);
+    println!(
+        "After drain completes, remove the node with: miroir-ctl node remove {}",
+        args.node_id
+    );
 
     Ok(())
 }
@@ -292,7 +295,12 @@ async fn list_nodes(
         println!("  (none)");
     } else {
         let max_id_len = topo.nodes.iter().map(|n| n.id.len()).max().unwrap_or(0);
-        let max_addr_len = topo.nodes.iter().map(|n| n.address.len()).max().unwrap_or(0);
+        let max_addr_len = topo
+            .nodes
+            .iter()
+            .map(|n| n.address.len())
+            .max()
+            .unwrap_or(0);
 
         for node in &topo.nodes {
             let status_emoji = match node.status.as_str() {

@@ -4,8 +4,8 @@
 //! instead of broadcasting to all nodes.
 
 use crate::error::{MiroirError, Result};
-use crate::router::{shard_for_key, assign_shard_in_group};
-use crate::topology::{Topology, NodeId};
+use crate::router::{assign_shard_in_group, shard_for_key};
+use crate::topology::{NodeId, Topology};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -205,8 +205,7 @@ impl DumpImportManager {
             .map_err(|e| MiroirError::InvalidRequest(format!("invalid UTF-8 in dump: {}", e)))?;
 
         // Per-target buffers
-        let mut per_target_buffers: HashMap<(NodeId, u32), Vec<serde_json::Value>> =
-            HashMap::new();
+        let mut per_target_buffers: HashMap<(NodeId, u32), Vec<serde_json::Value>> = HashMap::new();
 
         let mut processed = 0u64;
         let _total_estimate = 0u64;
@@ -215,9 +214,8 @@ impl DumpImportManager {
             if line.is_empty() {
                 continue;
             }
-            let doc: serde_json::Value = serde_json::from_str(line).map_err(|e| {
-                MiroirError::InvalidRequest(format!("invalid JSON in dump: {}", e))
-            })?;
+            let doc: serde_json::Value = serde_json::from_str(line)
+                .map_err(|e| MiroirError::InvalidRequest(format!("invalid JSON in dump: {}", e)))?;
 
             // Extract primary key value
             let pk_value = doc
@@ -240,7 +238,10 @@ impl DumpImportManager {
                 .collect();
 
             if target_nodes.is_empty() {
-                return Err(MiroirError::Topology(format!("no nodes for shard {}", shard_id)));
+                return Err(MiroirError::Topology(format!(
+                    "no nodes for shard {}",
+                    shard_id
+                )));
             }
 
             // Add to each target's buffer
@@ -341,7 +342,10 @@ fn millis_now() -> u64 {
 
 impl Default for DumpImportManager {
     fn default() -> Self {
-        Self::new(DumpImportConfig::default(), Arc::new(Topology::new(1, 1, 1)))
+        Self::new(
+            DumpImportConfig::default(),
+            Arc::new(Topology::new(1, 1, 1)),
+        )
     }
 }
 

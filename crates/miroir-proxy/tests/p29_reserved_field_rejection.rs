@@ -7,7 +7,7 @@
 //! - Error body matches Meilisearch shape `{message, code, type, link}` with `code: miroir_reserved_field`
 //! - Orchestrator-injected `_miroir_shard` passes write-validation (exemption path)
 
-use miroir_core::api_error::{MiroirCode, MeilisearchError};
+use miroir_core::api_error::{MeilisearchError, MiroirCode};
 use serde_json::json;
 
 /// Test 1: Reserved field `_miroir_shard` is always rejected.
@@ -20,7 +20,10 @@ fn test_reserved_field_miroir_shard_always_rejected() {
     let code = MiroirCode::ReservedField;
     assert_eq!(code.as_str(), "miroir_reserved_field");
     assert_eq!(code.http_status(), 400);
-    assert_eq!(code.error_type(), miroir_core::api_error::ErrorType::InvalidRequest);
+    assert_eq!(
+        code.error_type(),
+        miroir_core::api_error::ErrorType::InvalidRequest
+    );
 }
 
 /// Test 2: Error format matches Meilisearch shape.
@@ -36,7 +39,10 @@ fn test_reserved_field_error_format_matches_meilisearch_shape() {
     assert_eq!(json["code"], "miroir_reserved_field");
     assert_eq!(json["type"], "invalid_request");
     assert!(json["message"].is_string());
-    assert!(json["link"].as_str().unwrap().contains("miroir_reserved_field"));
+    assert!(json["link"]
+        .as_str()
+        .unwrap()
+        .contains("miroir_reserved_field"));
 }
 
 /// Test 3: Orchestrator stamping path exemption.
@@ -73,21 +79,31 @@ fn test_reserved_field_matrix_all_combinations() {
     let test_cases = vec![
         // (doc, should_reject, description)
         (json!({"id": "test"}), false, "clean document should pass"),
-        (json!({"id": "test", "_miroir_shard": 1}), true, "_miroir_shard always rejected"),
-        (json!({"id": "test", "_miroir_updated_at": "2024-01-01T00:00:00Z"}), false, "_miroir_updated_at allowed when anti_entropy disabled (default for test)"),
-        (json!({"id": "test", "_miroir_expires_at": "2024-12-31T23:59:59Z"}), false, "_miroir_expires_at always allowed (clients SET it)"),
-        (json!({"id": "test", "_miroir_custom": "value"}), false, "non-reserved _miroir_ fields allowed"),
+        (
+            json!({"id": "test", "_miroir_shard": 1}),
+            true,
+            "_miroir_shard always rejected",
+        ),
+        (
+            json!({"id": "test", "_miroir_updated_at": "2024-01-01T00:00:00Z"}),
+            false,
+            "_miroir_updated_at allowed when anti_entropy disabled (default for test)",
+        ),
+        (
+            json!({"id": "test", "_miroir_expires_at": "2024-12-31T23:59:59Z"}),
+            false,
+            "_miroir_expires_at always allowed (clients SET it)",
+        ),
+        (
+            json!({"id": "test", "_miroir_custom": "value"}),
+            false,
+            "non-reserved _miroir_ fields allowed",
+        ),
     ];
 
     for (doc, should_reject, description) in test_cases {
         let has_shard = doc.get("_miroir_shard").is_some();
-        assert_eq!(
-            has_shard,
-            should_reject,
-            "{}: doc={}",
-            description,
-            doc
-        );
+        assert_eq!(has_shard, should_reject, "{}: doc={}", description, doc);
     }
 }
 

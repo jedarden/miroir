@@ -11,14 +11,14 @@
 use axum::{
     extract::{Extension, FromRef, Path, State},
     http::{HeaderMap, StatusCode},
-    Json,
     response::{IntoResponse, Response},
+    Json,
 };
 use miroir_core::task_store::{NewAdminSession, TaskStore};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::auth::{AdminSessionId, build_csp_header, generate_csrf_token, validate_origin};
+use crate::auth::{build_csp_header, generate_csrf_token, validate_origin, AdminSessionId};
 
 use super::admin_endpoints::AppState;
 
@@ -106,19 +106,13 @@ where
             allowed_origins = ?config.admin_ui.allowed_origins,
             "admin login origin check failed"
         );
-        return Err((
-            StatusCode::FORBIDDEN,
-            "origin not allowed".into(),
-        ));
+        return Err((StatusCode::FORBIDDEN, "origin not allowed".into()));
     }
 
     // Validate admin key (constant-time compare)
     let expected_key = &config.admin.api_key;
     if !crate::auth::constant_time_compare(body.admin_key.as_bytes(), expected_key.as_bytes()) {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "invalid admin key".into(),
-        ));
+        return Err((StatusCode::UNAUTHORIZED, "invalid admin key".into()));
     }
 
     // Generate session ID and CSRF token
@@ -285,7 +279,10 @@ where
         (StatusCode::INTERNAL_SERVER_ERROR, "failed to revoke session".into())
     })?;
 
-    info!(session_prefix = session_prefix(&session_id), "admin logout successful");
+    info!(
+        session_prefix = session_prefix(&session_id),
+        "admin logout successful"
+    );
 
     Ok(())
 }
@@ -335,10 +332,7 @@ where
             allowed_origins = ?allowed_origins,
             "search UI session origin check failed"
         );
-        return Err((
-            StatusCode::FORBIDDEN,
-            "origin not allowed".into(),
-        ));
+        return Err((StatusCode::FORBIDDEN, "origin not allowed".into()));
     }
 
     // Authentication based on mode
@@ -349,10 +343,13 @@ where
                 .get("X-Search-UI-Key")
                 .and_then(|h| h.to_str().ok())
                 .ok_or_else(|| {
-                    (StatusCode::UNAUTHORIZED, "missing X-Search-UI-Key header".into())
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        "missing X-Search-UI-Key header".into(),
+                    )
                 })?;
-            let expected_key = std::env::var(&config.search_ui.auth.shared_key_env)
-                .unwrap_or_default();
+            let expected_key =
+                std::env::var(&config.search_ui.auth.shared_key_env).unwrap_or_default();
             if !crate::auth::constant_time_compare(key.as_bytes(), expected_key.as_bytes()) {
                 return Err((StatusCode::UNAUTHORIZED, "invalid search UI key".into()));
             }
@@ -379,13 +376,12 @@ where
     };
 
     // Generate JWT
-    let jwt_secret = std::env::var(&config.search_ui.auth.jwt_secret_env)
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("{} not set", config.search_ui.auth.jwt_secret_env),
-            )
-        })?;
+    let jwt_secret = std::env::var(&config.search_ui.auth.jwt_secret_env).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("{} not set", config.search_ui.auth.jwt_secret_env),
+        )
+    })?;
 
     let auth_state = crate::auth::AuthState {
         master_key: String::new(),
@@ -407,7 +403,10 @@ where
             config.search_ui.auth.session_ttl_s,
         )
         .ok_or_else(|| {
-            (StatusCode::INTERNAL_SERVER_ERROR, "failed to sign JWT".into())
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to sign JWT".into(),
+            )
         })?;
 
     let expires_at = epoch_seconds() + config.search_ui.auth.session_ttl_s as i64;
@@ -428,7 +427,10 @@ where
     resp.headers_mut().insert(
         "Content-Security-Policy",
         csp_value.parse().map_err(|_| {
-            (StatusCode::INTERNAL_SERVER_ERROR, "invalid CSP header".into())
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invalid CSP header".into(),
+            )
         })?,
     );
 

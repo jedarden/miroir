@@ -90,12 +90,7 @@ impl QueryPlanner {
     ///
     /// Returns a plan indicating whether the query can be narrowed to
     /// a subset of shards.
-    pub async fn plan(
-        &self,
-        index: &str,
-        filter: &Option<String>,
-        shard_count: u32,
-    ) -> QueryPlan {
+    pub async fn plan(&self, index: &str, filter: &Option<String>, shard_count: u32) -> QueryPlan {
         if !self.config.enabled {
             return QueryPlan {
                 narrowed: false,
@@ -141,7 +136,9 @@ impl QueryPlanner {
                     warnings: vec![],
                 }
             }
-            Ok(PkConstraint::In(literals)) if literals.len() <= self.config.max_pk_literals_narrowable as usize => {
+            Ok(PkConstraint::In(literals))
+                if literals.len() <= self.config.max_pk_literals_narrowable as usize =>
+            {
                 // PK IN list -> narrow to N shards
                 let mut shard_ids: HashSet<u32> = HashSet::new();
                 for literal in &literals {
@@ -169,14 +166,12 @@ impl QueryPlanner {
                     warnings: vec![],
                 }
             }
-            Err(e) => {
-                QueryPlan {
-                    narrowed: false,
-                    reason: format!("filter not narrowable: {}", e),
-                    target_shards: vec![],
-                    warnings: vec![],
-                }
-            }
+            Err(e) => QueryPlan {
+                narrowed: false,
+                reason: format!("filter not narrowable: {}", e),
+                target_shards: vec![],
+                warnings: vec![],
+            },
         }
     }
 
@@ -192,11 +187,17 @@ impl QueryPlanner {
 
         // Check for non-narrowable patterns FIRST (before trying to match)
         if filter.contains(" OR ") {
-            return Err(MiroirError::InvalidState("contains OR at top level".to_string()));
+            return Err(MiroirError::InvalidState(
+                "contains OR at top level".to_string(),
+            ));
         }
 
-        if filter.contains(&format!("{} != ", pk_field)) || filter.contains(&format!("{}<>", pk_field)) {
-            return Err(MiroirError::InvalidState("PK negation is not narrowable".to_string()));
+        if filter.contains(&format!("{} != ", pk_field))
+            || filter.contains(&format!("{}<>", pk_field))
+        {
+            return Err(MiroirError::InvalidState(
+                "PK negation is not narrowable".to_string(),
+            ));
         }
 
         // Try equality: pk = "literal"
@@ -220,7 +221,9 @@ impl QueryPlanner {
             }
         }
 
-        Err(MiroirError::InvalidState("no PK constraint found".to_string()))
+        Err(MiroirError::InvalidState(
+            "no PK constraint found".to_string(),
+        ))
     }
 
     /// Parse a comma-separated list of string literals.
@@ -306,7 +309,9 @@ mod tests {
     #[tokio::test]
     async fn test_plan_pk_equality() {
         let planner = QueryPlanner::default();
-        planner.set_primary_key("products".into(), "sku".into()).await;
+        planner
+            .set_primary_key("products".into(), "sku".into())
+            .await;
 
         let plan = planner
             .plan("products", &Some("sku = \"abc123\"".to_string()), 64)
@@ -329,7 +334,9 @@ mod tests {
     #[tokio::test]
     async fn test_plan_or_not_narrowable() {
         let planner = QueryPlanner::default();
-        planner.set_primary_key("products".into(), "sku".into()).await;
+        planner
+            .set_primary_key("products".into(), "sku".into())
+            .await;
 
         let plan = planner
             .plan(

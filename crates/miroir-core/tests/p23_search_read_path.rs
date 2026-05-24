@@ -22,9 +22,21 @@ use serde_json::json;
 /// Group 1: node-2
 fn make_test_topology() -> Topology {
     let mut topo = Topology::new(16, 2, 2);
-    topo.add_node(Node::new(NodeId::new("node-0".into()), "http://node-0:7700".into(), 0));
-    topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
-    topo.add_node(Node::new(NodeId::new("node-2".into()), "http://node-2:7700".into(), 1));
+    topo.add_node(Node::new(
+        NodeId::new("node-0".into()),
+        "http://node-0:7700".into(),
+        0,
+    ));
+    topo.add_node(Node::new(
+        NodeId::new("node-1".into()),
+        "http://node-1:7700".into(),
+        0,
+    ));
+    topo.add_node(Node::new(
+        NodeId::new("node-2".into()),
+        "http://node-2:7700".into(),
+        1,
+    ));
     topo
 }
 
@@ -39,9 +51,21 @@ fn make_test_topology() -> Topology {
 #[tokio::test]
 async fn test_unique_keyword_returns_exactly_one_hit() {
     let mut topo = Topology::new(3, 1, 1); // 3 shards, 1 group, RF=1 for simplicity
-    topo.add_node(Node::new(NodeId::new("node-0".into()), "http://node-0:7700".into(), 0));
-    topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
-    topo.add_node(Node::new(NodeId::new("node-2".into()), "http://node-2:7700".into(), 0));
+    topo.add_node(Node::new(
+        NodeId::new("node-0".into()),
+        "http://node-0:7700".into(),
+        0,
+    ));
+    topo.add_node(Node::new(
+        NodeId::new("node-1".into()),
+        "http://node-1:7700".into(),
+        0,
+    ));
+    topo.add_node(Node::new(
+        NodeId::new("node-2".into()),
+        "http://node-2:7700".into(),
+        0,
+    ));
 
     let plan = plan_search_scatter(&topo, 0, 1, 3, None).await;
 
@@ -55,9 +79,15 @@ async fn test_unique_keyword_returns_exactly_one_hit() {
         "processingTimeMs": 5,
     });
 
-    client.responses.insert(NodeId::new("node-0".into()), response.clone());
-    client.responses.insert(NodeId::new("node-1".into()), response.clone());
-    client.responses.insert(NodeId::new("node-2".into()), response);
+    client
+        .responses
+        .insert(NodeId::new("node-0".into()), response.clone());
+    client
+        .responses
+        .insert(NodeId::new("node-1".into()), response.clone());
+    client
+        .responses
+        .insert(NodeId::new("node-2".into()), response);
 
     let req = SearchRequest {
         index_uid: "test".into(),
@@ -94,9 +124,21 @@ async fn test_unique_keyword_returns_exactly_one_hit() {
 #[tokio::test]
 async fn test_facet_counts_sum_correctly() {
     let mut topo = Topology::new(3, 1, 1); // 3 shards for simplicity
-    topo.add_node(Node::new(NodeId::new("node-0".into()), "http://node-0:7700".into(), 0));
-    topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
-    topo.add_node(Node::new(NodeId::new("node-2".into()), "http://node-2:7700".into(), 0));
+    topo.add_node(Node::new(
+        NodeId::new("node-0".into()),
+        "http://node-0:7700".into(),
+        0,
+    ));
+    topo.add_node(Node::new(
+        NodeId::new("node-1".into()),
+        "http://node-1:7700".into(),
+        0,
+    ));
+    topo.add_node(Node::new(
+        NodeId::new("node-2".into()),
+        "http://node-2:7700".into(),
+        0,
+    ));
 
     let plan = plan_search_scatter(&topo, 0, 1, 3, None).await;
 
@@ -169,8 +211,8 @@ async fn test_facet_counts_sum_correctly() {
 
     // Verify counts are summed correctly across 3 shards
     assert_eq!(category.get("electronics"), Some(&90)); // 50 + 40
-    assert_eq!(category.get("books"), Some(&50));      // 30 + 20
-    assert_eq!(category.get("clothing"), Some(&40));   // 25 + 15
+    assert_eq!(category.get("books"), Some(&50)); // 30 + 20
+    assert_eq!(category.get("clothing"), Some(&40)); // 25 + 15
 }
 
 /// P2.3-A3: Paging - 5 pages of 10 = single limit=50 order, no dupes/gaps.
@@ -253,7 +295,12 @@ async fn test_paging_no_dupes_or_gaps() {
 
     // Verify no duplicates
     let unique_ids: std::collections::HashSet<_> = all_ids.iter().collect();
-    assert_eq!(unique_ids.len(), 50, "All IDs should be unique, got {}", unique_ids.len());
+    assert_eq!(
+        unique_ids.len(),
+        50,
+        "All IDs should be unique, got {}",
+        unique_ids.len()
+    );
 
     // Verify all docs from doc-000 to doc-049 are present
     for i in 0..50 {
@@ -266,8 +313,16 @@ async fn test_paging_no_dupes_or_gaps() {
 #[tokio::test]
 async fn test_node_down_rf2_covers_all_shards() {
     let mut topo = Topology::new(16, 1, 2); // 1 group, RF=2
-    topo.add_node(Node::new(NodeId::new("node-0".into()), "http://node-0:7700".into(), 0));
-    topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
+    topo.add_node(Node::new(
+        NodeId::new("node-0".into()),
+        "http://node-0:7700".into(),
+        0,
+    ));
+    topo.add_node(Node::new(
+        NodeId::new("node-1".into()),
+        "http://node-1:7700".into(),
+        0,
+    ));
 
     let plan = plan_search_scatter(&topo, 0, 2, 16, None).await;
 
@@ -284,7 +339,10 @@ async fn test_node_down_rf2_covers_all_shards() {
     );
 
     // Node 1 is down (timeout)
-    client.errors.insert(NodeId::new("node-1".into()), miroir_core::scatter::NodeError::Timeout);
+    client.errors.insert(
+        NodeId::new("node-1".into()),
+        miroir_core::scatter::NodeError::Timeout,
+    );
 
     let req = SearchRequest {
         index_uid: "test".into(),
@@ -309,17 +367,34 @@ async fn test_node_down_rf2_covers_all_shards() {
     .unwrap();
 
     // With RF=2, each shard has 2 replicas. When one fails, the other succeeds.
-    assert!(result.partial, "Result should be partial when one node fails");
-    assert!(!result.shard_pages.is_empty(), "Should have results from surviving replicas");
-    assert!(!result.failed_shards.is_empty(), "Should have some failed shards");
+    assert!(
+        result.partial,
+        "Result should be partial when one node fails"
+    );
+    assert!(
+        !result.shard_pages.is_empty(),
+        "Should have results from surviving replicas"
+    );
+    assert!(
+        !result.failed_shards.is_empty(),
+        "Should have some failed shards"
+    );
 }
 
 /// P2.3-A5: With one group fully down, search uses the other group (fallback).
 #[tokio::test]
 async fn test_group_down_fallback_succeeds_not_degraded() {
     let mut topo = Topology::new(16, 2, 1); // 2 groups, RF=1
-    topo.add_node(Node::new(NodeId::new("node-g0".into()), "http://g0:7700".into(), 0));
-    topo.add_node(Node::new(NodeId::new("node-g1".into()), "http://g1:7700".into(), 1));
+    topo.add_node(Node::new(
+        NodeId::new("node-g0".into()),
+        "http://g0:7700".into(),
+        0,
+    ));
+    topo.add_node(Node::new(
+        NodeId::new("node-g1".into()),
+        "http://g1:7700".into(),
+        1,
+    ));
 
     let plan = plan_search_scatter(&topo, 0, 1, 16, None).await; // query_seq=0 → group 0
     assert_eq!(plan.chosen_group, 0);
@@ -366,7 +441,10 @@ async fn test_group_down_fallback_succeeds_not_degraded() {
 
     // Fallback to group 1 should succeed completely
     assert!(!result.partial, "Fallback should provide complete results");
-    assert!(result.failed_shards.is_empty(), "No shards should have failed after fallback");
+    assert!(
+        result.failed_shards.is_empty(),
+        "No shards should have failed after fallback"
+    );
 }
 
 /// P2.3-A6: X-Miroir-Degraded header includes actual shard IDs.
@@ -420,25 +498,53 @@ async fn test_degraded_header_includes_shard_ids() {
     .unwrap();
 
     assert!(result.partial, "Result should be partial");
-    assert!(!result.failed_shards.is_empty(), "Should have failed shards");
+    assert!(
+        !result.failed_shards.is_empty(),
+        "Should have failed shards"
+    );
 
     // Verify failed_shards contains actual shard IDs
     let mut shard_ids: Vec<_> = result.failed_shards.keys().copied().collect();
     shard_ids.sort();
-    assert!(!shard_ids.is_empty(), "Should have at least one failed shard");
+    assert!(
+        !shard_ids.is_empty(),
+        "Should have at least one failed shard"
+    );
 
     // Verify we can format the header value correctly: "shards=3,7,11"
-    let header_value = format!("shards={}", shard_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(","));
-    assert!(header_value.starts_with("shards="), "Header should start with 'shards='");
+    let header_value = format!(
+        "shards={}",
+        shard_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    assert!(
+        header_value.starts_with("shards="),
+        "Header should start with 'shards='"
+    );
 }
 
 /// P2.3: Integration test - end-to-end search with all features.
 #[tokio::test]
 async fn test_search_read_path_integration() {
     let mut topo = Topology::new(3, 1, 1); // 3 shards for simplicity
-    topo.add_node(Node::new(NodeId::new("node-0".into()), "http://node-0:7700".into(), 0));
-    topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
-    topo.add_node(Node::new(NodeId::new("node-2".into()), "http://node-2:7700".into(), 0));
+    topo.add_node(Node::new(
+        NodeId::new("node-0".into()),
+        "http://node-0:7700".into(),
+        0,
+    ));
+    topo.add_node(Node::new(
+        NodeId::new("node-1".into()),
+        "http://node-1:7700".into(),
+        0,
+    ));
+    topo.add_node(Node::new(
+        NodeId::new("node-2".into()),
+        "http://node-2:7700".into(),
+        0,
+    ));
 
     let plan = plan_search_scatter(&topo, 0, 1, 3, None).await;
 
@@ -602,7 +708,14 @@ fn test_degraded_header_format() {
     sorted.sort();
 
     // Build header value as done in search route
-    let header_value = format!("shards={}", sorted.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(","));
+    let header_value = format!(
+        "shards={}",
+        sorted
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
 
     assert_eq!(header_value, "shards=3,7,11,15");
 }

@@ -50,11 +50,9 @@ impl SqliteTaskStore {
         )?;
 
         let current: Option<i64> = conn
-            .query_row(
-                "SELECT MAX(version) FROM schema_versions",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT MAX(version) FROM schema_versions", [], |row| {
+                row.get(0)
+            })
             .optional()?
             .flatten();
 
@@ -246,7 +244,8 @@ impl TaskStore for SqliteTaskStore {
             sql.push_str(&format!(" OFFSET {offset}"));
         }
 
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params_refs.as_slice(), Self::task_row_from_row)?;
         let mut result = Vec::new();
@@ -486,8 +485,10 @@ impl TaskStore for SqliteTaskStore {
 
     fn delete_expired_idempotency_entries(&self, now_ms: i64) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
-        let rows =
-            conn.execute("DELETE FROM idempotency_cache WHERE expires_at < ?1", params![now_ms])?;
+        let rows = conn.execute(
+            "DELETE FROM idempotency_cache WHERE expires_at < ?1",
+            params![now_ms],
+        )?;
         Ok(rows)
     }
 
@@ -1093,7 +1094,10 @@ impl TaskStore for SqliteTaskStore {
 
     fn delete_rollover_policy(&self, name: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
-        let rows = conn.execute("DELETE FROM rollover_policies WHERE name = ?1", params![name])?;
+        let rows = conn.execute(
+            "DELETE FROM rollover_policies WHERE name = ?1",
+            params![name],
+        )?;
         Ok(rows > 0)
     }
 
@@ -1321,7 +1325,8 @@ impl TaskStore for SqliteTaskStore {
                         created_at, updated_at, state_json, error, status,
                         index_uid, old_shards, target_shards, shadow_index,
                         documents_backfilled, total_documents
-                 FROM mode_b_operations".to_string();
+                 FROM mode_b_operations"
+            .to_string();
         let mut wheres = Vec::new();
         let mut params = Vec::new();
 
@@ -1353,7 +1358,8 @@ impl TaskStore for SqliteTaskStore {
         }
 
         let mut stmt = conn.prepare(&query)?;
-        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+        let param_refs: Vec<&dyn rusqlite::ToSql> =
+            params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
 
         let mut results = Vec::new();
         let rows = stmt.query_map(param_refs.as_slice(), |row| {
@@ -1456,7 +1462,9 @@ mod tests {
         assert!(task.error.is_none());
 
         // Update status
-        assert!(store.update_task_status("test-task-1", "processing").unwrap());
+        assert!(store
+            .update_task_status("test-task-1", "processing")
+            .unwrap());
         let task = store.get_task("test-task-1").unwrap().unwrap();
         assert_eq!(task.status, "processing");
 
@@ -1805,11 +1813,11 @@ mod tests {
         // Use realistic timestamps based on current time
         let now = now_ms();
         let t0 = now;
-        let t1 = now + 15_000;  // +15s (first lease expiration)
-        let t2 = now + 6_000;   // +6s (renew before expiration)
-        let t3 = now + 20_000;  // +20s (after lease expired)
-        let t4 = now + 30_000;  // +30s (new lease expiration)
-        let t5 = now + 35_000;  // +35s (renewal)
+        let t1 = now + 15_000; // +15s (first lease expiration)
+        let t2 = now + 6_000; // +6s (renew before expiration)
+        let t3 = now + 20_000; // +20s (after lease expired)
+        let t4 = now + 30_000; // +30s (new lease expiration)
+        let t5 = now + 35_000; // +35s (renewal)
 
         // First acquisition (now=t0, expires=t1)
         assert!(store
@@ -1832,10 +1840,14 @@ mod tests {
             .unwrap());
 
         // Renew by current holder
-        assert!(store.renew_leader_lease("reshard:idx-1", "pod-b", t5).unwrap());
+        assert!(store
+            .renew_leader_lease("reshard:idx-1", "pod-b", t5)
+            .unwrap());
 
         // Wrong holder cannot renew
-        assert!(!store.renew_leader_lease("reshard:idx-1", "pod-a", t5).unwrap());
+        assert!(!store
+            .renew_leader_lease("reshard:idx-1", "pod-a", t5)
+            .unwrap());
 
         // Get lease
         let lease = store.get_leader_lease("reshard:idx-1").unwrap().unwrap();
@@ -1880,11 +1892,9 @@ mod tests {
 
         let conn = store.conn.lock().unwrap();
         let version: i64 = conn
-            .query_row(
-                "SELECT MAX(version) FROM schema_versions",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT MAX(version) FROM schema_versions", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(version, registry().max_version());
     }
@@ -2250,7 +2260,8 @@ mod tests {
                 pattern: "logs-{YYYY-MM-DD}".to_string(),
                 triggers_json: r#"{"max_age": "1d", "max_docs": 1000000}"#.to_string(),
                 retention_json: r#"{"keep_indexes": 30}"#.to_string(),
-                template_json: r#"{"primary_key": "id", "settings_ref": "logs-template"}"#.to_string(),
+                template_json: r#"{"primary_key": "id", "settings_ref": "logs-template"}"#
+                    .to_string(),
                 enabled: true,
             })
             .unwrap();
@@ -2276,7 +2287,8 @@ mod tests {
                 pattern: "logs-{YYYY-MM-DD}".to_string(),
                 triggers_json: r#"{"max_age": "1d", "max_docs": 2000000}"#.to_string(), // changed
                 retention_json: r#"{"keep_indexes": 30}"#.to_string(),
-                template_json: r#"{"primary_key": "id", "settings_ref": "logs-template"}"#.to_string(),
+                template_json: r#"{"primary_key": "id", "settings_ref": "logs-template"}"#
+                    .to_string(),
                 enabled: false, // changed
             })
             .unwrap();
@@ -2691,7 +2703,9 @@ mod tests {
             assert_eq!(task.node_tasks.get("node-0"), Some(&42u64));
 
             // Can continue updating the task
-            assert!(store.update_task_status("survivor-task", "processing").unwrap());
+            assert!(store
+                .update_task_status("survivor-task", "processing")
+                .unwrap());
             assert!(store.set_task_error("survivor-task", "recovered").unwrap());
 
             let updated = store.get_task("survivor-task").unwrap().unwrap();
@@ -2721,132 +2735,163 @@ mod tests {
             store.migrate().unwrap();
 
             // Table 1: tasks
-            store.insert_task(&NewTask {
-                miroir_id: "task-r".to_string(),
-                created_at: 1000,
-                status: "enqueued".to_string(),
-                node_tasks: HashMap::new(),
-                error: None,
-                started_at: None,
-                finished_at: None,
-                index_uid: None,
-                task_type: None,
-                node_errors: HashMap::new(),
-            }).unwrap();
+            store
+                .insert_task(&NewTask {
+                    miroir_id: "task-r".to_string(),
+                    created_at: 1000,
+                    status: "enqueued".to_string(),
+                    node_tasks: HashMap::new(),
+                    error: None,
+                    started_at: None,
+                    finished_at: None,
+                    index_uid: None,
+                    task_type: None,
+                    node_errors: HashMap::new(),
+                })
+                .unwrap();
 
             // Table 2: node_settings_version
-            store.upsert_node_settings_version("idx-r", "node-r", 5, 1000).unwrap();
+            store
+                .upsert_node_settings_version("idx-r", "node-r", 5, 1000)
+                .unwrap();
 
             // Table 3: aliases
-            store.create_alias(&NewAlias {
-                name: "alias-r".to_string(),
-                kind: "single".to_string(),
-                current_uid: Some("uid-v1".to_string()),
-                target_uids: None,
-                version: 1,
-                created_at: 1000,
-                history: vec![],
-            }).unwrap();
+            store
+                .create_alias(&NewAlias {
+                    name: "alias-r".to_string(),
+                    kind: "single".to_string(),
+                    current_uid: Some("uid-v1".to_string()),
+                    target_uids: None,
+                    version: 1,
+                    created_at: 1000,
+                    history: vec![],
+                })
+                .unwrap();
 
             // Table 4: sessions
-            store.upsert_session(&SessionRow {
-                session_id: "sess-r".to_string(),
-                last_write_mtask_id: None,
-                last_write_at: None,
-                pinned_group: None,
-                min_settings_version: 1,
-                ttl: 100000,
-            }).unwrap();
+            store
+                .upsert_session(&SessionRow {
+                    session_id: "sess-r".to_string(),
+                    last_write_mtask_id: None,
+                    last_write_at: None,
+                    pinned_group: None,
+                    min_settings_version: 1,
+                    ttl: 100000,
+                })
+                .unwrap();
 
             // Table 5: idempotency_cache
-            store.insert_idempotency_entry(&IdempotencyEntry {
-                key: "idemp-r".to_string(),
-                body_sha256: vec![0; 32],
-                miroir_task_id: "task-r".to_string(),
-                expires_at: 100000,
-            }).unwrap();
+            store
+                .insert_idempotency_entry(&IdempotencyEntry {
+                    key: "idemp-r".to_string(),
+                    body_sha256: vec![0; 32],
+                    miroir_task_id: "task-r".to_string(),
+                    expires_at: 100000,
+                })
+                .unwrap();
 
             // Table 6: jobs
-            store.insert_job(&NewJob {
-                id: "job-r".to_string(),
-                type_: "test".to_string(),
-                params: "{}".to_string(),
-                state: "queued".to_string(),
-                progress: "{}".to_string(),
-                parent_job_id: None,
-                chunk_index: None,
-                total_chunks: None,
-                created_at: 1000,
-            }).unwrap();
+            store
+                .insert_job(&NewJob {
+                    id: "job-r".to_string(),
+                    type_: "test".to_string(),
+                    params: "{}".to_string(),
+                    state: "queued".to_string(),
+                    progress: "{}".to_string(),
+                    parent_job_id: None,
+                    chunk_index: None,
+                    total_chunks: None,
+                    created_at: 1000,
+                })
+                .unwrap();
 
             // Table 7: leader_lease
-            store.try_acquire_leader_lease("scope-r", "pod-r", 100000, 0).unwrap();
+            store
+                .try_acquire_leader_lease("scope-r", "pod-r", 100000, 0)
+                .unwrap();
 
             // Table 8: canaries
-            store.upsert_canary(&NewCanary {
-                id: "canary-r".to_string(),
-                name: "test-canary".to_string(),
-                index_uid: "idx-r".to_string(),
-                interval_s: 60,
-                query_json: "{}".to_string(),
-                assertions_json: "[]".to_string(),
-                enabled: true,
-                created_at: 1000,
-            }).unwrap();
+            store
+                .upsert_canary(&NewCanary {
+                    id: "canary-r".to_string(),
+                    name: "test-canary".to_string(),
+                    index_uid: "idx-r".to_string(),
+                    interval_s: 60,
+                    query_json: "{}".to_string(),
+                    assertions_json: "[]".to_string(),
+                    enabled: true,
+                    created_at: 1000,
+                })
+                .unwrap();
 
             // Table 9: canary_runs
-            store.insert_canary_run(&NewCanaryRun {
-                canary_id: "canary-r".to_string(),
-                ran_at: 1000,
-                status: "pass".to_string(),
-                latency_ms: 50,
-                failed_assertions_json: None,
-            }, 100).unwrap();
+            store
+                .insert_canary_run(
+                    &NewCanaryRun {
+                        canary_id: "canary-r".to_string(),
+                        ran_at: 1000,
+                        status: "pass".to_string(),
+                        latency_ms: 50,
+                        failed_assertions_json: None,
+                    },
+                    100,
+                )
+                .unwrap();
 
             // Table 10: cdc_cursors
-            store.upsert_cdc_cursor(&NewCdcCursor {
-                sink_name: "sink-r".to_string(),
-                index_uid: "idx-r".to_string(),
-                last_event_seq: 42,
-                updated_at: 1000,
-            }).unwrap();
+            store
+                .upsert_cdc_cursor(&NewCdcCursor {
+                    sink_name: "sink-r".to_string(),
+                    index_uid: "idx-r".to_string(),
+                    last_event_seq: 42,
+                    updated_at: 1000,
+                })
+                .unwrap();
 
             // Table 11: tenant_map
-            store.insert_tenant_mapping(&NewTenantMapping {
-                api_key_hash: vec![1u8; 32],
-                tenant_id: "tenant-r".to_string(),
-                group_id: Some(2),
-            }).unwrap();
+            store
+                .insert_tenant_mapping(&NewTenantMapping {
+                    api_key_hash: vec![1u8; 32],
+                    tenant_id: "tenant-r".to_string(),
+                    group_id: Some(2),
+                })
+                .unwrap();
 
             // Table 12: rollover_policies
-            store.upsert_rollover_policy(&NewRolloverPolicy {
-                name: "policy-r".to_string(),
-                write_alias: "w-r".to_string(),
-                read_alias: "r-r".to_string(),
-                pattern: "p-r".to_string(),
-                triggers_json: "{}".to_string(),
-                retention_json: "{}".to_string(),
-                template_json: "{}".to_string(),
-                enabled: true,
-            }).unwrap();
+            store
+                .upsert_rollover_policy(&NewRolloverPolicy {
+                    name: "policy-r".to_string(),
+                    write_alias: "w-r".to_string(),
+                    read_alias: "r-r".to_string(),
+                    pattern: "p-r".to_string(),
+                    triggers_json: "{}".to_string(),
+                    retention_json: "{}".to_string(),
+                    template_json: "{}".to_string(),
+                    enabled: true,
+                })
+                .unwrap();
 
             // Table 13: search_ui_config
-            store.upsert_search_ui_config(&NewSearchUiConfig {
-                index_uid: "idx-r".to_string(),
-                config_json: "{}".to_string(),
-                updated_at: 1000,
-            }).unwrap();
+            store
+                .upsert_search_ui_config(&NewSearchUiConfig {
+                    index_uid: "idx-r".to_string(),
+                    config_json: "{}".to_string(),
+                    updated_at: 1000,
+                })
+                .unwrap();
 
             // Table 14: admin_sessions
-            store.insert_admin_session(&NewAdminSession {
-                session_id: "admin-r".to_string(),
-                csrf_token: "csrf-r".to_string(),
-                admin_key_hash: "hash-r".to_string(),
-                created_at: 1000,
-                expires_at: 100000,
-                user_agent: None,
-                source_ip: None,
-            }).unwrap();
+            store
+                .insert_admin_session(&NewAdminSession {
+                    session_id: "admin-r".to_string(),
+                    csrf_token: "csrf-r".to_string(),
+                    admin_key_hash: "hash-r".to_string(),
+                    created_at: 1000,
+                    expires_at: 100000,
+                    user_agent: None,
+                    source_ip: None,
+                })
+                .unwrap();
         }
 
         // Phase 2: reopen and verify all 14 tables
@@ -2855,7 +2900,10 @@ mod tests {
             store.migrate().unwrap();
 
             assert!(store.get_task("task-r").unwrap().is_some());
-            assert!(store.get_node_settings_version("idx-r", "node-r").unwrap().is_some());
+            assert!(store
+                .get_node_settings_version("idx-r", "node-r")
+                .unwrap()
+                .is_some());
             assert!(store.get_alias("alias-r").unwrap().is_some());
             assert!(store.get_session("sess-r").unwrap().is_some());
             assert!(store.get_idempotency_entry("idemp-r").unwrap().is_some());
@@ -2897,16 +2945,24 @@ mod tests {
 
         // A fresh SQLite database with 14 tables and WAL mode is typically 100-200 KB
         // This includes the page structure and internal metadata
-        assert!(file_size < 200 * 1024, "Empty database size {} bytes exceeds 200 KB", file_size);
+        assert!(
+            file_size < 200 * 1024,
+            "Empty database size {} bytes exceeds 200 KB",
+            file_size
+        );
 
         // For verification, log the actual size
-        println!("Empty database size: {} bytes ({} KB)", file_size, file_size / 1024);
+        println!(
+            "Empty database size: {} bytes ({} KB)",
+            file_size,
+            file_size / 1024
+        );
     }
 
     #[test]
     fn empty_tables_add_minimal_overhead_per_table() {
-        use std::fs;
         use rusqlite::Connection;
+        use std::fs;
 
         // Create a database with just the core 7 tables (001_initial.sql)
         let dir1 = tempfile::tempdir().unwrap();
@@ -2947,7 +3003,15 @@ mod tests {
 
         println!("Core tables: {} bytes ({} KB)", core_size, core_size / 1024);
         println!("All tables: {} bytes ({} KB)", all_size, all_size / 1024);
-        println!("Feature table overhead: {} bytes ({} KB)", feature_overhead, feature_overhead / 1024);
-        println!("Average per feature table: {} bytes ({} KB)", overhead_per_table, overhead_per_table / 1024);
+        println!(
+            "Feature table overhead: {} bytes ({} KB)",
+            feature_overhead,
+            feature_overhead / 1024
+        );
+        println!(
+            "Average per feature table: {} bytes ({} KB)",
+            overhead_per_table,
+            overhead_per_table / 1024
+        );
     }
 }
