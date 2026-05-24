@@ -13,10 +13,10 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::group_addition::{GroupAdditionCoordinator, GroupAdditionError, GroupAdditionId};
+use crate::group_addition::{GroupAdditionCoordinator, GroupAdditionId};
 use crate::migration::ShardId;
 use crate::scatter::FetchDocumentsRequest;
-use crate::topology::{Group, GroupState, Node, NodeId, Topology};
+use crate::topology::{NodeId, Topology};
 use crate::Result;
 
 /// Configuration for the group sync worker.

@@ -2691,7 +2691,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_write_documents() {
-        let mut c = MockNodeClient::default();
+        let c = MockNodeClient::default();
         let node = NodeId::new("test-node".into());
 
         let req = WriteRequest {
@@ -3249,7 +3249,7 @@ mod tests {
         ));
 
         let primary_node = NodeId::new("node-0".into());
-        let req = make_req();
+        let _req = make_req();
 
         let config = crate::hedging::HedgingConfig {
             enabled: true,

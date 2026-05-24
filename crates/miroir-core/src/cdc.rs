@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, RwLock, Semaphore};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::task_store::{NewCdcCursor, TaskStore};
 
