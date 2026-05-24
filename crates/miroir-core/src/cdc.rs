@@ -50,6 +50,9 @@ use crate::task_store::{NewCdcCursor, TaskStore};
 #[cfg(feature = "redis-store")]
 use ::redis::AsyncCommands;
 
+#[cfg(feature = "nats-sink")]
+use async_nats::Client;
+
 /// Add random jitter to a duration.
 ///
 /// Jitter is ±`fraction` of the base duration. For example, with fraction=0.25,
@@ -380,6 +383,9 @@ pub struct CdcManager {
     dropped_metric_callback: Option<CdcDroppedMetricCallback>,
     /// Internal queue for GET /_miroir/changes endpoint.
     internal_queue: Arc<CdcInternalQueue>,
+    /// NATS client pool (url -> client), for NATS sinks.
+    #[cfg(feature = "nats-sink")]
+    nats_clients: Arc<RwLock<HashMap<String, Client>>>,
 }
 
 /// CDC manager configuration.
@@ -665,7 +671,7 @@ impl CdcRedisOverflow {
 
 #[async_trait::async_trait]
 impl CdcOverflowBackend for CdcRedisOverflow {
-    async fn push(&self, _event: CdcEvent) -> Result<(), CdcError> {
+    async fn push(&self, event: CdcEvent) -> Result<(), CdcError> {
         #[cfg(feature = "redis-store")]
         return self.push_inner(event).await;
 
@@ -1053,12 +1059,17 @@ impl CdcManager {
             }
         }
 
+        #[cfg(feature = "nats-sink")]
+        let nats_clients = Arc::new(RwLock::new(HashMap::new()));
+
         if config.enabled {
             // Spawn background publisher task
             let state_clone = state.clone();
             let config_clone = config.clone();
             let buffers_clone = buffers.clone();
             let internal_queue_clone = internal_queue.clone();
+            #[cfg(feature = "nats-sink")]
+            let nats_clients_clone = nats_clients.clone();
             tokio::spawn(async move {
                 Self::background_publisher(
                     event_rx,
@@ -1066,6 +1077,8 @@ impl CdcManager {
                     config_clone,
                     buffers_clone,
                     internal_queue_clone,
+                    #[cfg(feature = "nats-sink")]
+                    nats_clients_clone,
                 )
                 .await;
             });
@@ -1079,6 +1092,8 @@ impl CdcManager {
             buffers,
             dropped_metric_callback,
             internal_queue,
+            #[cfg(feature = "nats-sink")]
+            nats_clients,
         }
     }
 
@@ -1195,6 +1210,7 @@ impl CdcManager {
         config: CdcConfig,
         buffers: HashMap<String, Arc<CdcBuffer>>,
         internal_queue: Arc<CdcInternalQueue>,
+        #[cfg(feature = "nats-sink")] nats_clients: Arc<RwLock<HashMap<String, Client>>>,
     ) {
         info!("CDC: background publisher started");
 
@@ -1245,7 +1261,7 @@ impl CdcManager {
 
                                 // Flush if buffer size reached (batch_size trigger)
                                 if buffer.len() >= sink.batch_size as usize {
-                                    if let Err(e) = Self::flush_sink(sink, buffer, &state, &internal_queue).await {
+                                    if let Err(e) = Self::flush_sink(sink, buffer, &state, &internal_queue, #[cfg(feature = "nats-sink")] &nats_clients).await {
                                         error!("CDC: failed to flush sink {}: {}", sink.url, e);
                                     }
                                     sink_buffers.insert(sink.url.clone(), Vec::new());
@@ -1277,7 +1293,16 @@ impl CdcManager {
                                     .unwrap_or(now);
 
                                 if now >= flush_deadline {
-                                    if let Err(e) = Self::flush_sink(sink, buffer, &state, &internal_queue).await {
+                                    if let Err(e) = Self::flush_sink(
+                                        sink,
+                                        buffer,
+                                        &state,
+                                        &internal_queue,
+                                        #[cfg(feature = "nats-sink")]
+                                        &nats_clients,
+                                    )
+                                    .await
+                                    {
                                         error!("CDC: failed to flush sink {} on timer: {}", sink.url, e);
                                     }
                                     buffer.clear();
@@ -1295,7 +1320,16 @@ impl CdcManager {
             if !buffer.is_empty() {
                 let sink = config.sinks.iter().find(|s| s.url == sink_url);
                 if let Some(sink) = sink {
-                    if let Err(e) = Self::flush_sink(sink, &buffer, &state, &internal_queue).await {
+                    if let Err(e) = Self::flush_sink(
+                        sink,
+                        &buffer,
+                        &state,
+                        &internal_queue,
+                        #[cfg(feature = "nats-sink")]
+                        &nats_clients,
+                    )
+                    .await
+                    {
                         error!("CDC: failed to flush sink {} on shutdown: {}", sink_url, e);
                     }
                 }
@@ -1314,6 +1348,7 @@ impl CdcManager {
         events: &[CdcEvent],
         state: &Arc<RwLock<CdcPublisherState>>,
         internal_queue: &Arc<CdcInternalQueue>,
+        #[cfg(feature = "nats-sink")] nats_clients: &Arc<RwLock<HashMap<String, Client>>>,
     ) -> Result<(), CdcError> {
         match sink.sink_type {
             CdcSinkType::Webhook => {
@@ -1323,6 +1358,15 @@ impl CdcManager {
                 st.published_count += events.len() as u64;
                 Ok(())
             }
+            #[cfg(feature = "nats-sink")]
+            CdcSinkType::Nats => {
+                Self::flush_nats(sink, events, nats_clients).await?;
+                // Increment published count on success
+                let mut st = state.write().await;
+                st.published_count += events.len() as u64;
+                Ok(())
+            }
+            #[cfg(not(feature = "nats-sink"))]
             CdcSinkType::Nats => Self::flush_nats(sink, events).await,
             CdcSinkType::Kafka => Self::flush_kafka(sink, events).await,
             CdcSinkType::Internal => {
@@ -1444,11 +1488,71 @@ impl CdcManager {
         }
     }
 
-    /// NATS flush (placeholder for P5.13.b).
-    async fn flush_nats(_sink: &CdcSinkConfig, _events: &[CdcEvent]) -> Result<(), CdcError> {
-        // NATS publishing implementation (P5.13.b)
-        // (requires async-nats crate)
+    /// NATS flush (P5.13.b).
+    ///
+    /// Publishes events to NATS subjects using the pattern `{subject_prefix}.{index}`.
+    /// Plan §13.13: "For each event, PUB to miroir.cdc.{index}"
+    /// Uses async-nats with connection pooling per sink URL.
+    #[cfg(feature = "nats-sink")]
+    async fn flush_nats(
+        sink: &CdcSinkConfig,
+        events: &[CdcEvent],
+        nats_clients: &Arc<RwLock<HashMap<String, Client>>>,
+    ) -> Result<(), CdcError> {
+        // Get or create NATS client for this sink URL
+        let client = {
+            let clients = nats_clients.read().await;
+            clients.get(&sink.url).cloned()
+        };
+
+        let client = match client {
+            Some(client) => client,
+            None => {
+                // Create new connection using async-nats::connect()
+                let client = async_nats::connect(&sink.url)
+                    .await
+                    .map_err(|e| CdcError::SinkError(format!("NATS connect error: {e}")))?;
+
+                // Store in pool for reuse
+                let mut clients = nats_clients.write().await;
+                clients.insert(sink.url.clone(), client.clone());
+                client
+            }
+        };
+
+        // Determine subject prefix from config (default: "miroir.cdc")
+        let subject_prefix = sink
+            .subject_prefix
+            .as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or("miroir.cdc");
+
+        // Publish each event to its index-specific subject
+        for event in events {
+            let subject = format!("{}.{}", subject_prefix, event.index);
+
+            // Serialize event (respect include_body setting)
+            let mut event_to_send = event.clone();
+            if !sink.include_body {
+                event_to_send.document = None;
+            }
+
+            let payload = serde_json::to_vec(&event_to_send)
+                .map_err(|e| CdcError::SinkError(format!("serialize error: {e}")))?;
+
+            client
+                .publish(subject, payload.into())
+                .await
+                .map_err(|e| CdcError::SinkError(format!("NATS publish error: {e}")))?;
+        }
+
         Ok(())
+    }
+
+    /// NATS flush stub when nats-sink feature is disabled.
+    #[cfg(not(feature = "nats-sink"))]
+    async fn flush_nats(_sink: &CdcSinkConfig, _events: &[CdcEvent]) -> Result<(), CdcError> {
+        Err(CdcError::SinkError("nats-sink feature not enabled".into()))
     }
 
     /// Kafka flush (placeholder for P5.13.c).

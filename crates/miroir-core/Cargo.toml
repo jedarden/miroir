@@ -41,6 +41,9 @@ futures-util = "0.3"
 reqwest = { version = "0.12", features = ["json"], default-features = false }
 urlencoding = "2"
 
+# NATS (CDC sink)
+async-nats = { version = "0.38", optional = true }
+
 # Utilities
 indexmap = "2"
 chrono = { version = "0.4", features = ["serde"] }
@@ -63,6 +66,7 @@ raft-proto = ["bincode"]
 redis-store = ["redis"]
 axum = ["dep:axum"]
 peer-discovery = ["trust-dns-resolver"]
+nats-sink = ["async-nats"]
 test-helpers = []
 
 # Enable when openraft compiles on stable Rust:
