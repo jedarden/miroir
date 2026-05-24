@@ -2768,10 +2768,7 @@ where
 
     // Get node addresses for shadow creation
     let topology = app_state.topology.read().await;
-    let node_addresses: Vec<String> = topology
-        .nodes()
-        .map(|n| n.address.clone())
-        .collect();
+    let node_addresses: Vec<String> = topology.nodes().map(|n| n.address.clone()).collect();
     drop(topology);
 
     if node_addresses.is_empty() {
