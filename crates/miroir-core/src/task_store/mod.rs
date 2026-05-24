@@ -3,7 +3,7 @@ mod redis;
 mod sqlite;
 
 #[cfg(feature = "redis-store")]
-pub use redis::{RedisTaskStore, SearchUiScopedKey};
+pub use redis::{RedisPool, RedisTaskStore, SearchUiScopedKey};
 pub use sqlite::SqliteTaskStore;
 
 use crate::Result;

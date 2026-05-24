@@ -20,7 +20,7 @@ futures-util = "0.3"
 # Redis support (optional — enable via `redis-store` feature)
 redis = { version = "0.27", features = ["aio", "tokio-comp", "connection-manager"], optional = true }
 hex = "0.4"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "macros", "fs", "io-util"] }
 async-trait = "0.1"
 rand = "0.8"
 reqwest = { version = "0.12", features = ["json"], default-features = false }
