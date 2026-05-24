@@ -87,4 +87,7 @@ where
             "/replica_groups/{id}",
             delete(admin_endpoints::remove_replica_group::<S>),
         )
+        // Shadow traffic endpoints (plan §13.16)
+        .route("/shadow/diff", get(admin_endpoints::get_shadow_diff::<S>))
+        .route("/shadow/stats", get(admin_endpoints::get_shadow_stats::<S>))
 }
