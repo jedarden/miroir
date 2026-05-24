@@ -375,24 +375,334 @@
                     </div>
                 </section>
 
+                <!-- Documents Section -->
                 <section id="documents" class="section">
                     <div class="card">
-                        <h3>Document Browser</h3>
-                        <p class="placeholder">Coming soon — Paginated document browser with filter builder and CSV/NDJSON import</p>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
+                            <div style="display: flex; gap: 0.5rem; align-items: center; flex: 1; min-width: 200px;">
+                                <select id="documentIndexSelect" class="form-input" style="flex: 1;">
+                                    <option value="">Loading indexes...</option>
+                                </select>
+                            </div>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <button class="btn btn-secondary" id="importDocumentsBtn">📥 Import</button>
+                                <button class="btn btn-secondary" id="exportDocumentsBtn">📤 Export</button>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <h4>Filter Builder</h4>
+                            <div id="documentFilterBuilder" class="filter-builder">
+                                <div class="filter-row">
+                                    <select class="form-input filter-field">
+                                        <option value="">Select field...</option>
+                                    </select>
+                                    <select class="form-input filter-operator">
+                                        <option value="equals">Equals</option>
+                                        <option value="notEquals">Not Equals</option>
+                                        <option value="gt">Greater Than</option>
+                                        <option value="gte">Greater Than or Equal</option>
+                                        <option value="lt">Less Than</option>
+                                        <option value="lte">Less Than or Equal</option>
+                                        <option value="in">In</option>
+                                        <option value="exists">Exists</option>
+                                    </select>
+                                    <input type="text" class="form-input filter-value" placeholder="Value">
+                                    <button class="btn btn-secondary btn-sm" onclick="addFilterRow('documentFilterBuilder')">+</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="removeFilterRow(this)">−</button>
+                                </div>
+                            </div>
+                            <button class="btn btn-primary" id="applyDocumentFilterBtn" style="margin-top: 0.5rem;">Apply Filters</button>
+                            <button class="btn btn-secondary" id="clearDocumentFilterBtn" style="margin-top: 0.5rem;">Clear</button>
+                        </div>
+
+                        <div class="table-container" style="margin-top: 1rem;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                                <span id="documentCount" class="text-secondary">0 documents</span>
+                                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                                    <label>Limit:</label>
+                                    <select id="documentLimit" class="form-input" style="width: 80px;">
+                                        <option value="20">20</option>
+                                        <option value="50" selected>50</option>
+                                        <option value="100">100</option>
+                                        <option value="200">200</option>
+                                    </select>
+                                    <label>Offset:</label>
+                                    <input type="number" id="documentOffset" class="form-input" value="0" min="0" style="width: 80px;">
+                                </div>
+                            </div>
+                            <table class="data-table" id="documentsTable">
+                                <thead id="documentsTableHead">
+                                    <tr><th class="loading">Loading...</th></tr>
+                                </thead>
+                                <tbody id="documentsTableBody">
+                                    <tr><td class="loading">Select an index to browse documents</td></tr>
+                                </tbody>
+                            </table>
+                            <div id="documentPagination" class="pagination" style="margin-top: 1rem; display: none;">
+                                <button class="btn btn-secondary btn-sm" id="documentPrevPage">← Previous</button>
+                                <span id="documentPageInfo" style="margin: 0 1rem;">Page 1</span>
+                                <button class="btn btn-secondary btn-sm" id="documentNextPage">Next →</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Import Documents Modal -->
+                    <div id="importDocumentsModal" class="modal">
+                        <div class="modal-content" style="max-width: 600px;">
+                            <div class="modal-header">
+                                <h3>Import Documents</h3>
+                                <button class="modal-close" id="importDocumentsModalClose">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="form-group">
+                                    <label>Import Method</label>
+                                    <select id="importMethod" class="form-input">
+                                        <option value="stream">Streaming Import (recommended for large files)</option>
+                                        <option value="batch">Batch Import (for smaller files)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>File Format</label>
+                                    <select id="importFormat" class="form-input">
+                                        <option value="ndjson">NDJSON (newline-delimited JSON)</option>
+                                        <option value="csv">CSV</option>
+                                        <option value="json">JSON Array</option>
+                                    </select>
+                                </div>
+                                <div class="dropzone" id="importDropzone">
+                                    <p>Drag & drop files here, or click to select</p>
+                                    <input type="file" id="importFileInput" multiple accept=".json,.ndjson,.csv" style="display: none;">
+                                </div>
+                                <div id="importPreview" style="display: none; margin-top: 1rem;">
+                                    <h4>Preview</h4>
+                                    <pre id="importPreviewContent" style="max-height: 200px; overflow: auto; background: var(--bg-secondary); padding: 0.5rem; border-radius: 4px;"></pre>
+                                    <p id="importFileCount" class="text-secondary" style="margin-top: 0.5rem;"></p>
+                                </div>
+                                <div id="importProgress" style="display: none; margin-top: 1rem;">
+                                    <h4>Import Progress</h4>
+                                    <div class="progress-bar">
+                                        <div class="progress-fill" id="importProgressBar" style="width: 0%"></div>
+                                    </div>
+                                    <p id="importStatus" class="text-secondary" style="margin-top: 0.5rem;">Initializing...</p>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button class="btn btn-secondary" id="importCancelBtn">Cancel</button>
+                                <button class="btn btn-primary" id="importConfirmBtn" disabled>Import</button>
+                            </div>
+                        </div>
                     </div>
                 </section>
 
+                <!-- Query Sandbox Section -->
                 <section id="query" class="section">
                     <div class="card">
-                        <h3>Query Sandbox</h3>
-                        <p class="placeholder">Coming soon — Filter builder, sort builder, facet-request builder with per-shard latency breakdown</p>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
+                            <div style="display: flex; gap: 0.5rem; align-items: center; flex: 1; min-width: 200px;">
+                                <select id="queryIndexSelect" class="form-input" style="flex: 1;">
+                                    <option value="">Loading indexes...</option>
+                                </select>
+                            </div>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <button class="btn btn-primary" id="runQueryBtn">▶ Run Query</button>
+                                <button class="btn btn-secondary" id="explainQueryBtn">ℹ️ Explain</button>
+                                <button class="btn btn-secondary" id="shadowDiffBtn">👻 Shadow Diff</button>
+                            </div>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                            <!-- Query Builder -->
+                            <div class="card" style="margin: 0;">
+                                <h4>Query Builder</h4>
+                                <div class="form-group">
+                                    <label for="queryQ">Query Text (q)</label>
+                                    <input type="text" id="queryQ" class="form-input" placeholder="Enter search query...">
+                                </div>
+
+                                <div class="card" style="margin: 0.5rem 0;">
+                                    <h4>Filter Builder</h4>
+                                    <div id="queryFilterBuilder" class="filter-builder">
+                                        <div class="filter-row">
+                                            <select class="form-input filter-field">
+                                                <option value="">Select field...</option>
+                                            </select>
+                                            <select class="form-input filter-operator">
+                                                <option value="equals">Equals</option>
+                                                <option value="notEquals">Not Equals</option>
+                                                <option value="gt">Greater Than</option>
+                                                <option value="gte">Greater Than or Equal</option>
+                                                <option value="lt">Less Than</option>
+                                                <option value="lte">Less Than or Equal</option>
+                                                <option value="in">In</option>
+                                                <option value="exists">Exists</option>
+                                            </select>
+                                            <input type="text" class="form-input filter-value" placeholder="Value">
+                                            <button class="btn btn-secondary btn-sm" onclick="addFilterRow('queryFilterBuilder')">+</button>
+                                            <button class="btn btn-secondary btn-sm" onclick="removeFilterRow(this)">−</button>
+                                        </div>
+                                    </div>
+                                    <button class="btn btn-secondary btn-sm" id="addQueryFilterBtn" style="margin-top: 0.5rem;">+ Add Filter</button>
+                                </div>
+
+                                <div class="card" style="margin: 0.5rem 0;">
+                                    <h4>Sort Builder</h4>
+                                    <div id="sortBuilder">
+                                        <div class="sort-row">
+                                            <select class="form-input sort-field">
+                                                <option value="">Select field...</option>
+                                            </select>
+                                            <select class="form-input sort-direction">
+                                                <option value="asc">Ascending</option>
+                                                <option value="desc">Descending</option>
+                                            </select>
+                                            <button class="btn btn-secondary btn-sm" onclick="removeSortRow(this)">−</button>
+                                        </div>
+                                    </div>
+                                    <button class="btn btn-secondary btn-sm" id="addSortBtn" style="margin-top: 0.5rem;">+ Add Sort</button>
+                                </div>
+
+                                <div class="card" style="margin: 0.5rem 0;">
+                                    <h4>Facet Request Builder</h4>
+                                    <div id="facetBuilder">
+                                        <div class="facet-row">
+                                            <select class="form-input facet-field">
+                                                <option value="">Select field...</option>
+                                            </select>
+                                            <button class="btn btn-secondary btn-sm" onclick="removeFacetRow(this)">−</button>
+                                        </div>
+                                    </div>
+                                    <button class="btn btn-secondary btn-sm" id="addFacetBtn" style="margin-top: 0.5rem;">+ Add Facet</button>
+                                </div>
+
+                                <div class="form-group" style="margin-top: 1rem;">
+                                    <label for="queryLimit">Limit</label>
+                                    <input type="number" id="queryLimit" class="form-input" value="20" min="1" max="1000">
+                                </div>
+                                <div class="form-group">
+                                    <label for="queryOffset">Offset</label>
+                                    <input type="number" id="queryOffset" class="form-input" value="0" min="0">
+                                </div>
+                            </div>
+
+                            <!-- Query Results -->
+                            <div class="card" style="margin: 0;">
+                                <h4>Results</h4>
+                                <div id="queryResults" class="query-results">
+                                    <p class="placeholder">Run a query to see results</p>
+                                </div>
+                                <div id="queryStats" class="query-stats" style="display: none; margin-top: 1rem;">
+                                    <div class="stat-row">
+                                        <span class="stat-label">Hits:</span>
+                                        <span class="stat-value" id="queryHits">-</span>
+                                    </div>
+                                    <div class="stat-row">
+                                        <span class="stat-label">Processing Time:</span>
+                                        <span class="stat-value" id="queryProcessingTime">-</span>
+                                    </div>
+                                    <div class="stat-row">
+                                        <span class="stat-label">Shards Queried:</span>
+                                        <span class="stat-value" id="queryShardsQueried">-</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Per-Shard Latency Breakdown -->
+                        <div id="latencyBreakdown" class="card" style="display: none;">
+                            <h4>Per-Shard Latency Breakdown</h4>
+                            <div id="shardLatencyTable" class="table-container"></div>
+                        </div>
+
+                        <!-- Explain Results -->
+                        <div id="explainResults" class="card" style="display: none;">
+                            <h4>Query Plan Explanation</h4>
+                            <pre id="explainJson" style="max-height: 400px; overflow: auto; background: var(--bg-secondary); padding: 1rem; border-radius: 4px;"></pre>
+                        </div>
+
+                        <!-- Shadow Diff Results -->
+                        <div id="shadowDiffResults" class="card" style="display: none;">
+                            <h4>Shadow Diff Results</h4>
+                            <div id="shadowDiffContent"></div>
+                        </div>
                     </div>
                 </section>
 
+                <!-- Tasks Section -->
                 <section id="tasks" class="section">
                     <div class="card">
-                        <h3>Active Tasks</h3>
-                        <p class="placeholder">Coming soon — Active and recent tasks with per-node breakdown</p>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h3>Active Tasks</h3>
+                            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                                <label for="taskFilter">Filter:</label>
+                                <select id="taskFilter" class="form-input">
+                                    <option value="all">All Tasks</option>
+                                    <option value="active">Active Only</option>
+                                    <option value="pending">Pending</option>
+                                    <option value="succeeded">Succeeded</option>
+                                    <option value="failed">Failed</option>
+                                </select>
+                                <label for="taskIndex">Index:</label>
+                                <select id="taskIndex" class="form-input">
+                                    <option value="">All Indexes</option>
+                                </select>
+                                <label for="taskType">Type:</label>
+                                <select id="taskType" class="form-input">
+                                    <option value="">All Types</option>
+                                    <option value="documentAddition">Document Addition</option>
+                                    <option value="documentUpdate">Document Update</option>
+                                    <option value="documentDeletion">Document Deletion</option>
+                                    <option value="settingsUpdate">Settings Update</option>
+                                    <option value="indexCreation">Index Creation</option>
+                                    <option value="indexDeletion">Index Deletion</option>
+                                    <option value="indexUpdate">Index Update</option>
+                                    <option value="indexSwap">Index Swap</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="table-container">
+                            <table class="data-table" id="tasksTable">
+                                <thead>
+                                    <tr>
+                                        <th>Task UID</th>
+                                        <th>Type</th>
+                                        <th>Index</th>
+                                        <th>Status</th>
+                                        <th>Progress</th>
+                                        <th>Started</th>
+                                        <th>Finished</th>
+                                        <th>Duration</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tasksTableBody">
+                                    <tr><td colspan="9" class="loading">Loading tasks...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div id="taskPagination" class="pagination" style="margin-top: 1rem; display: flex; justify-content: center; align-items: center; gap: 1rem;">
+                            <button class="btn btn-secondary btn-sm" id="taskPrevPage" disabled>← Previous</button>
+                            <span id="taskPageInfo">Showing 0-0 of 0 tasks</span>
+                            <button class="btn btn-secondary btn-sm" id="taskNextPage" disabled>Next →</button>
+                        </div>
+                    </div>
+
+                    <!-- Task Details Modal -->
+                    <div id="taskDetailsModal" class="modal">
+                        <div class="modal-content" style="max-width: 800px;">
+                            <div class="modal-header">
+                                <h3>Task Details</h3>
+                                <button class="modal-close" id="taskDetailsModalClose">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <div id="taskDetailsContent"></div>
+                            </div>
+                            <div class="modal-footer">
+                                <button class="btn btn-secondary" id="taskDetailsCloseBtn">Close</button>
+                            </div>
+                        </div>
                     </div>
                 </section>
 
