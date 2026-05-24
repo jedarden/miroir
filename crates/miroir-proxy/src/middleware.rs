@@ -346,6 +346,12 @@ pub struct Metrics {
     query_plan_narrowable_total: CounterVec,
     query_plan_fanout_size: Histogram,
     query_plan_narrowing_ratio: Gauge,
+
+    // ── §13.1 Resharding metrics (always present) ──
+    reshard_in_progress: Gauge,
+    reshard_phase: GaugeVec,
+    reshard_documents_backfilled_total: CounterVec,
+    reshard_cleanup_completed_seconds: Histogram,
 }
 
 impl Clone for Metrics {
@@ -448,6 +454,10 @@ impl Clone for Metrics {
             query_plan_narrowable_total: self.query_plan_narrowable_total.clone(),
             query_plan_fanout_size: self.query_plan_fanout_size.clone(),
             query_plan_narrowing_ratio: self.query_plan_narrowing_ratio.clone(),
+            reshard_in_progress: self.reshard_in_progress.clone(),
+            reshard_phase: self.reshard_phase.clone(),
+            reshard_documents_backfilled_total: self.reshard_documents_backfilled_total.clone(),
+            reshard_cleanup_completed_seconds: self.reshard_cleanup_completed_seconds.clone(),
         }
     }
 }
@@ -1316,11 +1326,49 @@ impl Metrics {
         ))
         .expect("create query_plan_narrowing_ratio");
 
+        // ── §13.1 Resharding metrics ──
+        let reshard_in_progress = Gauge::with_opts(Opts::new(
+            "miroir_reshard_in_progress",
+            "Number of resharding operations currently in progress",
+        ))
+        .expect("create reshard_in_progress");
+
+        let reshard_phase = GaugeVec::new(
+            Opts::new(
+                "miroir_reshard_phase",
+                "Current phase of resharding operation (0=idle, 1=shadow, 2=dual_write, 3=backfill, 4=verify, 5=swap, 6=cleanup)",
+            ),
+            &["index_uid"],
+        )
+        .expect("create reshard_phase");
+
+        let reshard_documents_backfilled_total = CounterVec::new(
+            Opts::new(
+                "miroir_reshard_documents_backfilled_total",
+                "Total number of documents backfilled during resharding",
+            ),
+            &["index_uid", "source_index"],
+        )
+        .expect("create reshard_documents_backfilled_total");
+
+        let reshard_cleanup_completed_seconds = Histogram::with_opts(
+            HistogramOpts::new(
+                "miroir_reshard_cleanup_completed_seconds",
+                "Time taken to complete cleanup phase (old index deletion)",
+            )
+            .buckets(vec![0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0]),
+        )
+        .expect("create reshard_cleanup_completed_seconds");
+
         reg!(query_coalesce_subscribers_total);
         reg!(query_coalesce_hits_total);
         reg!(query_plan_narrowable_total);
         reg!(query_plan_fanout_size);
         reg!(query_plan_narrowing_ratio);
+        reg!(reshard_in_progress);
+        reg!(reshard_phase);
+        reg!(reshard_documents_backfilled_total);
+        reg!(reshard_cleanup_completed_seconds);
 
         Self {
             registry,
@@ -1416,6 +1464,10 @@ impl Metrics {
             query_plan_narrowable_total,
             query_plan_fanout_size,
             query_plan_narrowing_ratio,
+            reshard_in_progress,
+            reshard_phase,
+            reshard_documents_backfilled_total,
+            reshard_cleanup_completed_seconds,
         }
     }
 
@@ -2206,6 +2258,34 @@ impl Metrics {
         self.query_plan_narrowing_ratio.set(ratio);
     }
 
+    // ── §13.1 Resharding metrics ──
+
+    pub fn set_reshard_in_progress(&self, v: bool) {
+        self.reshard_in_progress.set(if v { 1.0 } else { 0.0 });
+    }
+
+    pub fn set_reshard_phase(&self, index_uid: &str, phase: u8) {
+        self.reshard_phase
+            .with_label_values(&[index_uid])
+            .set(phase as f64);
+    }
+
+    pub fn inc_reshard_documents_backfilled(
+        &self,
+        index_uid: &str,
+        source_index: &str,
+        count: u64,
+    ) {
+        self.reshard_documents_backfilled_total
+            .with_label_values(&[index_uid, source_index])
+            .inc_by(count as f64);
+    }
+
+    pub fn observe_reshard_cleanup_completed(&self, duration_secs: f64) {
+        self.reshard_cleanup_completed_seconds
+            .observe(duration_secs);
+    }
+
     pub fn registry(&self) -> &Registry {
         &self.registry
     }
@@ -2813,5 +2893,52 @@ mod tests {
             message = "fan-out buffer contents",
             "trace log"
         );
+    }
+
+    #[test]
+    fn test_reshard_metrics() {
+        let metrics = Metrics::new(&MiroirConfig::default());
+
+        // Test reshard_in_progress gauge
+        metrics.set_reshard_in_progress(true);
+        metrics.reshard_in_progress.set(0.0); // Reset
+
+        // Test reshard_phase gauge
+        metrics.set_reshard_phase("products", 3);
+        metrics
+            .reshard_phase
+            .with_label_values(&["products"])
+            .set(0.0);
+
+        // Test reshard_documents_backfilled_total counter
+        metrics.inc_reshard_documents_backfilled("products", "products__old", 1000);
+        metrics.inc_reshard_documents_backfilled("products", "products__old", 500);
+
+        // Test reshard_cleanup_completed_seconds histogram
+        metrics.observe_reshard_cleanup_completed(5.2);
+        metrics.observe_reshard_cleanup_completed(10.5);
+
+        // Encode and verify the metrics appear in output
+        let encoded = metrics.encode_metrics().unwrap();
+
+        assert!(
+            encoded.contains("miroir_reshard_in_progress"),
+            "missing miroir_reshard_in_progress metric"
+        );
+        assert!(
+            encoded.contains("miroir_reshard_phase"),
+            "missing miroir_reshard_phase metric"
+        );
+        assert!(
+            encoded.contains("miroir_reshard_documents_backfilled_total"),
+            "missing miroir_reshard_documents_backfilled_total metric"
+        );
+        assert!(
+            encoded.contains("miroir_reshard_cleanup_completed_seconds"),
+            "missing miroir_reshard_cleanup_completed_seconds metric"
+        );
+
+        // Verify the counter has the expected value (1500)
+        assert!(encoded.contains("miroir_reshard_documents_backfilled_total{index_uid=\"products\",source_index=\"products__old\"} 1500"));
     }
 }
