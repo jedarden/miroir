@@ -6,6 +6,7 @@ pub mod aliases;
 pub mod canary;
 pub mod cdc;
 pub mod documents;
+pub mod dumps;
 pub mod explain;
 pub mod health;
 pub mod indexes;
