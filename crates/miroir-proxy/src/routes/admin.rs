@@ -2,7 +2,7 @@
 //!
 //! This router requires `admin_endpoints::AppState` to be provided via `.with_state()`.
 
-use super::{admin_endpoints, aliases, canary, cdc, explain, session};
+use super::{admin_endpoints, aliases, canary, cdc, dumps, explain, session};
 use axum::{
     extract::FromRef,
     routing::{delete, get, post, put},
@@ -93,4 +93,6 @@ where
         .route("/shadow/stats", get(admin_endpoints::get_shadow_stats::<S>))
         // CDC changes endpoint (plan §13.13)
         .route("/changes", get(cdc::get_changes::<S>))
+        // Dump import routes (plan §13.9)
+        .nest("/dumps", dumps::routes())
 }

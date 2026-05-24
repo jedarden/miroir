@@ -4,9 +4,13 @@
 //! instead of broadcasting to all nodes.
 
 use crate::error::{MiroirError, Result};
-use crate::router::{assign_shard_in_group, shard_for_key};
+use crate::router::assign_shard_in_group;
+use crate::router::shard_for_key;
+use crate::scatter::{NodeClient, WriteRequest};
 use crate::topology::{NodeId, Topology};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -77,6 +81,31 @@ pub enum DumpImportPhase {
     Failed = 5,
 }
 
+impl DumpImportPhase {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Reading => "reading",
+            Self::Routing => "routing",
+            Self::ApplyingSettings => "applying_settings",
+            Self::Complete => "complete",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "idle" => Some(Self::Idle),
+            "reading" => Some(Self::Reading),
+            "routing" => Some(Self::Routing),
+            "applying_settings" => Some(Self::ApplyingSettings),
+            "complete" => Some(Self::Complete),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
 /// Dump import status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DumpImportStatus {
@@ -85,7 +114,7 @@ pub struct DumpImportStatus {
     /// Target index UID.
     pub index_uid: String,
     /// Current phase.
-    pub phase: DumpImportPhase,
+    pub phase: String,
     /// Documents processed so far.
     pub documents_processed: u64,
     /// Total documents (estimated).
@@ -99,22 +128,25 @@ pub struct DumpImportStatus {
 }
 
 /// Dump import manager.
-pub struct DumpImportManager {
+pub struct DumpImportManager<C: NodeClient + Send + Sync + 'static> {
     /// Configuration.
     config: DumpImportConfig,
     /// Active imports (ID -> status).
     active_imports: Arc<RwLock<HashMap<String, DumpImportStatus>>>,
     /// Topology for routing.
     topology: Arc<Topology>,
+    /// HTTP client for posting documents.
+    client: Arc<C>,
 }
 
-impl DumpImportManager {
+impl<C: NodeClient + Send + Sync + 'static> DumpImportManager<C> {
     /// Create a new dump import manager.
-    pub fn new(config: DumpImportConfig, topology: Arc<Topology>) -> Self {
+    pub fn new(config: DumpImportConfig, topology: Arc<Topology>, client: C) -> Self {
         Self {
             config,
             active_imports: Arc::new(RwLock::new(HashMap::new())),
             topology,
+            client: Arc::new(client),
         }
     }
 
@@ -139,7 +171,7 @@ impl DumpImportManager {
         let status = DumpImportStatus {
             id: import_id.clone(),
             index_uid: index_uid.clone(),
-            phase: DumpImportPhase::Reading,
+            phase: DumpImportPhase::Reading.as_str().to_string(),
             documents_processed: 0,
             total_documents: 0,
             bytes_read: 0,
@@ -152,30 +184,31 @@ impl DumpImportManager {
             imports.insert(import_id.clone(), status);
         }
 
-        // Clone import_id before moving into the async block
-        let import_id_for_spawn = import_id.clone();
+        // Run the import directly (for now, can be made background later)
+        let result = Self::run_import(
+            &import_id,
+            index_uid,
+            dump_data,
+            primary_key,
+            shard_count,
+            self.topology.clone(),
+            self.config.clone(),
+            self.active_imports.clone(),
+            self.client.clone(),
+        )
+        .await;
 
-        // Spawn background import task
-        let imports = self.active_imports.clone();
-        let topology = self.topology.clone();
-        let config = self.config.clone();
+        if let Err(e) = result {
+            tracing::error!("Dump import {} failed: {}", import_id, e);
 
-        tokio::spawn(async move {
-            if let Err(e) = Self::run_import(
-                &import_id_for_spawn,
-                index_uid,
-                dump_data,
-                primary_key,
-                shard_count,
-                topology,
-                config,
-                imports,
-            )
-            .await
-            {
-                tracing::error!("Dump import {} failed: {}", import_id_for_spawn, e);
+            // Update status to failed
+            let mut imports = self.active_imports.write().await;
+            if let Some(status) = imports.get_mut(&import_id) {
+                status.phase = DumpImportPhase::Failed.as_str().to_string();
+                status.error = Some(e.to_string());
+                status.phase_started_at = millis_now();
             }
-        });
+        }
 
         Ok(import_id)
     }
@@ -196,6 +229,7 @@ impl DumpImportManager {
         topology: Arc<Topology>,
         config: DumpImportConfig,
         imports: Arc<RwLock<HashMap<String, DumpImportStatus>>>,
+        client: Arc<C>,
     ) -> Result<()> {
         // Update phase to reading
         Self::update_phase(&imports, import_id, DumpImportPhase::Reading).await;
@@ -204,17 +238,17 @@ impl DumpImportManager {
         let data_str = std::str::from_utf8(&dump_data)
             .map_err(|e| MiroirError::InvalidRequest(format!("invalid UTF-8 in dump: {}", e)))?;
 
-        // Per-target buffers
-        let mut per_target_buffers: HashMap<(NodeId, u32), Vec<serde_json::Value>> = HashMap::new();
+        // Per-target buffers: (node_id, shard_id) -> Vec<documents>
+        let mut per_target_buffers: HashMap<(NodeId, u32), Vec<Value>> = HashMap::new();
 
         let mut processed = 0u64;
-        let _total_estimate = 0u64;
+        let bytes_read = dump_data.len() as u64;
 
         for line in data_str.lines() {
             if line.is_empty() {
                 continue;
             }
-            let doc: serde_json::Value = serde_json::from_str(line)
+            let mut doc: Value = serde_json::from_str(line)
                 .map_err(|e| MiroirError::InvalidRequest(format!("invalid JSON in dump: {}", e)))?;
 
             // Extract primary key value
@@ -230,6 +264,9 @@ impl DumpImportManager {
 
             // Compute shard and route
             let shard_id = shard_for_key(pk_value, shard_count);
+
+            // Inject _miroir_shard into the document
+            doc["_miroir_shard"] = serde_json::json!(shard_id);
 
             // Get target nodes for this shard (assign across all replica groups)
             let target_nodes: Vec<NodeId> = topology
@@ -263,6 +300,8 @@ impl DumpImportManager {
                     &imports,
                     import_id,
                     processed,
+                    bytes_read,
+                    &client,
                 )
                 .await?;
             }
@@ -276,6 +315,8 @@ impl DumpImportManager {
             &imports,
             import_id,
             processed,
+            bytes_read,
+            &client,
         )
         .await?;
 
@@ -288,31 +329,85 @@ impl DumpImportManager {
     /// Flush buffered documents to target nodes.
     async fn flush_buffers(
         index_uid: &str,
-        buffers: &mut HashMap<(NodeId, u32), Vec<serde_json::Value>>,
+        buffers: &mut HashMap<(NodeId, u32), Vec<Value>>,
         _config: &DumpImportConfig,
         imports: &Arc<RwLock<HashMap<String, DumpImportStatus>>>,
         import_id: &str,
         processed: u64,
+        bytes_read: u64,
+        client: &Arc<C>,
     ) -> Result<()> {
+        // Build write requests for each target
+        let mut write_tasks = Vec::new();
+
         for ((node, _shard), docs) in buffers.drain() {
             if docs.is_empty() {
                 continue;
             }
 
-            // POST documents to the node
-            // In a real implementation, this would use the HTTP client
-            tracing::debug!(
-                "Flushing {} documents to node {} for index {}",
-                docs.len(),
-                node,
-                index_uid
-            );
+            let node_id = node.clone();
+            let index = index_uid.to_string();
+            let documents = docs;
+            let client_ref = client;
 
-            // Update status
-            let mut imports = imports.write().await;
-            if let Some(status) = imports.get_mut(import_id) {
-                status.documents_processed = processed;
+            write_tasks.push(async move {
+                let write_req = WriteRequest {
+                    index_uid: index.clone(),
+                    documents: documents.clone(),
+                    primary_key: None,
+                    origin: None,
+                };
+
+                let result = client_ref.write_documents(&node_id, "", &write_req).await;
+
+                (node_id, documents.len(), result)
+            });
+        }
+
+        // Execute all writes in parallel (with concurrency limit)
+        let results = futures_util::stream::iter(write_tasks)
+            .buffer_unordered(_config.parallel_target_writes as usize)
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check for errors
+        for (node, doc_count, result) in results {
+            let _total_docs = doc_count as u64;
+
+            match result {
+                Ok(resp) if resp.success => {
+                    tracing::debug!(
+                        "Flushed {} documents to node {} for index {}",
+                        doc_count,
+                        node,
+                        index_uid
+                    );
+                }
+                Ok(resp) => {
+                    tracing::warn!(
+                        "Failed to flush {} documents to node {} for index {}: {}",
+                        doc_count,
+                        node,
+                        index_uid,
+                        resp.message.unwrap_or_default()
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Error flushing documents to node {} for index {}: {:?}",
+                        node,
+                        index_uid,
+                        e
+                    );
+                }
             }
+        }
+
+        // Update status
+        let mut imports_guard = imports.write().await;
+        if let Some(status) = imports_guard.get_mut(import_id) {
+            status.documents_processed = processed;
+            status.bytes_read = bytes_read;
         }
 
         Ok(())
@@ -326,7 +421,7 @@ impl DumpImportManager {
     ) {
         let mut imports = imports.write().await;
         if let Some(status) = imports.get_mut(import_id) {
-            status.phase = phase;
+            status.phase = phase.as_str().to_string();
             status.phase_started_at = millis_now();
         }
     }
@@ -340,18 +435,11 @@ fn millis_now() -> u64 {
         .as_millis() as u64
 }
 
-impl Default for DumpImportManager {
-    fn default() -> Self {
-        Self::new(
-            DumpImportConfig::default(),
-            Arc::new(Topology::new(1, 1, 1)),
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scatter::MockNodeClient;
+    use crate::topology::Node;
 
     #[test]
     fn test_config_default() {
@@ -364,16 +452,34 @@ mod tests {
     #[test]
     fn test_phase_serialization() {
         let phase = DumpImportPhase::Routing;
-        let json = serde_json::to_string(&phase).unwrap();
-        assert_eq!(json, "\"Routing\"");
+        assert_eq!(phase.as_str(), "routing");
 
-        let deserialized: DumpImportPhase = serde_json::from_str(&json).unwrap();
+        let deserialized = DumpImportPhase::from_str("routing").unwrap();
         assert_eq!(deserialized, DumpImportPhase::Routing);
+    }
+
+    #[test]
+    fn test_phase_roundtrip() {
+        for phase in [
+            DumpImportPhase::Idle,
+            DumpImportPhase::Reading,
+            DumpImportPhase::Routing,
+            DumpImportPhase::ApplyingSettings,
+            DumpImportPhase::Complete,
+            DumpImportPhase::Failed,
+        ] {
+            let s = phase.as_str();
+            let parsed = DumpImportPhase::from_str(s).unwrap();
+            assert_eq!(parsed, phase);
+        }
     }
 
     #[tokio::test]
     async fn test_get_status_nonexistent() {
-        let manager = DumpImportManager::default();
+        let topology = Arc::new(Topology::new(64, 2, 1));
+        let client = MockNodeClient::default();
+        let manager = DumpImportManager::new(DumpImportConfig::default(), topology, client);
+
         let status = manager.get_status("nonexistent").await;
         assert!(status.is_none());
     }
@@ -385,12 +491,107 @@ mod tests {
             ..Default::default()
         };
         let topology = Arc::new(Topology::new(64, 2, 1));
-        let manager = DumpImportManager::new(config, topology);
+        let client = MockNodeClient::default();
+        let manager = DumpImportManager::new(config, topology, client);
 
         let result = manager
             .start_import("products".into(), vec![1, 2, 3], "id".into(), 64)
             .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_import_success() {
+        // Create topology with nodes
+        let mut topology = Topology::new(64, 2, 1);
+        topology.add_node(Node::new(
+            NodeId::new("node-0".into()),
+            "http://node-0:7700".into(),
+            0,
+        ));
+        topology.add_node(Node::new(
+            NodeId::new("node-1".into()),
+            "http://node-1:7700".into(),
+            0,
+        ));
+
+        let topology = Arc::new(topology);
+
+        // Create mock client
+        let mut client = MockNodeClient::default();
+        client.write_responses.insert(
+            NodeId::new("node-0".into()),
+            WriteResponse {
+                success: true,
+                task_uid: Some(1),
+                message: None,
+                code: None,
+                error_type: None,
+            },
+        );
+        client.write_responses.insert(
+            NodeId::new("node-1".into()),
+            WriteResponse {
+                success: true,
+                task_uid: Some(2),
+                message: None,
+                code: None,
+                error_type: None,
+            },
+        );
+
+        let manager = DumpImportManager::new(DumpImportConfig::default(), topology, client);
+
+        // Create test dump data
+        let dump_data = r#"{"id": "1", "name": "Product 1"}
+{"id": "2", "name": "Product 2"}
+{"id": "3", "name": "Product 3"}"#
+            .as_bytes()
+            .to_vec();
+
+        let import_id = manager
+            .start_import("products".into(), dump_data, "id".into(), 64)
+            .await
+            .expect("Import should succeed");
+
+        // Wait a bit for the import to complete
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // Check final status
+        let status = manager.get_status(&import_id).await;
+        assert!(status.is_some());
+
+        let status = status.unwrap();
+        assert_eq!(status.index_uid, "products");
+        assert_eq!(status.documents_processed, 3);
+    }
+
+    #[tokio::test]
+    async fn test_import_invalid_json() {
+        let topology = Arc::new(Topology::new(64, 2, 1));
+        let client = MockNodeClient::default();
+        let manager = DumpImportManager::new(DumpImportConfig::default(), topology, client);
+
+        let dump_data = b"invalid json".to_vec();
+
+        let result = manager
+            .start_import("products".into(), dump_data, "id".into(), 64)
+            .await;
+
+        // Should return an ID but the import will fail in the background
+        assert!(result.is_ok());
+
+        let import_id = result.unwrap();
+
+        // Wait for background task to fail
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        let status = manager.get_status(&import_id).await;
+        assert!(status.is_some());
+
+        let status = status.unwrap();
+        assert_eq!(status.phase, "failed");
+        assert!(status.error.is_some());
     }
 }
