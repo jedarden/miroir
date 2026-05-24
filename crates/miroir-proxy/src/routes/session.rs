@@ -10,7 +10,7 @@
 
 use axum::{
     extract::{Extension, FromRef, Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -18,6 +18,7 @@ use miroir_core::task_store::{NewAdminSession, TaskStore};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::admin_session::{seal_session, COOKIE_NAME};
 use crate::auth::{build_csp_header, generate_csrf_token, validate_origin, AdminSessionId};
 
 use super::admin_endpoints::AppState;
@@ -86,7 +87,7 @@ pub async fn admin_login<S>(
     State(state): State<S>,
     headers: HeaderMap,
     Json(body): Json<AdminLoginRequest>,
-) -> Result<Json<AdminLoginResponse>, (StatusCode, String)>
+) -> Result<Response, (StatusCode, String)>
 where
     S: Clone + Send + Sync + 'static,
     AppState: FromRef<S>,
@@ -171,11 +172,34 @@ where
         "admin login successful"
     );
 
-    Ok(Json(AdminLoginResponse {
+    // Seal the session ID for the cookie (plan §9)
+    let sealed = seal_session(&session_id, &state.seal_key).map_err(|e| {
+        warn!(error = %e, "failed to seal admin session");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to create session".into(),
+        )
+    })?;
+
+    // Build the Set-Cookie header with HttpOnly, Secure, SameSite=Strict (plan §9)
+    let cookie_value = format!(
+        "{}={}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}",
+        COOKIE_NAME, sealed, config.admin_ui.session_ttl_s
+    );
+
+    // Build response with Set-Cookie header and JSON body
+    let response_body = AdminLoginResponse {
         session_id,
         csrf_token,
         expires_at,
-    }))
+    };
+
+    let mut response = Json(response_body).into_response();
+    if let Ok(cookie_header) = HeaderValue::from_str(&cookie_value) {
+        response.headers_mut().insert("Set-Cookie", cookie_header);
+    }
+
+    Ok(response)
 }
 
 /// GET /_miroir/admin/session - validate admin session and refresh CSRF token.

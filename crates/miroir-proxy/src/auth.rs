@@ -76,15 +76,15 @@ pub struct JwtClaims {
 }
 
 /// Key ID embedded in the JWT header to identify which secret signed it.
-const KID_PRIMARY: &str = "primary";
-const KID_PREVIOUS: &str = "previous";
+pub const KID_PRIMARY: &str = "primary";
+pub const KID_PREVIOUS: &str = "previous";
 
 /// JWT header (always HS256).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct JwtHeader {
-    alg: String,
-    kid: String,
-    typ: String,
+pub struct JwtHeader {
+    pub alg: String,
+    pub kid: String,
+    pub typ: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ struct JwtHeader {
 // ---------------------------------------------------------------------------
 
 /// Encode and sign a JWT with the given secret.
-fn jwt_encode(header: &JwtHeader, claims: &JwtClaims, secret: &[u8]) -> Result<String, String> {
+pub fn jwt_encode(header: &JwtHeader, claims: &JwtClaims, secret: &[u8]) -> Result<String, String> {
     let header_json = serde_json::to_string(header).map_err(|e| e.to_string())?;
     let claims_json = serde_json::to_string(claims).map_err(|e| e.to_string())?;
 
@@ -2159,5 +2159,230 @@ mod tests {
             &state,
         );
         assert_eq!(verdict, AuthVerdict::Authenticated(TokenKind::Jwt));
+    }
+
+    // -----------------------------------------------------------------------
+    // CSRF middleware tests (plan §9, bead miroir-46p.6)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn csrf_bypass_for_bearer_token() {
+        // Cookie-auth POST without X-CSRF-Token → 403
+        // Cookie-auth POST with wrong token → 403
+        // Bearer-auth POST without X-CSRF-Token → 200 (bearer bypasses CSRF)
+        // This test verifies the bypass works
+        let state = test_state_with_jwt();
+        let csrf_state = crate::auth::CsrfState {
+            auth: state.clone(),
+            redis_store: None,
+        };
+
+        // Create a POST request with Bearer token but no CSRF token
+        let mut req = Request::builder()
+            .uri("/_miroir/admin/some-endpoint")
+            .method(Method::POST)
+            .header("Authorization", "Bearer admin-key-456")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        // Run through CSRF middleware
+        let response = csrf_middleware(
+            State(csrf_state),
+            req,
+            Next::new(|_| async {
+                // This should not be reached for CSRF check failure
+                Response::new(axum::body::Body::from("should not reach"))
+            }),
+        )
+        .await;
+
+        // Bearer token should bypass CSRF check - response should not be a CSRF error
+        // (Note: this will still fail auth later, but CSRF middleware should pass)
+        assert_ne!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn csrf_token_extraction() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-CSRF-Token", "test-token-123".parse().unwrap());
+
+        let token = extract_csrf_token(&headers);
+        assert_eq!(token, Some("test-token-123".to_string()));
+    }
+
+    #[test]
+    fn csrf_token_missing() {
+        let headers = HeaderMap::new();
+        let token = extract_csrf_token(&headers);
+        assert_eq!(token, None);
+    }
+
+    #[test]
+    fn csrf_constant_time_compare() {
+        assert!(constant_time_csrf_compare("same-token", "same-token"));
+        assert!(!constant_time_csrf_compare("different", "tokens"));
+    }
+
+    #[test]
+    fn csrf_token_generation() {
+        let token1 = generate_csrf_token();
+        let token2 = generate_csrf_token();
+
+        // Tokens should be different (random)
+        assert_ne!(token1, token2);
+
+        // Tokens should be base64-like (alphanumeric + -_)
+        assert!(token1
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn validate_csrf_token_matches() {
+        let token = "test-csrf-token";
+        let expected = "test-csrf-token";
+        assert!(validate_csrf_token(token, expected).is_ok());
+    }
+
+    #[test]
+    fn validate_csrf_token_mismatch() {
+        let token = "test-csrf-token";
+        let expected = "different-token";
+        assert!(validate_csrf_token(token, expected).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Origin validation tests (plan §9, bead miroir-46p.6)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn origin_allowed_same_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Host", "admin.example.com".parse().unwrap());
+        headers.insert("Origin", "https://admin.example.com".parse().unwrap());
+
+        let allowed = vec!["same-origin".to_string()];
+        let verdict = validate_origin(&headers, &allowed, true);
+
+        assert_eq!(verdict, OriginVerdict::Allowed);
+    }
+
+    #[test]
+    fn origin_allowed_specific_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Origin", "https://admin.example.com".parse().unwrap());
+
+        let allowed = vec!["https://admin.example.com".to_string()];
+        let verdict = validate_origin(&headers, &allowed, false);
+
+        assert_eq!(verdict, OriginVerdict::Allowed);
+    }
+
+    #[test]
+    fn origin_forbidden_not_in_list() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Origin", "https://evil.com".parse().unwrap());
+
+        let allowed = vec!["https://admin.example.com".to_string()];
+        let verdict = validate_origin(&headers, &allowed, false);
+
+        assert_eq!(verdict, OriginVerdict::Forbidden);
+    }
+
+    #[test]
+    fn origin_missing_same_origin_by_default() {
+        let headers = HeaderMap::new(); // No Origin header
+
+        let allowed = vec!["same-origin".to_string()];
+        let verdict = validate_origin(&headers, &allowed, true);
+
+        assert_eq!(verdict, OriginVerdict::Missing);
+    }
+
+    #[test]
+    fn origin_forbidden_when_missing_and_not_default() {
+        let headers = HeaderMap::new(); // No Origin header
+
+        let allowed = vec!["https://admin.example.com".to_string()];
+        let verdict = validate_origin(&headers, &allowed, false);
+
+        assert_eq!(verdict, OriginVerdict::Forbidden);
+    }
+
+    #[test]
+    fn origin_allowed_wildcard() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Origin", "https://any-origin.com".parse().unwrap());
+
+        let allowed = vec!["*".to_string()];
+        let verdict = validate_origin(&headers, &allowed, false);
+
+        assert_eq!(verdict, OriginVerdict::Allowed);
+    }
+
+    #[test]
+    fn origin_referer_fallback() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Referer", "https://admin.example.com/path".parse().unwrap());
+
+        let allowed = vec!["https://admin.example.com".to_string()];
+        let verdict = validate_origin(&headers, &allowed, false);
+
+        assert_eq!(verdict, OriginVerdict::Allowed);
+    }
+
+    // -----------------------------------------------------------------------
+    // CSP header builder tests (plan §9, bead miroir-46p.6)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn csp_base_template() {
+        let base = "default-src 'self'; script-src 'self'";
+        let overrides = miroir_core::config::CspOverridesConfig::default();
+
+        let csp = build_csp_header(base, &overrides);
+        assert_eq!(csp, "default-src 'self'; script-src 'self'");
+    }
+
+    #[test]
+    fn csp_override_script_src() {
+        let base = "default-src 'self'; script-src 'self'";
+        let overrides = miroir_core::config::CspOverridesConfig {
+            script_src: vec!["https://cdn.example.com".to_string()],
+            ..Default::default()
+        };
+
+        let csp = build_csp_header(base, &overrides);
+        assert!(csp.contains("script-src 'self' https://cdn.example.com"));
+    }
+
+    #[test]
+    fn csp_override_multiple_sources() {
+        let base = "default-src 'self'; connect-src 'self'";
+        let overrides = miroir_core::config::CspOverridesConfig {
+            connect_src: vec![
+                "https://api.example.com".to_string(),
+                "https://cdn.example.com".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let csp = build_csp_header(base, &overrides);
+        assert!(csp.contains("connect-src 'self' https://api.example.com https://cdn.example.com"));
+    }
+
+    #[test]
+    fn csp_override_additive() {
+        let base = "default-src 'self'; script-src 'self'";
+        let overrides = miroir_core::config::CspOverridesConfig {
+            script_src: vec!["https://cdn.example.com".to_string()],
+            img_src: vec!["data:".to_string()],
+            ..Default::default()
+        };
+
+        let csp = build_csp_header(base, &overrides);
+        // Base template should be preserved, overrides added
+        assert!(csp.contains("script-src 'self' https://cdn.example.com"));
+        assert!(csp.contains("img-src data:"));
     }
 }
