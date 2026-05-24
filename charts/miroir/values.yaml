@@ -1,313 +1,115 @@
-# Miroir Helm Chart Values
-# These defaults boot a working single-pod install for evaluation and CI.
-# For production, override to: replicas=2+, replicationFactor=2, replicaGroups=2,
-# taskStore.backend=redis, redis.enabled=true, hpa.enabled=true
-#
-# SECRET INVENTORY (plan §9):
-# ┌──────────────────────────┬───────────────────────────────┬─────────────────────┐
-# │ Secret                   │ Managed by                    │ Rotation            │
-# ├──────────────────────────┼───────────────────────────────┼─────────────────────┤
-# │ masterKey                │ Helm / ESO                    │ Manual key change   │
-# │ nodeMasterKey            │ Helm / ESO                    │ Zero-downtime (§9)  │
-# │ MEILI_MASTER_KEY         │ Helm / ESO                    │ Pod restart only    │
-# │ adminApiKey              │ Helm / ESO                    │ Manual + restart    │
-# │ adminSessionSealKey      │ Helm / ESO                    │ Manual + restart    │
-# │ searchUiJwtSecret        │ Helm / ESO                    │ Zero-downtime (§9)  │
-# │ searchUiJwtSecretPrev    │ Helm / ESO                    │ Overlap window      │
-# │ searchUiSharedKey        │ Helm / ESO                    │ Manual + restart    │
-# │ redis_password           │ Helm / ESO                    │ Manual + restart    │
-# │ ghcr_credentials         │ Argo Workflows (CI only)      │ Manual              │
-# │ github_token             │ Argo Workflows (CI only)      │ Manual              │
-# └──────────────────────────┴───────────────────────────────┴─────────────────────┘
-# ghcr_credentials and github_token are NOT in this chart — they belong to the
-# Argo Workflows service account in the iad-ci cluster (see CLAUDE.md CI/CD section).
-# MEILI_MASTER_KEY is set at Meilisearch process start and cannot be rotated
-# without a pod restart (documented in the Meilisearch docs).
+# Default values for miroir.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
 
 miroir:
   image:
     repository: ghcr.io/jedarden/miroir
-    tag: ""  # defaults to Chart.appVersion
+    tag: ""  # Defaults to Chart.appVersion
     pullPolicy: IfNotPresent
+
   replicas: 1  # dev default: override to 2+ in production (requires taskStore.backend=redis)
+
+  # Sharding configuration
   shards: 64
   replicationFactor: 1  # dev default: override to 2 in production
   replicaGroups: 1  # dev default: override to 2 in production
-  masterKey: ""  # auto-generated if empty; ignored when existingSecret is set
-  nodeMasterKey: ""  # auto-generated if empty; admin-scoped key for Meilisearch nodes (plan §9 Model B)
-  adminApiKey: ""  # auto-generated if empty; ignored when existingSecret is set
-  adminSessionSealKey: ""  # 64-byte base64 key for sealing admin session cookies; auto-generated if empty (plan §9)
-  searchUiJwtSecret: ""  # HMAC secret for search UI JWTs; auto-generated when search_ui.enabled=true (plan §9)
-  searchUiJwtSecretPrevious: ""  # Previous JWT secret during rotation overlap window (plan §9)
-  searchUiSharedKey: ""  # Shared key for X-Search-UI-Key header when search_ui.auth.mode=shared_key (plan §9)
-  logLevel: info  # RUST_LOG: trace, debug, info, warn, error
-  existingSecret: ""  # name of K8s Secret with masterKey, nodeMasterKey, adminApiKey
-  podAnnotations: {}
-  podLabels: {}
+
+  # Task store backend (plan §4)
+  # IMPORTANT: When replicas > 1, backend MUST be "redis" (enforced by values.schema.json)
+  taskStore:
+    backend: sqlite  # sqlite | redis
+    path: /data/miroir-tasks.db
+    url: ""  # for redis: redis://host:6379
+
+  # Admin UI
+  admin:
+    enabled: true
+
+  # Scatter policy for unavailable shards
+  scatter:
+    unavailableShardPolicy: partial  # partial | error
+
+  # Horizontal Pod Autoscaler
+  hpa:
+    enabled: false  # dev default; production: true (requires taskStore.backend=redis)
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+  # Ingress configuration
+  ingress:
+    enabled: false
+    className: "nginx"
+    annotations: {}
+      # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    hosts:
+      - host: search.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+    # - secretName: search-tls
+    #   hosts:
+    #     - search.example.com
+
+  # Resource limits (plan §14.2: 2 vCPU / 3.75 GB per pod)
   resources:
     limits:
       cpu: 2000m
-      memory: 3584Mi  # 3.5 GiB (leaves headroom under 3.75 GB envelope)
+      memory: 3840Mi
     requests:
-      cpu: 500m
-      memory: 1Gi
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
-  cdc:
-    enabled: true
-    emit_ttl_deletes: false
-    emit_internal_writes: false
-    buffer:
-      primary: memory  # memory | pvc | redis
-      overflow: drop   # drop | pvc | redis
-      pvc_size: 10Gi
-      pvc_storage_class: ""
-      memory_bytes: 67108864
-  # §14.8 Resource-aware configuration defaults
-  # All defaults sized for 2 vCPU / 3.75 GB envelope
-  server:
-    max_body_bytes: 104857600          # 100 MiB per request
-    max_concurrent_requests: 500
-    request_timeout_ms: 30000
-  connection_pool_per_node:
-    max_idle: 32
-    max_total: 128
-    idle_timeout_s: 60
-  task_registry:
-    cache_size: 10000
-    redis_pool_max: 50
-    ttl_seconds: 604800                # 7 days
-    prune_interval_s: 300
-    prune_batch_size: 10000
-  idempotency:
-    enabled: true
-    max_cached_keys: 1000000           # ~100 MB
-    ttl_seconds: 86400
-  session_pinning:
-    enabled: true
-    ttl_seconds: 900
-    max_sessions: 100000               # ~50 MB
-    wait_strategy: block               # block | route_pin
-    max_wait_ms: 5000
-  query_coalescing:
-    enabled: true
-    window_ms: 50
-    max_subscribers: 1000
-    max_pending_queries: 10000
-  anti_entropy:
-    enabled: true
-    schedule: every 6h
-    shards_per_pass: 0                 # 0 = all shards
-    max_read_concurrency: 2
-    fingerprint_batch_size: 1000
-    auto_repair: true
-    updated_at_field: _miroir_updated_at
-  resharding:
-    enabled: true
-    backfill_concurrency: 4
-    backfill_batch_size: 1000
-    throttle_docs_per_sec: 0           # 0 = no throttle
-    verify_before_swap: true
-    retain_old_index_hours: 48
-    allowed_windows: []                # e.g., ["22:00-04:00 UTC"]
-  peer_discovery:
-    service_name: ""  # default: "<fullname>-headless" (auto-derived from release name)
-    refresh_interval_s: 15
-  leader_election:
-    enabled: true                      # auto-true when replicas > 1
-    lease_ttl_s: 10
-    renew_interval_s: 3
+      cpu: 1000m
+      memory: 2048Mi
 
-search_ui:
-  enabled: true
-  scoped_key_max_age_days: 60        # Maximum lifetime of a scoped Meilisearch key (days)
-  scoped_key_rotate_before_expiry_days: 30  # Rotate this many days before max_age (must be < max_age)
-  scoped_key_rotation_drain_s: 120   # Seconds to wait for all pods to observe new key before revoking old
-
-admin_ui:
-  enabled: true
-  path: "/_miroir/admin"
-  auth: key  # key | oauth (future) | none (dev only)
-  session_ttl_s: 3600  # 1 hour
-  read_only_mode: false
-  allowed_origins:
-    - "same-origin"
-  cors_allowed_origins: []
-  rate_limit:
-    per_ip: "10/minute"  # Rate limit per source IP
-    backend: redis  # redis | local (schema enforces redis when replicas > 1)
-    redis_key_prefix: "miroir:ratelimit:adminlogin:"
-    redis_ttl_s: 60
-    failed_attempt_threshold: 5  # Consecutive failures before exponential backoff
-    backoff_start_minutes: 10  # Initial backoff after threshold
-    backoff_max_hours: 24  # Maximum backoff cap
-
-taskStore:
-  backend: sqlite  # sqlite | redis
-  path: /data/miroir-tasks.db
-  url: ""  # for redis: redis://host:6379
-
-# Horizontal Pod Autoscaler (disabled by default for dev)
-# Per plan §14.4, requires prometheus-adapter when custom metrics are enabled
-# When HPA is enabled, prometheus-adapter is auto-enabled as a dependency
-hpa:
-  enabled: false
-  minReplicas: 2
-  maxReplicas: 10
-  targetCPUUtilizationPercentage: 70
-  targetMemoryUtilizationPercentage: 75
-  targetRequestsInFlight: "500"  # type: Pods AverageValue (per-pod metric)
-  targetBackgroundQueueDepth: "10"  # type: External Value (global metric)
-  annotations: {}
-  behavior:
-    scaleDown:
-      stabilizationWindowSeconds: 300
-      policies:
-        - type: Percent
-          value: 50
-          periodSeconds: 60
-    scaleUp:
-      stabilizationWindowSeconds: 0
-      policies:
-        - type: Percent
-          value: 100
-          periodSeconds: 30
-        - type: Pods
-          value: 2
-          periodSeconds: 60
-      selectPolicy: Max
-
-# ServiceAccount
-serviceAccount:
-  create: true
-  name: ""  # defaults to release name
-  annotations: {}
-
-# Services
-service:
-  type: ClusterIP
-  annotations: {}
-  ports:
-    http: 7700
-    metrics: 9090
-
-headless:
-  annotations: {}
-
-# Meilisearch StatefulSet
-meilisearch:
-  enabled: true
-  image:
-    repository: getmeilisearch/meilisearch
-    tag: v1.12
-    pullPolicy: IfNotPresent
-  replicas: 2  # 1 group × 2 nodes (dev default)
-  nodesPerGroup: 2  # nodes per replica group
+  # Pod annotations
   podAnnotations: {}
-  podLabels: {}
-  resources:
-    limits:
-      cpu: 2000m
-      memory: 2Gi
-    requests:
-      cpu: 500m
-      memory: 1Gi
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
-  persistence:
-    enabled: true
-    size: 10Gi
-    storageClass: ""  # uses default storage class
-  env: []
-  masterKey: ""  # defaults to auto-generated; NOT zero-downtime rotatable (fixed at process start)
 
-# Redis deployment (only when taskStore.backend=redis)
+  # Pod security context
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+
+  # Container security context
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 7700
+    annotations: {}
+
+  # Existing secret with keys: masterKey, nodeMasterKey, adminApiKey
+  existingSecret: ""
+
+# Redis deployment (when taskStore.backend=redis)
 redis:
-  enabled: false  # dev default: enable for production
+  enabled: false
   image:
     repository: redis
-    tag: 7.4-alpine
+    tag: 7-alpine
     pullPolicy: IfNotPresent
-  replicas: 1
-  podAnnotations: {}
-  podLabels: {}
   resources:
     limits:
       cpu: 500m
-      memory: 512Mi
+      memory: 256Mi
     requests:
       cpu: 100m
       memory: 128Mi
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
   persistence:
-    enabled: true
-    size: 5Gi
+    enabled: false
+    size: 1Gi
     storageClass: ""
-  service:
-    type: ClusterIP
-    port: 6379
-  auth:
-    enabled: true
-    existingSecret: ""  # auto-generated as <release>-redis-secret when empty; password comes from K8s Secret or ESO
 
-# Prometheus Operator integration (plan §10 + §14.9)
-serviceMonitor:
-  enabled: false  # requires prometheus-operator in cluster
-  interval: 30s
+# Service account
+serviceAccount:
+  create: true
   annotations: {}
-
-prometheusRule:
-  enabled: false  # requires prometheus-operator in cluster
-  annotations: {}
-
-# Grafana dashboard ConfigMap (requires grafana-dashboard sidecar)
-dashboards:
-  enabled: false  # creates a ConfigMap labeled grafana_dashboard=1
-  annotations: {}
-
-# OpenTelemetry tracing (plan §10)
-tracing:
-  enabled: false  # disabled by default for zero overhead
-  endpoint: "http://tempo.monitoring.svc:4317"  # OTLP gRPC endpoint
-  serviceName: "miroir"  # service name for trace identification
-  sampleRate: 0.1  # head-based sampling: 0.1 = ~10% of requests traced
-
-# External Secrets Operator integration (plan §6 + §9)
-# When enabled, ESO pulls secrets from OpenBao via ClusterSecretStore.
-# Set miroir.existingSecret to "<release>-secret" to use the ESO-managed Secret.
-eso:
-  enabled: false  # disabled by default; enable for production with OpenBao
-  refreshInterval: "15m"  # how often ESO re-syncs from the backend
-  secretStoreRef:
-    name: "openbao-backend"  # ClusterSecretStore name in the cluster
-    kind: "ClusterSecretStore"
-  secretPath: "kv/search/miroir"  # OpenBao KV v2 path
-  includePreviousJwt: false  # set true during JWT rotation overlap window
-  includeSharedKey: false  # set true when search_ui.auth.mode=shared_key
-  includeRedisPassword: false  # set true when redis.auth.enabled=true
-
-# Prometheus Adapter (plan §14.4)
-# Required for HPA custom metrics (miroir_requests_in_flight, miroir_background_queue_depth).
-# When HPA is enabled, prometheus-adapter is automatically installed as a dependency.
-prometheusAdapter:
-  enabled: false  # auto-enabled when hpa.enabled=true
-  # Prometheus adapter configuration (plan §14.4)
-  # Custom metrics rules for Miroir HPA
-  customMetrics:
-    # Per-pod metric: miroir_requests_in_flight (type: Pods AverageValue)
-    - name: miroir_requests_in_flight
-      metricsQuery: |
-        sum(mirol_requests_in_flight{<<.LabelMatchers>>}) by (<<.GroupBy>>)
-      type: Pods
-      resource:
-        name: miroir_requests_in_flight
-      container: miroir
-    # Global metric: miroir_background_queue_depth (type: External Value)
-    - name: miroir_background_queue_depth
-      metricsQuery: |
-        sum(miroir_background_queue_depth{<<.LabelMatchers>>})
-      type: Value
+  name: ""

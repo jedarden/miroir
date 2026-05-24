@@ -101,7 +101,7 @@ fn main() {
             result.old_shard_cv,
             result.new_shard_cv,
         );
-        println!("  (computed in {:.2?})", elapsed);
+        println!("  (computed in {elapsed:.2?})");
     }
 
     println!();
@@ -111,7 +111,7 @@ fn main() {
     println!();
 
     for (label, params, result, _elapsed) in &results {
-        println!("--- {} ---", label);
+        println!("--- {label} ---");
         println!("  doc_size: {} bytes", params.doc_size_bytes);
         println!(
             "  corpus: {} bytes ({:.2} GB)",
@@ -203,7 +203,7 @@ fn main() {
         let cv_ok = result.old_shard_cv < 0.05 && result.new_shard_cv < 0.05;
 
         let status = |ok| if ok { "PASS" } else { "FAIL" };
-        println!("  {}:", label);
+        println!("  {label}:");
         println!(
             "    storage amplification == 2.0×:  {} ({:.4}×)",
             status(storage_ok),

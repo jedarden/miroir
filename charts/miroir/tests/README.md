@@ -1,40 +1,33 @@
-# Helm Chart Validation Tests
+# Miroir Helm Chart Tests
 
-## Running All Tests
+This directory contains test cases and validation scripts for the Miroir Helm chart.
+
+## Schema Validation Tests
+
+The `test_schema.py` script validates that the `values.schema.json` constraints are working correctly.
+
+### Test Cases
+
+| Test File | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `replicas-1-sqlite.yaml` | Single replica with SQLite | PASS |
+| `replicas-2-sqlite.yaml` | Multiple replicas with SQLite | FAIL (error: backend must be redis) |
+| `replicas-2-redis.yaml` | Multiple replicas with Redis | PASS |
+
+### Running Tests
 
 ```bash
-./charts/miroir/tests/run-tests.sh
+# Using Python (works without helm installed)
+python3 tests/test_schema.py
+
+# Using helm lint (requires helm)
+helm lint --strict -f tests/replicas-1-sqlite.yaml .
+helm lint --strict -f tests/replicas-2-sqlite.yaml .  # Should fail
+helm lint --strict -f tests/replicas-2-redis.yaml .
 ```
 
-This runs both `helm lint --strict` (schema rules) and `helm template` (render-time rules) for all test cases.
+### Constraint Details
 
-## Test Cases
+The values.schema.json enforces that when `miroir.replicas > 1`, the `taskStore.backend` must be `"redis"`. SQLite is a single-writer database and cannot be shared across multiple pods.
 
-### Schema rejection tests (`helm lint --strict`)
-
-| File | Rule | Description |
-|------|------|-------------|
-| `invalid-multi-replica-sqlite.yaml` | 1 | `replicas>1` with `taskStore.backend: sqlite` — SQLite cannot be shared across pods |
-| `bad-hpa-no-redis.yaml` | 2a | `hpa.enabled: true` with `taskStore.backend: sqlite` — autoscaling requires Redis |
-| `bad-hpa-single-replica.yaml` | 2b | `hpa.enabled: true` with `replicas: 1` — HPA requires `replicas >= 2` |
-| `bad-search-ui-rate-limit-local-multi.yaml` | 3 | `search_ui.rate_limit.backend: local` with `replicas>1` — per-pod limits don't share state |
-| `bad-admin-login-rate-limit-local-multi.yaml` | 4 | `admin_ui.login_rate_limit.backend: local` with `replicas>1` — per-pod limits don't share state |
-
-### Template rejection tests (`helm template`)
-
-| File | Rule | Description |
-|------|------|-------------|
-| `bad-scoped-key-rotate-gte-max.yaml` | 5a | `rotate_before_expiry >= max_age` — rotation fires at/before issuance |
-| `bad-scoped-key-rotate-gt-max.yaml` | 5b | `rotate_before_expiry > max_age` — negative rotation window |
-
-Rule 5 uses template-level `fail()` because JSON Schema draft-7 cannot compare sibling property values.
-
-### Positive tests
-
-| File | Description |
-|------|-------------|
-| `valid-single-replica-sqlite.yaml` | Single replica with SQLite (dev default) |
-| `valid-single-pod-oversized.yaml` | Single-pod oversized mode (4 vCPU / 8 GB) for dev/small deployments |
-| `valid-multi-replica-redis.yaml` | Multi-replica with Redis |
-| `good-production.yaml` | Full production config with HPA, Redis rate limiting, and scoped keys |
-| `good-dev-no-ui.yaml` | Minimal dev defaults |
+See values.schema.json lines 142-161 for the constraint implementation.

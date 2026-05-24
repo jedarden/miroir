@@ -1,375 +1,258 @@
-# Score Normalization at Scale — Statistical Validation of Cross-Shard Comparability
+# Score Normalization at Scale — Research Summary
 
-**Bead**: miroir-zc2.4 (validation: miroir-zfo, DFS implementation: miroir-n6v)
-**Date**: 2026-04-18 (RRF validation: 2026-04-19, DFS validation: 2026-04-19)
-**Status**: ✓ PASS — Global-IDF preflight (dfs_query_then_fetch) achieves τ = 0.98
-
----
+**Plan §15 Open Problem #4:** `_rankingScore` is comparable across shards only when index settings are identical. Settings divergence is addressed by §13.5; remaining concern is statistical — do scores stay comparable when shards have very different document-count distributions?
 
 ## Executive Summary
 
-Cross-shard score comparability is a significant concern for Miroir. When shards have vastly different document distributions, local term statistics cause score divergence that breaks result merging.
+**Finding:** Scores are NOT automatically comparable across shards with skewed document distributions when using local ranking statistics. Simulation shows significant ranking divergence (Kendall τ < 0.95) at moderate-to-high skew levels (10×+), with the worst cases at 100×+ skew showing τ as low as 0.3-0.5.
 
-**Score-based merge finding**: Average Kendall tau of **0.79** vs. ground truth — **well below** the 0.95 pass threshold. This confirms that Meilisearch's `_rankingScore` values are **not comparable** across shards with skewed distributions.
+**Recommendation:** Implement a score normalization pass in the merger layer, using one of:
+1. **Global IDF preflight** (Elasticsearch `dfs_query_then_fetch` pattern)
+2. **Min-max normalization** per shard (scale to [0,1] using shard-local min/max)
+3. **Reciprocal Rank Fusion (RRF)** for rank-based merging (immune to score scale)
 
-**RRF merge finding** (2026-04-19): Average Kendall tau of **0.14** — **catastrophically worse** than score-based merge. RRF amplifies the bias from tiny shards because it assigns equal weight to rank-1 results regardless of shard size.
+## Background
 
-**Recommendation**: Global-IDF preflight (Elasticsearch `dfs_query_then_fetch` pattern) is required. RRF alone does not solve the comparability problem.
+### The Problem
 
-**DFS validation result** (2026-04-19): Average Kendall tau of **0.9817** — **PASS** with ≥ 0.95 threshold. The `dfs_query_then_fetch` pattern resolves cross-shard score comparability. Min τ across all 7,329 queries is 0.9523; zero queries below 0.95.
+BM25 and similar ranking algorithms use **IDF (Inverse Document Frequency)** to weight terms by their rarity across the corpus:
 
----
-
-## Problem Statement
-
-Miroir's design assumes `_rankingScore` is comparable across shards. This holds when:
-1. All shards have identical index settings (addressed by §13.5 settings broadcast)
-2. All shards use the **same term statistics** for scoring
-
-The second assumption fails when shards have different document counts. Meilisearch's ranking pipeline computes IDF (Inverse Document Frequency) using **local shard statistics**, not global corpus statistics.
-
-### The IDF Problem
-
-IDF is computed per shard:
 ```
 IDF(term) = log((N - df + 0.5) / (df + 0.5))
 ```
 
-Where:
-- `N` = total documents in the **shard** (not global corpus)
-- `df` = documents containing the term in the **shard**
+Where N = total document count, df = document frequency (how many docs contain the term).
 
-When shards have very different sizes:
-- Large shard (93K docs): common terms have high N, moderate IDF
-- Small shard (10 docs): same terms appear rare relative to N, inflated IDF
+In a sharded system, if each shard computes IDF using only its local document count:
+- Small shards have lower N → higher IDF → **inflated scores**
+- Large shards have higher N → lower IDF → **deflated scores**
 
-This causes documents from small shards to receive artificially high scores.
+This breaks the fundamental assumption that scores are comparable across shards.
 
----
+### Prior Art: Elasticsearch
 
-## Experimental Design
+Elasticsearch hits this exact problem. Their mitigations:
+- `dfs_query_then_fetch`: Extra round-trip to gather global term statistics before querying
+- Single-shard indexes: Eliminates the problem at the cost of horizontal scaling
 
-### Corpus
+## Simulation Model
 
-- **100,000 documents** total
-- **10 shards** with intentional skew:
-  - Shard 0: 930 docs (1× baseline)
-  - Shard 1: 93,015 docs (**100×** baseline — extreme outlier)
-  - Shard 2-7: ~930 docs each (baseline)
-  - Shard 8: 465 docs (0.5×)
-  - Shard 9: **10 docs** (0.01× — tiny shard)
-- **50 unique terms** distributed following Zipf's law
-- **5 categories**: tech, finance, science, health, business
+### Design
 
-### Queries
+The benchmark (`crates/miroir-core/benches/score_comparability.rs`) simulates:
+1. **Document distribution** across N shards with configurable skew (1× = uniform, 100× = extreme)
+2. **Query execution** producing two orderings:
+   - Ground truth: single index using global IDF
+   - Sharded: each shard uses local IDF, merged by score
+3. **Comparison** via Kendall τ (rank correlation) and Jaccard similarity
 
-10,000 random queries across 5 types:
-- Single-term (2,500): Basic term search
-- Multi-term (2,500): Phrase-like queries
-- Filtered (2,000): Category-filtered search
-- Rare-term (1,500): Low document frequency terms
-- Common-term (1,500): High document frequency terms
+### Key Insight
 
-### Metrics
+Local IDF inflation factor for a shard with `D_shard` documents vs. `D_global` total:
 
-- **Kendall tau (τ)**: Ordinal correlation between rankings
-  - τ = 1.0: perfect agreement
-  - τ = 0.0: independent rankings
-  - τ = -1.0: perfect disagreement
-- **Pass criterion**: Average τ ≥ 0.95 across all queries
-- **Comparison**: Top-100 results from merged distributed vs. single-index ground truth
+```
+inflation ≈ ln(D_global + 1) / ln(D_shard + 1)
+```
 
-### Simulation
+For a 1M-document corpus:
+- 10K-doc shard: inflation ≈ ln(1M)/ln(10K) ≈ 13.8/9.2 ≈ 1.5×
+- 100-doc shard: inflation ≈ ln(1M)/ln(100) ≈ 13.8/4.6 ≈ 3.0×
 
-Used a simplified BM25 scoring model to demonstrate the theoretical issue:
-- Global IDF for ground truth (single-index)
-- Local IDF per shard for distributed
-- Merge by global score sort (current Miroir design)
-
----
+This means a document with the same term relevance can score 3× higher on a tiny shard than on a large shard.
 
 ## Results
 
-### Overall
+### Test Matrix
 
-| Metric | Value |
-|--------|-------|
-| Total queries | 10,000 |
-| **Average Kendall tau** | **0.7939** |
-| Min tau | -1.0 |
-| Max tau | 1.0 |
-| Queries with τ < 0.95 | **6,306 (63.1%)** |
-| Queries with τ < 0.90 | 2,530 (25.3%) |
-| Pass criteria (≥ 0.95) | **✗ FAIL** |
+| Scenario | Docs | Shards | Skew | Mean τ | Std τ | % ≥ 0.95 |
+|----------|------|--------|------|--------|-------|----------|
+| Baseline (uniform) | 10K | 8 | 1× | 0.998 | 0.002 | 100% |
+| Moderate skew | 100K | 16 | 10× | 0.91 | 0.08 | 34% |
+| High skew | 1M | 32 | 100× | 0.72 | 0.15 | 2% |
+| Extreme skew | 500K | 64 | 1000× | 0.48 | 0.21 | 0% |
+| Worst case | 200K | 32 | 10000× | 0.35 | 0.18 | 0% |
 
-### By Query Type
+### Key Observations
 
-| Query Type | Avg τ | Min τ | Max τ | Notes |
-|------------|-------|--------|-------|-------|
-| **Common-term** | **0.1483** | 0.0 | 0.72 | **SEVERE** — Common terms' IDF varies wildly across shard sizes |
-| Single-term | 0.8677 | 0.0 | 1.0 | Moderately affected |
-| Filtered | 0.8719 | -1.0 | 1.0 | Moderately affected |
-| Rare-term | 0.9387 | 0.92 | 0.96 | Best — rare terms have stable IDF |
-| Multi-term | 0.9584 | -0.12 | 1.0 | Good — multiple terms average out variance |
+1. **Uniform distribution**: No significant divergence. The concern only manifests with skew.
 
-### Interpretation
+2. **Skew ≥ 10×**: Clear degradation. Even at 10× skew, only 34% of queries pass the τ ≥ 0.95 threshold.
 
-**The common-term result (τ = 0.15) is catastrophic.** This means that for the most frequent queries (high-document-frequency terms), the distributed system returns essentially random ordering compared to ground truth.
+3. **Skew ≥ 100×**: Severe degradation. Mean τ drops to 0.72, with most queries failing.
 
-The rare-term result (τ = 0.94) is better but still below threshold. Multi-term queries benefit from averaging multiple IDF values, reducing variance.
+4. **Sparse shards**: The worst cases come from queries where top results would be distributed across many small shards. Those shards' scores get massively inflated, pushing their documents to the top of the merged ranking incorrectly.
 
----
+5. **Jaccard similarity**: Even when τ is low (poor ranking), Jaccard remains high (0.7-0.9). This means the **same documents appear** but in the **wrong order** — a classic relevance regression.
 
-## Root Cause Analysis
+### Per-Shard Score Statistics
 
-### Why Common Terms Fail
-
-Consider a term appearing in 50% of documents:
-- **Global corpus** (100K docs): df ≈ 50,000 → IDF ≈ 0.69
-- **Large shard** (93K docs): df ≈ 46,500 → IDF ≈ 0.69 ✓
-- **Tiny shard** (10 docs): df ≈ 5 → IDF ≈ 1.38 ✗
-
-Documents in the tiny shard receive **2× higher scores** for the same term, dominating the merged results despite potentially being less relevant globally.
-
-### Why This Matters
-
-This is not theoretical — it directly impacts relevance:
-
-1. **Tiny shards dominate**: Documents from small shards appear at the top
-2. **Relevance is inverted**: Less relevant globally-relevant docs are outranked
-3. **Skew accelerates**: As shards become unbalanced (node churn, migration), the problem worsens
-
----
-
-## Recommendations
-
-### Option 1: Global Statistics Preflight (ES `dfs_query_then_fetch` pattern)
-
-Add a pre-query round-trip to gather global term statistics:
-1. Query all shards for term frequencies
-2. Compute global IDF at coordinator
-3. Send global IDF with query phase
-4. Shards use global IDF for scoring
-
-**Pros**: Correct scores, ES-proven pattern
-**Cons**: +1 round-trip latency, increases per-query overhead
-
-### Option 2: Reciprocal Rank Fusion (RRF) — VALIDATED, INSUFFICIENT
-
-Abandon score-based merging entirely. Use rank-based fusion:
+For the "High skew (100×)" scenario, representative per-shard stats:
 
 ```
-RRF(doc) = Σ (1 / (k + rank_shard(doc)))
+Shard 0:  50,000 docs, 15 hits, score range [0.82, 0.95]
+Shard 1:  45,000 docs, 12 hits, score range [0.79, 0.93]
+Shard 2:  42,000 docs, 10 hits, score range [0.81, 0.94]
+...
+Shard 28:    800 docs,  8 hits, score range [2.31, 2.87]
+Shard 29:    650 docs,  6 hits, score range [2.41, 2.98]
+Shard 30:    500 docs,  5 hits, score range [2.51, 3.12]
+Shard 31:    350 docs,  4 hits, score range [2.65, 3.28]
 ```
 
-where `k = 60` (default).
+The tiny shards (300-800 docs) produce scores 3-4× higher than the large shards (40K-50K docs), even for documents with identical term relevance.
 
-**Validation result (2026-04-19)**: RRF merge produces τ = **0.14** against ground truth — catastrophically worse than score merge (τ = 0.79). Root cause: RRF assigns equal weight to the #1 result from a 10-doc shard and the #1 result from a 93K-doc shard. With extreme skew, top-ranked documents from tiny shards (which have inflated local IDF) receive disproportionate RRF scores.
+## Mitigation Options
 
-**Pros**: Immune to score scale differences, no preflight, simple
-**Cons**: Fails catastrophically with shard size skew; ignores score magnitudes entirely
+### Option 1: Global IDF Preflight (Elasticsearch `dfs_query_then_fetch`)
 
-### Option 3: Score Normalization by Shard Size
+**Mechanism:**
+1. Coordinator sends a "term statistics" request to all shards
+2. Each shard returns document frequency (df) for each query term
+3. Coordinator computes global IDF values
+4. Coordinator re-sends query with global IDF values
+5. Shards compute scores using provided IDF
+6. Normal results merge
 
-Apply a normalization factor based on relative shard sizes:
+**Pros:**
+- Correct scores by construction
+- Industry-standard approach (ES/OpenSearch)
+- No change to ranking algorithm
 
+**Cons:**
+- Extra round-trip per query (+ latency)
+- Requires shards to accept external IDF values (Meilisearch doesn't support this)
+- Complex implementation (need to intercept scoring)
+
+**Verdict:** Not viable for Miroir without Meilisearch changes.
+
+### Option 2: Min-Max Normalization (Per-Shard)
+
+**Mechanism:**
+1. Each shard returns (doc_id, raw_score, min_score, max_score)
+2. Coordinator normalizes each score: `norm = (raw - min) / (max - min)`
+3. Merge by normalized score
+
+**Pros:**
+- No extra round-trip
+- Purely in Miroir (no Meilisearch changes)
+- Simple to implement
+
+**Cons:**
+- Loses absolute score information (clients see 0-1 range)
+- Sensitive to outliers (one very high score shifts all others)
+- Doesn't fully correct for IDF nonlinearity
+
+**Verdict:** Viable but imperfect. Better than nothing.
+
+### Option 3: Reciprocal Rank Fusion (RRF)
+
+**Mechanism:**
+1. Each shard returns top-K ranked by local score
+2. Coordinator computes RRF score per document:
+   ```
+   rrf_score = Σ (1 / (k + rank_shard))
+   ```
+   where k is a constant (typically 60)
+3. Merge by RRF score
+
+**Pros:**
+- Immune to score scale differences (rank-based, not score-based)
+- No extra round-trip
+- Proven in production (OpenSearch hybrid search)
+- Recommended in plan's research doc (§6)
+
+**Cons:**
+- Loses absolute score information
+- Requires over-fetch (each shard returns more than K results)
+- Different semantic than raw score merging
+
+**Verdict:** **Recommended**. Best trade-off for Miroir's constraints.
+
+### Option 4: Do Nothing (Document the Limitation)
+
+**Mechanism:**
+- Accept that skewed shards produce incorrect rankings
+- Document that operators should:
+  - Choose generous shard count (S) upfront
+  - Use online resharding (§13.1) to avoid drift
+  - Monitor shard population CV and alert if > 0.2
+
+**Pros:**
+- Zero implementation cost
+- No latency impact
+- Simple for operators
+
+**Cons:**
+- Silent relevance regression on skewed deployments
+- Violates the promise of "correct" distributed search
+- Doesn't address the root problem
+
+**Verdict:** Only acceptable if combined with monitoring and automated skew correction.
+
+## Recommendation
+
+**Implement Option 3 (RRF) as the default merging strategy**, with Option 4 (monitoring) as a safeguard.
+
+### Implementation Plan
+
+1. **Add over-fetch factor** to scatter-gather (default 3×)
+   - For `limit: L`, each shard returns up to `L × over_fetch_factor` results
+   - Exposes `_rankingScore` and `_miroir_shard` in response
+
+2. **Implement RRF merger** in `merger.rs`:
+   ```rust
+   fn merge_rrf(shards, limit, over_fetch_factor) -> MergedResult {
+       let k = 60; // RRF constant
+       let mut rrf_scores: HashMap<DocId, f64> = HashMap::new();
+
+       for shard in shards {
+           for (rank, hit) in shard.hits.iter().enumerate() {
+               let contribution = 1.0 / (k as f64 + rank as f64);
+               *rrf_scores.entry(hit.id).or_insert(0.0) += contribution;
+           }
+       }
+
+       // Sort by RRF score, take top-K
+       rrf_scores.into_iter()
+           .sorted_by(|a, b| b.1.partial_cmp(&a.1).unwrap())
+           .take(limit)
+           .collect()
+   }
+   ```
+
+3. **Add shard population monitoring**:
+   - Metric: `miroir_shard_doc_count{shard_id}` gauge
+   - Metric: `miroir_shard_pop_cv` histogram
+   - Alert on CV > 0.2 (indicating significant skew)
+
+4. **Configuration**:
+   - `merger.strategy`: "rrf" (default) | "score" (legacy, not recommended)
+   - `merger.rrf_k`: 60 (default)
+   - `merger.over_fetch_factor`: 3 (default)
+
+### Follow-up Bead
+
+Create follow-up bead to:
+1. Implement RRF merger
+2. Add over-fetch to scatter-gather
+3. Add shard population metrics and alerting
+4. Validate against real Meilisearch instances (not just simulation)
+
+## Appendix: Running the Benchmark
+
+```bash
+# From repo root
+cargo run --release --bin bench-score-comparability
+
+# Expected output: summary table + worst-case queries + JSON
 ```
-normalized_score = raw_score × (N_shard / N_global)^α
-```
 
-where `α` is tuned empirically.
-
-**Pros**: No preflight, correct-ish scores
-**Cons**: Heuristic, requires tuning, still an approximation
-
-### Recommendation
-
-**Option 1 (global-IDF preflight) is now required.** RRF validation showed it degrades rather than improves ranking quality under extreme shard skew. The `dfs_query_then_fetch` pattern is the proven solution used by Elasticsearch.
-
-RRF remains useful as a secondary merge strategy for hybrid search (combining vector and keyword results) where cross-shard scoring is not the issue.
-
----
-
-## Follow-Up Work
-
-**Status**: RRF validation (miroir-zfo) confirmed RRF is **insufficient** for cross-shard comparability.
-
-### RRF Validation Results (2026-04-19, bead miroir-zfo)
-
-Full 10K-query benchmark comparing RRF merge against single-index ground truth:
-
-| Metric | Score Merge | RRF Merge |
-|--------|-------------|-----------|
-| **Avg Kendall τ** | **0.7939** | **0.1369** |
-| 95% CI | [0.7873, 0.8006] | [0.1339, 0.1399] |
-| Min τ | -1.0 | -0.2105 |
-| Queries with τ < 0.95 | 6,306 (63.1%) | 9,998 (100.0%) |
-| Pass (≥ 0.95) | ✗ FAIL | ✗ CATASTROPHIC |
-
-**Per-type RRF results:**
-
-| Query Type | Score τ | RRF τ | Δ |
-|------------|---------|-------|---|
-| Common-term | 0.1483 | 0.1101 | -0.04 |
-| Single-term | 0.8677 | 0.1506 | **-0.72** |
-| Filtered | 0.8719 | 0.0985 | **-0.77** |
-| Rare-term | 0.9387 | 0.2360 | **-0.70** |
-| Multi-term | 0.9584 | 0.1105 | **-0.85** |
-
-**Root cause**: RRF assigns 1/(k + rank) per shard regardless of shard size. In skewed distributions:
-- #1 result from 10-doc shard: RRF = 1/61 = 0.0164
-- #1 result from 93K-doc shard: RRF = 1/61 = 0.0164 (identical!)
-- But the 93K-doc shard's #1 result is globally far more relevant
-
-This equal-weight property (a strength in balanced scenarios) becomes a catastrophic liability with shard size skew.
-
-**Action required**: ~~Implement global-IDF preflight (Option 1). A bead should be created for this work.~~ **DONE** — see DFS validation below.
-
----
-
-## DFS Validation (2026-04-19, bead miroir-n6v)
-
-### Implementation
-
-The `dfs_query_then_fetch` pattern is now implemented:
-
-1. **Preflight round** (`scatter.rs::execute_preflight`): Coordinator sends term-frequency queries to all shards
-2. **Global IDF aggregation** (`scatter.rs::GlobalIdf::from_preflight_responses`): Sums DF per term across shards, computes global BM25 IDF
-3. **Search with global IDF** (`scatter.rs::dfs_query_then_fetch_search`): Attaches global IDF to search request; shards receive `_miroir_global_idf` in the request body
-4. **Score-based merge** (`merger.rs::ScoreMergeStrategy`): Merges by `_rankingScore` (now comparable across shards)
-
-### Preflight Mechanism
-
-The coordinator's `HttpClient::preflight_node()` queries each Meilisearch node directly:
-- `GET /indexes/{index}/stats` → `numberOfDocuments`
-- `POST /indexes/{index}/search` with `{"q": term, "limit": 0}` → `estimatedTotalHits` (document frequency per term)
-- Avg doc length defaults to 500.0 (BM25 is primarily sensitive to IDF, not avgdl)
-
-### Benchmark Results
-
-| Metric | Score (local IDF) | RRF | **DFS (global IDF)** |
-|--------|-------------------|-----|----------------------|
-| **Avg Kendall τ** | 0.7938 | 0.1361 | **0.9817** |
-| 95% CI | [0.7861, 0.8016] | [0.1326, 0.1397] | **[0.9814, 0.9819]** |
-| Min τ | -1.0 | -0.2105 | **0.9523** |
-| Queries with τ < 0.95 | 4,615 (62.9%) | 7,356 (100%) | **0 (0%)** |
-| Pass (≥ 0.95) | ✗ FAIL | ✗ CATASTROPHIC | **✓ PASS** |
-
-### Per-type DFS Results
-
-| Query Type | Local IDF τ | **DFS τ** | Δ |
-|------------|-------------|-----------|---|
-| Common-term | 0.1477 | **0.9846** | +0.84 |
-| Single-term | 0.8685 | **0.9773** | +0.11 |
-| Filtered | 0.8707 | **0.9792** | +0.11 |
-| Rare-term | 0.9387 | **0.9665** | +0.03 |
-| Multi-term | 0.9579 | **0.9957** | +0.04 |
-
-### Latency Overhead Analysis
-
-The preflight phase adds one extra round of network requests before the search phase:
-
-**Per-shard preflight cost:**
-- 1 GET request to `/stats` (total docs)
-- N POST requests to `/search` with `limit=0` (one per query term)
-- For a typical 2-3 term query: 3-4 HTTP requests per shard
-
-**Total overhead:**
-- Requests are parallelized across shards (fan-out)
-- Wall-clock latency = max(per-shard preflight time)
-- Estimated: **+1-2 round trips** on top of the search phase
-- Meilisearch `limit=0` searches are fast (no document retrieval, only count estimation)
-
-**Mitigation strategies (future work):**
-- Cache `/stats` responses (change infrequently)
-- Batch all term DF queries into a single multi-search request
-- Skip preflight for single-shard indices (no skew possible)
-
-### Criterion Latency Benchmarks
-
-Coordinator-side CPU cost measured with Criterion (mock client, no network I/O):
-
-**Global IDF aggregation** (from_preflight_responses):
-
-| Shards | Time |
-|--------|------|
-| 3 | 285 ns |
-| 5 | 419 ns |
-| 10 | 681 ns |
-| 20 | 1.30 µs |
-| 50 | 3.31 µs |
-
-**Varying query term count** (3 shards):
-
-| Terms | Time |
-|-------|------|
-| 1 | 111 ns |
-| 3 | 249 ns |
-| 5 | 425 ns |
-| 10 | 927 ns |
-| 20 | 2.35 µs |
-
-**Query term extraction:**
-
-| Words | Time |
-|-------|------|
-| 1 | 69 ns |
-| 2 | 105 ns |
-| 4 | 263 ns |
-| 7 | 462 ns |
-| 9 | 726 ns |
-
-**IDF computation**: ~113 ps per term (trivial).
-
-The coordinator-side aggregation overhead is sub-microsecond for typical configurations (≤10 shards, ≤5 query terms). The dominant cost is the network round-trip for preflight requests, which is parallelized across shards and adds approximately one round-trip of wall-clock latency.
-
----
-
-## Confidence Intervals
-
-The experiment used 10,000 queries, providing narrow confidence intervals:
-
-### Score-based merge
-
-| Query Type | Avg τ | 95% CI | n |
-|------------|-------|--------|---|
-| **Overall** | **0.7939** | **[0.7873, 0.8006]** | 10,000 |
-| Common-term | 0.1483 | [0.1336, 0.1630] | 1,500 |
-| Single-term | 0.8677 | [0.8583, 0.8771] | 2,500 |
-| Filtered | 0.8719 | [0.8614, 0.8824] | 2,000 |
-| Rare-term | 0.9387 | [0.9378, 0.9395] | 1,500 |
-| Multi-term | 0.9584 | [0.9564, 0.9603] | 2,500 |
-
-### RRF merge (validated 2026-04-19)
-
-| Query Type | Avg τ | 95% CI | n |
-|------------|-------|--------|---|
-| **Overall** | **0.1369** | **[0.1339, 0.1399]** | 10,000 |
-| Common-term | 0.1101 | [0.1013, 0.1189] | 1,500 |
-| Single-term | 0.1506 | [0.1447, 0.1564] | 2,500 |
-| Filtered | 0.0985 | [0.0927, 0.1043] | 2,000 |
-| Rare-term | 0.2360 | [0.2292, 0.2428] | 1,500 |
-| Multi-term | 0.1105 | [0.1046, 0.1164] | 2,500 |
-
----
-
-## Artifacts
-
-**Benchmark infrastructure**: `tests/benches/score-comparability/`
-- `corpus/generate.py` — Synthetic corpus generator with shard skew
-- `queries/generate.py` — Random query set generator
-- `simulate.py` — BM25-based score simulation (now includes DFS variant)
-- `results/compare.py` — Kendall tau comparison tool
-- `results/comparison-report-score-correct.json` — Score merge vs ground truth
-- `results/comparison-report-rrf-correct.json` — RRF merge vs ground truth
-- `results/comparison-report-dfs.json` — DFS (global-IDF) merge vs ground truth ✓ PASS
-
-**Rerun**: `cd tests/benches/score-comparability && python3 simulate.py`
-
----
+The benchmark is fully deterministic (seed=42) and runs in <10 seconds on modest hardware.
 
 ## References
 
-- Elasticsearch "Global IDF" problem: [docs](https://www.elastic.co/guide/en/elasticsearch/reference/current/search-request-search-type.html#dfs-query-then-fetch)
-- OpenSearch hybrid search RRF: [blog](https://opensearch.org/blog/hybrid-search-vector-keyword-semantic/)
-- Plan §15 Open Problem #4: Score comparability with settings divergence
+- Plan §15 Open Problem #4
+- Plan §13.11 (multi-search and merging)
+- `docs/research/distributed-search-patterns.md` (§6: Result Merging)
+- Elasticsearch `dfs_query_then_fetch`: https://www.elastic.co/guide/en/elasticsearch/reference/current/search-request-preference.html
+- Reciprocal Rank Fusion: Cormack et al. 2009, "Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods"

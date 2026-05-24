@@ -1,5 +1,99 @@
 # Miroir Trade-Offs and Design Decisions
 
+## Resharding (S-Change) vs Node Scaling (N-Change) (Plan §15 OP#3)
+
+### Core Distinction
+
+Miroir supports two orthogonal scaling dimensions with very different cost profiles:
+
+| Dimension | Parameter | What Changes | Routing Impact |
+|-----------|-----------|--------------|----------------|
+| **Node scaling** | N (node count) | Which nodes host each shard | Rendezvous hash reassigns shards to new/remaining nodes |
+| **Resharding** | S (shard count) | How the hash space is divided | Every document's shard assignment changes: `hash(pk) % S` |
+
+**Key insight:** Node scaling is lightweight; resharding is heavy.
+
+### Node Scaling (N-Change)
+
+**When to use:** Add or remove nodes to adjust capacity, throughput, or fault tolerance.
+
+**Cost:** Minimal — only the affected fraction of documents moves.
+
+**Mechanism:**
+- Rendezvous hashing assigns shards to nodes based on a stable ordering
+- Adding a node: only `~1/(N_new)` of documents move (those whose top-ranked node changes)
+- Removing a node: only that node's documents migrate to surviving nodes
+- Migration uses dual-write with delta-pass cutover (see migration write safety below)
+
+**Example:** Adding a 5th node to a 4-node group moves ~20% of documents (1/5). The other 80% stay untouched.
+
+**Constraints:** None — fully elastic, can be done anytime.
+
+**When this is insufficient:** When individual shards are too large for a single node, you need more shards (S-change), not more nodes.
+
+### Resharding (S-Change)
+
+**When to use:** Increase the logical shard count when individual shards are too large.
+
+**Cost:** High — transient 2× storage amplification and 2× write amplification during dual-write phase.
+
+**Mechanism:** Six-phase shadow-index operation (§13.1):
+1. Shadow create: new index with new S
+2. Dual-hash dual-write: every write routes to both old and new S
+3. Backfill: stream all documents to shadow index
+4. Verify: cross-index PK-set comparison
+5. Alias swap: atomic cutover
+6. Cleanup: retain old index for rollback, then delete
+
+**Example:** Resharding from S=64 to S=128 temporarily doubles storage from 200 GB to 400 GB (× RG), and write throughput from 4,000 writes/sec to 8,000 writes/sec (× RF × RG).
+
+**Constraints:** Requires significant headroom and off-peak scheduling. See `docs/benchmarks/resharding-load.md` for empirical data.
+
+**When to avoid:** If you can instead add nodes to your current shard layout. Prefer N-change over S-change.
+
+### Decision Matrix
+
+| Symptom | Solution | Why |
+|---------|----------|-----|
+| Cluster CPU/memory saturated | Add nodes (N-change) | Spreads load across more machines |
+| Shard too large for one node | Reshard (S-change) | Need more hash buckets to split large shards |
+| Need more write throughput | Add replica groups (RG-scale) | Groups are independent; more groups = parallel writes |
+| Need more read throughput | Add nodes or groups | Both help; groups add fault tolerance too |
+| Individual shard > node disk | Reshard (S-change) | Only S-change reduces per-shard size |
+
+### Capacity Planning Guidance
+
+**Choosing S at index creation:**
+```
+S = max_nodes_per_group_ever × 8
+```
+
+This formula ensures you never need to reshard as your cluster grows within a group. Each group's rendezvous assignment is scoped to its own node list, so adding groups doesn't consume S headroom.
+
+**Example:** A cluster starting at 2 nodes per group that might grow to 60 nodes per group should use S ≥ 480 (or 512 for a round power of two). Node fleet elasticity is unlimited within that S.
+
+**Why the "× 8" factor?**
+- Provides enough shard granularity to evenly distribute documents as nodes are added
+- Avoids hot spots where some nodes host many large shards and others host few small ones
+- Each node typically hosts 8-16 shards, which balances per-shard metadata overhead with distribution quality
+
+**If you must reshard:**
+1. Schedule during off-peak hours (use `miroir-ctl reshard start --schedule-window off-peak`)
+2. Set backfill throttle conservatively: aim for peak total writes ≤ 3× normal
+3. Ensure 2× storage headroom before starting
+4. Monitor progress via `miroir-ctl reshard status`
+
+### Empirical Validation
+
+See `docs/benchmarks/resharding-load.md` for comprehensive benchmark results:
+- Storage amplification: exactly 2.0× (all scenarios)
+- Dual-write amplification: exactly 2.0× (all scenarios)
+- Peak write amplification: varies by corpus and throttle (can exceed 500× for low-write corpora with aggressive backfill)
+
+**Bottom line:** The "choose S generously" guidance remains the recommended default because online resharding is expensive. Treat §13.1 as a remediation path, not a license to under-provision.
+
+---
+
 ## Shard Migration Write Safety (Plan §15 OP#1)
 
 ### Problem

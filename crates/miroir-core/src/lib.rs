@@ -44,6 +44,7 @@ pub mod router;
 pub mod scatter;
 pub mod schema_migrations;
 pub mod scoped_key_rotation;
+pub mod score_comparability;
 pub mod session_pinning;
 pub mod settings;
 pub mod shadow;
@@ -55,8 +56,9 @@ pub mod tenant;
 pub mod topology;
 pub mod ttl;
 
-#[cfg(feature = "raft-proto")]
-pub mod raft_proto;
+// Raft prototype temporarily disabled (openraft 0.9.22 fails on Rust 1.87)
+// #[cfg(feature = "raft-proto")]
+// pub mod raft_proto;
 
 // Public re-exports
 pub use api_error::{ErrorType, MeilisearchError, MiroirCode};

@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/jedarden/miroir"
-rust-version = "1.87"
+rust-version = "1.88"
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }

@@ -1,138 +1,82 @@
-{{/*
-Redis Deployment (only when redis.enabled=true)
-*/}}
-{{- if eq (include "miroir.redisEnabled" .) "true" }}
+{{- if and (include "miroir.redisEnabled" .) .Values.redis.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "miroir.fullname" . }}-redis
   labels:
     {{- include "miroir.labels" . | nindent 4 }}
-    app.kubernetes.io/component: redis
+    app: redis
 spec:
-  replicas: {{ .Values.redis.replicas }}
+  replicas: 1
   selector:
     matchLabels:
       {{- include "miroir.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: redis
+      app: redis
   template:
     metadata:
-      annotations:
-        {{- with .Values.redis.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
       labels:
         {{- include "miroir.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: redis
-        {{- with .Values.redis.podLabels }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
+        app: redis
     spec:
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 999
-        fsGroup: 999
       containers:
+      - name: redis
+        {{- with .Values.redis.image }}
+        image: "{{ .repository }}:{{ .tag }}"
+        imagePullPolicy: {{ .pullPolicy }}
+        {{- end }}
+        ports:
         - name: redis
-          image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
-          imagePullPolicy: {{ .Values.redis.image.pullPolicy }}
-          ports:
-            - name: redis
-              containerPort: 6379
-              protocol: TCP
-          {{- if .Values.redis.auth.enabled }}
-          env:
-            - name: REDIS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "miroir.redisSecretName" . }}
-                  key: redis-password
-          {{- end }}
-          args:
-            {{- if .Values.redis.auth.enabled }}
-            - --requirepass
-            - $(REDIS_PASSWORD)
-            {{- end }}
-          {{- if .Values.redis.persistence.enabled }}
-          volumeMounts:
-            - name: data
-              mountPath: /data
-          {{- end }}
-          livenessProbe:
-            exec:
-              command:
-                - redis-cli
-                {{- if .Values.redis.auth.enabled }}
-                - -a
-                - $(REDIS_PASSWORD)
-                {{- end }}
-                - ping
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          readinessProbe:
-            exec:
-              command:
-                - redis-cli
-                {{- if .Values.redis.auth.enabled }}
-                - -a
-                - $(REDIS_PASSWORD)
-                {{- end }}
-                - ping
-            initialDelaySeconds: 3
-            periodSeconds: 5
-          resources:
-            {{- toYaml .Values.redis.resources | nindent 12 }}
+          containerPort: 6379
+          protocol: TCP
+        {{- with .Values.redis.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- if .Values.redis.persistence.enabled }}
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        {{- end }}
       {{- if .Values.redis.persistence.enabled }}
       volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: {{ include "miroir.fullname" . }}-redis-data
-      {{- end }}
-      {{- with .Values.redis.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.redis.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.redis.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "miroir.fullname" . }}-redis
       {{- end }}
 ---
+{{- if and (include "miroir.redisEnabled" .) .Values.redis.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "miroir.fullname" . }}-redis
   labels:
     {{- include "miroir.labels" . | nindent 4 }}
-    app.kubernetes.io/component: redis
+    app: redis
 spec:
-  type: {{ .Values.redis.service.type | default "ClusterIP" }}
+  type: ClusterIP
   ports:
-    - port: {{ .Values.redis.service.port | default 6379 }}
-      targetPort: redis
-      protocol: TCP
-      name: redis
+  - port: 6379
+    targetPort: redis
+    protocol: TCP
+    name: redis
   selector:
     {{- include "miroir.selectorLabels" . | nindent 4 }}
-    app.kubernetes.io/component: redis
-{{- if .Values.redis.persistence.enabled }}
+    app: redis
+{{- end }}
 ---
+{{- if and (include "miroir.redisEnabled" .) .Values.redis.enabled .Values.redis.persistence.enabled }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "miroir.fullname" . }}-redis-data
+  name: {{ include "miroir.fullname" . }}-redis
   labels:
     {{- include "miroir.labels" . | nindent 4 }}
-    app.kubernetes.io/component: redis
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: {{ .Values.redis.persistence.size | default "1Gi" }}
+      storage: {{ .Values.redis.persistence.size }}
   {{- if .Values.redis.persistence.storageClass }}
   storageClassName: {{ .Values.redis.persistence.storageClass }}
   {{- end }}

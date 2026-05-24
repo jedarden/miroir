@@ -194,6 +194,11 @@ impl HedgingManager {
     pub fn should_hedge(&self, elapsed: Duration, deadline: Duration) -> bool {
         elapsed >= deadline
     }
+
+    /// Get configuration.
+    pub fn config(&self) -> &HedgingConfig {
+        &self.config
+    }
 }
 
 impl Default for HedgingManager {
@@ -216,7 +221,6 @@ pub enum HedgeOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn test_config_default() {
