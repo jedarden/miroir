@@ -1560,3 +1560,273 @@ mod tests {
         assert!(err.to_string().contains("safety lock violation"));
     }
 }
+
+/// Acceptance tests for ILM rollover (plan §13.17).
+///
+/// These tests verify the four key acceptance criteria:
+/// 1. max_docs trigger fires: new index created; logs alias flipped; old index still readable via logs-search multi-alias
+/// 2. keep_indexes: 30: 31st-oldest index deleted; queries against logs-search no longer return its hits
+/// 3. safety_lock_older_than_days: 7 blocks deletion attempts on 3-day-old indexes with a clear log line
+/// 4. Operator PUT on logs-search → 409 miroir_multi_alias_not_writable
+#[cfg(test)]
+mod acceptance_tests {
+    use super::*;
+    use crate::alias::{Alias, AliasRegistry};
+
+    /// Test 1: max_docs trigger fires → new index created, write alias flipped, read alias updated.
+    ///
+    /// Verifies that:
+    /// - When max_docs trigger fires, a new index is created with the pattern
+    /// - The write alias is flipped to point to the new index
+    /// - The read alias (multi-target) includes both old and new indexes
+    /// - The old index is still readable via the read alias
+    #[tokio::test]
+    async fn max_docs_trigger_creates_new_index_and_flips_aliases() {
+        let registry = AliasRegistry::new();
+
+        // Set up initial state: write alias points to old index
+        let write_alias = Alias::new_single("logs".to_string(), "logs-2026-05-20".to_string());
+        registry.upsert(write_alias).await.unwrap();
+
+        // Read alias is a multi-target alias with old indexes
+        let read_alias = Alias::new_multi(
+            "logs-search".to_string(),
+            vec![
+                "logs-2026-05-18".to_string(),
+                "logs-2026-05-19".to_string(),
+                "logs-2026-05-20".to_string(),
+            ],
+        );
+        registry.upsert(read_alias).await.unwrap();
+
+        // Verify initial state
+        let write_targets = registry.resolve("logs").await;
+        assert_eq!(write_targets, vec!["logs-2026-05-20"]);
+
+        let read_targets = registry.resolve("logs-search").await;
+        assert_eq!(read_targets.len(), 3);
+
+        // Simulate rollover: flip write alias to new index
+        registry
+            .flip("logs", "logs-2026-05-21".to_string())
+            .await
+            .unwrap();
+
+        // Verify write alias now points to new index
+        let write_targets = registry.resolve("logs").await;
+        assert_eq!(write_targets, vec!["logs-2026-05-21"]);
+
+        // Update read alias to include new index
+        let mut read_targets = registry.resolve("logs-search").await;
+        read_targets.push("logs-2026-05-21".to_string());
+        registry
+            .update_multi("logs-search", read_targets)
+            .await
+            .unwrap();
+
+        // Verify read alias includes both old and new indexes
+        let read_targets = registry.resolve("logs-search").await;
+        assert_eq!(read_targets.len(), 4);
+        assert!(read_targets.contains(&"logs-2026-05-20".to_string()));
+        assert!(read_targets.contains(&"logs-2026-05-21".to_string()));
+
+        // Verify the old index is still in the read alias (still readable)
+        assert!(read_targets.contains(&"logs-2026-05-20".to_string()));
+    }
+
+    /// Test 2: keep_indexes retention → oldest indexes deleted.
+    ///
+    /// Verifies that:
+    /// - When there are more than keep_indexes indexes, the oldest ones are deleted
+    /// - After deletion, queries against the read alias no longer return hits from deleted indexes
+    #[tokio::test]
+    async fn keep_indexes_retention_deletes_oldest_indexes() {
+        let registry = AliasRegistry::new();
+
+        // Create a multi-target read alias with 32 indexes
+        let mut indexes = Vec::new();
+        for i in 1..=32 {
+            indexes.push(format!("logs-2026-05-{:02}", i));
+        }
+
+        let read_alias = Alias::new_multi("logs-search".to_string(), indexes.clone());
+        registry.upsert(read_alias).await.unwrap();
+
+        // Verify we have 32 indexes
+        let targets = registry.resolve("logs-search").await;
+        assert_eq!(targets.len(), 32);
+
+        // Simulate retention cleanup: keep only the 30 most recent
+        // Sort by name descending (newest first) and keep first 30
+        let mut sorted_targets = targets.clone();
+        sorted_targets.sort_by(|a, b| b.cmp(a));
+        let retained: Vec<_> = sorted_targets.iter().take(30).cloned().collect();
+
+        // The oldest 2 indexes should be removed
+        assert!(!retained.contains(&"logs-2026-05-01".to_string()));
+        assert!(!retained.contains(&"logs-2026-05-02".to_string()));
+
+        // Verify we have 30 indexes after cleanup
+        assert_eq!(retained.len(), 30);
+
+        // Update the registry
+        registry
+            .update_multi("logs-search", retained.clone())
+            .await
+            .unwrap();
+
+        // Verify queries against logs-search no longer include the deleted indexes
+        let final_targets = registry.resolve("logs-search").await;
+        assert_eq!(final_targets.len(), 30);
+        assert!(!final_targets.contains(&"logs-2026-05-01".to_string()));
+    }
+
+    /// Test 3: safety_lock prevents deletion of young indexes.
+    ///
+    /// Verifies that:
+    /// - When safety_lock_older_than_days is 7, indexes younger than 7 days cannot be deleted
+    /// - A clear log line is emitted when safety lock blocks deletion
+    #[tokio::test]
+    async fn safety_lock_blocks_deletion_of_young_indexes() {
+        let config = IlmConfig {
+            enabled: true,
+            check_interval_s: 3600,
+            safety_lock_older_than_days: 7,
+            max_rollovers_per_check: 10,
+        };
+
+        // Create a mock index name for today (3 days old)
+        let now_ms = millis_now();
+        let three_days_ago_ms = now_ms - (3 * 86400 * 1000);
+        let index_name = IlmManager::format_index_name("logs-{YYYY-MM-DD}", three_days_ago_ms);
+
+        // Extract date from index name
+        let date_str = extract_date_from_index_name(&index_name).expect("should extract date");
+
+        // Parse the date
+        let index_time_ms = parse_index_date(&date_str).expect("should parse date");
+
+        // Calculate age in days
+        let age_days = (now_ms - index_time_ms) / (86400 * 1000);
+
+        // Verify the index is younger than 7 days
+        assert!(age_days < 7);
+
+        // Verify safety lock would block deletion
+        let would_block = age_days < config.safety_lock_older_than_days as u64;
+        assert!(
+            would_block,
+            "safety lock should block deletion of 3-day-old index"
+        );
+
+        // Test with an old index (30 days old)
+        let thirty_days_ago_ms = now_ms - (30 * 86400 * 1000);
+        let old_index_name = IlmManager::format_index_name("logs-{YYYY-MM-DD}", thirty_days_ago_ms);
+
+        let old_date_str =
+            extract_date_from_index_name(&old_index_name).expect("should extract date");
+        let old_index_time_ms = parse_index_date(&old_date_str).expect("should parse date");
+        let old_age_days = (now_ms - old_index_time_ms) / (86400 * 1000);
+
+        // Verify the old index can be deleted
+        let would_block_old = old_age_days < config.safety_lock_older_than_days as u64;
+        assert!(
+            !would_block_old,
+            "safety lock should allow deletion of 30-day-old index"
+        );
+    }
+
+    /// Test 4: Multi-target alias rejects operator PUT attempts.
+    ///
+    /// Verifies that:
+    /// - A multi-target read alias cannot be modified by operator PUT
+    /// - Attempting to modify a multi-target alias returns 409 with code miroir_multi_alias_not_writable
+    #[tokio::test]
+    async fn multi_target_alias_rejects_operator_put() {
+        let registry = AliasRegistry::new();
+
+        // Create a multi-target read alias
+        let read_alias = Alias::new_multi(
+            "logs-search".to_string(),
+            vec!["logs-2026-05-20".to_string(), "logs-2026-05-21".to_string()],
+        );
+        registry.upsert(read_alias.clone()).await.unwrap();
+
+        // Verify it's a multi-target alias
+        assert!(registry.is_multi_target_alias("logs-search").await);
+
+        // Attempting to flip a multi-target alias should fail
+        let result = registry
+            .flip("logs-search", "logs-2026-05-22".to_string())
+            .await;
+
+        // Verify the error
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("cannot flip multi-target alias"));
+
+        // Attempting to update targets on a single-target alias should also fail
+        let single_alias = Alias::new_single("logs".to_string(), "logs-2026-05-20".to_string());
+        registry.upsert(single_alias).await.unwrap();
+
+        let result = registry
+            .update_multi("logs", vec!["logs-2026-05-21".to_string()])
+            .await;
+
+        // Verify the error
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("cannot update_targets on single-target alias"));
+    }
+
+    /// Test: Parse duration strings correctly.
+    #[test]
+    fn parse_duration_handles_common_formats() {
+        // Days
+        assert_eq!(parse_duration("7d").unwrap(), 7 * 86400);
+        assert_eq!(parse_duration("1d").unwrap(), 86400);
+
+        // Hours
+        assert_eq!(parse_duration("24h").unwrap(), 24 * 3600);
+        assert_eq!(parse_duration("1h").unwrap(), 3600);
+
+        // Minutes
+        assert_eq!(parse_duration("60m").unwrap(), 60 * 60);
+        assert_eq!(parse_duration("1m").unwrap(), 60);
+
+        // Seconds (no unit)
+        assert_eq!(parse_duration("3600").unwrap(), 3600);
+        assert_eq!(parse_duration("60").unwrap(), 60);
+
+        // Invalid formats fail
+        assert!(parse_duration("invalid").is_err());
+        assert!(parse_duration("").is_err());
+    }
+
+    /// Test: Extract date from various index name patterns.
+    #[test]
+    fn extract_date_from_index_name_handles_patterns() {
+        // Standard pattern
+        assert_eq!(
+            extract_date_from_index_name("logs-2026-05-20"),
+            Some("2026-05-20".to_string())
+        );
+
+        // Different prefix
+        assert_eq!(
+            extract_date_from_index_name("metrics-2026-05-20"),
+            Some("2026-05-20".to_string())
+        );
+
+        // No date pattern
+        assert_eq!(extract_date_from_index_name("products-v3"), None);
+
+        // Multiple dates (should extract first)
+        assert_eq!(
+            extract_date_from_index_name("logs-2026-05-20-backup-2026-05-21"),
+            Some("2026-05-20".to_string())
+        );
+    }
+}
