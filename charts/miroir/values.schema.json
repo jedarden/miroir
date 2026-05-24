@@ -143,7 +143,85 @@
               }
             }
           },
-          "allOf": []
+          "allOf": [
+            {
+              "oneOf": [
+                {
+                  "properties": {
+                    "scoped_key_max_age_days": {"const": 2},
+                    "scoped_key_rotate_before_expiry_days": {"const": 1}
+                  }
+                },
+                {
+                  "properties": {
+                    "scoped_key_max_age_days": {"const": 3},
+                    "scoped_key_rotate_before_expiry_days": {"enum": [1, 2]}
+                  }
+                },
+                {
+                  "properties": {
+                    "scoped_key_max_age_days": {"const": 4},
+                    "scoped_key_rotate_before_expiry_days": {"enum": [1, 2, 3]}
+                  }
+                },
+                {
+                  "properties": {
+                    "scoped_key_max_age_days": {"const": 5},
+                    "scoped_key_rotate_before_expiry_days": {"enum": [1, 2, 3, 4]}
+                  }
+                },
+                {
+                  "properties": {
+                    "scoped_key_max_age_days": {"const": 7},
+                    "scoped_key_rotate_before_expiry_days": {"enum": [1, 2, 3, 4, 5, 6]}
+                  }
+                },
+                {
+                  "properties": {
+                    "scoped_key_max_age_days": {"const": 14},
+                    "scoped_key_rotate_before_expiry_days": {"maximum": 13, "minimum": 1}
+                  }
+                },
+                {
+                  "properties": {
+                    "scoped_key_max_age_days": {"const": 30},
+                    "scoped_key_rotate_before_expiry_days": {"maximum": 29, "minimum": 1}
+                  }
+                },
+                {
+                  "properties": {
+                    "scoped_key_max_age_days": {"const": 60},
+                    "scoped_key_rotate_before_expiry_days": {"maximum": 59, "minimum": 1}
+                  }
+                },
+                {
+                  "properties": {
+                    "scoped_key_max_age_days": {"const": 90},
+                    "scoped_key_rotate_before_expiry_days": {"maximum": 89, "minimum": 1}
+                  }
+                },
+                {
+                  "properties": {
+                    "scoped_key_max_age_days": {"const": 120},
+                    "scoped_key_rotate_before_expiry_days": {"maximum": 119, "minimum": 1}
+                  }
+                },
+                {
+                  "properties": {
+                    "scoped_key_max_age_days": {"const": 180},
+                    "scoped_key_rotate_before_expiry_days": {"maximum": 179, "minimum": 1}
+                  }
+                },
+                {
+                  "properties": {
+                    "scoped_key_max_age_days": {"const": 365},
+                    "scoped_key_rotate_before_expiry_days": {"maximum": 364, "minimum": 1}
+                  }
+                }
+              ],
+              "errorMessage": "scoped_key_rotate_before_expiry_days (rotation trigger window) must be strictly less than scoped_key_max_age_days (key lifetime). Common values: (max_age_days=30, rotate_before_expiry_days=7-14), (max_age_days=60, rotate_before_expiry_days=30), (max_age_days=90, rotate_before_expiry_days=30-45). The constraint prevents continuous rotation loops."
+            }
+          ]
         },
         "scatter": {
           "type": "object",
