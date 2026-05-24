@@ -10,6 +10,8 @@
 #[cfg(feature = "redis-store")]
 mod redis;
 mod sqlite;
+pub mod error;
+pub mod schema;
 
 #[cfg(feature = "redis-store")]
 pub use redis::{RedisPool, RedisTaskStore, SearchUiScopedKey};

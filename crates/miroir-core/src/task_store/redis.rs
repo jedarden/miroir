@@ -15,6 +15,37 @@ fn hash_api_key(api_key: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Redis connection pool wrapper for CDC and other components.
+pub struct RedisPool {
+    /// Connection manager (shared via Arc<Mutex<>> for async access).
+    pub manager: Arc<tokio::sync::Mutex<redis::aio::MultiplexedConnection>>,
+    /// Redis client for creating new connections if needed.
+    client: Arc<redis::Client>,
+}
+
+impl RedisPool {
+    /// Create a new Redis connection pool.
+    pub async fn new(url: &str) -> Result<Self> {
+        let client = redis::Client::open(url)?;
+        let conn = client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(Into::into)?;
+        Ok(Self {
+            manager: Arc::new(tokio::sync::Mutex::new(conn)),
+            client: Arc::new(client),
+        })
+    }
+
+    /// Get a connection from the pool.
+    pub async fn get_conn(&self) -> Result<redis::aio::MultiplexedConnection> {
+        self.client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(Into::into)
+    }
+}
+
 /// Redis task store implementation.
 pub struct RedisTaskStore {
     client: Arc<redis::Client>,
