@@ -74,7 +74,8 @@ where
             "/nodes/{id}/recover",
             post(admin_endpoints::recover_node::<S>),
         )
-        // Rebalancer status
+        // Rebalancer management
+        .route("/rebalance", post(admin_endpoints::trigger_rebalance::<S>))
         .route(
             "/rebalance/status",
             get(admin_endpoints::get_rebalance_status::<S>),

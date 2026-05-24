@@ -1035,6 +1035,11 @@ impl RebalancerWorker {
         }
     }
 
+    /// Get a clone of all active jobs for detailed status reporting.
+    pub async fn get_all_jobs(&self) -> HashMap<RebalanceJobId, RebalanceJob> {
+        self.jobs.read().await.clone()
+    }
+
     /// Process a single rebalance job.
     ///
     /// Drives the migration state machine forward for each shard in the job.
