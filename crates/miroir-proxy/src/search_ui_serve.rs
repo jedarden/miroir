@@ -163,6 +163,7 @@ mod tests {
     #[test]
     fn test_serve_embedded_file_not_found() {
         let result = serve_embedded_file("nonexistent.html", false);
-        assert_eq!(result, Err(StatusCode::NOT_FOUND));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), StatusCode::NOT_FOUND);
     }
 }
