@@ -641,6 +641,9 @@ impl ModeCWorker {
                     // Clone document and update _miroir_shard field
                     let mut shadow_doc = doc.clone();
                     shadow_doc["_miroir_shard"] = serde_json::json!(new_shard_id);
+                    // Tag with _miroir_origin for CDC suppression (plan §13.1, §13.13)
+                    // Backfill writes are suppressed from CDC by default
+                    shadow_doc["_miroir_origin"] = serde_json::json!(ORIGIN_RESHARD_BACKFILL);
                     shadow_documents.push(shadow_doc);
                 }
 
@@ -655,7 +658,6 @@ impl ModeCWorker {
                     let response = client
                         .post(&write_url)
                         .header("Authorization", format!("Bearer {}", node_master_key))
-                        .header("X-Miroir-Origin", ORIGIN_RESHARD_BACKFILL)
                         .json(&shadow_documents)
                         .send()
                         .await
