@@ -6,6 +6,11 @@
     const DEBOUNCE_MS = 150;
     const RESULTS_PER_PAGE = 20;
 
+    // Parse embed/headless modes from URL (plan §13.21)
+    const urlParams = new URLSearchParams(window.location.search);
+    const isEmbed = urlParams.get('embed') === 'true';
+    const isHeadless = urlParams.get('headless') === 'true';
+
     // State
     let currentIndex = null;
     let sessionToken = null;
@@ -20,6 +25,14 @@
     let focusedResultIndex = -1;
     let searchStartTime = 0;
     let sessionId = crypto.randomUUID();
+
+    // Apply embed mode classes (plan §13.21)
+    if (isEmbed || isHeadless) {
+        document.body.classList.add('embed-mode');
+    }
+    if (isHeadless) {
+        document.body.classList.add('headless-mode');
+    }
 
     // Initialize
     function init() {
@@ -146,6 +159,11 @@
                         perPageSelect.value = config.per_page_default;
                         currentPerPage = config.per_page_default;
                     }
+                }
+
+                // Apply accent color if configured (for embed mode)
+                if (config.accent_color && (isEmbed || isHeadless)) {
+                    document.documentElement.style.setProperty('--accent-color', config.accent_color);
                 }
             }
         } catch (error) {
@@ -337,6 +355,11 @@
             </div>
         `).join('');
 
+        // Update height for embed mode (plan §13.21)
+        if (isEmbed) {
+            sendHeightUpdate();
+        }
+
         try {
             const data = await search(query, currentFilters, page, currentSort, currentPerPage);
             renderResults(data);
@@ -348,6 +371,11 @@
             // Update URL state for bookmarkable searches (plan §13.21)
             if (updateUrlState) {
                 updateUrl(query, currentFilters, currentSort, page);
+            }
+
+            // Update height after rendering (plan §13.21)
+            if (isEmbed) {
+                sendHeightUpdate();
             }
         } catch (error) {
             showError(error.message);
@@ -381,6 +409,33 @@
                 });
             }
             return;
+        }
+
+        // Use custom template if configured (plan §13.21)
+        if (config?.result_template === 'custom' && config?.custom_template_html) {
+            try {
+                const resultsHtml = data.hits.map((hit, index) => {
+                    return renderCustomResult(hit, index, config.custom_template_html);
+                }).join('');
+                resultsDiv.innerHTML = resultsHtml;
+
+                // Add click tracking for custom templates
+                resultsDiv.querySelectorAll('.result-card').forEach((card, index) => {
+                    const link = card.querySelector('a[data-result-id]');
+                    if (link) {
+                        link.addEventListener('click', (e) => {
+                            const resultId = link.dataset.resultId;
+                            const position = parseInt(link.dataset.resultPosition, 10);
+                            const url = link.href;
+                            trackClickThrough(resultId, position);
+                            sendResultClickEvent(resultId, position, url);
+                        });
+                    }
+                });
+                return;
+            } catch (error) {
+                console.warn('Failed to render custom template, falling back to default:', error);
+            }
         }
 
         const resultsHtml = data.hits.map((hit, index) => {
@@ -424,9 +479,65 @@
             link.addEventListener('click', (e) => {
                 const resultId = link.dataset.resultId;
                 const position = parseInt(link.dataset.resultPosition, 10);
+                const url = link.href;
                 trackClickThrough(resultId, position);
+
+                // Send postMessage in embed mode (plan §13.21)
+                sendResultClickEvent(resultId, position, url);
             });
         });
+    }
+
+    // Render a custom result template (plan §13.21)
+    function renderCustomResult(hit, index, template) {
+        const formatted = hit._formatted || {};
+        const resultId = hit[config?.primary_key_field || 'id'] || hit.id || '';
+        const url = config?.hit_url_template?.replace(
+            `{${config?.primary_key_field || 'id'}}`,
+            resultId
+        ) || '#';
+
+        // Build data object for template rendering
+        const data = {
+            ...hit,
+            _formatted: formatted,
+            _url: url,
+            _index: index,
+            _result_id: resultId,
+        };
+
+        // Render template with Handlebars-style interpolation
+        let html = template;
+
+        // Process {{#if}}...{{/if}} blocks
+        html = html.replace(/\{\{#if\s+(\w+)\}\}([\s\S]*?)\{\{\/if\}\}/g, (match, field, content) => {
+            const value = data[field];
+            const isTruthy = value !== undefined && value !== null && value !== '' &&
+                (typeof value !== 'boolean' || value === true) &&
+                (typeof value !== 'number' || value !== 0) &&
+                (typeof value !== 'object' || (Array.isArray(value) ? value.length > 0 : true));
+
+            return isTruthy ? content : '';
+        });
+
+        // Process simple {{field}} tags
+        html = html.replace(/\{\{(\w+)\}\}/g, (match, field) => {
+            if (field.startsWith('_')) {
+                // Meta fields
+                return escapeHtml(String(data[field] || ''));
+            }
+            // Regular fields - prefer _formatted for highlighting
+            const value = formatted[field] !== undefined ? formatted[field] : hit[field];
+            return escapeHtml(String(value !== undefined ? value : ''));
+        });
+
+        // Add data attributes for click tracking
+        html = html.replace(
+            /<a\s+/gi,
+            `<a data-result-id="${escapeHtml(resultId)}" data-result-position="${index}" `
+        );
+
+        return `<div class="result-card" data-result-index="${index}" data-result-id="${escapeHtml(resultId)}">${html}</div>`;
     }
 
     // Render facets
@@ -677,6 +788,40 @@
             result_id: resultId,
             position
         });
+    }
+
+    // Embed mode: send height update to parent frame (plan §13.21)
+    function sendHeightUpdate() {
+        if (!isEmbed) return;
+
+        const height = document.body.scrollHeight;
+        window.parent.postMessage({
+            type: 'miroir-search:resize',
+            height: height,
+            index: currentIndex
+        }, '*');
+
+        // Also send result count for convenience
+        const resultCount = document.querySelectorAll('.result-card').length;
+        window.parent.postMessage({
+            type: 'miroir-search:results-count',
+            count: resultCount,
+            index: currentIndex
+        }, '*');
+    }
+
+    // Embed mode: send result click event to parent frame (plan §13.21)
+    function sendResultClickEvent(resultId, position, url) {
+        if (!isEmbed) return;
+
+        window.parent.postMessage({
+            type: 'miroir-search:result-clicked',
+            result_id: resultId,
+            position: position,
+            url: url,
+            index: currentIndex,
+            query: currentQuery
+        }, '*');
     }
 
     // Start the app

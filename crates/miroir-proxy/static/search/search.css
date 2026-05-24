@@ -609,6 +609,62 @@ body {
     }
 }
 
+/* Embed mode (plan §13.21) - strip chrome for iframe embedding */
+.embed-mode .header,
+.embed-mode .footer {
+    display: none !important;
+}
+
+.embed-mode .main {
+    padding: 1rem;
+    max-width: none;
+}
+
+.embed-mode .search-container {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+}
+
+.embed-mode .facets {
+    position: static;
+    transform: none;
+    box-shadow: none;
+    border-top: 1px solid var(--border-color);
+    padding-top: 1rem;
+    margin-top: 1rem;
+}
+
+/* Headless mode (plan §13.21) - only results, no search input or facets */
+.headless-mode .header,
+.headless-mode .footer,
+.headless-mode .search-box,
+.headless-mode .search-controls,
+.headless-mode .facets,
+.headless-mode .facet-toggle-button,
+.headless-mode .pagination {
+    display: none !important;
+}
+
+.headless-mode .main {
+    padding: 0;
+    max-width: none;
+}
+
+.headless-mode .search-container {
+    grid-template-columns: 1fr;
+}
+
+.headless-mode .results {
+    gap: 0.5rem;
+}
+
+.headless-mode .result-card {
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    padding: 1rem;
+}
+
 @media (min-width: 641px) and (max-width: 1024px) {
     /* Tablet: two-column layout */
     .search-container {

@@ -24,6 +24,7 @@ mod middleware;
 mod otel;
 mod routes;
 mod scoped_key_rotation;
+mod search_ui_serve;
 
 use admin_session::SealKey;
 use auth::AuthState;
@@ -35,8 +36,8 @@ use miroir_core::{
     task_store::TaskStore,
 };
 use routes::{
-    admin, admin_endpoints, explain, health, indexes, keys, multi_search, search, settings, tasks,
-    version,
+    admin, admin_endpoints, explain, health, indexes, keys, multi_search, search, search_ui,
+    settings, tasks, version,
 };
 use scoped_key_rotation::ScopedKeyRotationState;
 use std::sync::Arc;
@@ -762,6 +763,9 @@ async fn main() -> anyhow::Result<()> {
         .nest("/search", search::router::<UnifiedState>())
         .nest("/settings", settings::router::<UnifiedState>())
         .nest("/tasks", tasks::router::<UnifiedState>())
+        // Search UI routes (plan §13.21)
+        .nest("/ui/search", search_ui::router::<UnifiedState>())
+        .route("/ui/widget.js", get(search_ui_serve::serve_widget))
         // IMPORTANT: Layer order matters! Last layer() call = outermost = runs first.
         // The middleware stack (from outermost to innermost):
         // 1. csrf_middleware - runs first
