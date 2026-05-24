@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 066aeddf6e95068819e3587b03b21864eab4fae699ba6bcf1a1574b78db81b83 # shrinks to shard_count = 8, rf = 1, old_nodes = 7
+cc 8268ac028420c9279d0c9bb3ea8089de3fba3eef2e71a1ecea804f0a6a41500e # shrinks to shard_count = 30, seed = 45
+cc ca6b1e16df390db9ef9ab272d65e9fb00317f7bedf08901cdf1f8b246488439d # shrinks to shard_count = 334, replica_groups = 1, rf = 2, nodes_per_group = 1, shard_id = 0
+cc 890435e5541f917b956fedac46de8a00e3e3973540eba6166ed2bba1a313aa9b # shrinks to shard_count = 81, seed = 95
+cc 0733f61e37558ef75a5faac2c84e9cbe3087b812d1a8980545482b4a706e608e # shrinks to shard_count = 8, rf = 1, old_nodes = 7

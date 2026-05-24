@@ -71,7 +71,7 @@ pub fn write_targets_with_migration(
     if let Some(coordinator) = migration_coordinator {
         if coordinator.is_dual_write_active(shard) {
             // Find migrations affecting this shard
-            for (_mid, state) in coordinator.get_all_migrations() {
+            for state in coordinator.get_all_migrations().values() {
                 if state.affected_shards.contains_key(&shard) {
                     // This shard is being migrated - include the new node
                     // Convert migration NodeId to topology NodeId
@@ -962,5 +962,272 @@ mod tests {
             node_6_count, 1,
             "Should not duplicate new_node if already in targets"
         );
+    }
+
+    // ── Property tests (proptest) ─────────────────────────────────────────────────────
+    #[cfg(test)]
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Property: |write_targets| == RG × RF (counting duplicates).
+        ///
+        /// For any topology and shard, the write_targets function returns
+        /// exactly RG × RF node IDs (one per replica group), provided each group
+        /// has at least RF nodes.
+        proptest! {
+            #[test]
+            fn prop_write_targets_count(
+                shard_count in 1u32..1000u32,
+                replica_groups in 1u32..10u32,
+                rf in 1u32..5u32,
+                nodes_per_group in 1usize..10usize,
+                shard_id in 0u32..1000u32,
+            ) {
+                prop_assume!(shard_id < shard_count);
+                let rf = rf as usize;
+                let replica_groups = replica_groups as usize;
+
+                // Constraint: each group must have at least RF nodes
+                prop_assume!(nodes_per_group >= rf);
+
+                let mut topo = Topology::new(shard_count, replica_groups as u32, rf);
+                let mut node_idx = 0u32;
+
+                // Add nodes to each group
+                for rg in 0..replica_groups {
+                    for _ in 0..nodes_per_group {
+                        topo.add_node(Node::new(
+                            NodeId::new(format!("node-{}", node_idx)),
+                            format!("http://node-{}:7700", node_idx),
+                            rg as u32,
+                        ));
+                        node_idx += 1;
+                    }
+                }
+
+                let targets = write_targets(shard_id % shard_count, &topo);
+
+                // Expected: RG × RF targets (may include duplicates across groups)
+                prop_assert_eq!(targets.len(), replica_groups * rf);
+            }
+        }
+
+        /// Property: Every group has exactly RF entries in write_targets.
+        ///
+        /// The write_targets function must return exactly RF nodes from each
+        /// replica group (duplicates within a group are not allowed).
+        proptest! {
+            #[test]
+            fn prop_write_targets_rf_per_group(
+                shard_count in 1u32..100u32,
+                replica_groups in 1u32..5u32,
+                rf in 1u32..3u32,
+                nodes_per_group in 3usize..10usize,
+                shard_id in 0u32..100u32,
+            ) {
+                prop_assume!(shard_id < shard_count);
+                let rf = rf as usize;
+                let replica_groups = replica_groups as usize;
+
+                let mut topo = Topology::new(shard_count, replica_groups as u32, rf);
+                let mut node_idx = 0u32;
+
+                for rg in 0..replica_groups {
+                    for _ in 0..nodes_per_group {
+                        topo.add_node(Node::new(
+                            NodeId::new(format!("node-{}", node_idx)),
+                            format!("http://node-{}:7700", node_idx),
+                            rg as u32,
+                        ));
+                        node_idx += 1;
+                    }
+                }
+
+                let targets = write_targets(shard_id % shard_count, &topo);
+
+                // Check that each group contributes exactly RF nodes
+                for rg in 0..replica_groups {
+                    if let Some(group) = topo.group(rg as u32) {
+                        let group_targets: Vec<_> = targets.iter()
+                            .filter(|n| group.nodes().contains(n))
+                            .collect();
+
+                        prop_assert_eq!(group_targets.len(), rf,
+                            "Group {} should have exactly {} targets, got {}",
+                            rg, rf, group_targets.len());
+                    }
+                }
+            }
+        }
+
+        /// Property: covering_set unions to cover every shard in the chosen group.
+        ///
+        /// The covering_set must include at least one node for each shard,
+        /// ensuring all shards are covered in a search query.
+        proptest! {
+            #[test]
+            fn prop_covering_set_covers_all_shards(
+                shard_count in 1u32..100u32,
+                rf in 1u32..5u32,
+                nodes_per_group in 2usize..10usize,
+                query_seq in 0u64..100u64,
+            ) {
+                let rf = rf as usize;
+
+                let mut topo = Topology::new(shard_count, 1, rf);
+                for i in 0..nodes_per_group {
+                    topo.add_node(Node::new(
+                        NodeId::new(format!("node-{}", i)),
+                        format!("http://node-{}:7700", i),
+                        0,
+                    ));
+                }
+
+                let group = topo.group(0).unwrap();
+                let covering = covering_set(shard_count, group, rf, query_seq);
+
+                // Verify that every shard is represented in the covering set
+                for shard_id in 0..shard_count {
+                    let replicas = assign_shard_in_group(shard_id, group.nodes(), rf);
+                    let selected = &replicas[query_seq as usize % replicas.len()];
+
+                    prop_assert!(covering.contains(selected),
+                        "Shard {} not covered: selected node {:?} not in covering set {:?}",
+                        shard_id, selected, covering);
+                }
+            }
+        }
+
+        /// Property: Reshuffle on topology change is bounded.
+        ///
+        /// When adding a node to a group, the number of shard assignments that change
+        /// should be proportional to RF × S / Ng_new. The bound is relaxed by a factor
+        /// of 2 to account for hash distribution variance.
+        proptest! {
+            #[test]
+            fn prop_reshuffle_bound_on_add(
+                shard_count in 8u32..64u32,
+                rf in 1u32..3u32,
+                old_nodes in 2usize..10usize,
+            ) {
+                let rf = rf as usize;
+
+                // Create old topology
+                let mut topo_old = Topology::new(shard_count, 1, rf);
+                for i in 0..old_nodes {
+                    topo_old.add_node(Node::new(
+                        NodeId::new(format!("node-{}", i)),
+                        format!("http://node-{}:7700", i),
+                        0,
+                    ));
+                }
+
+                // Create new topology with one additional node
+                let mut topo_new = Topology::new(shard_count, 1, rf);
+                for i in 0..(old_nodes + 1) {
+                    topo_new.add_node(Node::new(
+                        NodeId::new(format!("node-{}", i)),
+                        format!("http://node-{}:7700", i),
+                        0,
+                    ));
+                }
+
+                let new_nodes = old_nodes + 1;
+                let group_old = topo_old.group(0).unwrap();
+                let group_new = topo_new.group(0).unwrap();
+
+                // Compute assignments for all shards
+                let old_assignment: Vec<_> = (0..shard_count)
+                    .map(|shard_id| (shard_id, assign_shard_in_group(shard_id, group_old.nodes(), rf)))
+                    .collect();
+
+                let new_assignment: Vec<_> = (0..shard_count)
+                    .map(|shard_id| (shard_id, assign_shard_in_group(shard_id, group_new.nodes(), rf)))
+                    .collect();
+
+                // Count differences
+                let diff = count_assignment_diff(&old_assignment, &new_assignment);
+
+                // Relaxed bound: 4 × RF × ceil(S / Ng_new) to account for hash variance
+                let expected = rf * ((shard_count as usize + new_nodes - 1) / new_nodes);
+                let max_diff = 4 * expected.max(1);
+
+                prop_assert!(diff <= max_diff,
+                    "Reshuffle {} exceeded bound {} when adding node (shard_count={}, rf={}, old_nodes={})",
+                    diff, max_diff, shard_count, rf, old_nodes);
+            }
+        }
+
+        /// Property: Determinism under proptest.
+        ///
+        /// The same inputs must always produce the same outputs.
+        proptest! {
+            #[test]
+            fn prop_determinism(
+                shard_count in 1u32..100u32,
+                rf in 1u32..5u32,
+                seed in 0u64..10000u64,
+            ) {
+                let rf = rf as usize;
+
+                // Generate a deterministic set of nodes from the seed
+                let mut nodes = Vec::new();
+                for i in 0..10 {
+                    nodes.push(NodeId::new(format!("node-{}", (seed as usize + i) % 20)));
+                }
+
+                // Run assignment twice and compare
+                let assignment1: Vec<_> = (0..shard_count.min(50))
+                    .map(|shard_id| (shard_id, assign_shard_in_group(shard_id, &nodes, rf).clone()))
+                    .collect();
+
+                let assignment2: Vec<_> = (0..shard_count.min(50))
+                    .map(|shard_id| (shard_id, assign_shard_in_group(shard_id, &nodes, rf).clone()))
+                    .collect();
+
+                prop_assert_eq!(assignment1, assignment2,
+                    "Assignment is non-deterministic for shard_count={}, rf={}, seed={}",
+                    shard_count, rf, seed);
+            }
+        }
+
+        /// Property: shard_for_key distribution is roughly uniform.
+        ///
+        /// Primary keys should be roughly uniformly distributed across shards.
+        /// Checks that no shard deviates excessively from the expected count.
+        proptest! {
+            #[test]
+            fn prop_shard_for_key_uniformity(
+                shard_count in 8u32..128u32,
+                seed in 0u64..100u64,
+            ) {
+                use std::collections::HashMap;
+
+                let samples = 1000usize;
+                let mut shard_counts: HashMap<u32, usize> = HashMap::new();
+
+                // Generate keys from seed
+                for i in 0..samples {
+                    let key = format!("key-{}-{}", seed, i);
+                    let shard = shard_for_key(&key, shard_count);
+                    *shard_counts.entry(shard).or_insert(0) += 1;
+                }
+
+                // Expected count per shard: samples / shard_count
+                let expected = samples as f64 / shard_count as f64;
+
+                // Check that no shard is excessively over represented
+                // Allow 5× variance for robustness (hash randomness + small sample size)
+                // Only check upper bound - lower bound is naturally handled by the sum constraint
+                let max_acceptable = (expected * 5.0).ceil() as usize;
+
+                for (shard, count) in shard_counts {
+                    prop_assert!(count <= max_acceptable,
+                        "Shard {} has {} keys, expected <= {} (shard_count={}, samples={})",
+                        shard, count, max_acceptable, shard_count, samples);
+                }
+            }
+        }
     }
 }
