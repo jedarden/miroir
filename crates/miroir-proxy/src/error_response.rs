@@ -135,6 +135,7 @@ impl From<miroir_core::MiroirError> for ErrorResponse {
             miroir_core::MiroirError::Task(msg) => Self::new(msg, "task_error"),
             miroir_core::MiroirError::Io(err) => Self::new(err.to_string(), "internal_error"),
             miroir_core::MiroirError::Json(err) => Self::new(err.to_string(), "internal_error"),
+            _ => Self::new(err.to_string(), "internal_error"),
         }
     }
 }
