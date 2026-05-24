@@ -461,6 +461,28 @@ async fn write_documents_impl(
         }
     }
 
+    // 2.5. Check if index is in resharding dual-write phase (plan §13.1 step 2)
+    // If yes, prepare separate document batches for live and shadow indexes
+    let resharding_state = state.resharding_registry.read().await;
+    let dual_write_prep = if resharding_state.is_dual_write_active(&index_uid) {
+        let state = resharding_state.get(&index_uid).unwrap();
+        tracing::debug!(
+            index_uid = %index_uid,
+            shadow_index = %state.shadow_index,
+            old_shards = state.old_shards,
+            target_shards = state.target_shards,
+            "index in resharding dual-write phase, preparing dual-hash writes"
+        );
+        Some(miroir_core::reshard::prepare_dual_write_documents(
+            &documents,
+            &primary_key,
+            state,
+        ))
+    } else {
+        None
+    };
+    drop(resharding_state); // Release lock before async operations
+
     // 3. Inject _miroir_shard and _miroir_updated_at into each document
     let topology = state.topology.read().await;
     let shard_count = topology.shards;
@@ -479,21 +501,49 @@ async fn write_documents_impl(
         None
     };
 
-    for doc in &mut documents {
-        if let Some(pk_value) = doc.get(&primary_key).and_then(|v| v.as_str()) {
-            let shard_id = shard_for_key(pk_value, shard_count);
-            doc["_miroir_shard"] = serde_json::json!(shard_id);
-        }
+    // Handle dual-write resharding: prepare separate document batches
+    // If dual_write_prep is Some, use pre-computed batches with different shard tags
+    // Otherwise, inject shard tags inline as before
+    let (mut live_docs, shadow_write_info) = if let Some(prep) = dual_write_prep {
+        // Use pre-computed batches from prepare_dual_write_documents
+        // Shadow documents already have new shard tags; live documents have old shard tags
+        (
+            prep.live_documents,
+            Some((
+                prep.shadow_documents,
+                prep.shadow_index,
+                prep.old_shards,
+                prep.target_shards,
+            )),
+        )
+    } else {
+        // Normal path: inject shard tags inline
+        for doc in &mut documents {
+            if let Some(pk_value) = doc.get(&primary_key).and_then(|v| v.as_str()) {
+                let shard_id = shard_for_key(pk_value, shard_count);
+                doc["_miroir_shard"] = serde_json::json!(shard_id);
+            }
 
-        // Stamp _miroir_updated_at when anti_entropy is enabled (plan §13.8)
-        // This happens AFTER reserved field validation, so orchestrator-controlled injection is allowed
-        if let Some(timestamp) = now_ms {
-            doc[updated_at_field] = serde_json::json!(timestamp);
+            // Stamp _miroir_updated_at when anti_entropy is enabled (plan §13.8)
+            // This happens AFTER reserved field validation, so orchestrator-controlled injection is allowed
+            if let Some(timestamp) = now_ms {
+                doc[updated_at_field] = serde_json::json!(timestamp);
+            }
+        }
+        (documents, None)
+    };
+
+    // Stamp _miroir_updated_at on live documents if anti_entropy is enabled
+    if let Some(timestamp) = now_ms {
+        for doc in &mut live_docs {
+            if doc.get(updated_at_field).is_none() {
+                doc[updated_at_field] = serde_json::json!(timestamp);
+            }
         }
     }
 
     // 4. Group documents by target nodes (per-batch grouping for efficient fan-out)
-    let node_documents = group_documents_by_shard(&documents, &primary_key, &topology)?;
+    let node_documents = group_documents_by_shard(&live_docs, &primary_key, &topology)?;
 
     // 5. Fan out to nodes and track quorum
     let client = HttpClient::new(
@@ -560,6 +610,73 @@ async fn write_documents_impl(
         }
     }
 
+    // 5.5. Dual-write to shadow index during resharding (plan §13.1 step 2)
+    // Shadow writes are tagged with origin="reshard_backfill" for CDC suppression (plan §13.13)
+    if let Some((shadow_docs, shadow_index, old_shards, target_shards)) = shadow_write_info {
+        tracing::debug!(
+            shadow_index = %shadow_index,
+            docs_count = shadow_docs.len(),
+            "writing to shadow index during resharding dual-write phase"
+        );
+
+        // Group shadow documents by their new shard assignment for efficient fan-out
+        let mut shadow_node_documents: HashMap<u32, Vec<Value>> = HashMap::new();
+        for doc in &shadow_docs {
+            let pk_value = doc
+                .get(&primary_key)
+                .and_then(|v| v.as_str())
+                .expect("primary key validation should have happened");
+
+            // Shadow documents already have new shard tags from prepare_dual_write_documents
+            let shard_id = shard_for_key(pk_value, target_shards);
+            shadow_node_documents
+                .entry(shard_id)
+                .or_default()
+                .push(doc.clone());
+        }
+
+        // Write shadow documents to all nodes (shadow index exists on all nodes)
+        for (_shard_id, docs) in shadow_node_documents {
+            for node in topology.nodes() {
+                let group_id = node.replica_group;
+                quorum_state.record_attempt(group_id, &node.id);
+
+                let req = WriteRequest {
+                    index_uid: shadow_index.clone(),
+                    documents: docs.clone(),
+                    primary_key: Some(primary_key.clone()),
+                    // Tag shadow writes with origin for CDC suppression (plan §13.13)
+                    origin: Some(miroir_core::cdc::ORIGIN_RESHARD_BACKFILL.to_string()),
+                };
+
+                match client.write_documents(&node.id, &node.address, &req).await {
+                    Ok(resp) if resp.success => {
+                        quorum_state.record_success(group_id, &node.id);
+                        if let Some(task_uid) = resp.task_uid {
+                            node_task_uids.insert(node.id.as_str().to_string(), task_uid);
+                        }
+                    }
+                    Ok(resp) => {
+                        // Non-success response - log but don't fail the live write
+                        tracing::warn!(
+                            node = %node.id,
+                            error = ?resp.message,
+                            "shadow index write returned non-success"
+                        );
+                    }
+                    Err(e) => {
+                        // Log shadow write failure but don't fail the live write
+                        tracing::warn!(
+                            node = %node.id,
+                            error = ?e,
+                            "shadow index write failed"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // 6. Apply two-rule quorum logic
     let degraded_groups = quorum_state.count_degraded_groups(replica_group_count, rf);
     let quorum_groups = quorum_state.count_quorum_groups();
@@ -619,7 +736,7 @@ async fn write_documents_impl(
             use sha2::{Digest, Sha256};
             let body_hash = format!(
                 "{:x}",
-                Sha256::digest(serde_json::to_string(&documents).unwrap_or_default())
+                Sha256::digest(serde_json::to_string(&live_docs).unwrap_or_default())
             );
             state
                 .idempotency_cache
