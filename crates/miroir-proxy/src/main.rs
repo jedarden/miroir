@@ -443,6 +443,24 @@ async fn main() -> anyhow::Result<()> {
         info!("Mode C worker not available (no task store configured)");
     }
 
+    // Start group sync worker background task (plan §2 group addition)
+    if let Some(ref worker) = state.admin.group_sync_worker {
+        let worker = worker.clone();
+        tokio::spawn(async move {
+            info!("group sync worker started");
+            match worker.run().await {
+                Ok(()) => {
+                    info!("group sync worker exited cleanly");
+                }
+                Err(e) => {
+                    error!("group sync worker exited unexpectedly: {}", e);
+                }
+            }
+        });
+    } else {
+        info!("group sync worker not available (no task store configured)");
+    }
+
     // Start peer discovery refresh loop (plan §14.5)
     // Periodically performs SRV lookups to discover peer pods
     if let Some(ref peer_discovery) = state.peer_discovery {

@@ -444,7 +444,7 @@ pub async fn plan_search_scatter_with_version_floor(
     version_checker: &impl Fn(&str, &str) -> u64,
     replica_selector: Option<&ReplicaSelector>,
 ) -> Option<ScatterPlan> {
-    let chosen_group = query_group(query_seq, topology.replica_group_count());
+    let chosen_group = crate::router::query_group_active(query_seq, topology);
 
     let group = topology.group(chosen_group)?;
 
@@ -551,7 +551,7 @@ pub async fn plan_search_scatter_adaptive(
     shard_count: u32,
     replica_selector: &ReplicaSelector,
 ) -> ScatterPlan {
-    let chosen_group = query_group(query_seq, topology.replica_group_count());
+    let chosen_group = crate::router::query_group_active(query_seq, topology);
 
     let group = match topology.group(chosen_group) {
         Some(g) => g,
