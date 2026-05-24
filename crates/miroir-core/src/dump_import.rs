@@ -438,7 +438,7 @@ fn millis_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scatter::MockNodeClient;
+    use crate::scatter::{MockNodeClient, WriteResponse};
     use crate::topology::Node;
 
     #[test]
