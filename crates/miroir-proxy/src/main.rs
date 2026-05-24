@@ -7,7 +7,7 @@ use miroir_core::{
     config::MiroirConfig,
     peer_discovery::PeerDiscovery,
     rebalancer_worker::{RebalancerWorker, RebalancerWorkerConfig, TopologyChangeEvent},
-    task_pruner,
+    resource_pressure, task_pruner,
     topology::{NodeStatus, Topology},
 };
 use std::net::SocketAddr;
@@ -520,6 +520,44 @@ async fn main() -> anyhow::Result<()> {
         });
     } else {
         info!("peer discovery disabled (not running in Kubernetes)");
+    }
+
+    // Start resource-pressure metrics collection (plan §14.9)
+    // Collects memory pressure, CPU throttling, and other system metrics every 15 seconds
+    {
+        let metrics = state.metrics.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(15));
+            info!("resource-pressure metrics collection started");
+            let mut last_cpu_throttled_total = 0u64;
+            loop {
+                interval.tick().await;
+                // Collect memory pressure
+                match resource_pressure::read_memory_pressure() {
+                    Ok(level) => {
+                        metrics.set_memory_pressure(level);
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "failed to read memory pressure");
+                    }
+                }
+                // Collect CPU throttling
+                match resource_pressure::read_cpu_throttling() {
+                    Ok((nr_throttled, throttled_time_seconds)) => {
+                        // Increment by the delta since last collection
+                        // The counter is cumulative, so we report the additional throttled time
+                        if nr_throttled > last_cpu_throttled_total {
+                            // Some throttling occurred - report the time increment
+                            metrics.inc_cpu_throttled_seconds(throttled_time_seconds);
+                        }
+                        last_cpu_throttled_total = nr_throttled;
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "failed to read CPU throttling");
+                    }
+                }
+            }
+        });
     }
 
     // Start task registry TTL pruner background task (plan §4, Phase 3)
