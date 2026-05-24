@@ -133,7 +133,10 @@ replication_factor: 2
 nodes: []
 "#;
         let result = from_yaml(yaml);
-        assert!(result.is_err(), "should fail validation: RF=2 requires redis");
+        assert!(
+            result.is_err(),
+            "should fail validation: RF=2 requires redis"
+        );
     }
 
     #[test]

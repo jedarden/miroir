@@ -382,7 +382,9 @@ mod tests {
 
         rt.block_on(async {
             planner.set_primary_key("test".into(), "id".into()).await;
-            let plan = planner.plan("test", &Some("id = \"test-doc\"".to_string()), 16).await;
+            let plan = planner
+                .plan("test", &Some("id = \"test-doc\"".to_string()), 16)
+                .await;
             assert!(plan.narrowed);
             assert_eq!(plan.target_shards.len(), 1);
         });
@@ -411,7 +413,11 @@ mod tests {
         rt.block_on(async {
             planner.set_primary_key("test".into(), "id".into()).await;
             let plan = planner
-                .plan("test", &Some("id = \"test\" AND category = \"books\"".to_string()), 16)
+                .plan(
+                    "test",
+                    &Some("id = \"test\" AND category = \"books\"".to_string()),
+                    16,
+                )
                 .await;
             assert!(plan.narrowed);
             assert_eq!(plan.target_shards.len(), 1);

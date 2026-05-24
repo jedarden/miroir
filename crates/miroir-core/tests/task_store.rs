@@ -425,8 +425,14 @@ async fn concurrent_writes_no_deadlock() {
 
             // Perform multiple operations
             store_clone.task_insert(&task).await.unwrap();
-            store_clone.task_get(&format!("concurrent-{}", i)).await.unwrap();
-            store_clone.task_update_status(&format!("concurrent-{}", i), TaskStatus::Processing).await.unwrap();
+            store_clone
+                .task_get(&format!("concurrent-{}", i))
+                .await
+                .unwrap();
+            store_clone
+                .task_update_status(&format!("concurrent-{}", i), TaskStatus::Processing)
+                .await
+                .unwrap();
         });
     }
 
