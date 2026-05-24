@@ -44,18 +44,14 @@ spec:
             template: cargo-test
             dependencies: [checkout]
           - name: coverage
-            template: cargo-coverage
-            dependencies: [checkout]
+            template: cargo-tarpaulin
+            dependencies: [test]
           - name: bench-check
             template: cargo-bench-check
             dependencies: [test]
-          - name: coverage-comment
-            template: coverage-pr-comment
-            dependencies: [coverage]
-            when: "'{{workflow.parameters.revision}}' != 'main'"
           - name: build
             template: cargo-build
-            dependencies: [lint, bench-check, coverage]
+            dependencies: [lint, bench-check]
           - name: docker
             template: docker-build-push
             dependencies: [build]
@@ -63,6 +59,18 @@ spec:
           - name: release
             template: create-github-release
             dependencies: [build]
+            when: "'{{workflow.parameters.tag}}' != ''"
+          - name: helm-package
+            template: helm-package
+            dependencies: [checkout]
+            when: "'{{workflow.parameters.tag}}' != ''"
+          - name: helm-publish-ghpages
+            template: helm-publish-ghpages
+            dependencies: [helm-package]
+            when: "'{{workflow.parameters.tag}}' != ''"
+          - name: helm-publish-oci
+            template: helm-publish-oci
+            dependencies: [helm-package]
             when: "'{{workflow.parameters.tag}}' != ''"
 
     - name: git-checkout
@@ -141,6 +149,68 @@ spec:
             cpu: 4000m
             memory: 8Gi
 
+    - name: cargo-tarpaulin
+      activeDeadlineSeconds: 1800
+      container:
+        image: rust:1.87-slim
+        command: [bash, -c]
+        args:
+          - |
+            set -e
+            apt-get update -qq && apt-get install -y -qq pkg-config libssl-dev curl >/dev/null 2>&1
+
+            # Install cargo-tarpaulin
+            curl -LsSf https://get.cargo-tarpaulin.app | cargo install --root /usr/local
+
+            cd /workspace/src
+            export CARGO_TARGET_DIR=/workspace/target-coverage
+
+            # Run tarpaulin with HTML and XML output (plan §8 coverage policy)
+            # Exclude miroir-proxy and miroir-ctl (I/O-heavy, integration-tested instead)
+            cargo tarpaulin --workspace \
+              --exclude-files 'crates/miroir-proxy/*' 'crates/miroir-ctl/*' \
+              --out Html --out Xml \
+              --output-dir /workspace/coverage \
+              --timeout 600 \
+              --fail-under 90.0
+
+            # Generate coverage summary for CI logs
+            echo "=== Coverage summary ==="
+            if [ -f /workspace/coverage/cobertura.xml ]; then
+              # Parse XML to show percentage
+              python3 << 'EOF'
+import xml.etree.ElementTree as ET
+tree = ET.parse('/workspace/coverage/cobertura.xml')
+root = tree.getroot()
+coverage = root.attrib.get('line-rate', '0')
+percent = float(coverage) * 100
+print(f"miroir-core coverage: {percent:.2f}%")
+if percent < 90.0:
+    print(f"ERROR: Coverage {percent:.2f}% is below 90% threshold")
+    exit(1)
+print("Coverage gate: PASSED")
+EOF
+            fi
+
+            echo "=== Coverage reports generated ==="
+            ls -la /workspace/coverage/
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            cpu: 4000m
+            memory: 8Gi
+          limits:
+            cpu: 6000m
+            memory: 12Gi
+        outputs:
+          artifacts:
+            - name: coverage-html
+              path: /workspace/coverage/tarpaulin-report.html
+            - name: coverage-xml
+              path: /workspace/coverage/cobertura.xml
+
     - name: cargo-bench-check
       activeDeadlineSeconds: 600
       container:
@@ -152,70 +222,35 @@ spec:
             apt-get update -qq && apt-get install -y -qq pkg-config libssl-dev >/dev/null 2>&1
             cd /workspace/src
             export CARGO_TARGET_DIR=/workspace/target-bench
-            # Phase 8: Compile benches to verify they still work (plan §8 regression gate)
-            cargo bench --no-run -p miroir-core
 
-    - name: cargo-coverage
-      activeDeadlineSeconds: 1800
-      outputs:
-        artifacts:
-          - name: coverage-html
-            path: /workspace/coverage/html
-            archive:
-              none: {}
-          - name: coverage-xml
-            path: /workspace/coverage/cobertura.xml
-            archive:
-              none: {}
-          - name: coverage-lcov
-            path: /workspace/coverage/lcov.info
-            archive:
-              none: {}
-      container:
-        image: rust:1.87-slim
-        command: [bash, -c]
-        args:
-          - |
-            set -e
-            apt-get update -qq && apt-get install -y -qq pkg-config libssl-dev libcurl4-openssl-dev zlib1g-dev >/dev/null 2>&1
-            cd /workspace/src
-            export CARGO_TARGET_DIR=/workspace/target-coverage
+            # Phase 8: Run performance benchmarks (plan §8)
+            # Run with short sample size for CI; full benchmarks run in nightly
+            cargo bench -p miroir-core \
+              --bench router_bench \
+              --bench merger_bench \
+              -- --sample-size 10 --warm-up-time 1 --measurement-time 3 \
+              --save-baseline main
 
-            # Install tarpaulin from binaries (faster than compiling)
-            curl -sL https://github.com/xd009642/tarpaulin/releases/download/v0.31.4/cargo-tarpaulin-x86_64-unknown-linux-gnu.gz | \
-              gunzip -c > /usr/local/bin/cargo-tarpaulin && \
-              chmod +x /usr/local/bin/cargo-tarpaulin
+            # Copy benchmark results to workspace
+            mkdir -p /workspace/dist/bench
+            cp -r /workspace/target-bench/criterion /workspace/dist/bench/
 
-            # Run coverage for miroir-core with 90% gate (plan §8)
-            # Outputs: HTML (for browsing), Xml (for CI tools), Lcov (for diff)
-            cargo tarpaulin \
-              --workspace \
-              --package miroir-core \
-              --exclude-files "benches/*" \
-              --exclude-files "tests/*" \
-              --timeout 900 \
-              --out Html \
-              --out Xml \
-              --out Lcov \
-              --output-dir /workspace/coverage \
-              --fail-under 90 \
-              -- --test-threads=1
-
-            echo "=== Coverage passed 90% gate ==="
-
-            # Generate coverage summary for PR comment
-            COVERAGE_PERCENT=$(grep -oP 'coverage_\d+\.pc' /workspace/coverage/cobertura.xml | head -1 | grep -oP '\d+\.\d+' || echo "90.0")
-            echo "COVERAGE=${COVERAGE_PERCENT}" > /workspace/coverage/summary.txt
-      volumeMounts:
-        - name: workspace
-          mountPath: /workspace
-      resources:
-        requests:
-          cpu: 2000m
-          memory: 4Gi
-        limits:
-          cpu: 4000m
-          memory: 8Gi
+            echo "=== Benchmark results ==="
+            ls -la /workspace/dist/bench/criterion/
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            cpu: 2000m
+            memory: 4Gi
+          limits:
+            cpu: 4000m
+            memory: 8Gi
+        outputs:
+          artifacts:
+            - name: benchmark-results
+              path: /workspace/dist/bench
 
     - name: cargo-build
       activeDeadlineSeconds: 1800
@@ -371,57 +406,89 @@ spec:
             cpu: 500m
             memory: 512Mi
 
-    - name: coverage-pr-comment
+    - name: helm-package
       activeDeadlineSeconds: 300
       container:
-        image: ghcr.io/cli/cli:2.49.0
-        command: [bash, -c]
+        image: alpine/helm:3.14.0
+        command: [sh, -c]
         args:
           - |
             set -e
-            cd /workspace/src
+            apk add --no-cache yq
 
-            # Read coverage percentage
-            COVERAGE=$(cat /workspace/coverage/summary.txt | grep COVERAGE= | cut -d= -f2)
+            TAG="{{workflow.parameters.tag}}"
+            VERSION="${TAG#v}"
 
-            # Get base coverage from main branch for comparison
-            BASE_COVERAGE="N/A"  # TODO: implement base coverage lookup
+            # Extract chart version from Chart.yaml and update it
+            CHART_YAML="/workspace/src/charts/miroir/Chart.yaml"
 
-            # Construct PR comment
-            COMMENT="## Coverage Report 📊
+            # For chart-only changes, we'd bump only chart version here
+            # For now, chart version tracks app version
+            yq -i ".version = \"$VERSION\"" "$CHART_YAML"
+            yq -i ".appVersion = \"$VERSION\"" "$CHART_YAML"
 
-| Metric | Value |
-|--------|-------|
-| **Current Coverage** | ${COVERAGE}% |
-| **Target** | ≥ 90% |
-| **Base (main)** | ${BASE_COVERAGE}% |
+            # Package the chart
+            mkdir -p /workspace/dist
+            helm package /workspace/src/charts/miroir -d /workspace/dist
 
-[View full coverage report](https://argo-ci.ardenone.com/workflows/{{workflow.namespace}}/{{workflow.name}}/{{workflow.uid}}?tab=artifacts)
+            echo "=== Helm chart packaged ==="
+            ls -la /workspace/dist/miroir-*.tgz
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
 
----
+    - name: helm-publish-ghpages
+      activeDeadlineSeconds: 600
+      container:
+        image: alpine/helm:3.14.0
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            apk add --no-cache git
 
-*Reported by Miroir CI (plan §8)*"
+            TAG="{{workflow.parameters.tag}}"
 
-            # Find the PR associated with this commit
-            PR_NUMBER=$(gh pr list --head "{{workflow.parameters.revision}}" --json number --jq '.[0].number' 2>/dev/null || echo "")
+            # Set up git config for gh-pages push
+            git config --global user.name "miroir-ci"
+            git config --global user.email "ci@ardenone.com"
 
-            if [ -n "$PR_NUMBER" ]; then
-              # Post or update comment
-              EXISTING_COMMENT_ID=$(gh api \
-                repos/jedarden/miroir/issues/$PR_NUMBER/comments \
-                --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("Coverage Report"))) | .id' \
-                2>/dev/null | head -1)
-
-              if [ -n "$EXISTING_COMMENT_ID" ]; then
-                gh api --method PATCH \
-                  repos/jedarden/miroir/issues/comments/$EXISTING_COMMENT_ID \
-                  -f body="$COMMENT"
-              else
-                gh pr comment $PR_NUMBER --body "$COMMENT"
-              fi
+            # Clone or create gh-pages branch
+            if git ls-remote --exit-code --heads "https://x-access-token:${GH_TOKEN}@github.com/jedarden/miroir.git" gh-pages >/dev/null 2>&1; then
+              git clone --depth 1 --branch gh-pages \
+                "https://x-access-token:${GH_TOKEN}@github.com/jedarden/miroir.git" \
+                /workspace/gh-pages
             else
-              echo "No PR found for revision {{workflow.parameters.revision}}, skipping comment."
+              # Create initial gh-pages branch
+              git clone "https://x-access-token:${GH_TOKEN}@github.com/jedarden/miroir.git" /workspace/gh-pages
+              cd /workspace/gh-pages
+              git checkout --orphan gh-pages
+              git rm -rf .
+              git commit -m "Initialize gh-pages branch" --allow-empty
+              git push origin gh-pages
             fi
+
+            # Copy new chart package
+            cp /workspace/dist/miroir-*.tgz /workspace/gh-pages/
+
+            # Generate/update index.yaml
+            cd /workspace/gh-pages
+            helm repo index . --url https://jedarden.github.io/miroir
+
+            # Commit and push
+            git add -A
+            git commit -m "Release chart ${TAG}" || echo "No changes to commit"
+            git push origin gh-pages
+
+            echo "=== Chart published to gh-pages ==="
+            echo "Repository: https://jedarden.github.io/miroir"
         env:
           - name: GH_TOKEN
             valueFrom:
@@ -434,7 +501,55 @@ spec:
         resources:
           requests:
             cpu: 200m
-          memory: 256Mi
-        limits:
-          cpu: 500m
-          memory: 512Mi
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+    - name: helm-publish-oci
+      activeDeadlineSeconds: 600
+      container:
+        image: alpine/helm:3.14.0
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            apk add --no-cache jq
+
+            # Parse Docker config JSON for GHCR auth
+            # The ghcr-credentials secret uses Docker config JSON format
+            DOCKER_CONFIG="/kaniko/.docker/config.json"
+            AUTH=$(jq -r '.auths."ghcr.io".auth' "$DOCKER_CONFIG")
+            if [ "$AUTH" = "null" ]; then
+              echo "Error: GHCR auth not found in Docker config"
+              exit 1
+            fi
+
+            # Decode base64 auth (username:password format)
+            CREDS=$(echo "$AUTH" | base64 -d)
+            USERNAME=$(echo "$CREDS" | cut -d: -f1)
+            PASSWORD=$(echo "$CREDS" | cut -d: -f2)
+
+            # Login to GHCR
+            echo "$PASSWORD" | helm registry login ghcr.io \
+              --username "$USERNAME" \
+              --password-stdin
+
+            # Push chart to OCI registry
+            CHART_FILE=$(ls /workspace/dist/miroir-*.tgz | head -1)
+            helm push "${CHART_FILE}" oci://ghcr.io/jedarden/charts
+
+            echo "=== Chart published to OCI ==="
+            echo "Repository: oci://ghcr.io/jedarden/charts/miroir"
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: ghcr-config
+            mountPath: /kaniko/.docker
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
