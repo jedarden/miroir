@@ -1,15 +1,15 @@
 //! Scatter orchestration: fan-out logic and covering set builder.
 
 use crate::config::UnavailableShardPolicy;
+use crate::merger::{MergeInput, MergeStrategy, MergedSearchResult, ShardHitPage};
 use crate::replica_selection::ReplicaSelector;
-use tracing::{instrument, info_span, Instrument};
-use crate::merger::{MergeInput, MergedSearchResult, MergeStrategy, ShardHitPage};
 use crate::router::{covering_set, covering_set_with_version_floor, query_group};
 use crate::topology::{NodeId, Topology};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use tracing::{info_span, instrument, Instrument};
 
 /// Scatter plan: the exact shard→node mapping for a search query.
 #[derive(Debug, Clone)]
@@ -96,7 +96,11 @@ impl GlobalIdf {
             })
             .collect();
 
-        Self { total_docs, avg_doc_length, terms }
+        Self {
+            total_docs,
+            avg_doc_length,
+            terms,
+        }
     }
 }
 
@@ -232,7 +236,11 @@ pub trait NodeClient: Send + Sync {
         _address: &str,
         _request: &PreflightRequest,
     ) -> std::result::Result<PreflightResponse, NodeError> {
-        Ok(PreflightResponse { total_docs: 0, avg_doc_length: 0.0, term_stats: HashMap::new() })
+        Ok(PreflightResponse {
+            total_docs: 0,
+            avg_doc_length: 0.0,
+            term_stats: HashMap::new(),
+        })
     }
 
     /// Write documents to a node (add/replace).
@@ -257,7 +265,8 @@ pub trait NodeClient: Send + Sync {
         _node: &NodeId,
         _address: &str,
         _request: &TaskStatusRequest,
-    ) -> impl std::future::Future<Output = std::result::Result<TaskStatusResponse, NodeError>> + Send {
+    ) -> impl std::future::Future<Output = std::result::Result<TaskStatusResponse, NodeError>> + Send
+    {
         async move {
             Ok(TaskStatusResponse {
                 task_uid: _request.task_uid,
@@ -397,8 +406,11 @@ pub async fn plan_search_scatter(
         Some(g) => g,
         None => {
             return ScatterPlan {
-                chosen_group, target_shards: Vec::new(),
-                shard_to_node: HashMap::new(), deadline_ms: 0, hedging_eligible: false,
+                chosen_group,
+                target_shards: Vec::new(),
+                shard_to_node: HashMap::new(),
+                deadline_ms: 0,
+                hedging_eligible: false,
             };
         }
     };
@@ -415,7 +427,8 @@ pub async fn plan_search_scatter(
         let healthy_replicas: Vec<NodeId> = replicas
             .iter()
             .filter(|node_id| {
-                node_map.get(node_id)
+                node_map
+                    .get(node_id)
                     .map(|n| n.is_healthy())
                     .unwrap_or(false)
             })
@@ -440,7 +453,8 @@ pub async fn plan_search_scatter(
                     continue;
                 }
                 if let Some(other_group) = topology.group(group_id) {
-                    let other_replicas = crate::router::assign_shard_in_group(shard_id, other_group.nodes(), rf);
+                    let other_replicas =
+                        crate::router::assign_shard_in_group(shard_id, other_group.nodes(), rf);
                     for other_node in other_replicas {
                         if let Some(node) = node_map.get(&other_node) {
                             if node.is_healthy() {
@@ -579,6 +593,56 @@ pub async fn plan_search_scatter_for_group(
     })
 }
 
+/// Plan search scatter with tenant affinity (plan §13.15).
+///
+/// If the tenant has a pinned group, routes to that group. Otherwise, uses
+/// normal round-robin group selection. Returns None if the pinned group is invalid.
+///
+/// # Arguments
+/// * `topology` - The cluster topology
+/// * `query_seq` - Query sequence number for round-robin
+/// * `rf` - Replication factor
+/// * `shard_count` - Number of shards
+/// * `pinned_group` - Optional tenant-pinned replica group
+/// * `replica_selector` - Optional replica selector for adaptive selection
+///
+/// # Returns
+/// A scatter plan, or None if the pinned group is invalid.
+pub async fn plan_search_scatter_with_tenant(
+    topology: &Topology,
+    query_seq: u64,
+    rf: usize,
+    shard_count: u32,
+    pinned_group: Option<u32>,
+    replica_selector: Option<&ReplicaSelector>,
+) -> Option<ScatterPlan> {
+    match pinned_group {
+        Some(group_id) => {
+            // Tenant has a pinned group - use it
+            plan_search_scatter_for_group(
+                topology,
+                query_seq,
+                rf,
+                shard_count,
+                group_id,
+                replica_selector,
+            )
+            .await
+        }
+        None => {
+            // No tenant pinning - use normal group selection
+            let plan =
+                plan_search_scatter(topology, query_seq, rf, shard_count, replica_selector).await;
+            // Check if the plan has valid targets (group exists and has nodes)
+            if topology.group(plan.chosen_group).is_some() && !plan.target_shards.is_empty() {
+                Some(plan)
+            } else {
+                None
+            }
+        }
+    }
+}
+
 /// Plan search scatter using adaptive replica selection (plan §13.3).
 ///
 /// Uses EWMA-based scoring to select the best replica for each shard,
@@ -656,7 +720,10 @@ pub async fn execute_scatter<C: NodeClient>(
     let mut node_to_shards: HashMap<NodeId, Vec<u32>> = HashMap::new();
     for (&shard_id, node_id) in &plan.shard_to_node {
         if plan.target_shards.contains(&shard_id) {
-            node_to_shards.entry(node_id.clone()).or_default().push(shard_id);
+            node_to_shards
+                .entry(node_id.clone())
+                .or_default()
+                .push(shard_id);
         }
     }
     tracing::Span::current().record("node_count", node_to_shards.len());
@@ -671,7 +738,10 @@ pub async fn execute_scatter<C: NodeClient>(
             Some(n) => n.clone(),
             None => {
                 for shard_id in shards {
-                    failed_shards.insert(shard_id, NodeError::NetworkError("node not in topology".to_string()));
+                    failed_shards.insert(
+                        shard_id,
+                        NodeError::NetworkError("node not in topology".to_string()),
+                    );
                 }
                 continue;
             }
@@ -687,10 +757,15 @@ pub async fn execute_scatter<C: NodeClient>(
             address = %node.address,
             shard_count = shard_count,
         );
-        tasks.push(async move {
-            let result = client_ref.search_node(&node_id_clone, &node.address, &req_clone).await;
-            (node_id_clone, shards, result)
-        }.instrument(span));
+        tasks.push(
+            async move {
+                let result = client_ref
+                    .search_node(&node_id_clone, &node.address, &req_clone)
+                    .await;
+                (node_id_clone, shards, result)
+            }
+            .instrument(span),
+        );
     }
 
     let results = futures_util::future::join_all(tasks).await;
@@ -704,10 +779,14 @@ pub async fn execute_scatter<C: NodeClient>(
             }
             Err(NodeError::Timeout) => {
                 deadline_exceeded = true;
-                for shard_id in shards { failed_shards.insert(shard_id, NodeError::Timeout); }
+                for shard_id in shards {
+                    failed_shards.insert(shard_id, NodeError::Timeout);
+                }
             }
             Err(e) => {
-                for shard_id in shards { failed_shards.insert(shard_id, e.clone()); }
+                for shard_id in shards {
+                    failed_shards.insert(shard_id, e.clone());
+                }
             }
         }
     }
@@ -717,7 +796,10 @@ pub async fn execute_scatter<C: NodeClient>(
     match policy {
         UnavailableShardPolicy::Error => {
             if !failed_shards.is_empty() {
-                return Err(crate::error::MiroirError::Routing(format!("{} shard(s) unavailable", failed_shards.len())));
+                return Err(crate::error::MiroirError::Routing(format!(
+                    "{} shard(s) unavailable",
+                    failed_shards.len()
+                )));
             }
         }
         UnavailableShardPolicy::Partial => {}
@@ -737,7 +819,11 @@ pub async fn execute_scatter<C: NodeClient>(
                         }
 
                         if let Some(group) = topology.group(group_id) {
-                            let replicas = crate::router::assign_shard_in_group(shard_id, group.nodes(), topology.rf());
+                            let replicas = crate::router::assign_shard_in_group(
+                                shard_id,
+                                group.nodes(),
+                                topology.rf(),
+                            );
                             if replicas.is_empty() {
                                 continue;
                             }
@@ -789,7 +875,12 @@ pub async fn execute_scatter<C: NodeClient>(
         }
     }
 
-    Ok(ScatterResult { shard_pages, failed_shards, partial, deadline_exceeded })
+    Ok(ScatterResult {
+        shard_pages,
+        failed_shards,
+        partial,
+        deadline_exceeded,
+    })
 }
 
 #[instrument(skip_all, fields(index = %req.index_uid))]
@@ -830,7 +921,8 @@ pub async fn scatter_gather_search<C: NodeClient>(
         shard_count = merge_input.shard_hits.len(),
         offset = req.offset,
         limit = req.limit,
-    ).entered();
+    )
+    .entered();
 
     strategy.merge(merge_input)
 }
@@ -847,7 +939,9 @@ pub fn extract_query_terms(query: &Option<String>) -> Vec<String> {
             let mut terms = Vec::new();
             for term in q.split_whitespace() {
                 let lower = term.to_lowercase();
-                if seen.insert(lower.clone()) { terms.push(lower); }
+                if seen.insert(lower.clone()) {
+                    terms.push(lower);
+                }
             }
             terms
         }
@@ -864,13 +958,20 @@ pub async fn execute_preflight<C: NodeClient>(
     topology: &Topology,
 ) -> Result<GlobalIdf> {
     if req.terms.is_empty() {
-        return Ok(GlobalIdf { total_docs: 0, avg_doc_length: 0.0, terms: HashMap::new() });
+        return Ok(GlobalIdf {
+            total_docs: 0,
+            avg_doc_length: 0.0,
+            terms: HashMap::new(),
+        });
     }
 
     let mut node_to_shards: HashMap<NodeId, Vec<u32>> = HashMap::new();
     for (&shard_id, node_id) in &plan.shard_to_node {
         if plan.target_shards.contains(&shard_id) {
-            node_to_shards.entry(node_id.clone()).or_default().push(shard_id);
+            node_to_shards
+                .entry(node_id.clone())
+                .or_default()
+                .push(shard_id);
         }
     }
 
@@ -883,7 +984,11 @@ pub async fn execute_preflight<C: NodeClient>(
         let client_ref = client;
         let req_clone = req.clone();
         let nid = node_id.clone();
-        tasks.push(async move { client_ref.preflight_node(&nid, &node.address, &req_clone).await });
+        tasks.push(async move {
+            client_ref
+                .preflight_node(&nid, &node.address, &req_clone)
+                .await
+        });
     }
 
     let results = futures_util::future::join_all(tasks).await;
@@ -928,43 +1033,71 @@ pub struct MockNodeClient {
 
 impl NodeClient for MockNodeClient {
     async fn search_node(
-        &self, node: &NodeId, _address: &str, _request: &SearchRequest,
+        &self,
+        node: &NodeId,
+        _address: &str,
+        _request: &SearchRequest,
     ) -> std::result::Result<Value, NodeError> {
         let _ = self.delay_ms;
-        if let Some(err) = self.errors.get(node) { return Err(err.clone()); }
+        if let Some(err) = self.errors.get(node) {
+            return Err(err.clone());
+        }
         Ok(self.responses.get(node).cloned().unwrap_or_else(|| {
             serde_json::json!({"hits": [], "estimatedTotalHits": 0, "processingTimeMs": 0, "facetDistribution": {}})
         }))
     }
 
     async fn preflight_node(
-        &self, node: &NodeId, _address: &str, _request: &PreflightRequest,
+        &self,
+        node: &NodeId,
+        _address: &str,
+        _request: &PreflightRequest,
     ) -> std::result::Result<PreflightResponse, NodeError> {
-        if let Some(err) = self.errors.get(node) { return Err(err.clone()); }
-        Ok(self.preflight_responses.get(node).cloned().unwrap_or_else(|| {
-            PreflightResponse { total_docs: 1000, avg_doc_length: 50.0, term_stats: HashMap::new() }
-        }))
+        if let Some(err) = self.errors.get(node) {
+            return Err(err.clone());
+        }
+        Ok(self
+            .preflight_responses
+            .get(node)
+            .cloned()
+            .unwrap_or_else(|| PreflightResponse {
+                total_docs: 1000,
+                avg_doc_length: 50.0,
+                term_stats: HashMap::new(),
+            }))
     }
 
     async fn write_documents(
-        &self, node: &NodeId, _address: &str, _request: &WriteRequest,
+        &self,
+        node: &NodeId,
+        _address: &str,
+        _request: &WriteRequest,
     ) -> std::result::Result<WriteResponse, NodeError> {
-        if let Some(err) = self.errors.get(node) { return Err(err.clone()); }
-        Ok(self.write_responses.get(node).cloned().unwrap_or_else(|| {
-            WriteResponse {
+        if let Some(err) = self.errors.get(node) {
+            return Err(err.clone());
+        }
+        Ok(self
+            .write_responses
+            .get(node)
+            .cloned()
+            .unwrap_or_else(|| WriteResponse {
                 success: true,
                 task_uid: Some(1),
                 message: None,
                 code: None,
                 error_type: None,
-            }
-        }))
+            }))
     }
 
     async fn delete_documents(
-        &self, node: &NodeId, _address: &str, _request: &DeleteByIdsRequest,
+        &self,
+        node: &NodeId,
+        _address: &str,
+        _request: &DeleteByIdsRequest,
     ) -> std::result::Result<DeleteResponse, NodeError> {
-        if let Some(err) = self.errors.get(node) { return Err(err.clone()); }
+        if let Some(err) = self.errors.get(node) {
+            return Err(err.clone());
+        }
         Ok(DeleteResponse {
             success: true,
             task_uid: Some(1),
@@ -975,9 +1108,14 @@ impl NodeClient for MockNodeClient {
     }
 
     async fn delete_documents_by_filter(
-        &self, node: &NodeId, _address: &str, _request: &DeleteByFilterRequest,
+        &self,
+        node: &NodeId,
+        _address: &str,
+        _request: &DeleteByFilterRequest,
     ) -> std::result::Result<DeleteResponse, NodeError> {
-        if let Some(err) = self.errors.get(node) { return Err(err.clone()); }
+        if let Some(err) = self.errors.get(node) {
+            return Err(err.clone());
+        }
         Ok(DeleteResponse {
             success: true,
             task_uid: Some(1),
@@ -988,18 +1126,25 @@ impl NodeClient for MockNodeClient {
     }
 
     async fn fetch_documents(
-        &self, node: &NodeId, _address: &str, request: &FetchDocumentsRequest,
+        &self,
+        node: &NodeId,
+        _address: &str,
+        request: &FetchDocumentsRequest,
     ) -> std::result::Result<FetchDocumentsResponse, NodeError> {
-        if let Some(err) = self.errors.get(node) { return Err(err.clone()); }
+        if let Some(err) = self.errors.get(node) {
+            return Err(err.clone());
+        }
         // Return stored fetch response if available, otherwise return empty
-        let stored = self.fetch_responses.get(node).cloned().unwrap_or_else(|| {
-            FetchDocumentsResponse {
-                results: Vec::new(),
-                limit: request.limit,
-                offset: request.offset,
-                total: 0,
-            }
-        });
+        let stored =
+            self.fetch_responses
+                .get(node)
+                .cloned()
+                .unwrap_or_else(|| FetchDocumentsResponse {
+                    results: Vec::new(),
+                    limit: request.limit,
+                    offset: request.offset,
+                    total: 0,
+                });
 
         // Handle pagination: if offset exceeds total, return empty results
         if request.offset as u64 >= stored.total {
@@ -1019,7 +1164,8 @@ impl NodeClient for MockNodeClient {
         node: &NodeId,
         _address: &str,
         _request: &TaskStatusRequest,
-    ) -> impl std::future::Future<Output = std::result::Result<TaskStatusResponse, NodeError>> + Send {
+    ) -> impl std::future::Future<Output = std::result::Result<TaskStatusResponse, NodeError>> + Send
+    {
         let node = node.clone();
         let task_uid = _request.task_uid;
         let error = self.errors.get(&node).cloned();
@@ -1046,7 +1192,11 @@ mod tests {
         let mut topo = Topology::new(64, 2, 2);
         for i in 0u32..6 {
             let rg = if i < 3 { 0 } else { 1 };
-            let mut node = Node::new(NodeId::new(format!("node-{i}")), format!("http://node-{i}:7700"), rg);
+            let mut node = Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            );
             node.status = crate::topology::NodeStatus::Active;
             topo.add_node(node);
         }
@@ -1055,9 +1205,15 @@ mod tests {
 
     fn make_req() -> SearchRequest {
         SearchRequest {
-            index_uid: "test".into(), query: Some("test".into()),
-            offset: 0, limit: 10, filter: None, facets: None,
-            ranking_score: false, body: serde_json::json!({}), global_idf: None,
+            index_uid: "test".into(),
+            query: Some("test".into()),
+            offset: 0,
+            limit: 10,
+            filter: None,
+            facets: None,
+            ranking_score: false,
+            body: serde_json::json!({}),
+            global_idf: None,
         }
     }
 
@@ -1073,25 +1229,51 @@ mod tests {
     #[tokio::test]
     async fn test_plan_group_rotation() {
         let topo = make_test_topology();
-        assert_eq!(plan_search_scatter(&topo, 0, 2, 64, None).await.chosen_group, 0);
-        assert_eq!(plan_search_scatter(&topo, 1, 2, 64, None).await.chosen_group, 1);
+        assert_eq!(
+            plan_search_scatter(&topo, 0, 2, 64, None)
+                .await
+                .chosen_group,
+            0
+        );
+        assert_eq!(
+            plan_search_scatter(&topo, 1, 2, 64, None)
+                .await
+                .chosen_group,
+            1
+        );
     }
 
     #[tokio::test]
     async fn test_plan_shard_mapping() {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
-        for s in 0..64 { assert!(plan.shard_to_node.contains_key(&s)); }
+        for s in 0..64 {
+            assert!(plan.shard_to_node.contains_key(&s));
+        }
         let g0 = topo.group(0).unwrap();
-        for (_, nid) in &plan.shard_to_node { assert!(g0.nodes().contains(nid)); }
+        for (_, nid) in &plan.shard_to_node {
+            assert!(g0.nodes().contains(nid));
+        }
     }
 
     #[tokio::test]
     async fn test_plan_hedging() {
         let mut topo = Topology::new(64, 1, 1);
-        topo.add_node(Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0));
-        assert!(!plan_search_scatter(&topo, 0, 1, 64, None).await.hedging_eligible);
-        assert!(plan_search_scatter(&make_test_topology(), 0, 2, 64, None).await.hedging_eligible);
+        topo.add_node(Node::new(
+            NodeId::new("n0".into()),
+            "http://n0:7700".into(),
+            0,
+        ));
+        assert!(
+            !plan_search_scatter(&topo, 0, 1, 64, None)
+                .await
+                .hedging_eligible
+        );
+        assert!(
+            plan_search_scatter(&make_test_topology(), 0, 2, 64, None)
+                .await
+                .hedging_eligible
+        );
     }
 
     #[tokio::test]
@@ -1100,7 +1282,9 @@ mod tests {
         let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let mut c = MockNodeClient::default();
         c.responses.insert(NodeId::new("node-0".into()), serde_json::json!({"hits": [{"id": "doc1"}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
-        let r = execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial).await.unwrap();
+        let r = execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial)
+            .await
+            .unwrap();
         assert!(!r.partial);
         assert_eq!(r.shard_pages.len(), 64);
     }
@@ -1110,8 +1294,11 @@ mod tests {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let mut c = MockNodeClient::default();
-        c.errors.insert(NodeId::new("node-0".into()), NodeError::Timeout);
-        let r = execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial).await.unwrap();
+        c.errors
+            .insert(NodeId::new("node-0".into()), NodeError::Timeout);
+        let r = execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial)
+            .await
+            .unwrap();
         assert!(r.partial);
     }
 
@@ -1120,20 +1307,38 @@ mod tests {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let mut c = MockNodeClient::default();
-        c.errors.insert(NodeId::new("node-0".into()), NodeError::Timeout);
-        assert!(execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Error).await.is_err());
+        c.errors
+            .insert(NodeId::new("node-0".into()), NodeError::Timeout);
+        assert!(
+            execute_scatter(plan, &c, make_req(), &topo, UnavailableShardPolicy::Error)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn test_plan_invalid_group() {
-        assert!(plan_search_scatter(&Topology::new(64, 0, 1), 0, 1, 64, None).await.shard_to_node.is_empty());
+        assert!(
+            plan_search_scatter(&Topology::new(64, 0, 1), 0, 1, 64, None)
+                .await
+                .shard_to_node
+                .is_empty()
+        );
     }
 
     #[tokio::test]
     async fn test_scatter_node_not_in_topo() {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
-        let r = execute_scatter(plan, &MockNodeClient::default(), make_req(), &Topology::new(64, 2, 2), UnavailableShardPolicy::Partial).await.unwrap();
+        let r = execute_scatter(
+            plan,
+            &MockNodeClient::default(),
+            make_req(),
+            &Topology::new(64, 2, 2),
+            UnavailableShardPolicy::Partial,
+        )
+        .await
+        .unwrap();
         assert!(r.partial);
     }
 
@@ -1144,7 +1349,16 @@ mod tests {
         let mut c = MockNodeClient::default();
         c.responses.insert(NodeId::new("node-0".into()), serde_json::json!({"hits": [{"id": "a", "_rankingScore": 0.9}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
         let s = crate::merger::RrfStrategy::default_strategy();
-        let r = scatter_gather_search(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial, &s).await.unwrap();
+        let r = scatter_gather_search(
+            plan,
+            &c,
+            make_req(),
+            &topo,
+            UnavailableShardPolicy::Partial,
+            &s,
+        )
+        .await
+        .unwrap();
         assert!(!r.degraded);
     }
 
@@ -1154,22 +1368,46 @@ mod tests {
         let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let mut c = MockNodeClient::default();
         c.responses.insert(NodeId::new("node-0".into()), serde_json::json!({"hits": [{"id": "a"}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
-        c.errors.insert(NodeId::new("node-2".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-2".into()), NodeError::Timeout);
         let s = crate::merger::RrfStrategy::default_strategy();
-        assert!(scatter_gather_search(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial, &s).await.unwrap().degraded);
+        assert!(
+            scatter_gather_search(
+                plan,
+                &c,
+                make_req(),
+                &topo,
+                UnavailableShardPolicy::Partial,
+                &s
+            )
+            .await
+            .unwrap()
+            .degraded
+        );
     }
 
     #[test]
     fn test_extract_query_terms() {
-        assert_eq!(extract_query_terms(&Some("hello world hello".into())), vec!["hello", "world"]);
+        assert_eq!(
+            extract_query_terms(&Some("hello world hello".into())),
+            vec!["hello", "world"]
+        );
         assert!(extract_query_terms(&None).is_empty());
     }
 
     #[test]
     fn test_global_idf_aggregation() {
         let resp = vec![
-            PreflightResponse { total_docs: 50000, avg_doc_length: 50.0, term_stats: HashMap::from([("a".into(), TermStats { df: 5000 })]) },
-            PreflightResponse { total_docs: 50000, avg_doc_length: 60.0, term_stats: HashMap::from([("a".into(), TermStats { df: 4500 })]) },
+            PreflightResponse {
+                total_docs: 50000,
+                avg_doc_length: 50.0,
+                term_stats: HashMap::from([("a".into(), TermStats { df: 5000 })]),
+            },
+            PreflightResponse {
+                total_docs: 50000,
+                avg_doc_length: 60.0,
+                term_stats: HashMap::from([("a".into(), TermStats { df: 4500 })]),
+            },
         ];
         let g = GlobalIdf::from_preflight_responses(&resp);
         assert_eq!(g.total_docs, 100000);
@@ -1189,19 +1427,35 @@ mod tests {
         let topo = make_test_topology();
         let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let mut c = MockNodeClient::default();
-        c.preflight_responses.insert(NodeId::new("node-0".into()), PreflightResponse {
-            total_docs: 30000, avg_doc_length: 50.0,
-            term_stats: HashMap::from([("search".into(), TermStats { df: 3000 })]),
-        });
-        c.preflight_responses.insert(NodeId::new("node-1".into()), PreflightResponse {
-            total_docs: 30000, avg_doc_length: 55.0,
-            term_stats: HashMap::from([("search".into(), TermStats { df: 2500 })]),
-        });
-        c.preflight_responses.insert(NodeId::new("node-2".into()), PreflightResponse {
-            total_docs: 40000, avg_doc_length: 52.0,
-            term_stats: HashMap::from([("search".into(), TermStats { df: 4000 })]),
-        });
-        let req = PreflightRequest { index_uid: "test".into(), terms: vec!["search".into()], filter: None };
+        c.preflight_responses.insert(
+            NodeId::new("node-0".into()),
+            PreflightResponse {
+                total_docs: 30000,
+                avg_doc_length: 50.0,
+                term_stats: HashMap::from([("search".into(), TermStats { df: 3000 })]),
+            },
+        );
+        c.preflight_responses.insert(
+            NodeId::new("node-1".into()),
+            PreflightResponse {
+                total_docs: 30000,
+                avg_doc_length: 55.0,
+                term_stats: HashMap::from([("search".into(), TermStats { df: 2500 })]),
+            },
+        );
+        c.preflight_responses.insert(
+            NodeId::new("node-2".into()),
+            PreflightResponse {
+                total_docs: 40000,
+                avg_doc_length: 52.0,
+                term_stats: HashMap::from([("search".into(), TermStats { df: 4000 })]),
+            },
+        );
+        let req = PreflightRequest {
+            index_uid: "test".into(),
+            terms: vec!["search".into()],
+            filter: None,
+        };
         let g = execute_preflight(&plan, &c, &req, &topo).await.unwrap();
         assert_eq!(g.total_docs, 100000);
         assert_eq!(g.terms.get("search").unwrap().df, 9500);
@@ -1213,12 +1467,25 @@ mod tests {
         let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
         let mut c = MockNodeClient::default();
         c.responses.insert(NodeId::new("node-0".into()), serde_json::json!({"hits": [{"id": "a", "_rankingScore": 0.9}], "estimatedTotalHits": 1, "processingTimeMs": 5}));
-        c.preflight_responses.insert(NodeId::new("node-0".into()), PreflightResponse {
-            total_docs: 50000, avg_doc_length: 50.0,
-            term_stats: HashMap::from([("test".into(), TermStats { df: 500 })]),
-        });
+        c.preflight_responses.insert(
+            NodeId::new("node-0".into()),
+            PreflightResponse {
+                total_docs: 50000,
+                avg_doc_length: 50.0,
+                term_stats: HashMap::from([("test".into(), TermStats { df: 500 })]),
+            },
+        );
         let s = crate::merger::RrfStrategy::default_strategy();
-        let r = dfs_query_then_fetch_search(plan, &c, make_req(), &topo, UnavailableShardPolicy::Partial, &s).await.unwrap();
+        let r = dfs_query_then_fetch_search(
+            plan,
+            &c,
+            make_req(),
+            &topo,
+            UnavailableShardPolicy::Partial,
+            &s,
+        )
+        .await
+        .unwrap();
         assert!(!r.degraded);
         assert!(!r.hits.is_empty());
     }
@@ -1243,9 +1510,21 @@ mod tests {
     #[tokio::test]
     async fn test_dfs_skewed_shards_global_idf_aggregation() {
         let mut topo = Topology::new(3, 1, 1);
-        topo.add_node(Node::new(NodeId::new("node-0".into()), "http://node-0:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("node-2".into()), "http://node-2:7700".into(), 0));
+        topo.add_node(Node::new(
+            NodeId::new("node-0".into()),
+            "http://node-0:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-1".into()),
+            "http://node-1:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-2".into()),
+            "http://node-2:7700".into(),
+            0,
+        ));
 
         let plan = plan_search_scatter(&topo, 0, 1, 3, None).await;
 
@@ -1253,34 +1532,43 @@ mod tests {
         let mut c = MockNodeClient::default();
 
         // Shard 0: Normal distribution
-        c.preflight_responses.insert(NodeId::new("node-0".into()), PreflightResponse {
-            total_docs: 1000,
-            avg_doc_length: 50.0,
-            term_stats: HashMap::from([
-                ("machine".into(), TermStats { df: 100 }),
-                ("learning".into(), TermStats { df: 80 }),
-            ]),
-        });
+        c.preflight_responses.insert(
+            NodeId::new("node-0".into()),
+            PreflightResponse {
+                total_docs: 1000,
+                avg_doc_length: 50.0,
+                term_stats: HashMap::from([
+                    ("machine".into(), TermStats { df: 100 }),
+                    ("learning".into(), TermStats { df: 80 }),
+                ]),
+            },
+        );
 
         // Shard 1: 100x normal (severely skewed)
-        c.preflight_responses.insert(NodeId::new("node-1".into()), PreflightResponse {
-            total_docs: 100_000,
-            avg_doc_length: 55.0,
-            term_stats: HashMap::from([
-                ("machine".into(), TermStats { df: 10_000 }),
-                ("learning".into(), TermStats { df: 8_000 }),
-            ]),
-        });
+        c.preflight_responses.insert(
+            NodeId::new("node-1".into()),
+            PreflightResponse {
+                total_docs: 100_000,
+                avg_doc_length: 55.0,
+                term_stats: HashMap::from([
+                    ("machine".into(), TermStats { df: 10_000 }),
+                    ("learning".into(), TermStats { df: 8_000 }),
+                ]),
+            },
+        );
 
         // Shard 2: Near-empty
-        c.preflight_responses.insert(NodeId::new("node-2".into()), PreflightResponse {
-            total_docs: 10,
-            avg_doc_length: 45.0,
-            term_stats: HashMap::from([
-                ("machine".into(), TermStats { df: 1 }),
-                ("learning".into(), TermStats { df: 1 }),
-            ]),
-        });
+        c.preflight_responses.insert(
+            NodeId::new("node-2".into()),
+            PreflightResponse {
+                total_docs: 10,
+                avg_doc_length: 45.0,
+                term_stats: HashMap::from([
+                    ("machine".into(), TermStats { df: 1 }),
+                    ("learning".into(), TermStats { df: 1 }),
+                ]),
+            },
+        );
 
         // Execute preflight to get global IDF
         let preflight_req = PreflightRequest {
@@ -1289,7 +1577,9 @@ mod tests {
             filter: None,
         };
 
-        let global_idf = execute_preflight(&plan, &c, &preflight_req, &topo).await.unwrap();
+        let global_idf = execute_preflight(&plan, &c, &preflight_req, &topo)
+            .await
+            .unwrap();
 
         // Verify global aggregation
         assert_eq!(global_idf.total_docs, 101_010);
@@ -1298,12 +1588,14 @@ mod tests {
 
         // Verify global IDF is the same for all shards
         // Expected IDF for "machine": log((101010 - 10101 + 0.5) / (10101 + 0.5)) + 1
-        let expected_idf_machine: f64 = ((101010.0_f64 - 10101.0 + 0.5) / (10101.0 + 0.5)).ln() + 1.0;
+        let expected_idf_machine: f64 =
+            ((101010.0_f64 - 10101.0 + 0.5) / (10101.0 + 0.5)).ln() + 1.0;
         let actual_idf_machine = global_idf.terms.get("machine").unwrap().idf;
         assert!((actual_idf_machine - expected_idf_machine).abs() < 0.001);
 
         // Expected IDF for "learning": log((101010 - 8081 + 0.5) / (8081 + 0.5)) + 1
-        let expected_idf_learning: f64 = ((101010.0_f64 - 8081.0 + 0.5) / (8081.0 + 0.5)).ln() + 1.0;
+        let expected_idf_learning: f64 =
+            ((101010.0_f64 - 8081.0 + 0.5) / (8081.0 + 0.5)).ln() + 1.0;
         let actual_idf_learning = global_idf.terms.get("learning").unwrap().idf;
         assert!((actual_idf_learning - expected_idf_learning).abs() < 0.001);
 
@@ -1313,8 +1605,14 @@ mod tests {
         // Shard 2 local IDF for "machine": log((10 - 1 + 0.5) / (1 + 0.5)) + 1 ≈ 2.85
         let local_idf_shard_0: f64 = ((1000.0_f64 - 100.0 + 0.5) / (100.0 + 0.5)).ln() + 1.0;
         let local_idf_shard_2: f64 = ((10.0_f64 - 1.0 + 0.5) / (1.0 + 0.5)).ln() + 1.0;
-        assert!((local_idf_shard_2 - local_idf_shard_0).abs() > 0.2, "Local IDF values should differ significantly");
-        assert!((local_idf_shard_2 - actual_idf_machine).abs() > 0.3, "Global IDF should be closer to large-shard local IDF");
+        assert!(
+            (local_idf_shard_2 - local_idf_shard_0).abs() > 0.2,
+            "Local IDF values should differ significantly"
+        );
+        assert!(
+            (local_idf_shard_2 - actual_idf_machine).abs() > 0.3,
+            "Global IDF should be closer to large-shard local IDF"
+        );
     }
 
     /// Test that DFS preflight handles empty query terms gracefully.
@@ -1330,7 +1628,9 @@ mod tests {
             filter: None,
         };
 
-        let global_idf = execute_preflight(&plan, &c, &preflight_req, &topo).await.unwrap();
+        let global_idf = execute_preflight(&plan, &c, &preflight_req, &topo)
+            .await
+            .unwrap();
         assert_eq!(global_idf.total_docs, 0);
         assert!(global_idf.terms.is_empty());
     }
@@ -1339,29 +1639,48 @@ mod tests {
     #[tokio::test]
     async fn test_dfs_partial_failure() {
         let mut topo = Topology::new(3, 1, 1);
-        topo.add_node(Node::new(NodeId::new("node-0".into()), "http://node-0:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("node-1".into()), "http://node-1:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("node-2".into()), "http://node-2:7700".into(), 0));
+        topo.add_node(Node::new(
+            NodeId::new("node-0".into()),
+            "http://node-0:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-1".into()),
+            "http://node-1:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-2".into()),
+            "http://node-2:7700".into(),
+            0,
+        ));
 
         let plan = plan_search_scatter(&topo, 0, 1, 3, None).await;
         let mut c = MockNodeClient::default();
 
         // Node 0 returns valid data
-        c.preflight_responses.insert(NodeId::new("node-0".into()), PreflightResponse {
-            total_docs: 50000,
-            avg_doc_length: 50.0,
-            term_stats: HashMap::from([("test".into(), TermStats { df: 5000 })]),
-        });
+        c.preflight_responses.insert(
+            NodeId::new("node-0".into()),
+            PreflightResponse {
+                total_docs: 50000,
+                avg_doc_length: 50.0,
+                term_stats: HashMap::from([("test".into(), TermStats { df: 5000 })]),
+            },
+        );
 
         // Node 1 returns valid data
-        c.preflight_responses.insert(NodeId::new("node-1".into()), PreflightResponse {
-            total_docs: 30000,
-            avg_doc_length: 55.0,
-            term_stats: HashMap::from([("test".into(), TermStats { df: 3000 })]),
-        });
+        c.preflight_responses.insert(
+            NodeId::new("node-1".into()),
+            PreflightResponse {
+                total_docs: 30000,
+                avg_doc_length: 55.0,
+                term_stats: HashMap::from([("test".into(), TermStats { df: 3000 })]),
+            },
+        );
 
         // Node 2 fails
-        c.errors.insert(NodeId::new("node-2".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-2".into()), NodeError::Timeout);
 
         let preflight_req = PreflightRequest {
             index_uid: "test".into(),
@@ -1370,7 +1689,9 @@ mod tests {
         };
 
         // Should aggregate from successful nodes only
-        let global_idf = execute_preflight(&plan, &c, &preflight_req, &topo).await.unwrap();
+        let global_idf = execute_preflight(&plan, &c, &preflight_req, &topo)
+            .await
+            .unwrap();
         assert_eq!(global_idf.total_docs, 80000);
         assert_eq!(global_idf.terms.get("test").unwrap().df, 8000);
     }
@@ -1405,10 +1726,16 @@ mod tests {
         assert_eq!(body.get("q"), Some(&serde_json::json!("rust programming")));
 
         // filter must be set
-        assert_eq!(body.get("filter"), Some(&serde_json::json!("status = published")));
+        assert_eq!(
+            body.get("filter"),
+            Some(&serde_json::json!("status = published"))
+        );
 
         // facets must be set
-        assert_eq!(body.get("facets"), Some(&serde_json::json!(["category", "tags"])));
+        assert_eq!(
+            body.get("facets"),
+            Some(&serde_json::json!(["category", "tags"]))
+        );
 
         // custom body field must be preserved
         assert_eq!(body.get("custom"), Some(&serde_json::json!("field")));
@@ -1470,11 +1797,27 @@ mod tests {
     async fn test_group_fallback_on_partial_failure() {
         let mut topo = Topology::new(16, 2, 2);
         // Group 0: 2 nodes
-        topo.add_node(Node::new(NodeId::new("node-g0-0".into()), "http://g0-0:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("node-g0-1".into()), "http://g0-1:7700".into(), 0));
+        topo.add_node(Node::new(
+            NodeId::new("node-g0-0".into()),
+            "http://g0-0:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-g0-1".into()),
+            "http://g0-1:7700".into(),
+            0,
+        ));
         // Group 1: 2 nodes (healthy fallback targets)
-        topo.add_node(Node::new(NodeId::new("node-g1-0".into()), "http://g1-0:7700".into(), 1));
-        topo.add_node(Node::new(NodeId::new("node-g1-1".into()), "http://g1-1:7700".into(), 1));
+        topo.add_node(Node::new(
+            NodeId::new("node-g1-0".into()),
+            "http://g1-0:7700".into(),
+            1,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-g1-1".into()),
+            "http://g1-1:7700".into(),
+            1,
+        ));
 
         let plan = plan_search_scatter(&topo, 0, 2, 16, None).await; // query_seq=0 → group 0
         assert_eq!(plan.chosen_group, 0);
@@ -1487,82 +1830,148 @@ mod tests {
             "estimatedTotalHits": 1,
             "processingTimeMs": 5,
         });
-        c.responses.insert(NodeId::new("node-g1-0".into()), response_1.clone());
-        c.responses.insert(NodeId::new("node-g1-1".into()), response_1);
+        c.responses
+            .insert(NodeId::new("node-g1-0".into()), response_1.clone());
+        c.responses
+            .insert(NodeId::new("node-g1-1".into()), response_1);
 
         // All nodes in group 0 fail
-        c.errors.insert(NodeId::new("node-g0-0".into()), NodeError::Timeout);
-        c.errors.insert(NodeId::new("node-g1-0".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-g0-0".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-g1-0".into()), NodeError::Timeout);
 
         let req = make_req();
 
         // With fallback policy, shards should succeed via group 1
-        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Fallback).await.unwrap();
+        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Fallback)
+            .await
+            .unwrap();
 
         // Should have succeeded via fallback (group 1)
         assert!(!result.partial, "Fallback should have succeeded");
-        assert!(result.failed_shards.is_empty(), "No shards should have failed after fallback");
-        assert!(!result.shard_pages.is_empty(), "Should have shard pages from fallback");
+        assert!(
+            result.failed_shards.is_empty(),
+            "No shards should have failed after fallback"
+        );
+        assert!(
+            !result.shard_pages.is_empty(),
+            "Should have shard pages from fallback"
+        );
     }
 
     /// Test group fallback when both groups are down.
     #[tokio::test]
     async fn test_group_fallback_all_groups_down() {
         let mut topo = Topology::new(16, 2, 2);
-        topo.add_node(Node::new(NodeId::new("node-g0-0".into()), "http://g0-0:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("node-g0-1".into()), "http://g0-1:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("node-g1-0".into()), "http://g1-0:7700".into(), 1));
-        topo.add_node(Node::new(NodeId::new("node-g1-1".into()), "http://g1-1:7700".into(), 1));
+        topo.add_node(Node::new(
+            NodeId::new("node-g0-0".into()),
+            "http://g0-0:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-g0-1".into()),
+            "http://g0-1:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-g1-0".into()),
+            "http://g1-0:7700".into(),
+            1,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-g1-1".into()),
+            "http://g1-1:7700".into(),
+            1,
+        ));
 
         let plan = plan_search_scatter(&topo, 0, 2, 16, None).await;
         let mut c = MockNodeClient::default();
 
         // All nodes fail
-        c.errors.insert(NodeId::new("node-g0-0".into()), NodeError::Timeout);
-        c.errors.insert(NodeId::new("node-g0-1".into()), NodeError::Timeout);
-        c.errors.insert(NodeId::new("node-g1-0".into()), NodeError::Timeout);
-        c.errors.insert(NodeId::new("node-g1-1".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-g0-0".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-g0-1".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-g1-0".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-g1-1".into()), NodeError::Timeout);
 
         let req = make_req();
 
         // With fallback policy, should still fail when all groups are down
-        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Fallback).await.unwrap();
+        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Fallback)
+            .await
+            .unwrap();
 
         assert!(result.partial, "Should be partial when all groups fail");
-        assert!(!result.failed_shards.is_empty(), "Should have failed shards");
+        assert!(
+            !result.failed_shards.is_empty(),
+            "Should have failed shards"
+        );
     }
 
     /// Test that partial policy does NOT use fallback.
     #[tokio::test]
     async fn test_partial_policy_no_fallback() {
         let mut topo = Topology::new(16, 2, 2);
-        topo.add_node(Node::new(NodeId::new("node-g0-0".into()), "http://g0-0:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("node-g0-1".into()), "http://g0-1:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("node-g1-0".into()), "http://g1-0:7700".into(), 1));
-        topo.add_node(Node::new(NodeId::new("node-g1-1".into()), "http://g1-1:7700".into(), 1));
+        topo.add_node(Node::new(
+            NodeId::new("node-g0-0".into()),
+            "http://g0-0:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-g0-1".into()),
+            "http://g0-1:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-g1-0".into()),
+            "http://g1-0:7700".into(),
+            1,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-g1-1".into()),
+            "http://g1-1:7700".into(),
+            1,
+        ));
 
         let plan = plan_search_scatter(&topo, 0, 2, 16, None).await;
         let mut c = MockNodeClient::default();
 
         // Group 1 nodes are healthy but partial policy shouldn't use them
-        c.responses.insert(NodeId::new("node-g1-0".into()), serde_json::json!({
-            "hits": [{"id": "fallback-doc"}],
-            "estimatedTotalHits": 1,
-        }));
+        c.responses.insert(
+            NodeId::new("node-g1-0".into()),
+            serde_json::json!({
+                "hits": [{"id": "fallback-doc"}],
+                "estimatedTotalHits": 1,
+            }),
+        );
 
         // Group 0 nodes fail
-        c.errors.insert(NodeId::new("node-g0-0".into()), NodeError::Timeout);
-        c.errors.insert(NodeId::new("node-g0-1".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-g0-0".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-g0-1".into()), NodeError::Timeout);
 
         let req = make_req();
 
         // With partial policy, should NOT use fallback
-        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Partial).await.unwrap();
+        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Partial)
+            .await
+            .unwrap();
 
         assert!(result.partial, "Should be partial");
-        assert!(!result.failed_shards.is_empty(), "Should have failed shards");
+        assert!(
+            !result.failed_shards.is_empty(),
+            "Should have failed shards"
+        );
         // Should NOT have any successful pages (fallback not used)
-        assert!(result.shard_pages.is_empty(), "Partial policy should not use fallback");
+        assert!(
+            result.shard_pages.is_empty(),
+            "Partial policy should not use fallback"
+        );
     }
 
     // ── plan_search_scatter_with_version_floor tests ─────────────────────────────
@@ -1590,7 +1999,8 @@ mod tests {
             1,
             &version_checker,
             None,
-        ).await;
+        )
+        .await;
 
         assert!(result.is_some(), "Should succeed when all nodes eligible");
         let plan = result.unwrap();
@@ -1621,7 +2031,8 @@ mod tests {
             10, // floor is 10
             &version_checker,
             None,
-        ).await;
+        )
+        .await;
 
         assert!(result.is_none(), "Should fail when no nodes eligible");
     }
@@ -1629,12 +2040,24 @@ mod tests {
     #[tokio::test]
     async fn test_plan_with_version_floor_partial_eligibility() {
         let mut topo = Topology::new(16, 1, 2);
-        topo.add_node(Node::new(NodeId::new("node-old".into()), "http://node-old:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("node-new".into()), "http://node-new:7700".into(), 0));
+        topo.add_node(Node::new(
+            NodeId::new("node-old".into()),
+            "http://node-old:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-new".into()),
+            "http://node-new:7700".into(),
+            0,
+        ));
 
         // Only node-new has version >= floor
         let version_checker = |_index: &str, node: &str| -> u64 {
-            if node == "node-new" { 100 } else { 5 }
+            if node == "node-new" {
+                100
+            } else {
+                5
+            }
         };
 
         let result = plan_search_scatter_with_version_floor(
@@ -1646,13 +2069,18 @@ mod tests {
             10,
             &version_checker,
             None,
-        ).await;
+        )
+        .await;
 
         assert!(result.is_some(), "Should succeed with partial eligibility");
         let plan = result.unwrap();
         // All shards should map to the eligible node
         for node_id in plan.shard_to_node.values() {
-            assert_eq!(node_id.as_str(), "node-new", "All shards should use eligible node");
+            assert_eq!(
+                node_id.as_str(),
+                "node-new",
+                "All shards should use eligible node"
+            );
         }
     }
 
@@ -1706,27 +2134,140 @@ mod tests {
             ));
         }
 
-        let plan = plan_search_scatter_for_group(&topo, 0, 3, 64, 0, None).await.unwrap();
+        let plan = plan_search_scatter_for_group(&topo, 0, 3, 64, 0, None)
+            .await
+            .unwrap();
         assert_eq!(plan.chosen_group, 0);
 
         // Verify intra-group replica rotation by checking shard_to_node
-        let node_0_usages = plan.shard_to_node.values()
+        let node_0_usages = plan
+            .shard_to_node
+            .values()
             .filter(|n| n.as_str() == "node-0")
             .count();
-        let node_1_usages = plan.shard_to_node.values()
+        let node_1_usages = plan
+            .shard_to_node
+            .values()
             .filter(|n| n.as_str() == "node-1")
             .count();
-        let node_2_usages = plan.shard_to_node.values()
+        let node_2_usages = plan
+            .shard_to_node
+            .values()
             .filter(|n| n.as_str() == "node-2")
             .count();
 
         // With RF=3 and query_seq=0, each shard should use replicas[0]
         // The assignment should distribute shards across nodes
         // Total should be 64 across all nodes
-        let node_3_usages = plan.shard_to_node.values()
+        let node_3_usages = plan
+            .shard_to_node
+            .values()
             .filter(|n| n.as_str() == "node-3")
             .count();
         assert!(node_0_usages + node_1_usages + node_2_usages + node_3_usages == 64);
+    }
+
+    // ── plan_search_scatter_with_tenant tests (plan §13.15) ──────────────────────
+
+    #[tokio::test]
+    async fn test_plan_with_tenant_pinned_group() {
+        let mut topo = Topology::new(64, 2, 2);
+        for i in 0u32..6 {
+            let rg = if i < 3 { 0 } else { 1 };
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        // Tenant pinned to group 1
+        let plan = plan_search_scatter_with_tenant(&topo, 0, 2, 64, Some(1), None).await;
+
+        assert!(plan.is_some(), "Should succeed with valid pinned group");
+        let plan = plan.unwrap();
+        assert_eq!(plan.chosen_group, 1, "Should use pinned group");
+        assert_eq!(plan.target_shards.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn test_plan_with_tenant_no_pin() {
+        let mut topo = Topology::new(64, 2, 2);
+        for i in 0u32..6 {
+            let rg = if i < 3 { 0 } else { 1 };
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        // No tenant pin - should use normal round-robin (group 0 for query_seq=0)
+        let plan = plan_search_scatter_with_tenant(&topo, 0, 2, 64, None, None).await;
+
+        assert!(plan.is_some(), "Should succeed without tenant pin");
+        let plan = plan.unwrap();
+        assert_eq!(plan.chosen_group, 0, "Should use round-robin group 0");
+    }
+
+    #[tokio::test]
+    async fn test_plan_with_tenant_invalid_group() {
+        let mut topo = Topology::new(64, 2, 2);
+        for i in 0u32..6 {
+            let rg = if i < 3 { 0 } else { 1 };
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        // Tenant pinned to non-existent group 99
+        let plan = plan_search_scatter_with_tenant(&topo, 0, 2, 64, Some(99), None).await;
+
+        assert!(plan.is_none(), "Should fail with invalid pinned group");
+    }
+
+    #[tokio::test]
+    async fn test_plan_with_tenant_consistent_routing() {
+        let mut topo = Topology::new(64, 2, 2);
+        for i in 0u32..6 {
+            let rg = if i < 3 { 0 } else { 1 };
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        // Same tenant should always route to same group
+        for _ in 0..10 {
+            let plan = plan_search_scatter_with_tenant(&topo, 0, 2, 64, Some(1), None).await;
+            assert!(plan.is_some());
+            assert_eq!(plan.unwrap().chosen_group, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_plan_with_tenant_separate_groups() {
+        let mut topo = Topology::new(64, 2, 2);
+        for i in 0u32..6 {
+            let rg = if i < 3 { 0 } else { 1 };
+            topo.add_node(Node::new(
+                NodeId::new(format!("node-{i}")),
+                format!("http://node-{i}:7700"),
+                rg,
+            ));
+        }
+
+        // Tenant-A pins to group 0, Tenant-B pins to group 1
+        let plan_a = plan_search_scatter_with_tenant(&topo, 0, 2, 64, Some(0), None).await;
+        let plan_b = plan_search_scatter_with_tenant(&topo, 0, 2, 64, Some(1), None).await;
+
+        assert!(plan_a.is_some());
+        assert!(plan_b.is_some());
+        assert_eq!(plan_a.unwrap().chosen_group, 0);
+        assert_eq!(plan_b.unwrap().chosen_group, 1);
     }
 
     // ── plan_search_scatter_adaptive tests ───────────────────────────────────────
@@ -1749,13 +2290,16 @@ mod tests {
                 strategy: "adaptive".into(),
                 exploration_epsilon: 0.0, // Disable exploration for deterministic test
                 ..Default::default()
-            }
+            },
         );
         let plan = plan_search_scatter_adaptive(&topo, 0, 2, 64, &selector).await;
 
         assert_eq!(plan.chosen_group, 0);
         assert_eq!(plan.target_shards.len(), 64);
-        assert!(plan.hedging_eligible, "Should be eligible for hedging with multiple nodes in group");
+        assert!(
+            plan.hedging_eligible,
+            "Should be eligible for hedging with multiple nodes in group"
+        );
     }
 
     #[tokio::test]
@@ -1766,7 +2310,10 @@ mod tests {
         let plan = plan_search_scatter_adaptive(&topo, 0, 2, 64, &selector).await;
 
         assert_eq!(plan.chosen_group, 0);
-        assert!(plan.target_shards.is_empty(), "Should have no targets for empty topology");
+        assert!(
+            plan.target_shards.is_empty(),
+            "Should have no targets for empty topology"
+        );
         assert!(!plan.hedging_eligible);
     }
 
@@ -1787,20 +2334,27 @@ mod tests {
                 strategy: "adaptive".into(),
                 exploration_epsilon: 0.0, // Disable exploration for deterministic test
                 ..Default::default()
-            }
+            },
         );
         let plan = plan_search_scatter_adaptive(&topo, 0, 2, 64, &selector).await;
 
         // Should fall back to default behavior when no metrics exist
         assert_eq!(plan.target_shards.len(), 64);
-        assert!(plan.hedging_eligible, "Should be eligible for hedging with multiple nodes");
+        assert!(
+            plan.hedging_eligible,
+            "Should be eligible for hedging with multiple nodes"
+        );
     }
 
     /// Test that execute_scatter handles empty target_shards correctly.
     #[tokio::test]
     async fn test_execute_scatter_empty_target_shards() {
         let mut topo = Topology::new(64, 1, 1);
-        topo.add_node(Node::new(NodeId::new("node-0".into()), "http://node-0:7700".into(), 0));
+        topo.add_node(Node::new(
+            NodeId::new("node-0".into()),
+            "http://node-0:7700".into(),
+            0,
+        ));
 
         let mut plan = plan_search_scatter(&topo, 0, 1, 64, None).await;
         plan.target_shards = Vec::new(); // Empty target shards
@@ -1808,7 +2362,9 @@ mod tests {
         let c = MockNodeClient::default();
         let req = make_req();
 
-        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Partial).await.unwrap();
+        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Partial)
+            .await
+            .unwrap();
 
         // Should succeed with no pages and no failures
         assert!(!result.partial);
@@ -1820,10 +2376,26 @@ mod tests {
     #[tokio::test]
     async fn test_fallback_with_network_error() {
         let mut topo = Topology::new(16, 2, 2);
-        topo.add_node(Node::new(NodeId::new("node-g0-0".into()), "http://g0-0:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("node-g0-1".into()), "http://g0-1:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("node-g1-0".into()), "http://g1-0:7700".into(), 1));
-        topo.add_node(Node::new(NodeId::new("node-g1-1".into()), "http://g1-1:7700".into(), 1));
+        topo.add_node(Node::new(
+            NodeId::new("node-g0-0".into()),
+            "http://g0-0:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-g0-1".into()),
+            "http://g0-1:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-g1-0".into()),
+            "http://g1-0:7700".into(),
+            1,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-g1-1".into()),
+            "http://g1-1:7700".into(),
+            1,
+        ));
 
         let plan = plan_search_scatter(&topo, 0, 2, 16, None).await;
 
@@ -1835,16 +2407,26 @@ mod tests {
             "estimatedTotalHits": 1,
             "processingTimeMs": 5,
         });
-        c.responses.insert(NodeId::new("node-g1-0".into()), response.clone());
-        c.responses.insert(NodeId::new("node-g1-1".into()), response);
+        c.responses
+            .insert(NodeId::new("node-g1-0".into()), response.clone());
+        c.responses
+            .insert(NodeId::new("node-g1-1".into()), response);
 
         // Group 0 fails with network error
-        c.errors.insert(NodeId::new("node-g0-0".into()), NodeError::NetworkError("connection refused".into()));
-        c.errors.insert(NodeId::new("node-g0-1".into()), NodeError::NetworkError("connection reset".into()));
+        c.errors.insert(
+            NodeId::new("node-g0-0".into()),
+            NodeError::NetworkError("connection refused".into()),
+        );
+        c.errors.insert(
+            NodeId::new("node-g0-1".into()),
+            NodeError::NetworkError("connection reset".into()),
+        );
 
         let req = make_req();
 
-        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Fallback).await.unwrap();
+        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Fallback)
+            .await
+            .unwrap();
 
         // Should succeed via fallback
         assert!(!result.partial);
@@ -1858,12 +2440,14 @@ mod tests {
         let plan = plan_search_scatter(&topo, 0, 2, 64, None).await;
 
         let mut c = MockNodeClient::default();
-        c.errors.insert(NodeId::new("node-0".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-0".into()), NodeError::Timeout);
 
         let req = make_req();
         let s = crate::merger::RrfStrategy::default_strategy();
 
-        let result = scatter_gather_search(plan, &c, req, &topo, UnavailableShardPolicy::Partial, &s).await;
+        let result =
+            scatter_gather_search(plan, &c, req, &topo, UnavailableShardPolicy::Partial, &s).await;
 
         // Should succeed but be degraded
         assert!(result.is_ok());
@@ -1896,7 +2480,10 @@ mod tests {
     async fn test_mock_write_documents_error() {
         let mut c = MockNodeClient::default();
         let node = NodeId::new("test-node".into());
-        c.errors.insert(node.clone(), NodeError::NetworkError("connection refused".into()));
+        c.errors.insert(
+            node.clone(),
+            NodeError::NetworkError("connection refused".into()),
+        );
 
         let req = WriteRequest {
             index_uid: "test".into(),
@@ -1938,7 +2525,9 @@ mod tests {
             origin: None,
         };
 
-        let result = c.delete_documents_by_filter(&node, "http://test:7700", &req).await;
+        let result = c
+            .delete_documents_by_filter(&node, "http://test:7700", &req)
+            .await;
         assert!(result.is_ok());
         let resp = result.unwrap();
         assert!(resp.success);
@@ -2064,10 +2653,22 @@ mod tests {
     async fn test_fallback_with_empty_replicas_in_group() {
         let mut topo = Topology::new(16, 2, 2);
         // Group 0: 2 nodes
-        topo.add_node(Node::new(NodeId::new("node-g0-0".into()), "http://g0-0:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("node-g0-1".into()), "http://g0-1:7700".into(), 0));
+        topo.add_node(Node::new(
+            NodeId::new("node-g0-0".into()),
+            "http://g0-0:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-g0-1".into()),
+            "http://g0-1:7700".into(),
+            0,
+        ));
         // Group 1: Only 1 node (not enough for RF=2, so assign_shard_in_group returns empty for some shards)
-        topo.add_node(Node::new(NodeId::new("node-g1-0".into()), "http://g1-0:7700".into(), 1));
+        topo.add_node(Node::new(
+            NodeId::new("node-g1-0".into()),
+            "http://g1-0:7700".into(),
+            1,
+        ));
 
         let plan = plan_search_scatter(&topo, 0, 2, 16, None).await; // query_seq=0 → group 0
 
@@ -2079,19 +2680,27 @@ mod tests {
             "estimatedTotalHits": 1,
             "processingTimeMs": 5,
         });
-        c.responses.insert(NodeId::new("node-g1-0".into()), response_1);
+        c.responses
+            .insert(NodeId::new("node-g1-0".into()), response_1);
 
         // All nodes in group 0 fail
-        c.errors.insert(NodeId::new("node-g0-0".into()), NodeError::Timeout);
-        c.errors.insert(NodeId::new("node-g0-1".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-g0-0".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-g0-1".into()), NodeError::Timeout);
 
         let req = make_req();
 
         // With fallback policy, some shards might succeed via group 1
-        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Fallback).await.unwrap();
+        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Fallback)
+            .await
+            .unwrap();
 
         // Result should be partial because group 1 has only 1 node (not enough for RF=2)
-        assert!(result.partial || !result.shard_pages.is_empty(), "Should have partial success or some pages");
+        assert!(
+            result.partial || !result.shard_pages.is_empty(),
+            "Should have partial success or some pages"
+        );
     }
 
     /// Test fallback with partial success (some shards succeed via fallback, others fail).
@@ -2099,11 +2708,27 @@ mod tests {
     async fn test_fallback_partial_success() {
         let mut topo = Topology::new(16, 2, 2);
         // Group 0: 2 nodes (all fail)
-        topo.add_node(Node::new(NodeId::new("node-g0-0".into()), "http://g0-0:7700".into(), 0));
-        topo.add_node(Node::new(NodeId::new("node-g0-1".into()), "http://g0-1:7700".into(), 0));
+        topo.add_node(Node::new(
+            NodeId::new("node-g0-0".into()),
+            "http://g0-0:7700".into(),
+            0,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-g0-1".into()),
+            "http://g0-1:7700".into(),
+            0,
+        ));
         // Group 1: 2 nodes (only one works)
-        topo.add_node(Node::new(NodeId::new("node-g1-0".into()), "http://g1-0:7700".into(), 1));
-        topo.add_node(Node::new(NodeId::new("node-g1-1".into()), "http://g1-1:7700".into(), 1));
+        topo.add_node(Node::new(
+            NodeId::new("node-g1-0".into()),
+            "http://g1-0:7700".into(),
+            1,
+        ));
+        topo.add_node(Node::new(
+            NodeId::new("node-g1-1".into()),
+            "http://g1-1:7700".into(),
+            1,
+        ));
 
         let plan = plan_search_scatter(&topo, 0, 2, 16, None).await;
 
@@ -2115,17 +2740,25 @@ mod tests {
             "estimatedTotalHits": 1,
             "processingTimeMs": 5,
         });
-        c.responses.insert(NodeId::new("node-g1-0".into()), response);
+        c.responses
+            .insert(NodeId::new("node-g1-0".into()), response);
 
         // All group 0 nodes fail
-        c.errors.insert(NodeId::new("node-g0-0".into()), NodeError::Timeout);
-        c.errors.insert(NodeId::new("node-g0-1".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-g0-0".into()), NodeError::Timeout);
+        c.errors
+            .insert(NodeId::new("node-g0-1".into()), NodeError::Timeout);
         // One group 1 node fails
-        c.errors.insert(NodeId::new("node-g1-1".into()), NodeError::NetworkError("connection refused".into()));
+        c.errors.insert(
+            NodeId::new("node-g1-1".into()),
+            NodeError::NetworkError("connection refused".into()),
+        );
 
         let req = make_req();
 
-        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Fallback).await.unwrap();
+        let result = execute_scatter(plan, &c, req, &topo, UnavailableShardPolicy::Fallback)
+            .await
+            .unwrap();
 
         // Should have partial success (some shards from node-g1-0, some failed)
         assert!(result.partial || !result.shard_pages.is_empty());
@@ -2135,8 +2768,16 @@ mod tests {
     #[test]
     fn test_global_idf_zero_total_docs() {
         let resp = vec![
-            PreflightResponse { total_docs: 0, avg_doc_length: 0.0, term_stats: HashMap::new() },
-            PreflightResponse { total_docs: 0, avg_doc_length: 0.0, term_stats: HashMap::new() },
+            PreflightResponse {
+                total_docs: 0,
+                avg_doc_length: 0.0,
+                term_stats: HashMap::new(),
+            },
+            PreflightResponse {
+                total_docs: 0,
+                avg_doc_length: 0.0,
+                term_stats: HashMap::new(),
+            },
         ];
         let g = GlobalIdf::from_preflight_responses(&resp);
         assert_eq!(g.total_docs, 0);
@@ -2147,13 +2788,11 @@ mod tests {
     /// Test GlobalIdf with term having zero df.
     #[test]
     fn test_global_idf_zero_df() {
-        let resp = vec![
-            PreflightResponse {
-                total_docs: 1000,
-                avg_doc_length: 50.0,
-                term_stats: HashMap::from([("test".into(), TermStats { df: 0 })]),
-            },
-        ];
+        let resp = vec![PreflightResponse {
+            total_docs: 1000,
+            avg_doc_length: 50.0,
+            term_stats: HashMap::from([("test".into(), TermStats { df: 0 })]),
+        }];
         let g = GlobalIdf::from_preflight_responses(&resp);
         assert_eq!(g.total_docs, 1000);
         assert_eq!(g.terms.get("test").unwrap().df, 0);
@@ -2164,20 +2803,17 @@ mod tests {
     /// Test GlobalIdf with single shard.
     #[test]
     fn test_global_idf_single_shard() {
-        let resp = vec![
-            PreflightResponse {
-                total_docs: 5000,
-                avg_doc_length: 45.0,
-                term_stats: HashMap::from([
-                    ("rust".into(), TermStats { df: 500 }),
-                    ("programming".into(), TermStats { df: 100 }),
-                ]),
-            },
-        ];
+        let resp = vec![PreflightResponse {
+            total_docs: 5000,
+            avg_doc_length: 45.0,
+            term_stats: HashMap::from([
+                ("rust".into(), TermStats { df: 500 }),
+                ("programming".into(), TermStats { df: 100 }),
+            ]),
+        }];
         let g = GlobalIdf::from_preflight_responses(&resp);
         assert_eq!(g.total_docs, 5000);
         assert_eq!(g.terms.get("rust").unwrap().df, 500);
         assert_eq!(g.terms.get("programming").unwrap().df, 100);
     }
-
 }
