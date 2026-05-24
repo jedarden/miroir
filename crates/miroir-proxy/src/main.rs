@@ -19,6 +19,7 @@ use tracing_subscriber::{layer::SubscriberExt, registry, util::SubscriberInitExt
 mod admin_session;
 mod auth;
 mod client;
+pub mod error_response;
 mod middleware;
 mod otel;
 mod routes;

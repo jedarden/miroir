@@ -287,18 +287,12 @@ where
                 };
 
                 // Use query planner to narrow target shards (plan §13.4)
-                let filter_str = query.filter.as_ref().and_then(|v| {
-                    if v.is_null()
-                        || v.is_string() && v.as_str().map(|s| s.is_empty()).unwrap_or(false)
-                    {
-                        None
-                    } else {
-                        serde_json::to_string(v).ok()
-                    }
-                });
+                let filter_str = query.filter.as_ref()
+                    .filter(|s| !s.is_empty())
+                    .cloned();
                 let query_plan = state
                     .query_planner
-                    .plan(&query.index_uid, &filter_str, config.shards)
+                    .plan(&query.indexUid, &filter_str, config.shards)
                     .await;
 
                 // Record query planner metrics

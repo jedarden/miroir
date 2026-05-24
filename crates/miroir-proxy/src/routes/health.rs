@@ -1,8 +1,9 @@
 //! Health check endpoints: /health, /version, /_miroir/ready
 
-use crate::state::ProxyState;
-use axum::{extract::State, Json};
+use axum::{extract::State, extract::FromRef, Json};
 use serde::Serialize;
+use crate::routes::admin_endpoints::AppState;
+use crate::error_response::ErrorResponse;
 
 #[derive(Serialize)]
 pub struct HealthResponse {
@@ -35,16 +36,20 @@ pub async fn get_version() -> Json<VersionResponse> {
 /// GET /_miroir/ready - Readiness check endpoint.
 ///
 /// Returns 200 if the proxy is ready to serve requests.
-pub async fn get_ready(
-    State(state): State<ProxyState>,
-) -> Result<Json<serde_json::Value>, crate::error_response::ErrorResponse> {
-    let topology = state.topology().await;
+pub async fn get_ready<S>(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ErrorResponse>
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    let topology = state.topology.read().await;
 
     // Check if we have any healthy nodes
     let healthy_count = topology.nodes().filter(|n| n.is_healthy()).count();
 
     if healthy_count == 0 {
-        return Err(crate::error_response::ErrorResponse::new(
+        return Err(ErrorResponse::new(
             "No healthy nodes available",
             "miroir_not_ready",
         ));
