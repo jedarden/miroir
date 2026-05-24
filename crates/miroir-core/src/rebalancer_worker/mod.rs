@@ -18,7 +18,7 @@ mod acceptance_tests;
 mod settings_broadcast_acceptance_tests;
 
 pub use anti_entropy_worker::{AntiEntropyWorker, AntiEntropyWorkerConfig};
-pub use drift_reconciler::{DriftReconciler, DriftReconcilerConfig};
+pub use drift_reconciler::{DriftRepairCallback, DriftReconciler, DriftReconcilerConfig};
 
 use crate::migration::{MigrationCoordinator, MigrationId, MigrationNodeId, ShardId};
 use crate::rebalancer::{MigrationExecutor, Rebalancer, RebalancerMetrics};
@@ -56,7 +56,7 @@ pub struct RebalanceJobId(pub String);
 impl RebalanceJobId {
     /// Create a new rebalance job ID for an index.
     pub fn new(index_uid: &str) -> Self {
-        Self(format!("rebalance:{}", index_uid))
+        Self(format!("rebalance:{index_uid}"))
     }
 
     /// Get the index UID from the job ID.
@@ -315,7 +315,7 @@ impl RebalancerWorker {
             // Build scopes for each index: rebalance:<index>
             let scopes: Vec<String> = index_uids
                 .into_iter()
-                .map(|uid| format!("rebalance:{}", uid))
+                .map(|uid| format!("rebalance:{uid}"))
                 .collect();
 
             let mut acquired_any = false;
@@ -424,11 +424,11 @@ impl RebalancerWorker {
                                 }
                                 Ok(Err(e)) => {
                                     error!(scope = %scope, error = %e, "failed to renew lease");
-                                    return Err(format!("lease renewal failed: {}", e));
+                                    return Err(format!("lease renewal failed: {e}"));
                                 }
                                 Err(e) => {
                                     error!(scope = %scope, error = %e, "spawn_blocking task failed");
-                                    return Err(format!("lease renewal task failed: {}", e));
+                                    return Err(format!("lease renewal task failed: {e}"));
                                 }
                             }
                         }
@@ -472,13 +472,13 @@ impl RebalancerWorker {
 
         // Derive the scope from the event to check leadership
         let scope = match &event {
-            TopologyChangeEvent::NodeAdded { index_uid, .. } => format!("rebalance:{}", index_uid),
+            TopologyChangeEvent::NodeAdded { index_uid, .. } => format!("rebalance:{index_uid}"),
             TopologyChangeEvent::NodeDraining { index_uid, .. } => {
-                format!("rebalance:{}", index_uid)
+                format!("rebalance:{index_uid}")
             }
-            TopologyChangeEvent::NodeFailed { index_uid, .. } => format!("rebalance:{}", index_uid),
+            TopologyChangeEvent::NodeFailed { index_uid, .. } => format!("rebalance:{index_uid}"),
             TopologyChangeEvent::NodeRecovered { index_uid, .. } => {
-                format!("rebalance:{}", index_uid)
+                format!("rebalance:{index_uid}")
             }
         };
 
@@ -498,8 +498,8 @@ impl RebalancerWorker {
             }
         })
         .await
-        .map_err(|e| format!("failed to check leader lease: {}", e))?
-        .map_err(|e| format!("failed to check leader lease: {}", e))?;
+        .map_err(|e| format!("failed to check leader lease: {e}"))?
+        .map_err(|e| format!("failed to check leader lease: {e}"))?;
 
         if !is_leader {
             debug!(
@@ -574,8 +574,8 @@ impl RebalancerWorker {
             move || task_store.list_jobs_by_state("running")
         })
         .await
-        .map_err(|e| format!("failed to list jobs: {}", e))?
-        .map_err(|e| format!("failed to list jobs: {}", e))?;
+        .map_err(|e| format!("failed to list jobs: {e}"))?
+        .map_err(|e| format!("failed to list jobs: {e}"))?;
 
         for existing_job in existing_jobs {
             if existing_job.id == job_id.0 {
@@ -632,7 +632,7 @@ impl RebalancerWorker {
             let new_node = topo_to_migration_node_id(&TopologyNodeId::new(node_id.to_string()));
             coordinator
                 .begin_migration(new_node, replica_group, old_owners)
-                .map_err(|e| format!("failed to create migration: {}", e))?
+                .map_err(|e| format!("failed to create migration: {e}"))?
         };
 
         // Start dual-write immediately so the router starts writing to both nodes
@@ -640,7 +640,7 @@ impl RebalancerWorker {
             let mut coordinator = self.migration_coordinator.write().await;
             coordinator
                 .begin_dual_write(migration_id)
-                .map_err(|e| format!("failed to start dual-write: {}", e))?;
+                .map_err(|e| format!("failed to start dual-write: {e}"))?;
         }
 
         let job = RebalanceJob {
@@ -729,7 +729,7 @@ impl RebalancerWorker {
                 let new_node = topo_to_migration_node_id(first_dest);
                 coordinator
                     .begin_migration(new_node, replica_group, old_owners)
-                    .map_err(|e| format!("failed to create migration: {}", e))?
+                    .map_err(|e| format!("failed to create migration: {e}"))?
             } else {
                 return Err("no shards to migrate".to_string());
             }
@@ -740,7 +740,7 @@ impl RebalancerWorker {
             let mut coordinator = self.migration_coordinator.write().await;
             coordinator
                 .begin_dual_write(migration_id)
-                .map_err(|e| format!("failed to start dual-write: {}", e))?;
+                .map_err(|e| format!("failed to start dual-write: {e}"))?;
         }
 
         let job = RebalanceJob {
@@ -841,9 +841,9 @@ impl RebalancerWorker {
         let group = topo
             .groups()
             .find(|g| g.id == replica_group)
-            .ok_or_else(|| format!("replica group {} not found", replica_group))?;
+            .ok_or_else(|| format!("replica group {replica_group} not found"))?;
 
-        let existing_nodes: Vec<_> = group.nodes().iter().cloned().collect();
+        let existing_nodes: Vec<_> = group.nodes().to_vec();
         let mut affected_shards = Vec::new();
 
         // For each shard, check if adding the new node would change the assignment
@@ -885,7 +885,7 @@ impl RebalancerWorker {
         let group = topo
             .groups()
             .find(|g| g.id == replica_group)
-            .ok_or_else(|| format!("replica group {} not found", replica_group))?;
+            .ok_or_else(|| format!("replica group {replica_group} not found"))?;
 
         let other_nodes: Vec<_> = group
             .nodes()
@@ -1264,7 +1264,7 @@ impl RebalancerWorker {
     /// Persist a job to the task store.
     async fn persist_job(&self, job: &RebalanceJob) -> Result<(), String> {
         let progress =
-            serde_json::to_string(job).map_err(|e| format!("failed to serialize job: {}", e))?;
+            serde_json::to_string(job).map_err(|e| format!("failed to serialize job: {e}"))?;
 
         let new_job = NewJob {
             id: job.id.0.clone(),
@@ -1298,8 +1298,8 @@ impl RebalancerWorker {
             move || task_store.insert_job(&new_job)
         })
         .await
-        .map_err(|e| format!("failed to persist job: {}", e))?
-        .map_err(|e| format!("failed to persist job: {}", e))?;
+        .map_err(|e| format!("failed to persist job: {e}"))?
+        .map_err(|e| format!("failed to persist job: {e}"))?;
 
         Ok(())
     }
@@ -1317,7 +1317,7 @@ impl RebalancerWorker {
             };
 
             let progress_json = serde_json::to_string(&progress)
-                .map_err(|e| format!("failed to serialize progress: {}", e))?;
+                .map_err(|e| format!("failed to serialize progress: {e}"))?;
 
             // Update job progress in task store
             tokio::task::spawn_blocking({
@@ -1328,8 +1328,8 @@ impl RebalancerWorker {
                 move || task_store.update_job_progress(&job_id, &completed_at, &progress_json)
             })
             .await
-            .map_err(|e| format!("failed to update job progress: {}", e))?
-            .map_err(|e| format!("failed to update job progress: {}", e))?;
+            .map_err(|e| format!("failed to update job progress: {e}"))?
+            .map_err(|e| format!("failed to update job progress: {e}"))?;
         }
 
         Ok(())
@@ -1348,7 +1348,7 @@ impl RebalancerWorker {
             let shard = ShardId(shard_id);
 
             // Look for a migration in the coordinator that affects this shard
-            for (_mid, migration_state) in coordinator.get_all_migrations() {
+            for migration_state in coordinator.get_all_migrations().values() {
                 if let Some(migration_shard_state) = migration_state.affected_shards.get(&shard) {
                     // Sync the phase based on the migration coordinator state
                     use crate::migration::ShardMigrationState as CoordinatorState;
@@ -1386,7 +1386,7 @@ impl RebalancerWorker {
         shard_id: u32,
     ) -> Result<(), String> {
         let shard = ShardId(shard_id);
-        let mut coordinator = self.migration_coordinator.write().await;
+        let coordinator = self.migration_coordinator.write().await;
 
         // Find or create the migration for this shard
         // For now, we'll create a new migration if one doesn't exist
@@ -1465,7 +1465,7 @@ impl RebalancerWorker {
         let coordinator = self.migration_coordinator.read().await;
 
         // Check if the migration coordinator has marked this shard as complete
-        for (_mid, migration_state) in coordinator.get_all_migrations() {
+        for migration_state in coordinator.get_all_migrations().values() {
             if let Some(shard_state) = migration_state.affected_shards.get(&shard) {
                 use crate::migration::ShardMigrationState as CoordinatorState;
                 if matches!(shard_state, CoordinatorState::MigrationComplete { .. }) {
@@ -1517,7 +1517,7 @@ impl RebalancerWorker {
                     offset,
                 )
                 .await
-                .map_err(|e| format!("fetch failed: {}", e))?;
+                .map_err(|e| format!("fetch failed: {e}"))?;
 
             if docs.is_empty() {
                 break; // No more documents
@@ -1527,7 +1527,7 @@ impl RebalancerWorker {
             executor
                 .write_documents(new_node_id, new_address, index_uid, docs.clone())
                 .await
-                .map_err(|e| format!("write failed: {}", e))?;
+                .map_err(|e| format!("write failed: {e}"))?;
 
             total_docs_copied += docs.len() as u64;
             offset += limit;
@@ -1544,7 +1544,7 @@ impl RebalancerWorker {
             let mut coordinator = self.migration_coordinator.write().await;
             coordinator
                 .shard_migration_complete(migration_id, ShardId(shard_id), total_docs_copied)
-                .map_err(|e| format!("failed to mark shard complete: {}", e))?;
+                .map_err(|e| format!("failed to mark shard complete: {e}"))?;
         }
 
         // Update metrics
@@ -1580,7 +1580,7 @@ impl RebalancerWorker {
             info!(index_uid = %index_uid, "paused rebalance");
             Ok(())
         } else {
-            Err(format!("no rebalance job found for index {}", index_uid))
+            Err(format!("no rebalance job found for index {index_uid}"))
         }
     }
 
@@ -1594,7 +1594,7 @@ impl RebalancerWorker {
             info!(index_uid = %index_uid, "resumed rebalance");
             Ok(())
         } else {
-            Err(format!("no rebalance job found for index {}", index_uid))
+            Err(format!("no rebalance job found for index {index_uid}"))
         }
     }
 
@@ -1605,8 +1605,8 @@ impl RebalancerWorker {
             move || task_store.list_jobs_by_state("running")
         })
         .await
-        .map_err(|e| format!("failed to list jobs: {}", e))?
-        .map_err(|e| format!("failed to list jobs: {}", e))?;
+        .map_err(|e| format!("failed to list jobs: {e}"))?
+        .map_err(|e| format!("failed to list jobs: {e}"))?;
 
         for job_row in jobs {
             if job_row.type_ == "rebalance" {

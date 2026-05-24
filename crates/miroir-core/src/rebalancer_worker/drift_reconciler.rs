@@ -37,8 +37,7 @@ use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 /// Configuration for the drift reconciler worker.
@@ -65,6 +64,9 @@ impl Default for DriftReconcilerConfig {
     }
 }
 
+/// Callback type for recording drift repair metrics.
+pub type DriftRepairCallback = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Settings drift reconciler background worker.
 ///
 /// Runs as a Tokio task, uses Mode A rendezvous hashing to partition
@@ -78,6 +80,8 @@ pub struct DriftReconciler {
     pod_id: String,
     /// Mode A coordinator for partitioning drift checks (plan §14.5 Mode A).
     mode_a_coordinator: Option<Arc<ModeACoordinator>>,
+    /// Callback for recording drift repair metrics.
+    metrics_callback: Option<DriftRepairCallback>,
 }
 
 impl DriftReconciler {
@@ -98,12 +102,19 @@ impl DriftReconciler {
             node_master_key,
             pod_id,
             mode_a_coordinator: None,
+            metrics_callback: None,
         }
     }
 
     /// Set the Mode A coordinator for partitioning drift checks (plan §14.5 Mode A).
     pub fn with_mode_a_coordinator(mut self, coordinator: Arc<ModeACoordinator>) -> Self {
         self.mode_a_coordinator = Some(coordinator);
+        self
+    }
+
+    /// Set the metrics callback for recording drift repairs.
+    pub fn with_metrics_callback(mut self, callback: DriftRepairCallback) -> Self {
+        self.metrics_callback = Some(callback);
         self
     }
 
@@ -184,7 +195,7 @@ impl DriftReconciler {
         for address in &self.node_addresses {
             // Mode A coordination: only check pairs we own
             // Key is "index_uid:node_address" for rendezvous hashing
-            let pair_key = format!("{}:{}", index, address);
+            let pair_key = format!("{index}:{address}");
 
             if let Some(ref coordinator) = self.mode_a_coordinator {
                 // Check if we own this (index, node) pair
@@ -195,7 +206,7 @@ impl DriftReconciler {
                 }
             }
 
-            let path = format!("/indexes/{}/settings", index);
+            let path = format!("/indexes/{index}/settings");
             match self.get_settings(client, address, &path).await {
                 Ok(settings) => {
                     let hash = fingerprint_settings(&settings);
@@ -250,7 +261,7 @@ impl DriftReconciler {
                     .iter()
                     .find(|(_addr, settings)| {
                         let hash = fingerprint_settings(settings);
-                        &hash == &consensus_hash
+                        hash == consensus_hash
                     })
                     .map(|(_, settings)| settings);
 
@@ -258,12 +269,16 @@ impl DriftReconciler {
                     // Repair drifted nodes
                     for address in &drifted_nodes {
                         if let Err(e) = self
-                            .repair_node_settings(client, address, index, &consensus_settings)
+                            .repair_node_settings(client, address, index, consensus_settings)
                             .await
                         {
                             error!(node = %address, index = %index, error = %e, "failed to repair settings");
                         } else {
                             info!(node = %address, index = %index, "repaired settings drift");
+                            // Record metrics if callback is set
+                            if let Some(ref callback) = self.metrics_callback {
+                                callback(index);
+                            }
                         }
                     }
                 }
@@ -281,7 +296,7 @@ impl DriftReconciler {
         index: &str,
         settings: &Value,
     ) -> Result<()> {
-        let path = format!("/indexes/{}/settings", index);
+        let path = format!("/indexes/{index}/settings");
         let url = format!("{}{}", address.trim_end_matches('/'), path);
 
         let response = client
@@ -290,7 +305,7 @@ impl DriftReconciler {
             .json(settings)
             .send()
             .await
-            .map_err(|e| MiroirError::InvalidState(format!("request failed: {}", e)))?;
+            .map_err(|e| MiroirError::InvalidState(format!("request failed: {e}")))?;
 
         if response.status().is_success() {
             Ok(())
@@ -298,8 +313,7 @@ impl DriftReconciler {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
             Err(MiroirError::InvalidState(format!(
-                "repair failed: HTTP {} — {}",
-                status, text
+                "repair failed: HTTP {status} — {text}"
             )))
         }
     }
@@ -313,7 +327,7 @@ impl DriftReconciler {
             .header("Authorization", format!("Bearer {}", self.node_master_key))
             .send()
             .await
-            .map_err(|e| MiroirError::InvalidState(format!("request failed: {}", e)))?;
+            .map_err(|e| MiroirError::InvalidState(format!("request failed: {e}")))?;
 
         if !response.status().is_success() {
             return Err(MiroirError::InvalidState(format!(
@@ -325,7 +339,7 @@ impl DriftReconciler {
         let json: Value = response
             .json()
             .await
-            .map_err(|e| MiroirError::InvalidState(format!("parse response: {}", e)))?;
+            .map_err(|e| MiroirError::InvalidState(format!("parse response: {e}")))?;
 
         let indexes = json
             .get("results")
@@ -350,7 +364,7 @@ impl DriftReconciler {
             .header("Authorization", format!("Bearer {}", self.node_master_key))
             .send()
             .await
-            .map_err(|e| MiroirError::InvalidState(format!("request failed: {}", e)))?;
+            .map_err(|e| MiroirError::InvalidState(format!("request failed: {e}")))?;
 
         if !response.status().is_success() {
             return Err(MiroirError::InvalidState(format!(
@@ -362,7 +376,7 @@ impl DriftReconciler {
         response
             .json()
             .await
-            .map_err(|e| MiroirError::InvalidState(format!("parse response: {}", e)))
+            .map_err(|e| MiroirError::InvalidState(format!("parse response: {e}")))
     }
 }
 

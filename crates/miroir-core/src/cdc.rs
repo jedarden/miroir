@@ -121,6 +121,37 @@ pub enum CdcOperation {
     Add,
     Update,
     Delete,
+    /// Analytics event: click-through (plan §13.21).
+    ClickThrough,
+    /// Analytics event: latency measurement (plan §13.21).
+    Latency,
+}
+
+/// Analytics event type for search UI beacons (plan §13.21).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalyticsEvent {
+    /// Event type: "click_through" or "latency".
+    pub event_type: String,
+    /// Stable event ID for deduplication.
+    pub event_id: String,
+    /// Opaque session ID from JWT.
+    pub session_id: String,
+    /// Index UID.
+    pub index: String,
+    /// Query string (for search/latency events).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    /// Result ID (for click events).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_id: Option<String>,
+    /// Click position (for click events).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_position: Option<u32>,
+    /// Latency in milliseconds (for latency events).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    /// UNIX timestamp (ms).
+    pub timestamp: u64,
 }
 
 /// CDC sink configuration.
@@ -370,6 +401,58 @@ impl CdcInternalQueue {
         } else {
             Ok(None)
         }
+    }
+
+    /// Store an analytics event (plan §13.21).
+    /// Analytics events (click_through, latency) are stored in the internal queue
+    /// and can be queried via GET /_miroir/changes.
+    pub async fn store_analytics(&self, event: AnalyticsEvent) -> u64 {
+        let index = event.index.clone();
+        let event_id = event.event_id.clone();
+        let event_type = event.event_type.clone();
+        let result_id = event.result_id.clone();
+        let timestamp = event.timestamp;
+
+        let mut sequences = self.sequences.write().await;
+        let seq = sequences.entry(index.clone()).or_insert(0);
+        *seq += 1;
+        let sequence = *seq;
+
+        // Convert analytics event to a CdcEvent for storage
+        let cdc_event = CdcEvent {
+            mtask_id: format!("analytics:{}", event_id),
+            index: index.clone(),
+            operation: if event_type == "click_through" {
+                CdcOperation::ClickThrough
+            } else {
+                CdcOperation::Latency
+            },
+            primary_keys: result_id.into_iter().collect(),
+            shard_ids: vec![],
+            settings_version: 0,
+            timestamp,
+            document: Some(serde_json::to_value(&event).unwrap_or_default()),
+            origin: None,
+            event_id,
+        };
+
+        let mut events = self.events.write().await;
+        events
+            .entry(index.clone())
+            .or_insert_with(Vec::new)
+            .push((sequence, cdc_event));
+
+        // Trim old events to keep memory usage bounded (keep last 10,000 per index)
+        if let Some(events_vec) = events.get_mut(&index) {
+            if events_vec.len() > 10_000 {
+                events_vec.drain(0..events_vec.len() - 10_000);
+            }
+        }
+
+        // Notify waiting consumers of the new event
+        let _ = self.notify_tx.send(index.clone());
+
+        sequence
     }
 }
 
@@ -1149,6 +1232,16 @@ impl CdcManager {
             .send(event)
             .map_err(|_| CdcError::ChannelClosed)?;
         Ok(())
+    }
+
+    /// Publish an analytics event (plan §13.21).
+    ///
+    /// Analytics events (click_through, latency) are stored in the internal queue
+    /// and can be queried via GET /_miroir/changes. They are not sent to external
+    /// sinks unless configured via `search_ui.analytics.sink`.
+    pub async fn publish_analytics(&self, event: AnalyticsEvent) {
+        // Store in internal queue for GET /_miroir/changes endpoint
+        self.internal_queue.store_analytics(event).await;
     }
 
     /// Get current publisher state.

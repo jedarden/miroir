@@ -567,6 +567,11 @@ impl AppState {
                 lease_ttl_secs: 10,
                 lease_renewal_interval_ms: 2000,
             };
+            let metrics_clone = metrics.clone();
+            let callback: miroir_core::rebalancer_worker::DriftRepairCallback =
+                Arc::new(move |index: &str| {
+                    metrics_clone.inc_settings_drift_repair(index);
+                });
             Some(Arc::new(
                 miroir_core::rebalancer_worker::DriftReconciler::new(
                     drift_config,
@@ -575,7 +580,8 @@ impl AppState {
                     node_addresses,
                     config.node_master_key.clone(),
                     pod_id.clone(),
-                ),
+                )
+                .with_metrics_callback(callback),
             ))
         } else {
             None

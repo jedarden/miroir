@@ -310,7 +310,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
                 .node_client
                 .fetch_documents(node_id, address, &request)
                 .await
-                .map_err(|e| MiroirError::Topology(format!("fetch failed: {:?}", e)))?;
+                .map_err(|e| MiroirError::Topology(format!("fetch failed: {e:?}")))?;
 
             if response.results.is_empty() {
                 break; // No more documents
@@ -449,7 +449,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
                 .node_client
                 .fetch_documents(node_id, address, &request)
                 .await
-                .map_err(|e| MiroirError::Topology(format!("fetch failed: {:?}", e)))?;
+                .map_err(|e| MiroirError::Topology(format!("fetch failed: {e:?}")))?;
 
             if response.results.is_empty() {
                 break;
@@ -629,7 +629,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
                     total_mismatches += mismatches;
                 }
                 Err(e) => {
-                    pass.errors.push(format!("shard {}: {}", shard_id, e));
+                    pass.errors.push(format!("shard {shard_id}: {e}"));
                 }
             }
 
@@ -697,7 +697,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
                 let topology_guard = self.topology.read().await;
                 let node = topology_guard
                     .node(&node_id)
-                    .ok_or_else(|| MiroirError::Topology(format!("node {} not found", node_id)))?;
+                    .ok_or_else(|| MiroirError::Topology(format!("node {node_id} not found")))?;
 
                 if !node.is_healthy() {
                     warn!("Node {} is not healthy, skipping fingerprint", node_id);
@@ -935,13 +935,13 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
             .as_ref()
             .and_then(|d| d.get("_miroir_expires_at"))
             .and_then(|v| v.as_u64())
-            .map_or(false, |expires| expires <= now_ms);
+            .is_some_and(|expires| expires <= now_ms);
 
         let target_expired = target_doc
             .as_ref()
             .and_then(|d| d.get("_miroir_expires_at"))
             .and_then(|v| v.as_u64())
-            .map_or(false, |expires| expires <= now_ms);
+            .is_some_and(|expires| expires <= now_ms);
 
         if ref_expired || target_expired {
             info!(
@@ -1164,7 +1164,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         self.node_client
             .write_documents(node_id, address, &request)
             .await
-            .map_err(|e| MiroirError::Topology(format!("write failed: {:?}", e)))?;
+            .map_err(|e| MiroirError::Topology(format!("write failed: {e:?}")))?;
 
         Ok(())
     }
@@ -1185,7 +1185,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         self.node_client
             .delete_documents(node_id, address, &request)
             .await
-            .map_err(|e| MiroirError::Topology(format!("delete failed: {:?}", e)))?;
+            .map_err(|e| MiroirError::Topology(format!("delete failed: {e:?}")))?;
 
         debug!("Deleted PK {} from node {}", primary_key, node_id);
         Ok(())
@@ -1290,7 +1290,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
                     .node_client
                     .fetch_documents(node_id, address, &request)
                     .await
-                    .map_err(|e| MiroirError::Topology(format!("fetch failed: {:?}", e)))?;
+                    .map_err(|e| MiroirError::Topology(format!("fetch failed: {e:?}")))?;
 
                 if response.results.is_empty() {
                     break;
@@ -1567,9 +1567,9 @@ mod tests_mode_a_acceptance {
             "pod-2".to_string(),
             "pod-3".to_string(),
         ]);
-        *coordinator_1.cached_peer_set.write().await = peer_set.clone();
-        *coordinator_2.cached_peer_set.write().await = peer_set.clone();
-        *coordinator_3.cached_peer_set.write().await = peer_set;
+        coordinator_1.set_peer_set_for_test(peer_set.clone()).await;
+        coordinator_2.set_peer_set_for_test(peer_set.clone()).await;
+        coordinator_3.set_peer_set_for_test(peer_set).await;
 
         // Create 3 anti-entropy reconcilers, one per pod
         let config = AntiEntropyConfig::default();
@@ -1691,9 +1691,9 @@ mod tests_mode_a_acceptance {
             "pod-2".to_string(),
             "pod-3".to_string(),
         ]);
-        *coordinator_1.cached_peer_set.write().await = peer_set_3pods.clone();
-        *coordinator_2.cached_peer_set.write().await = peer_set_3pods.clone();
-        *coordinator_3.cached_peer_set.write().await = peer_set_3pods.clone();
+        coordinator_1.set_peer_set_for_test(peer_set_3pods.clone()).await;
+        coordinator_2.set_peer_set_for_test(peer_set_3pods.clone()).await;
+        coordinator_3.set_peer_set_for_test(peer_set_3pods.clone()).await;
 
         // Track which shards pod-3 owns initially
         let mut pod3_owned_initial = Vec::new();
@@ -1707,8 +1707,8 @@ mod tests_mode_a_acceptance {
         // Pod-3 dies: remove it from the peer set
         let peer_set_2pods =
             crate::peer_discovery::PeerSet::new(vec!["pod-1".to_string(), "pod-2".to_string()]);
-        *coordinator_1.cached_peer_set.write().await = peer_set_2pods.clone();
-        *coordinator_2.cached_peer_set.write().await = peer_set_2pods.clone();
+        coordinator_1.set_peer_set_for_test(peer_set_2pods.clone()).await;
+        coordinator_2.set_peer_set_for_test(peer_set_2pods.clone()).await;
 
         // Verify that all shards previously owned by pod-3 are now owned by pod-1 or pod-2
         for shard_id in &pod3_owned_initial {
@@ -1766,7 +1766,7 @@ mod tests_mode_a_acceptance {
             "pod-2".to_string(),
             "pod-3".to_string(),
         ]);
-        *coordinator.cached_peer_set.write().await = peer_set;
+        coordinator.set_peer_set_for_test(peer_set).await;
 
         // Create anti-entropy reconciler with Mode A
         let config = AntiEntropyConfig {

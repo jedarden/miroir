@@ -24,7 +24,7 @@ use crate::peer_discovery::{PeerDiscovery, PeerId, PeerSet};
 use std::hash::Hasher;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use twox_hash::XxHash64;
 
 /// Error type for Mode A coordination.
@@ -179,7 +179,7 @@ impl ModeACoordinator {
             let score = Self::rendezvous_score(miroir_id, peer);
             if score > best_score {
                 best_score = score;
-                is_owner = (peer == &self.pod_id);
+                is_owner = peer == &self.pod_id;
             }
         }
 
@@ -220,7 +220,7 @@ impl ModeACoordinator {
             let score = Self::rendezvous_score(miroir_id, peer);
             if score > best_score {
                 best_score = score;
-                is_owner = (peer == &self.pod_id);
+                is_owner = peer == &self.pod_id;
             }
         }
 
@@ -238,7 +238,7 @@ impl ModeACoordinator {
     ///
     /// Combines index and node into a single key for rendezvous hashing.
     pub async fn owns_settings_check(&self, index_uid: &str, node_id: &str) -> Result<bool> {
-        let key = format!("{}:{}", index_uid, node_id);
+        let key = format!("{index_uid}:{node_id}");
         self.owns_task(&key).await
     }
 
@@ -292,6 +292,16 @@ impl ModeACoordinator {
     /// Get our pod ID.
     pub fn pod_id(&self) -> &str {
         &self.pod_id
+    }
+
+    /// Set the peer set directly (test-only).
+    ///
+    /// This method is only intended for use in tests to simulate different
+    /// peer configurations without going through peer discovery.
+    #[cfg(test)]
+    pub async fn set_peer_set_for_test(&self, peer_set: PeerSet) {
+        let mut cached = self.cached_peer_set.write().await;
+        *cached = peer_set;
     }
 }
 
