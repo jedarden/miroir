@@ -8,6 +8,8 @@
 //! - Persists phase state to mode_b_operations table for recovery
 //! - New leaders resume from last committed phase boundary
 
+pub mod executor;
+
 use crate::mode_b_coordinator::{ModeBOpLeader, PhaseState};
 use crate::router::{assign_shard_in_group, shard_for_key};
 use crate::topology::{Group, NodeId};

@@ -102,4 +102,8 @@ pub enum MiroirError {
     /// Anti-entropy error.
     #[error("anti-entropy error: {0}")]
     AntiEntropy(String),
+
+    /// Verification error (for resharding cross-index verification).
+    #[error("verification failed: {0}")]
+    VerificationFailed(String),
 }
