@@ -1775,6 +1775,8 @@ pub fn prepare_dual_write_documents(
         // Clone document for shadow index with new shard tag
         let mut shadow_doc = doc.clone();
         shadow_doc["_miroir_shard"] = serde_json::json!(new_shard_id);
+        // Tag for CDC suppression (plan §13.13)
+        shadow_doc["_miroir_origin"] = serde_json::json!("reshard_backfill");
         shadow_documents.push(shadow_doc);
     }
 
@@ -1907,6 +1909,36 @@ mod tests_dual_write {
 
         assert_eq!(prep.live_documents.len(), 0);
         assert_eq!(prep.shadow_documents.len(), 0);
+    }
+
+    #[test]
+    fn prepare_dual_write_tags_shadow_with_reshard_backfill_origin() {
+        let documents = vec![json!({"id": "product:123", "name": "Widget"})];
+
+        let reshard_state = ReshardOperationState {
+            shadow_index: "products__reshard_128".to_string(),
+            old_shards: 64,
+            target_shards: 128,
+            phase: ReshardPhase::DualWriteActive,
+            started_at: 1000,
+        };
+
+        let prep = prepare_dual_write_documents(&documents, "id", &reshard_state);
+
+        // Shadow documents should be tagged with _miroir_origin for CDC suppression
+        let shadow_doc = &prep.shadow_documents[0];
+        assert_eq!(
+            shadow_doc.get("_miroir_origin"),
+            Some(&json!("reshard_backfill")),
+            "shadow documents should have _miroir_origin: reshard_backfill"
+        );
+
+        // Live documents should NOT have _miroir_origin (client writes are emitted)
+        let live_doc = &prep.live_documents[0];
+        assert!(
+            live_doc.get("_miroir_origin").is_none(),
+            "live documents should not have _miroir_origin"
+        );
     }
 }
 
