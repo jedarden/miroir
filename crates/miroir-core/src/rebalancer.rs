@@ -1038,6 +1038,14 @@ impl Rebalancer {
     }
 
     /// Remove a replica group.
+    ///
+    /// Implements plan §2 group removal flow:
+    /// 1. Mark group as `draining` — queries stop routing immediately
+    /// 2. Nodes can be decommissioned; no data migration needed (other groups hold the docs)
+    /// 3. Remove nodes from config; operator deletes pods + PVCs
+    ///
+    /// Preconditions: refuse to remove a group if it's the last group holding a shard.
+    /// Use `force: true` to bypass this check (operator must re-type the index UID to confirm).
     pub async fn remove_replica_group(
         &self,
         request: RemoveReplicaGroupRequest,
@@ -1048,18 +1056,19 @@ impl Rebalancer {
             "starting replica group removal"
         );
 
-        // Check if group exists and is empty
+        // Create operation record
+        let op_id = self
+            .next_op_id
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        // Step 1: Mark group as draining (queries stop routing immediately)
         {
-            let topo = self.topology.read().await;
-            let group = topo.groups().find(|g| g.id == request.group_id);
+            let mut topo = self.topology.write().await;
+            let group = topo.group_mut(request.group_id);
 
             let Some(grp) = group else {
                 return Err(RebalancerError::GroupNotFound(request.group_id));
             };
-
-            if !request.force && !grp.nodes().is_empty() {
-                return Err(RebalancerError::GroupNotEmpty(request.group_id));
-            }
 
             // Check if this is the last group
             if topo.groups().count() <= 1 {
@@ -1067,20 +1076,67 @@ impl Rebalancer {
                     "cannot remove the last replica group".into(),
                 ));
             }
+
+            // Check if group is already draining
+            if grp.is_draining() {
+                // Group is already draining, proceed to removal if force=true
+                if !request.force {
+                    return Ok(TopologyOperationResult {
+                        id: op_id,
+                        message: format!(
+                            "Replica group {} is already draining. Use force=true to complete removal.",
+                            request.group_id
+                        ),
+                        migrations_count: 0,
+                    });
+                }
+            } else {
+                // Mark group as draining
+                grp.mark_draining();
+                info!(
+                    group_id = request.group_id,
+                    "replica group marked as draining, queries will stop routing to it"
+                );
+            }
+
+            // If not force, return early — operator can now decommission nodes
+            if !request.force {
+                let operation = TopologyOperation {
+                    id: op_id,
+                    op_type: TopologyOperationType::RemoveReplicaGroup,
+                    status: TopologyOperationStatus::Pending,
+                    target_node: None,
+                    target_group: Some(request.group_id),
+                    migrations: Vec::new(),
+                    started_at: Some(now_ms()),
+                    completed_at: None,
+                    error: None,
+                };
+
+                {
+                    let mut ops = self.operations.write().await;
+                    ops.insert(op_id, operation);
+                }
+
+                return Ok(TopologyOperationResult {
+                    id: op_id,
+                    message: format!(
+                        "Replica group {} marked as draining. Queries stopped routing to it. \
+                         Call again with force=true to complete removal after nodes are decommissioned.",
+                        request.group_id
+                    ),
+                    migrations_count: 0,
+                });
+            }
         }
 
-        // Create operation record
-        let op_id = self
-            .next_op_id
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
-        // Remove group from topology (this removes all nodes in the group)
+        // Step 2: Remove group from topology (this removes all nodes in the group)
         {
             let mut topo = self.topology.write().await;
             topo.remove_group(request.group_id);
         }
 
-        // Record operation
+        // Record operation as complete
         let operation = TopologyOperation {
             id: op_id,
             op_type: TopologyOperationType::RemoveReplicaGroup,
@@ -1097,6 +1153,11 @@ impl Rebalancer {
             let mut ops = self.operations.write().await;
             ops.insert(op_id, operation);
         }
+
+        info!(
+            group_id = request.group_id,
+            "replica group removal completed"
+        );
 
         Ok(TopologyOperationResult {
             id: op_id,

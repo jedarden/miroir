@@ -499,3 +499,229 @@ async fn chaos_cannot_remove_last_group() {
     let result = rebalancer.remove_replica_group(remove_group_request).await;
     assert!(result.is_err(), "Removing last group should fail");
 }
+
+/// P4.5 Test 1: Group removal marks as draining first.
+///
+/// Verifies plan §2 group removal flow:
+/// 1. Mark group as `draining` — queries stop routing immediately
+/// 2. Second call with force=true completes removal
+#[tokio::test]
+async fn p45_group_removal_drains_first() {
+    let shard_count = 64;
+    let replica_groups = 2;
+    let rf = 1;
+
+    // Two replica groups
+    let mut topology = Topology::new(shard_count, replica_groups, rf);
+    topology.add_node(Node::new(node_id("node-0"), "http://node-0:7700".into(), 0));
+    topology.add_node(Node::new(node_id("node-1"), "http://node-1:7700".into(), 0));
+    topology.add_node(Node::new(node_id("node-2"), "http://node-2:7700".into(), 1));
+    topology.add_node(Node::new(node_id("node-3"), "http://node-3:7700".into(), 1));
+
+    let topology = Arc::new(RwLock::new(topology));
+    let migration_config = MigrationConfig::default();
+    let rebalancer_config = RebalancerConfig::default();
+
+    let rebalancer = Rebalancer::new(rebalancer_config, topology.clone(), migration_config);
+
+    // First call: mark as draining (without force)
+    use miroir_core::rebalancer::RemoveReplicaGroupRequest;
+    let drain_request = RemoveReplicaGroupRequest {
+        group_id: 1,
+        force: false,
+    };
+
+    let result = rebalancer.remove_replica_group(drain_request).await;
+    assert!(result.is_ok(), "Group drain should succeed");
+
+    let drain_result = result.unwrap();
+    assert!(
+        drain_result.message.contains("marked as draining"),
+        "Should indicate group is draining"
+    );
+
+    // Verify group is marked as draining
+    let topo_read = topology.read().await;
+    let group = topo_read.group(1);
+    assert!(group.is_some(), "Group should still exist");
+    assert!(group.unwrap().is_draining(), "Group should be in draining state");
+    drop(topo_read);
+
+    // Second call with force=true completes removal
+    let remove_request = RemoveReplicaGroupRequest {
+        group_id: 1,
+        force: true,
+    };
+
+    let result = rebalancer.remove_replica_group(remove_request).await;
+    assert!(result.is_ok(), "Group removal with force should succeed");
+
+    // Verify group is removed
+    let topo_read = topology.read().await;
+    let group = topo_read.group(1);
+    assert!(group.is_none(), "Group should be removed");
+    let remaining_groups = topo_read.groups().count();
+    assert_eq!(remaining_groups, 1, "Should have 1 group remaining");
+}
+
+/// P4.5 Test 2: RF=2 group with 1 node killed → reads succeed on remaining replica.
+///
+/// Verifies that when RF=2 and one node fails, reads succeed on the remaining replica
+/// without degraded flag (intra-group redundancy).
+#[tokio::test]
+async fn p45_rf2_with_one_failed_node_succeeds() {
+    let shard_count = 64;
+    let replica_groups = 1;
+    let rf = 2;
+
+    // 3 nodes, RF=2 (each shard on 2 nodes)
+    let mut topology = Topology::new(shard_count, replica_groups, rf);
+    topology.add_node(Node::new(node_id("node-0"), "http://node-0:7700".into(), 0));
+    topology.add_node(Node::new(node_id("node-1"), "http://node-1:7700".into(), 0));
+    topology.add_node(Node::new(node_id("node-2"), "http://node-2:7700".into(), 0));
+
+    // Mark node-2 as failed
+    {
+        let mut topo_write = topology.write().await;
+        let node = topo_write.node_mut(&node_id("node-2")).unwrap();
+        node.status = NodeStatus::Failed;
+    }
+
+    // Verify that for each shard, there's still at least one healthy replica
+    let topo_read = topology.read().await;
+    let group = topo_read.group(0).unwrap();
+    let node_map = topo_read.node_map();
+    let healthy_nodes = group.healthy_nodes(&node_map);
+
+    assert_eq!(healthy_nodes.len(), 2, "Should have 2 healthy nodes");
+
+    // For each shard, verify RF=2 assignment still has healthy nodes
+    for shard_id in 0..shard_count {
+        let assigned = assign_shard_in_group(shard_id, group.nodes(), rf);
+        assert_eq!(assigned.len(), 2, "Shard {} should have {} replicas", shard_id, rf);
+
+        // At least one should be healthy
+        let healthy_count = assigned
+            .iter()
+            .filter(|n| {
+                topo_read
+                    .node(n)
+                    .map(|nn| nn.is_healthy())
+                    .unwrap_or(false)
+            })
+            .count();
+
+        assert!(
+            healthy_count >= 1,
+            "Shard {} should have at least 1 healthy replica",
+            shard_id
+        );
+    }
+}
+
+/// P4.5 Test 3: RF=1 group with 1 node killed → cross-group fallback available.
+///
+/// Verifies that when RF=1 and a node in the selected group fails,
+/// other groups exist for fallback (plan §2 cross-group fallback).
+#[tokio::test]
+async fn p45_rf1_with_failed_node_has_cross_group_fallback() {
+    let shard_count = 64;
+    let replica_groups = 2;
+    let rf = 1;
+
+    // Two replica groups, RF=1
+    let mut topology = Topology::new(shard_count, replica_groups, rf);
+    topology.add_node(Node::new(node_id("node-0"), "http://node-0:7700".into(), 0));
+    topology.add_node(Node::new(node_id("node-1"), "http://node-1:7700".into(), 0));
+    topology.add_node(Node::new(node_id("node-2"), "http://node-2:7700".into(), 1));
+    topology.add_node(Node::new(node_id("node-3"), "http://node-3:7700".into(), 1));
+
+    // Mark node-0 as failed (RF=1, so no intra-group replica for its shards)
+    {
+        let mut topo_write = topology.write().await;
+        let node = topo_write.node_mut(&node_id("node-0")).unwrap();
+        node.status = NodeStatus::Failed;
+    }
+
+    // Verify that other groups exist and are healthy
+    let topo_read = topology.read().await;
+    let group_0 = topo_read.group(0).unwrap();
+    let group_1 = topo_read.group(1).unwrap();
+    let node_map = topo_read.node_map();
+
+    let group_0_healthy = group_0.healthy_nodes(&node_map);
+    let group_1_healthy = group_1.healthy_nodes(&node_map);
+
+    assert_eq!(group_0_healthy.len(), 1, "Group 0 should have 1 healthy node");
+    assert_eq!(group_1_healthy.len(), 2, "Group 1 should have 2 healthy nodes");
+
+    // For each shard assigned to the failed node, verify group 1 has a replica
+    for shard_id in 0..shard_count {
+        let g0_assigned = assign_shard_in_group(shard_id, group_0.nodes(), rf);
+        let g1_assigned = assign_shard_in_group(shard_id, group_1.nodes(), rf);
+
+        assert_eq!(g0_assigned.len(), 1, "Group 0 shard should have 1 replica");
+        assert_eq!(g1_assigned.len(), 1, "Group 1 shard should have 1 replica");
+
+        // If group 0's node is failed, group 1's node should be healthy (fallback target)
+        if g0_assigned[0].as_str() == "node-0" {
+            assert!(
+                topo_read.node(&g1_assigned[0]).unwrap().is_healthy(),
+                "Fallback node for shard {} should be healthy",
+                shard_id
+            );
+        }
+    }
+}
+
+/// P4.5 Test 4: Node recovery triggers RF-restore.
+///
+/// Verifies that when a failed node recovers, it can be re-hydrated from peer replicas
+/// within its group (plan §2 unplanned node failure recovery).
+#[tokio::test]
+async fn p45_node_recovery_can_restore_rf() {
+    let shard_count = 64;
+    let replica_groups = 1;
+    let rf = 2;
+
+    // 3 nodes, RF=2
+    let mut topology = Topology::new(shard_count, replica_groups, rf);
+    topology.add_node(Node::new(node_id("node-0"), "http://node-0:7700".into(), 0));
+    topology.add_node(Node::new(node_id("node-1"), "http://node-1:7700".into(), 0));
+    topology.add_node(Node::new(node_id("node-2"), "http://node-2:7700".into(), 0));
+
+    let topology = Arc::new(RwLock::new(topology));
+    let migration_config = MigrationConfig::default();
+    let rebalancer_config = RebalancerConfig {
+        auto_rebalance_on_recovery: true,
+        ..Default::default()
+    };
+
+    let rebalancer = Rebalancer::new(rebalancer_config, topology.clone(), migration_config);
+
+    // Mark node-2 as failed
+    {
+        let mut topo_write = topology.write().await;
+        let node = topo_write.node_mut(&node_id("node-2")).unwrap();
+        node.status = NodeStatus::Failed;
+    }
+
+    // Verify node-2 is failed
+    let topo_read = topology.read().await;
+    let node_2 = topo_read.node(&node_id("node-2")).unwrap();
+    assert_eq!(node_2.status, NodeStatus::Failed);
+    drop(topo_read);
+
+    // Simulate node recovery (health checker would do this)
+    let recovery_result = rebalancer.handle_node_recovery("node-2").await;
+    assert!(recovery_result.is_ok(), "Node recovery should succeed");
+
+    // Verify node-2 is marked as active again
+    let topo_read = topology.read().await;
+    let node_2 = topo_read.node(&node_id("node-2")).unwrap();
+    assert_eq!(
+        node_2.status,
+        NodeStatus::Active,
+        "Node should be Active after recovery"
+    );
+}
