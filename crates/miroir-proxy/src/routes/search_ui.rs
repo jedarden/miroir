@@ -15,9 +15,10 @@ use axum::{
 use miroir_core::{
     config::advanced::{SearchUiAuthConfig, SearchUiConfig},
     task_store::{SearchUiScopedKey, TaskStore},
-    MiroirError, Result,
 };
-use rust_embed::RustEmbed;
+
+use crate::error_response::ErrorResponse;
+use rust_embed::RustEmbed as Embed;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, info};
@@ -150,14 +151,12 @@ pub async fn mint_session(
     Path(index_uid): Path<String>,
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, MiroirError> {
+) -> Result<impl IntoResponse, ErrorResponse> {
     let config = &state.config;
 
     // Check if search UI is enabled
     if !config.search_ui.enabled {
-        return Err(MiroirError::InvalidRequest(
-            "search UI is not enabled".to_string(),
-        ));
+        return Err(ErrorResponse::invalid_request("search UI is not enabled"));
     }
 
     // Validate auth mode
@@ -170,18 +169,18 @@ pub async fn mint_session(
         "shared_key" => {
             // Require X-Search-UI-Key header
             let shared_key = std::env::var(&auth_config.shared_key_env).map_err(|_| {
-                MiroirError::InvalidRequest("search UI shared key not configured".to_string())
+                ErrorResponse::invalid_request("search UI shared key not configured".to_string())
             })?;
 
             let provided_key = headers
                 .get("X-Search-UI-Key")
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| {
-                    MiroirError::InvalidRequest("missing X-Search-UI-Key header".to_string())
+                    ErrorResponse::invalid_request("missing X-Search-UI-Key header".to_string())
                 })?;
 
             if provided_key != shared_key {
-                return Err(MiroirError::InvalidRequest(
+                return Err(ErrorResponse::invalid_request(
                     "invalid X-Search-UI-Key".to_string(),
                 ));
             }
@@ -192,7 +191,7 @@ pub async fn mint_session(
                 .get(&auth_config.oauth_proxy.user_header)
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| {
-                    MiroirError::InvalidRequest(format!(
+                    ErrorResponse::invalid_request(format!(
                         "missing {} header",
                         auth_config.oauth_proxy.user_header
                     ))
@@ -205,7 +204,7 @@ pub async fn mint_session(
             debug!(index = %index_uid, "minting oauth_proxy search UI session");
         }
         _ => {
-            return Err(MiroirError::InvalidRequest(format!(
+            return Err(ErrorResponse::invalid_request(format!(
                 "invalid auth mode: {}",
                 auth_config.mode
             )));
@@ -213,7 +212,7 @@ pub async fn mint_session(
     }
 
     // Get or create scoped key for this index
-    let scoped_key = get_or_create_scoped_key(&state, &index_uid, config).await?;
+    let scoped_key = get_or_create_scoped_key(&state, &index_uid, &config.search_ui).await?;
 
     // Build JWT claims
     let now = chrono::Utc::now().timestamp() as u64;
@@ -272,7 +271,7 @@ pub async fn mint_session(
 
     // Sign with primary secret
     let secret = std::env::var(&auth_config.jwt_secret_env)
-        .map_err(|_| MiroirError::Task("JWT secret not configured".to_string()))?;
+        .map_err(|_| ErrorResponse::internal_error("JWT secret not configured".to_string()))?;
 
     let header = JwtHeader {
         alg: "HS256".to_string(),
@@ -281,7 +280,7 @@ pub async fn mint_session(
     };
 
     let token = jwt_encode(&header, &claims, secret.as_bytes())
-        .map_err(|e| MiroirError::Task(format!("JWT encoding failed: {}", e)))?;
+        .map_err(|e| ErrorResponse::internal_error(format!("JWT encoding failed: {}", e)))?;
 
     info!(
         index = %index_uid,
@@ -307,9 +306,9 @@ async fn get_or_create_scoped_key(
     state: &AppState,
     index_uid: &str,
     config: &SearchUiConfig,
-) -> Result<SearchUiScopedKey, MiroirError> {
+) -> Result<SearchUiScopedKey, ErrorResponse> {
     let redis_store = state.redis_store.as_ref().ok_or_else(|| {
-        MiroirError::TaskStore("Redis store required for search UI scoped keys".to_string())
+        ErrorResponse::internal_error("Redis store required for search UI scoped keys")
     })?;
 
     // Try to get existing key
@@ -334,7 +333,7 @@ async fn get_or_create_scoped_key(
 
     // TODO: Create new scoped key via Meilisearch API
     // For now, return an error indicating the key needs to be created
-    Err(MiroirError::Task(format!(
+    Err(ErrorResponse::internal_error(format!(
         "scoped key for index '{}' needs to be created via background rotation",
         index_uid
     )))
@@ -344,17 +343,17 @@ async fn get_or_create_scoped_key(
 pub async fn get_config(
     Path(index_uid): Path<String>,
     State(state): State<AppState>,
-) -> Result<impl IntoResponse, MiroirError> {
+) -> Result<impl IntoResponse, ErrorResponse> {
     let task_store = state
         .task_store
         .as_ref()
-        .ok_or_else(|| MiroirError::TaskStore("task store not available".to_string()))?;
+        .ok_or_else(|| ErrorResponse::internal_error("task store not available".to_string()))?;
 
     // Try to load config from task store
     if let Some(row) = task_store.get_search_ui_config(&index_uid)? {
         // Parse the config JSON
         let config: SearchUiIndexConfig = serde_json::from_str(&row.config_json)
-            .map_err(|e| MiroirError::Task(format!("failed to parse config: {}", e)))?;
+            .map_err(|e| ErrorResponse::internal_error(format!("failed to parse config: {}", e)))?;
 
         return Ok(Json(config));
     }
@@ -380,12 +379,12 @@ pub async fn update_config(
     Path(index_uid): Path<String>,
     State(state): State<AppState>,
     Json(config): Json<SearchUiIndexConfig>,
-) -> Result<impl IntoResponse, MiroirError> {
+) -> Result<impl IntoResponse, ErrorResponse> {
     use miroir_core::task_store::NewSearchUiConfig;
 
     // Serialize config to JSON for storage
     let config_json = serde_json::to_string(&config)
-        .map_err(|e| MiroirError::Task(format!("failed to serialize config: {}", e)))?;
+        .map_err(|e| ErrorResponse::internal_error(format!("failed to serialize config: {}", e)))?;
 
     // Validate custom template if present (plan §13.21)
     if let Some(template) = &config.result_template {
@@ -393,7 +392,7 @@ pub async fn update_config(
             // Custom templates are stored separately in the config
             // The actual template HTML is stored in the custom_template_html field
             if config.custom_template_html.is_none() {
-                return Err(MiroirError::InvalidRequest(
+                return Err(ErrorResponse::invalid_request(
                     "custom template requires custom_template_html field".to_string(),
                 ));
             }
@@ -407,7 +406,7 @@ pub async fn update_config(
     let task_store = state
         .task_store
         .as_ref()
-        .ok_or_else(|| MiroirError::TaskStore("task store not available".to_string()))?;
+        .ok_or_else(|| ErrorResponse::internal_error("task store not available".to_string()))?;
 
     let new_config = NewSearchUiConfig {
         index_uid: index_uid.clone(),
@@ -435,12 +434,12 @@ pub async fn beacon(
     Path(index_uid): Path<String>,
     State(state): State<AppState>,
     Json(mut beacon): Json<BeaconRequest>,
-) -> Result<impl IntoResponse, MiroirError> {
+) -> Result<impl IntoResponse, ErrorResponse> {
     let _ = &state.config;
 
     // Validate event_id is present
     if beacon.event_id.is_empty() {
-        return Err(MiroirError::InvalidRequest(
+        return Err(ErrorResponse::invalid_request(
             "event_id is required".to_string(),
         ));
     }
@@ -462,22 +461,17 @@ pub async fn beacon(
 }
 
 /// Embedded static assets for the Search UI (plan §13.21).
-#[derive(RustEmbed)]
-#[folder = "../../static/search/"]
-#[exclude = "*.swp"]
-#[exclude = "*.DS_Store"]
-#[exclude = ".git"]
-struct SearchUiAssets;
+#[derive(Embed)]
+#[folder = "static/search/"]
+pub struct SearchUiAssets;
 
 /// Serve the Search UI SPA (plan §13.21).
-pub async fn serve_spa(State(state): State<AppState>) -> Result<Response, MiroirError> {
+pub async fn serve_spa(State(state): State<AppState>) -> Result<Response, ErrorResponse> {
     let config = &state.config;
 
     // Check if search UI is enabled
     if !config.search_ui.enabled {
-        return Err(MiroirError::InvalidRequest(
-            "search UI is not enabled".to_string(),
-        ));
+        return Err(ErrorResponse::invalid_request("search UI is not enabled"));
     }
 
     // Build CSP header (plan §9)
@@ -496,17 +490,17 @@ pub async fn serve_spa(State(state): State<AppState>) -> Result<Response, Miroir
 }
 
 /// Serve a static asset from the Search UI (plan §13.21).
-pub async fn serve_static_asset(Path(path): Path<String>) -> Result<Response, MiroirError> {
+pub async fn serve_static_asset(Path(path): Path<String>) -> Result<Response, ErrorResponse> {
     serve_embedded_file(&path, true)
-        .map_err(|_| MiroirError::InvalidRequest("asset not found".to_string()))
 }
 
 /// Serve an embedded file from the Search UI assets (plan §13.21).
-fn serve_embedded_file(path: &str, is_static_asset: bool) -> Result<Response, StatusCode> {
+fn serve_embedded_file(path: &str, is_static_asset: bool) -> Result<Response, ErrorResponse> {
     use axum::body::Body;
     use axum::http::header;
 
-    let asset = SearchUiAssets::get(path).ok_or(StatusCode::NOT_FOUND)?;
+    let asset = SearchUiAssets::get(path)
+        .ok_or_else(|| ErrorResponse::invalid_request("asset not found"))?;
 
     let mime_type = mime_guess::from_path(path)
         .first_or_octet_stream()
@@ -543,7 +537,7 @@ fn serve_embedded_file(path: &str, is_static_asset: bool) -> Result<Response, St
 /// - Properly closed {{ }} tags
 /// - Valid {{#if}}...{{/if}} blocks
 /// - No unmatched closing tags
-fn validate_template(template: &str) -> Result<(), MiroirError> {
+fn validate_template(template: &str) -> Result<(), ErrorResponse> {
     let mut if_stack = Vec::new();
     let mut pos = 0;
 
@@ -561,7 +555,7 @@ fn validate_template(template: &str) -> Result<(), MiroirError> {
             // Check for {{/if}} closing
             else if tag.starts_with("/if") {
                 if if_stack.pop() != Some("if") {
-                    return Err(MiroirError::InvalidRequest(
+                    return Err(ErrorResponse::invalid_request(
                         "unmatched {{/if}} tag in template".to_string(),
                     ));
                 }
@@ -569,14 +563,14 @@ fn validate_template(template: &str) -> Result<(), MiroirError> {
 
             pos += end + 2;
         } else {
-            return Err(MiroirError::InvalidRequest(
+            return Err(ErrorResponse::invalid_request(
                 "unclosed {{ tag in template".to_string(),
             ));
         }
     }
 
     if !if_stack.is_empty() {
-        return Err(MiroirError::InvalidRequest(format!(
+        return Err(ErrorResponse::invalid_request(format!(
             "unclosed {{#if}} tag in template"
         )));
     }
