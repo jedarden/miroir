@@ -731,7 +731,8 @@ async fn main() -> anyhow::Result<()> {
                 });
 
             // Create and start the canary runner
-            let runner = CanaryRunner::new(
+            // Wire up Mode A coordinator for shard-partitioned canary execution (plan §14.5 Mode A, P6.3)
+            let mut runner = CanaryRunner::new(
                 store,
                 canary_config.max_concurrent_canaries as usize,
                 canary_config.run_history_per_canary as usize,
@@ -739,6 +740,14 @@ async fn main() -> anyhow::Result<()> {
                 metrics_emitter,
                 settings_version_checker,
             );
+
+            // Wire up Mode A coordinator if available (plan §14.5 Mode A, P6.3)
+            #[cfg(feature = "peer-discovery")]
+            {
+                if let Some(ref coordinator) = state.admin.mode_a_coordinator {
+                    runner = runner.with_mode_a(coordinator.clone());
+                }
+            }
 
             tokio::spawn(async move {
                 info!("canary runner started");

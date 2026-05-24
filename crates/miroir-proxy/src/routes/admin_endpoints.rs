@@ -561,6 +561,7 @@ impl AppState {
         let has_task_store = task_store.is_some();
 
         // Create drift reconciler worker (§13.5) if task store is available
+        // Note: Mode A coordinator will be wired up after it's created (below)
         let drift_reconciler = if let Some(ref store) = task_store {
             let node_addresses = config.nodes.iter().map(|n| n.address.clone()).collect();
             let drift_config = miroir_core::rebalancer_worker::DriftReconcilerConfig {
@@ -590,6 +591,7 @@ impl AppState {
         };
 
         // Create anti-entropy worker (plan §13.8) if task store is available
+        // Note: Mode A coordinator will be wired up after it's created (below)
         let anti_entropy_worker = if config.anti_entropy.enabled {
             if let Some(ref store) = task_store {
                 let ae_worker_config =
@@ -692,6 +694,7 @@ impl AppState {
         };
 
         // Create Mode A coordinator for shard-partitioned ownership (plan §14.5 Mode A)
+        // This must be created before drift_reconciler and anti_entropy_worker so they can be wired up
         let mode_a_coordinator = if cfg!(feature = "peer-discovery") {
             let pod_name = std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string());
             let namespace =
@@ -704,6 +707,99 @@ impl AppState {
                 service_name,
             ));
             Some(Arc::new(ModeACoordinator::new(pod_name, peer_discovery)))
+        } else {
+            None
+        };
+
+        // Wire up Mode A coordinator to drift_reconciler (plan §14.5 Mode A, P6.3)
+        let drift_reconciler = if let Some(ref reconciler) = drift_reconciler {
+            if let Some(ref coordinator) = mode_a_coordinator {
+                // Use Arc::make_mut to get a mutable reference if we're the only owner
+                // Since we just created this Arc, we should be the only owner
+                // We need to recreate the Arc with the coordinator wired up
+                let reconciler_inner = Arc::try_unwrap(reconciler.clone()).unwrap_or_else(|_| {
+                    // If we can't unwrap, create a new one with the coordinator
+                    // This shouldn't happen in practice since we just created it
+                    let node_addresses = config.nodes.iter().map(|n| n.address.clone()).collect();
+                    let drift_config = miroir_core::rebalancer_worker::DriftReconcilerConfig {
+                        interval_s: config.settings_drift_check.interval_s,
+                        auto_repair: config.settings_drift_check.auto_repair,
+                        lease_ttl_secs: 10,
+                        lease_renewal_interval_ms: 2000,
+                    };
+                    let metrics_clone = metrics.clone();
+                    let callback: miroir_core::rebalancer_worker::DriftRepairCallback =
+                        Arc::new(move |index: &str| {
+                            metrics_clone.inc_settings_drift_repair(index);
+                        });
+                    miroir_core::rebalancer_worker::DriftReconciler::new(
+                        drift_config,
+                        settings_broadcast.clone(),
+                        task_store.as_ref().unwrap().clone(),
+                        node_addresses,
+                        config.node_master_key.clone(),
+                        pod_id.clone(),
+                    )
+                    .with_metrics_callback(callback)
+                });
+                Some(Arc::new(
+                    reconciler_inner.with_mode_a_coordinator(coordinator.clone()),
+                ))
+            } else {
+                Some(reconciler.clone())
+            }
+        } else {
+            None
+        };
+
+        // Wire up Mode A coordinator to anti_entropy_worker (plan §14.5 Mode A, P6.3)
+        let anti_entropy_worker = if let Some(ref worker) = anti_entropy_worker {
+            if let Some(ref coordinator) = mode_a_coordinator {
+                // Same approach as drift_reconciler - unwrap and recreate with coordinator
+                let worker_inner = Arc::try_unwrap(worker.clone()).unwrap_or_else(|_| {
+                    // If we can't unwrap, create a new one
+                    if let Some(ref store) = task_store {
+                        let ae_worker_config =
+                            miroir_core::rebalancer_worker::AntiEntropyWorkerConfig::from_schedule(
+                                &config.anti_entropy.schedule,
+                            );
+                        let metrics_for_ae_1 = metrics.clone();
+                        let metrics_for_ae_2 = metrics.clone();
+                        let metrics_for_ae_3 = metrics.clone();
+                        let metrics_for_ae_4 = metrics.clone();
+                        let mut ae_worker = miroir_core::rebalancer_worker::AntiEntropyWorker::new(
+                            ae_worker_config,
+                            topology_arc.clone(),
+                            store.clone(),
+                            config.node_master_key.clone(),
+                            pod_id.clone(),
+                        );
+                        ae_worker = ae_worker.with_metrics(
+                            Arc::new(move |count: u64| {
+                                metrics_for_ae_1.inc_antientropy_shards_scanned(count);
+                            }),
+                            Arc::new(move |count: u64| {
+                                metrics_for_ae_2.inc_antientropy_mismatches_found(count);
+                            }),
+                            Arc::new(move |count: u64| {
+                                metrics_for_ae_3.inc_antientropy_docs_repaired(count);
+                            }),
+                            Arc::new(move |timestamp: u64| {
+                                metrics_for_ae_4.set_antientropy_last_scan_completed(timestamp);
+                            }),
+                        );
+                        ae_worker.set_ttl_enabled(config.anti_entropy.ttl_enabled);
+                        ae_worker
+                    } else {
+                        panic!("anti_entropy_worker exists but task_store is None");
+                    }
+                });
+                Some(Arc::new(
+                    worker_inner.with_mode_a_coordinator(coordinator.clone()),
+                ))
+            } else {
+                Some(worker.clone())
+            }
         } else {
             None
         };
