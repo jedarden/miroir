@@ -4,7 +4,7 @@
 //! - `POST /_miroir/dumps/import` — start a dump import
 //! - `GET /_miroir/dumps/import/{id}/status` — get import status
 
-use axum::extract::{Extension, Path};
+use axum::extract::{Extension, FromRef, Path};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};

@@ -211,7 +211,12 @@ impl CdcInternalQueue {
     }
 
     /// Persist a cursor for a sink/index combination.
-    pub async fn persist_cursor(&self, sink_name: &str, index: &str, seq: u64) -> Result<(), CdcError> {
+    pub async fn persist_cursor(
+        &self,
+        sink_name: &str,
+        index: &str,
+        seq: u64,
+    ) -> Result<(), CdcError> {
         if let Some(ref store) = self.task_store {
             let cursor = NewCdcCursor {
                 sink_name: sink_name.to_string(),
@@ -1017,8 +1022,15 @@ impl CdcManager {
     }
 
     /// Persist a cursor for a sink/index combination.
-    pub async fn persist_cursor(&self, sink_name: &str, index: &str, seq: u64) -> Result<(), CdcError> {
-        self.internal_queue.persist_cursor(sink_name, index, seq).await
+    pub async fn persist_cursor(
+        &self,
+        sink_name: &str,
+        index: &str,
+        seq: u64,
+    ) -> Result<(), CdcError> {
+        self.internal_queue
+            .persist_cursor(sink_name, index, seq)
+            .await
     }
 
     /// Get the persisted cursor for a sink/index combination.
@@ -1261,7 +1273,7 @@ mod tests {
             enabled: true,
             ..Default::default()
         };
-        let manager = CdcManager::with_metrics(config, None, None);
+        let manager = CdcManager::with_metrics(config, None, None, None);
 
         let event = CdcEvent {
             mtask_id: "mtask-123".into(),
@@ -1287,7 +1299,7 @@ mod tests {
             emit_internal_writes: false,
             ..Default::default()
         };
-        let manager = CdcManager::with_metrics(config, None, None);
+        let manager = CdcManager::with_metrics(config, None, None, None);
 
         // Internal write should be suppressed
         let event = CdcEvent {
@@ -1330,7 +1342,7 @@ mod tests {
             emit_internal_writes: false,
             ..Default::default()
         };
-        let manager = CdcManager::with_metrics(config, Some(callback), None);
+        let manager = CdcManager::with_metrics(config, Some(callback), None, None);
 
         let event = CdcEvent {
             mtask_id: "mtask-123".into(),
@@ -1367,7 +1379,7 @@ mod tests {
             emit_ttl_deletes: false,
             ..Default::default()
         };
-        let manager = CdcManager::with_metrics(config, Some(callback), None);
+        let manager = CdcManager::with_metrics(config, Some(callback), None, None);
 
         // Test all suppressible origins
         let origins = vec!["antientropy", "reshard_backfill", "rollover", "ttl_expire"];
@@ -1411,7 +1423,7 @@ mod tests {
             emit_internal_writes: true, // Enable internal writes
             ..Default::default()
         };
-        let manager = CdcManager::with_metrics(config, Some(callback), None);
+        let manager = CdcManager::with_metrics(config, Some(callback), None, None);
 
         let event = CdcEvent {
             mtask_id: "mtask-123".into(),
@@ -1449,7 +1461,7 @@ mod tests {
             emit_ttl_deletes: false,
             ..Default::default()
         };
-        let manager = CdcManager::with_metrics(config, Some(callback), None);
+        let manager = CdcManager::with_metrics(config, Some(callback), None, None);
 
         // Client write has no origin tag
         let event = CdcEvent {

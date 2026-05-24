@@ -1,17 +1,6 @@
-//! Task store: unified persistence layer for Miroir (plan §4).
-//!
-//! This module provides a trait-based abstraction over two backends:
-//! - SQLite: single-replica, file-based persistence
-//! - Redis: multi-replica, distributed persistence
-//!
-//! Every table in plan §4 is represented here, enabling cross-cutting features
-//! like §13 advanced capabilities and §14 HA mode.
-
 #[cfg(feature = "redis-store")]
 mod redis;
 mod sqlite;
-pub mod error;
-pub mod schema;
 
 #[cfg(feature = "redis-store")]
 pub use redis::{RedisPool, RedisTaskStore, SearchUiScopedKey};
@@ -20,41 +9,40 @@ pub use sqlite::SqliteTaskStore;
 use crate::Result;
 use std::collections::HashMap;
 
-/// Per-table store operations covering tables 1–15 from plan §4.
-#[async_trait::async_trait]
+/// Per-table store operations covering tables 1–14 from plan §4.
 pub trait TaskStore: Send + Sync {
     // --- Lifecycle ---
 
     /// Run idempotent migrations for all tables. Safe to call on every startup.
-    async fn migrate(&self) -> Result<()>;
+    fn migrate(&self) -> Result<()>;
 
     // --- Table 1: tasks ---
 
     /// Insert a new task row.
-    async fn insert_task(&self, task: &NewTask) -> Result<()>;
+    fn insert_task(&self, task: &NewTask) -> Result<()>;
 
     /// Get a task by miroir_id.
-    async fn get_task(&self, miroir_id: &str) -> Result<Option<TaskRow>>;
+    fn get_task(&self, miroir_id: &str) -> Result<Option<TaskRow>>;
 
     /// Update a task's status.
-    async fn update_task_status(&self, miroir_id: &str, status: &str) -> Result<bool>;
+    fn update_task_status(&self, miroir_id: &str, status: &str) -> Result<bool>;
 
     /// Update a node task within a task's node_tasks JSON.
-    async fn update_node_task(&self, miroir_id: &str, node_id: &str, task_uid: u64) -> Result<bool>;
+    fn update_node_task(&self, miroir_id: &str, node_id: &str, task_uid: u64) -> Result<bool>;
 
     /// Set the error field on a task.
-    async fn set_task_error(&self, miroir_id: &str, error: &str) -> Result<bool>;
+    fn set_task_error(&self, miroir_id: &str, error: &str) -> Result<bool>;
 
     /// List tasks with optional status filter and pagination.
-    async fn list_tasks(&self, filter: &TaskFilter) -> Result<Vec<TaskRow>>;
+    fn list_tasks(&self, filter: &TaskFilter) -> Result<Vec<TaskRow>>;
 
     /// Prune terminal tasks older than `cutoff_ms` (created_at < cutoff_ms
     /// AND status IN (succeeded, failed, canceled)). Returns number deleted.
     /// Limited to `batch_size` rows per call.
-    async fn prune_tasks(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize>;
+    fn prune_tasks(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize>;
 
     /// List terminal tasks older than `cutoff_ms` with pagination (Mode A support).
-    async fn list_terminal_tasks_batch(
+    fn list_terminal_tasks_batch(
         &self,
         cutoff_ms: i64,
         offset: i64,
@@ -62,15 +50,15 @@ pub trait TaskStore: Send + Sync {
     ) -> Result<Vec<TaskRow>>;
 
     /// Delete tasks by miroir_id in a batch (Mode A support).
-    async fn delete_tasks_batch(&self, miroir_ids: &[&str]) -> Result<usize>;
+    fn delete_tasks_batch(&self, miroir_ids: &[&str]) -> Result<usize>;
 
     /// Count total rows in the tasks table (for the miroir_task_registry_size gauge).
-    async fn task_count(&self) -> Result<u64>;
+    fn task_count(&self) -> Result<u64>;
 
     // --- Table 2: node_settings_version ---
 
     /// Upsert a settings version for (index_uid, node_id).
-    async fn upsert_node_settings_version(
+    fn upsert_node_settings_version(
         &self,
         index_uid: &str,
         node_id: &str,
@@ -79,7 +67,7 @@ pub trait TaskStore: Send + Sync {
     ) -> Result<()>;
 
     /// Get the settings version for (index_uid, node_id).
-    async fn get_node_settings_version(
+    fn get_node_settings_version(
         &self,
         index_uid: &str,
         node_id: &str,
@@ -88,79 +76,79 @@ pub trait TaskStore: Send + Sync {
     // --- Table 3: aliases ---
 
     /// Create a new alias.
-    async fn create_alias(&self, alias: &NewAlias) -> Result<()>;
+    fn create_alias(&self, alias: &NewAlias) -> Result<()>;
 
     /// Get an alias by name.
-    async fn get_alias(&self, name: &str) -> Result<Option<AliasRow>>;
+    fn get_alias(&self, name: &str) -> Result<Option<AliasRow>>;
 
     /// Flip a single alias to a new current_uid, recording history.
-    async fn flip_alias(&self, name: &str, new_uid: &str, history_retention: usize) -> Result<bool>;
+    fn flip_alias(&self, name: &str, new_uid: &str, history_retention: usize) -> Result<bool>;
 
     /// Delete an alias.
-    async fn delete_alias(&self, name: &str) -> Result<bool>;
+    fn delete_alias(&self, name: &str) -> Result<bool>;
 
     /// List all aliases.
-    async fn list_aliases(&self) -> Result<Vec<AliasRow>>;
+    fn list_aliases(&self) -> Result<Vec<AliasRow>>;
 
     // --- Table 4: sessions ---
 
     /// Create or replace a session.
-    async fn upsert_session(&self, session: &SessionRow) -> Result<()>;
+    fn upsert_session(&self, session: &SessionRow) -> Result<()>;
 
     /// Get a session by id.
-    async fn get_session(&self, session_id: &str) -> Result<Option<SessionRow>>;
+    fn get_session(&self, session_id: &str) -> Result<Option<SessionRow>>;
 
     /// Delete expired sessions.
-    async fn delete_expired_sessions(&self, now_ms: i64) -> Result<usize>;
+    fn delete_expired_sessions(&self, now_ms: i64) -> Result<usize>;
 
     // --- Table 5: idempotency_cache ---
 
     /// Insert an idempotency cache entry.
-    async fn insert_idempotency_entry(&self, entry: &IdempotencyEntry) -> Result<()>;
+    fn insert_idempotency_entry(&self, entry: &IdempotencyEntry) -> Result<()>;
 
     /// Look up an idempotency entry by key.
-    async fn get_idempotency_entry(&self, key: &str) -> Result<Option<IdempotencyEntry>>;
+    fn get_idempotency_entry(&self, key: &str) -> Result<Option<IdempotencyEntry>>;
 
     /// Delete expired entries.
-    async fn delete_expired_idempotency_entries(&self, now_ms: i64) -> Result<usize>;
+    fn delete_expired_idempotency_entries(&self, now_ms: i64) -> Result<usize>;
 
     // --- Table 6: jobs ---
 
     /// Insert a new job.
-    async fn insert_job(&self, job: &NewJob) -> Result<()>;
+    fn insert_job(&self, job: &NewJob) -> Result<()>;
 
     /// Get a job by id.
-    async fn get_job(&self, id: &str) -> Result<Option<JobRow>>;
+    fn get_job(&self, id: &str) -> Result<Option<JobRow>>;
 
     /// Claim a queued job (CAS: only if still queued).
-    async fn claim_job(&self, id: &str, claimed_by: &str, claim_expires_at: i64) -> Result<bool>;
+    fn claim_job(&self, id: &str, claimed_by: &str, claim_expires_at: i64) -> Result<bool>;
 
     /// Update job state and progress.
-    async fn update_job_progress(&self, id: &str, state: &str, progress: &str) -> Result<bool>;
+    fn update_job_progress(&self, id: &str, state: &str, progress: &str) -> Result<bool>;
 
     /// Renew a job claim (heartbeat).
-    async fn renew_job_claim(&self, id: &str, claim_expires_at: i64) -> Result<bool>;
+    fn renew_job_claim(&self, id: &str, claim_expires_at: i64) -> Result<bool>;
 
     /// List jobs by state.
-    async fn list_jobs_by_state(&self, state: &str) -> Result<Vec<JobRow>>;
+    fn list_jobs_by_state(&self, state: &str) -> Result<Vec<JobRow>>;
 
     /// Count jobs by state (for HPA queue depth metric).
-    async fn count_jobs_by_state(&self, state: &str) -> Result<u64>;
+    fn count_jobs_by_state(&self, state: &str) -> Result<u64>;
 
     /// List jobs with expired claims (for reclamation).
-    async fn list_expired_claims(&self, now_ms: i64) -> Result<Vec<JobRow>>;
+    fn list_expired_claims(&self, now_ms: i64) -> Result<Vec<JobRow>>;
 
     /// List all chunks for a parent job.
-    async fn list_jobs_by_parent(&self, parent_job_id: &str) -> Result<Vec<JobRow>>;
+    fn list_jobs_by_parent(&self, parent_job_id: &str) -> Result<Vec<JobRow>>;
 
     /// Reclaim an expired job claim (reset to queued and clear claim fields).
-    async fn reclaim_job_claim(&self, id: &str, state: &str, progress: &str) -> Result<bool>;
+    fn reclaim_job_claim(&self, id: &str, state: &str, progress: &str) -> Result<bool>;
 
     // --- Table 7: leader_lease ---
 
     /// Try to acquire a leader lease (CAS: only if expired or held by us).
     /// `now_ms` is the current time for expiry comparison.
-    async fn try_acquire_leader_lease(
+    fn try_acquire_leader_lease(
         &self,
         scope: &str,
         holder: &str,
@@ -169,113 +157,113 @@ pub trait TaskStore: Send + Sync {
     ) -> Result<bool>;
 
     /// Renew a leader lease we already hold.
-    async fn renew_leader_lease(&self, scope: &str, holder: &str, expires_at: i64) -> Result<bool>;
+    fn renew_leader_lease(&self, scope: &str, holder: &str, expires_at: i64) -> Result<bool>;
 
     /// Get current lease holder for a scope.
-    async fn get_leader_lease(&self, scope: &str) -> Result<Option<LeaderLeaseRow>>;
+    fn get_leader_lease(&self, scope: &str) -> Result<Option<LeaderLeaseRow>>;
 
     // --- Table 8: canaries ---
 
     /// Create or update a canary.
-    async fn upsert_canary(&self, canary: &NewCanary) -> Result<()>;
+    fn upsert_canary(&self, canary: &NewCanary) -> Result<()>;
 
     /// Get a canary by id.
-    async fn get_canary(&self, id: &str) -> Result<Option<CanaryRow>>;
+    fn get_canary(&self, id: &str) -> Result<Option<CanaryRow>>;
 
     /// List all canaries.
-    async fn list_canaries(&self) -> Result<Vec<CanaryRow>>;
+    fn list_canaries(&self) -> Result<Vec<CanaryRow>>;
 
     /// Delete a canary.
-    async fn delete_canary(&self, id: &str) -> Result<bool>;
+    fn delete_canary(&self, id: &str) -> Result<bool>;
 
     // --- Table 9: canary_runs ---
 
     /// Insert a canary run (auto-prunes to run_history_per_canary).
-    async fn insert_canary_run(&self, run: &NewCanaryRun, run_history_limit: usize) -> Result<()>;
+    fn insert_canary_run(&self, run: &NewCanaryRun, run_history_limit: usize) -> Result<()>;
 
     /// Get runs for a canary, most recent first.
-    async fn get_canary_runs(&self, canary_id: &str, limit: usize) -> Result<Vec<CanaryRunRow>>;
+    fn get_canary_runs(&self, canary_id: &str, limit: usize) -> Result<Vec<CanaryRunRow>>;
 
     // --- Table 10: cdc_cursors ---
 
     /// Upsert a CDC cursor for (sink_name, index_uid).
-    async fn upsert_cdc_cursor(&self, cursor: &NewCdcCursor) -> Result<()>;
+    fn upsert_cdc_cursor(&self, cursor: &NewCdcCursor) -> Result<()>;
 
     /// Get a CDC cursor by (sink_name, index_uid).
-    async fn get_cdc_cursor(&self, sink_name: &str, index_uid: &str) -> Result<Option<CdcCursorRow>>;
+    fn get_cdc_cursor(&self, sink_name: &str, index_uid: &str) -> Result<Option<CdcCursorRow>>;
 
     /// List all CDC cursors for a sink.
-    async fn list_cdc_cursors(&self, sink_name: &str) -> Result<Vec<CdcCursorRow>>;
+    fn list_cdc_cursors(&self, sink_name: &str) -> Result<Vec<CdcCursorRow>>;
 
     // --- Table 11: tenant_map ---
 
     /// Insert a tenant mapping.
-    async fn insert_tenant_mapping(&self, mapping: &NewTenantMapping) -> Result<()>;
+    fn insert_tenant_mapping(&self, mapping: &NewTenantMapping) -> Result<()>;
 
     /// Get tenant mapping by API key hash.
-    async fn get_tenant_mapping(&self, api_key_hash: &[u8]) -> Result<Option<TenantMapRow>>;
+    fn get_tenant_mapping(&self, api_key_hash: &[u8]) -> Result<Option<TenantMapRow>>;
 
     /// Delete a tenant mapping.
-    async fn delete_tenant_mapping(&self, api_key_hash: &[u8]) -> Result<bool>;
+    fn delete_tenant_mapping(&self, api_key_hash: &[u8]) -> Result<bool>;
 
     // --- Table 12: rollover_policies ---
 
     /// Create or update a rollover policy.
-    async fn upsert_rollover_policy(&self, policy: &NewRolloverPolicy) -> Result<()>;
+    fn upsert_rollover_policy(&self, policy: &NewRolloverPolicy) -> Result<()>;
 
     /// Get a rollover policy by name.
-    async fn get_rollover_policy(&self, name: &str) -> Result<Option<RolloverPolicyRow>>;
+    fn get_rollover_policy(&self, name: &str) -> Result<Option<RolloverPolicyRow>>;
 
     /// List all rollover policies.
-    async fn list_rollover_policies(&self) -> Result<Vec<RolloverPolicyRow>>;
+    fn list_rollover_policies(&self) -> Result<Vec<RolloverPolicyRow>>;
 
     /// Delete a rollover policy.
-    async fn delete_rollover_policy(&self, name: &str) -> Result<bool>;
+    fn delete_rollover_policy(&self, name: &str) -> Result<bool>;
 
     // --- Table 13: search_ui_config ---
 
     /// Set search UI config for an index.
-    async fn upsert_search_ui_config(&self, config: &NewSearchUiConfig) -> Result<()>;
+    fn upsert_search_ui_config(&self, config: &NewSearchUiConfig) -> Result<()>;
 
     /// Get search UI config for an index.
-    async fn get_search_ui_config(&self, index_uid: &str) -> Result<Option<SearchUiConfigRow>>;
+    fn get_search_ui_config(&self, index_uid: &str) -> Result<Option<SearchUiConfigRow>>;
 
     /// Delete search UI config for an index.
-    async fn delete_search_ui_config(&self, index_uid: &str) -> Result<bool>;
+    fn delete_search_ui_config(&self, index_uid: &str) -> Result<bool>;
 
     // --- Table 14: admin_sessions ---
 
     /// Create an admin session.
-    async fn insert_admin_session(&self, session: &NewAdminSession) -> Result<()>;
+    fn insert_admin_session(&self, session: &NewAdminSession) -> Result<()>;
 
     /// Get an admin session by id.
-    async fn get_admin_session(&self, session_id: &str) -> Result<Option<AdminSessionRow>>;
+    fn get_admin_session(&self, session_id: &str) -> Result<Option<AdminSessionRow>>;
 
     /// Revoke a session (logout).
-    async fn revoke_admin_session(&self, session_id: &str) -> Result<bool>;
+    fn revoke_admin_session(&self, session_id: &str) -> Result<bool>;
 
     /// Delete expired and revoked sessions (lazy eviction + pruner).
-    async fn delete_expired_admin_sessions(&self, now_ms: i64) -> Result<usize>;
+    fn delete_expired_admin_sessions(&self, now_ms: i64) -> Result<usize>;
 
     // --- Table 15: mode_b_operations ---
 
     /// Create or update a Mode B operation state.
-    async fn upsert_mode_b_operation(&self, operation: &ModeBOperation) -> Result<()>;
+    fn upsert_mode_b_operation(&self, operation: &ModeBOperation) -> Result<()>;
 
     /// Get a Mode B operation by ID.
-    async fn get_mode_b_operation(&self, operation_id: &str) -> Result<Option<ModeBOperation>>;
+    fn get_mode_b_operation(&self, operation_id: &str) -> Result<Option<ModeBOperation>>;
 
     /// Get the active Mode B operation for a scope (if any).
-    async fn get_mode_b_operation_by_scope(&self, scope: &str) -> Result<Option<ModeBOperation>>;
+    fn get_mode_b_operation_by_scope(&self, scope: &str) -> Result<Option<ModeBOperation>>;
 
     /// List Mode B operations by type and/or status.
-    async fn list_mode_b_operations(&self, filter: &ModeBOperationFilter) -> Result<Vec<ModeBOperation>>;
+    fn list_mode_b_operations(&self, filter: &ModeBOperationFilter) -> Result<Vec<ModeBOperation>>;
 
     /// Delete a Mode B operation.
-    async fn delete_mode_b_operation(&self, operation_id: &str) -> Result<bool>;
+    fn delete_mode_b_operation(&self, operation_id: &str) -> Result<bool>;
 
     /// Delete old completed Mode B operations.
-    async fn prune_mode_b_operations(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize>;
+    fn prune_mode_b_operations(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize>;
 }
 
 // --- Row types ---
