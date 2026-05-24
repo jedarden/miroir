@@ -165,6 +165,8 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             leader_election: state.admin.leader_election.clone(),
             mode_c_worker: state.admin.mode_c_worker.clone(),
             replica_selector: state.admin.replica_selector.clone(),
+            idempotency_cache: state.admin.idempotency_cache.clone(),
+            query_coalescer: state.admin.query_coalescer.clone(),
         }
     }
 }
@@ -219,6 +221,7 @@ impl FromRef<UnifiedState> for routes::multi_search::MultiSearchState {
             node_master_key: state.admin.config.master_key.clone(),
             metrics: state.metrics.clone(),
             alias_registry: state.admin.alias_registry.clone(),
+            replica_selector: state.admin.replica_selector.clone(),
         }
     }
 }

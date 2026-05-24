@@ -1,7 +1,7 @@
 //! Search route handler with DFS (Distributed Frequency Search) support.
 
-use axum::extract::{Extension, Path, HeaderMap};
-use axum::http::StatusCode;
+use axum::extract::{Extension, Path};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::body::Body;
 use axum::Json;
@@ -18,9 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, error, instrument, warn};
+use tracing::{debug, error, warn};
 
-use crate::middleware::OptionalSessionId;
 use crate::routes::admin_endpoints::{AppState, parse_rate_limit};
 
 /// Metrics observer for replica selection events.
@@ -160,21 +159,19 @@ impl std::fmt::Debug for SearchRequestBody {
 ///
 /// Session pinning (plan §13.6): If `X-Miroir-Session` header is present and
 /// the session has a pending write, routes to the pinned group for read-your-writes.
+#[tracing::instrument(skip(state, headers, body))]
 async fn search_handler(
     Path(index): Path<String>,
     Extension(state): Extension<Arc<AppState>>,
-    OptionalSessionId(session_id): OptionalSessionId,
+    session_id: Option<Extension<crate::middleware::SessionId>>,
     headers: HeaderMap,
     Json(body): Json<SearchRequestBody>,
 ) -> Response<Body> {
-    let _span = tracing::info_span!("search_handler", index = %index).entered();
     let start = Instant::now();
     let client_requested_score = body.ranking_score.unwrap_or(false);
 
     // Extract session ID from request extensions (set by session_pinning_middleware)
-    let sid = session_id.and_then(|s| {
-        if s.0.is_empty() { None } else { Some(s.0.clone()) }
-    });
+    let sid = session_id.map(|ext| ext.0).filter(|s| !s.as_str().is_empty());
 
     // TODO: Extract source IP from headers - need to add back HeaderMap extraction
     let source_ip = "unknown".to_string();
@@ -248,7 +245,7 @@ async fn search_handler(
 
     // Session pinning logic (plan §13.6): Check if session has pending write
     let (pinned_group, strategy_label) = if let Some(ref sid) = sid {
-        if let Some(group) = state.session_manager.get_pinned_group(sid).await {
+        if let Some(group) = state.session_manager.get_pinned_group(sid.as_str()).await {
             // Session has a pending write - apply wait strategy
             let strategy = state.session_manager.wait_strategy();
             match strategy {
@@ -257,7 +254,7 @@ async fn search_handler(
                     let max_wait = state.session_manager.max_wait_duration();
                     let wait_start = std::time::Instant::now();
                     match state.session_manager.wait_for_write_completion(
-                        sid,
+                        sid.as_str(),
                         &state.task_registry,
                         max_wait,
                     ).await {
@@ -405,7 +402,7 @@ async fn search_handler(
             resolved_targets,
             body,
             Extension(state.clone()),
-            sid,
+            sid.map(|s| s.as_str().to_string()),
             client_requested_score,
             min_settings_version,
         ).await;
@@ -455,16 +452,6 @@ async fn search_handler(
 
     // Plan scatter using live topology (span for plan construction)
     let plan = {
-        let _plan_span = tracing::info_span!(
-            "scatter_plan",
-            replica_groups = state.config.replica_groups,
-            shards = state.config.shards,
-            rf = state.config.replication_factor,
-            min_settings_version,
-            pinned_group = ?pinned_group,
-            strategy = %state.config.replica_selection.strategy,
-        ).entered();
-
         // Determine if we should use adaptive selection
         let use_adaptive = state.config.replica_selection.strategy == "adaptive";
         let replica_selector_ref = if use_adaptive {
@@ -475,6 +462,16 @@ async fn search_handler(
 
         // Session pinning: if pinned_group is set, use group-specific planning
         if let Some(group) = pinned_group {
+            let _plan_span = tracing::info_span!(
+                "scatter_plan",
+                replica_groups = state.config.replica_groups,
+                shards = state.config.shards,
+                rf = state.config.replication_factor,
+                min_settings_version,
+                pinned_group = ?pinned_group,
+                strategy = %state.config.replica_selection.strategy,
+            ).entered();
+            drop(_plan_span); // Drop span before await
             match plan_search_scatter_for_group(
                 &topo,
                 0,
@@ -788,8 +785,8 @@ async fn search_multi_targets(
     }
 
     // Session pinning logic (plan §13.6): Check if session has pending write
-    let (pinned_group, _strategy_label) = if let Some(ref sid) = session_id {
-        if let Some(group) = state.session_manager.get_pinned_group(sid).await {
+    let (pinned_group, _strategy_label) = if let Some(sid) = session_id {
+        if let Some(group) = state.session_manager.get_pinned_group(sid.as_str()).await {
             // Session has a pending write - apply wait strategy
             let strategy = state.session_manager.wait_strategy();
             match strategy {
@@ -798,7 +795,7 @@ async fn search_multi_targets(
                     let max_wait = state.session_manager.max_wait_duration();
                     let wait_start = std::time::Instant::now();
                     match state.session_manager.wait_for_write_completion(
-                        sid,
+                        sid.as_str(),
                         &state.task_registry,
                         max_wait,
                     ).await {
@@ -895,6 +892,7 @@ async fn search_multi_targets(
             pinned_group = ?pinned_group,
             target_count = targets.len(),
         ).entered();
+        drop(_plan_span); // Drop span before await
 
         if let Some(group) = pinned_group {
             match plan_search_scatter_for_group(

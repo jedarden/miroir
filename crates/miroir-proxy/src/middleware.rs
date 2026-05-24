@@ -115,6 +115,31 @@ where
     }
 }
 
+/// Extracts the `X-Miroir-Min-Settings-Version` header if present.
+///
+/// Used for settings version floor in queries (plan §13.5).
+pub struct OptionalMinSettingsVersion(pub Option<u64>);
+
+#[async_trait]
+impl<S> FromRequestParts<S> for OptionalMinSettingsVersion
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let version = parts
+            .headers
+            .get("x-miroir-min-settings-version")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
+        Ok(OptionalMinSettingsVersion(version))
+    }
+}
+
 pub async fn request_id_middleware(
     mut req: Request,
     next: Next,
