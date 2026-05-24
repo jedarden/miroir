@@ -338,8 +338,9 @@ where
     }
 
     // Authentication based on mode
-    let subject = match config.search_ui.auth.mode.as_str() {
-        "public" => "anonymous".to_string(),
+    let (subject, injected_filter, jwt_user, jwt_groups) = match config.search_ui.auth.mode.as_str()
+    {
+        "public" => ("anonymous".to_string(), None, None, None),
         "shared_key" => {
             let key = headers
                 .get("X-Search-UI-Key")
@@ -351,11 +352,16 @@ where
                     )
                 })?;
             let expected_key =
-                std::env::var(&config.search_ui.auth.shared_key_env).unwrap_or_default();
+                std::env::var(&config.search_ui.auth.shared_key_env).map_err(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("{} not set", config.search_ui.auth.shared_key_env),
+                    )
+                })?;
             if !crate::auth::constant_time_compare(key.as_bytes(), expected_key.as_bytes()) {
                 return Err((StatusCode::UNAUTHORIZED, "invalid search UI key".into()));
             }
-            "shared_key_user".to_string()
+            ("shared_key_user".to_string(), None, None, None)
         }
         "oauth_proxy" => {
             let user = headers
@@ -367,7 +373,51 @@ where
                         format!("missing {}", config.search_ui.auth.oauth_proxy.user_header),
                     )
                 })?;
-            user.to_string()
+
+            // Extract groups header for filter template rendering
+            let groups_header = headers
+                .get(&config.search_ui.auth.oauth_proxy.groups_header)
+                .and_then(|h| h.to_str().ok());
+
+            let groups: Option<Vec<String>> = groups_header.map(|gh| {
+                gh.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            });
+
+            // Render filter template if configured (plan §13.21)
+            let injected_filter = config
+                .search_ui
+                .auth
+                .oauth_proxy
+                .filter_template
+                .as_ref()
+                .and_then(|template| {
+                    let groups_array = groups.as_ref()?;
+                    if groups_array.is_empty() {
+                        return None;
+                    }
+
+                    // JSON-encode the groups array for safe filter DSL injection
+                    // e.g., ["engineering","ops"] for the IN operator
+                    let groups_json = serde_json::to_string(groups_array).ok()?;
+
+                    // Replace {groups} placeholder with JSON-encoded array
+                    let rendered = template.replace("{groups}", &groups_json);
+
+                    // Replace {user} placeholder
+                    let rendered = rendered.replace("{user}", user);
+
+                    Some(rendered)
+                });
+
+            (
+                user.to_string(),
+                injected_filter,
+                Some(user.to_string()),
+                groups,
+            )
         }
         _ => {
             return Err((
@@ -403,6 +453,9 @@ where
             &index,
             &["search", "multi_search", "beacon"],
             config.search_ui.auth.session_ttl_s,
+            injected_filter,
+            jwt_user,
+            jwt_groups,
         )
         .ok_or_else(|| {
             (
