@@ -365,6 +365,8 @@ miroir-ctl anti-entropy run --index products --shards 0-63
 
 ### Troubleshooting Guide
 
+> **For comprehensive troubleshooting**: See the [Troubleshooting Guide](../troubleshooting.md) for common issues and the [Diagnostic Playbook](diagnostics.md) for systematic diagnosis.
+
 #### High Write Latency
 
 **Symptoms**: Write latency increased by > 2× during dual-write

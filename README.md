@@ -87,6 +87,7 @@ See [`docs/versioning-policy.md`](docs/versioning-policy.md) for the full versio
 - [Helm Chart](charts/miroir/) — Production deployment on Kubernetes
 - [Deployment Guides](docs/onboarding/) — Production setup, sizing, and operational considerations
 - [Migration Runbook](docs/migration_runbook.md) — Paths from single-node Meilisearch to Miroir
+- [Troubleshooting Guide](docs/troubleshooting.md) — Common issues and diagnostic playbook
 
 ## Quick Start
 
