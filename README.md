@@ -1,5 +1,9 @@
 # Miroir
 
+[![CI](https://img.shields.io/badge/CI-Argo%20Workflows-blue)](https://github.com/jedarden/miroir/actions)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![SemVer](https://img.shields.io/badge/SemVer-2.0.0-blue)](https://semver.org/spec/v2.0.0.html)
+
 **Multi-node Index Replication Orchestrator, Integrated Rebalancing**
 
 Miroir is a RAID-like orchestration layer for Meilisearch. It stripes a large index across a fleet of small-RAM Meilisearch nodes with a configurable replication factor, fans out search queries across all shards, and rebalances shard assignments when nodes are added or removed — all using the Meilisearch Community Edition.
@@ -40,15 +44,49 @@ Analogous to software RAID — configurable per deployment:
 - **Rebalancer** — on node add/remove, recomputes assignments and migrates only the shards that changed owners; surviving replicas serve reads during rebuild
 - **Result merger** — normalizes and merges ranked result sets from multiple shards into a single coherent response
 
+## Feature Matrix
+
+Miroir implements 21 advanced capabilities (plan §13) that sit entirely within the orchestrator layer. Every Meilisearch node runs **unmodified Community Edition** — no patches, no forks, no custom builds.
+
+| Capability | Description | Default |
+|------------|-------------|---------|
+| §13.1 Online resharding | Change shard count without reindex via shadow index | on |
+| §13.2 Hedged requests | Tail-latency mitigation via duplicate requests to alternate replicas | on |
+| §13.3 Adaptive replica selection | EWMA-based routing to lowest-latency nodes | on |
+| §13.4 Shard-aware query planner | Narrow fan-out for PK-constrained searches | on |
+| §13.5 Two-phase settings broadcast | Atomic settings changes with verification | on |
+| §13.6 Read-your-writes | Session pinning for immediate consistency | on |
+| §13.7 Atomic index aliases | Blue-green reindexing and multi-target aliases | on |
+| §13.8 Anti-entropy reconciler | Continuous shard repair and drift detection | on |
+| §13.9 Streaming dump import | Route documents during import (no broadcast) | on |
+| §13.10 Idempotency keys | Request deduplication and query coalescing | on |
+| §13.11 Multi-search | Batch API for multiple queries in one round-trip | on |
+| §13.12 Vector + hybrid search | Over-fetch with RRF/convex merging for correct global ranking | on |
+| §13.13 CDC stream | Change data capture to webhook/NATS/Kafka/internal queue | on |
+| §13.14 Document TTL | Automatic expiration with background sweeper | on |
+| §13.15 Tenant affinity | Route tenant queries to dedicated replica groups | on |
+| §13.16 Traffic shadow | Async request tee to shadow cluster with diff analysis | on |
+| §13.17 ILM | Rolling time-series indexes with rollover policies | on |
+| §13.18 Canary queries | Synthetic queries with golden assertions for relevance testing | on |
+| §13.19 Admin Web UI | Embedded SPA for topology, config, query debugging, operations | on |
+| §13.20 Query explain | Debug routing decisions and warnings without executing | on |
+| §13.21 End-user Search UI | Embedded instant-search SPA with facets, keyboard nav, i18n | on |
+
+See [`docs/plan/plan.md#13-advanced-capabilities`](docs/plan/plan.md#13-advanced-capabilities) for detailed design of each capability.
+
 ## Stability
 
 Miroir is currently in development (v0.x). Starting with v1.0, the project provides backward-compatibility commitments for the Meilisearch API layer, `miroir-ctl` CLI, config file schema, and Helm chart values.
 
 See [`docs/versioning-policy.md`](docs/versioning-policy.md) for the full versioning policy, including what constitutes a breaking change and the deprecation process.
 
-## Status
+## Documentation
 
-Design phase. See [`docs/`](docs/) for architecture detail.
+- [Design Plan](docs/plan/plan.md) — Complete architecture, protocol, and capability specifications
+- [CHANGELOG.md](CHANGELOG.md) — Release notes and version history
+- [Helm Chart](charts/miroir/) — Production deployment on Kubernetes
+- [Deployment Guides](docs/onboarding/) — Production setup, sizing, and operational considerations
+- [Migration Runbook](docs/migration_runbook.md) — Paths from single-node Meilisearch to Miroir
 
 ## Quick Start
 
