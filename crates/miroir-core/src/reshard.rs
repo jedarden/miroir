@@ -3339,12 +3339,7 @@ pub async fn backfill_phase(
                         wait_ms = wait_time.as_millis(),
                         "throttling backfill"
                     );
-                    if let Err(e) = tokio::time::sleep(wait_time).await {
-                        tracing::warn!(
-                            error = %e,
-                            "throttle sleep interrupted, continuing"
-                        );
-                    }
+                    tokio::time::sleep(wait_time).await;
                 }
             }
 
@@ -3711,7 +3706,7 @@ mod tests_backfill_cleanup {
 // ---------------------------------------------------------------------------
 
 /// Configuration for the reshard orchestrator.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ReshardOrchestratorConfig {
     /// Index UID being resharded.
     pub index_uid: String,

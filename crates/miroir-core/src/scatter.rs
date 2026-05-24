@@ -488,6 +488,117 @@ pub async fn plan_search_scatter(
     }
 }
 
+/// Plan search scatter with query planner narrowing (plan §13.4).
+///
+/// Uses the query planner to narrow the target shard set when the filter
+/// constrains the primary key. This reduces fan-out from N/RG nodes to
+/// RF (or 1 with RF=1) for PK-constrained queries.
+///
+/// # Arguments
+/// * `topology` - The cluster topology
+/// * `query_seq` - Query sequence number for round-robin
+/// * `rf` - Replication factor
+/// * `shard_count` - Total number of shards
+/// * `replica_selector` - Optional replica selector for adaptive selection
+/// * `target_shards` - Optional narrowed shard set from query planner
+///
+/// # Returns
+/// A scatter plan with narrowed target_shards if provided, otherwise all shards.
+pub async fn plan_search_scatter_with_narrowing(
+    topology: &Topology,
+    query_seq: u64,
+    rf: usize,
+    shard_count: u32,
+    replica_selector: Option<&ReplicaSelector>,
+    target_shards: Option<Vec<u32>>,
+) -> ScatterPlan {
+    let chosen_group = crate::router::query_group_active(query_seq, topology);
+
+    let group = match topology.group(chosen_group) {
+        Some(g) => g,
+        None => {
+            return ScatterPlan {
+                chosen_group,
+                target_shards: Vec::new(),
+                shard_to_node: HashMap::new(),
+                deadline_ms: 0,
+                hedging_eligible: false,
+            };
+        }
+    };
+
+    let _covering = covering_set(shard_count, group, rf, query_seq);
+
+    let mut shard_to_node = HashMap::new();
+    let node_map = topology.node_map();
+
+    // Use narrowed target_shards if provided, otherwise target all shards
+    let target_shards = target_shards.unwrap_or_else(|| (0..shard_count).collect());
+
+    for shard_id in 0..shard_count {
+        let replicas = crate::router::assign_shard_in_group(shard_id, group.nodes(), rf);
+
+        // Filter to only healthy nodes within the group
+        let healthy_replicas: Vec<NodeId> = replicas
+            .iter()
+            .filter(|node_id| {
+                node_map
+                    .get(node_id)
+                    .map(|n| n.is_healthy())
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+
+        let selected = if !healthy_replicas.is_empty() {
+            // Use healthy intra-group replica
+            if let Some(selector) = replica_selector {
+                match selector.select(&healthy_replicas, chosen_group).await {
+                    Some(node) => node,
+                    None => healthy_replicas[(query_seq as usize) % healthy_replicas.len()].clone(),
+                }
+            } else {
+                healthy_replicas[(query_seq as usize) % healthy_replicas.len()].clone()
+            }
+        } else {
+            // Cross-group fallback: try other groups for this shard
+            let mut fallback_node = None;
+            'fallback: for group_id in 0..topology.replica_group_count() {
+                if group_id == chosen_group {
+                    continue;
+                }
+                if let Some(other_group) = topology.group(group_id) {
+                    let other_replicas =
+                        crate::router::assign_shard_in_group(shard_id, other_group.nodes(), rf);
+                    for other_node in other_replicas {
+                        if let Some(node) = node_map.get(&other_node) {
+                            if node.is_healthy() {
+                                fallback_node = Some(other_node);
+                                break 'fallback;
+                            }
+                        }
+                    }
+                }
+            }
+
+            fallback_node.unwrap_or_else(|| {
+                // No healthy node found anywhere - use original replica and let it fail
+                replicas[(query_seq as usize) % replicas.len()].clone()
+            })
+        };
+
+        shard_to_node.insert(shard_id, selected);
+    }
+
+    ScatterPlan {
+        chosen_group,
+        target_shards,
+        shard_to_node,
+        deadline_ms: 5000,
+        hedging_eligible: group.node_count() > 1,
+    }
+}
+
 /// Plan search scatter with settings version floor filtering (plan §13.5).
 ///
 /// Excludes nodes whose settings version for the given index is below `floor`.

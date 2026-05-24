@@ -341,6 +341,11 @@ pub struct Metrics {
     // ── §13.10 Query coalescing metrics (always present) ──
     query_coalesce_subscribers_total: Counter,
     query_coalesce_hits_total: Counter,
+
+    // ── §13.4 Query planner metrics (always present) ──
+    query_plan_narrowable_total: CounterVec,
+    query_plan_fanout_size: Histogram,
+    query_plan_narrowing_ratio: Gauge,
 }
 
 impl Clone for Metrics {
@@ -440,6 +445,9 @@ impl Clone for Metrics {
             idempotency_cache_size: self.idempotency_cache_size.clone(),
             query_coalesce_subscribers_total: self.query_coalesce_subscribers_total.clone(),
             query_coalesce_hits_total: self.query_coalesce_hits_total.clone(),
+            query_plan_narrowable_total: self.query_plan_narrowable_total.clone(),
+            query_plan_fanout_size: self.query_plan_fanout_size.clone(),
+            query_plan_narrowing_ratio: self.query_plan_narrowing_ratio.clone(),
         }
     }
 }
@@ -1284,8 +1292,35 @@ impl Metrics {
             "Total number of queries that hit an in-flight coalesced query",
         ))
         .expect("create query_coalesce_hits_total");
+
+        // ── §13.4 Query planner metrics ──
+        let query_plan_narrowable_total = CounterVec::new(
+            Opts::new(
+                "miroir_query_plan_narrowable_total",
+                "Total number of query plans, labeled by narrowed=yes|no",
+            ),
+            &["narrowed"],
+        )
+        .expect("create query_plan_narrowable_total");
+        let query_plan_fanout_size = Histogram::with_opts(
+            HistogramOpts::new(
+                "miroir_query_plan_fanout_size",
+                "Number of shards targeted by query plan (after narrowing)",
+            )
+            .buckets(vec![1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 32.0, 64.0, 128.0]),
+        )
+        .expect("create query_plan_fanout_size");
+        let query_plan_narrowing_ratio = Gauge::with_opts(Opts::new(
+            "miroir_query_plan_narrowing_ratio",
+            "Ratio of targeted shards to total shards (0-1)",
+        ))
+        .expect("create query_plan_narrowing_ratio");
+
         reg!(query_coalesce_subscribers_total);
         reg!(query_coalesce_hits_total);
+        reg!(query_plan_narrowable_total);
+        reg!(query_plan_fanout_size);
+        reg!(query_plan_narrowing_ratio);
 
         Self {
             registry,
@@ -1378,6 +1413,9 @@ impl Metrics {
             idempotency_cache_size,
             query_coalesce_subscribers_total,
             query_coalesce_hits_total,
+            query_plan_narrowable_total,
+            query_plan_fanout_size,
+            query_plan_narrowing_ratio,
         }
     }
 
@@ -2150,6 +2188,22 @@ impl Metrics {
 
     pub fn inc_query_coalesce_hits(&self) {
         self.query_coalesce_hits_total.inc();
+    }
+
+    // ── §13.4 Query planner metrics ──
+
+    pub fn inc_query_plan_narrowable(&self, narrowed: bool) {
+        self.query_plan_narrowable_total
+            .with_label_values(&[if narrowed { "yes" } else { "no" }])
+            .inc();
+    }
+
+    pub fn observe_query_plan_fanout(&self, size: u32) {
+        self.query_plan_fanout_size.observe(size as f64);
+    }
+
+    pub fn set_query_plan_narrowing_ratio(&self, ratio: f64) {
+        self.query_plan_narrowing_ratio.set(ratio);
     }
 
     pub fn registry(&self) -> &Registry {
