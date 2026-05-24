@@ -3,6 +3,7 @@
 //! This router requires `admin_endpoints::AppState` to be provided via `.with_state()`.
 
 use super::{admin_endpoints, aliases, canary, cdc, dumps, explain, session};
+use crate::admin_ui;
 use axum::{
     extract::FromRef,
     routing::{delete, get, post, put},
@@ -24,6 +25,9 @@ where
     std::sync::Arc<miroir_core::cdc::CdcManager>: FromRef<S>,
 {
     Router::new()
+        // Admin Web UI (plan §13.19) - must come before other /admin/* routes
+        .route("/admin", get(admin_ui::serve_admin_ui::<S>))
+        .route("/admin/*path", get(admin_ui::serve_admin_ui::<S>))
         // Admin session endpoints (plan §9, §13.19)
         .route("/admin/login", post(session::admin_login::<S>))
         .route("/admin/session", get(session::admin_session::<S>))
