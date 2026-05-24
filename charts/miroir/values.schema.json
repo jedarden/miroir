@@ -177,6 +177,9 @@
         "maxReplicas": { "type": "integer", "minimum": 1 },
         "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 },
         "targetMemoryUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "targetRequestsInFlight": { "type": "string" },
+        "targetBackgroundQueueDepth": { "type": "string" },
+        "annotations": { "type": "object" },
         "behavior": { "type": "object" }
       }
     },

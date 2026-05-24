@@ -20,6 +20,7 @@ pub mod hedging;
 pub mod idempotency;
 pub mod ilm;
 pub mod leader_election;
+pub mod mode_a_coordinator;
 pub mod mode_b_coordinator;
 pub mod mode_c_coordinator;
 pub mod mode_c_worker;
