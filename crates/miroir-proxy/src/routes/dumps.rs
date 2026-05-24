@@ -10,12 +10,13 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use miroir_core::api_error::{MeilisearchError, MiroirCode};
 use miroir_core::config::Config;
-use miroir_core::dump_import::{DumpImportManager, DumpImportStatus};
+use miroir_core::dump_import::{DumpImportManager, DumpImportPhase, DumpImportStatus};
 use miroir_core::topology::Topology;
 use serde_json::Value;
 use std::sync::Arc;
 
 use crate::client::HttpClient;
+use crate::middleware::Metrics;
 
 /// Request body for starting a dump import.
 #[derive(serde::Deserialize)]
@@ -98,6 +99,8 @@ where
         req.dump_data.into_bytes()
     };
 
+    let bytes_read = dump_data.len() as u64;
+
     // Create HTTP client
     let master_key = state.config.master_key.clone();
     let http_client = HttpClient::new(master_key, 30000); // 30s timeout
@@ -125,12 +128,19 @@ where
             )
         })?;
 
+    // Record metrics
+    state.metrics.inc_dump_import_bytes_read(bytes_read);
+    state
+        .metrics
+        .set_dump_import_phase(&req.index_uid, &import_id, DumpImportPhase::Reading as u8);
+
     tracing::info!(
-        "Started dump import {} for index {} (shard_count={}, primary_key={})",
+        "Started dump import {} for index {} (shard_count={}, primary_key={}, bytes={})",
         import_id,
         req.index_uid,
         req.shard_count,
-        req.primary_key
+        req.primary_key,
+        bytes_read
     );
 
     let status_url = format!("/_miroir/dumps/import/{}/status", import_id);
@@ -162,16 +172,38 @@ where
         http_client,
     );
 
-    manager
-        .get_status(&id)
-        .await
-        .ok_or_else(|| {
-            MeilisearchError::new(
-                MiroirCode::NotFound,
-                format!("import task not found: {}", id),
-            )
-        })
-        .map(Json)
+    let status = manager.get_status(&id).await.ok_or_else(|| {
+        MeilisearchError::new(
+            MiroirCode::NotFound,
+            format!("import task not found: {}", id),
+        )
+    })?;
+
+    // Record metrics from status
+    state
+        .metrics
+        .inc_dump_import_documents_routed(status.documents_processed);
+
+    // Calculate and update import rate (docs per second)
+    let now_ms = millis_now();
+    let elapsed_secs = if now_ms > status.phase_started_at {
+        (now_ms - status.phase_started_at) as f64 / 1000.0
+    } else {
+        0.0
+    };
+    if elapsed_secs > 0.0 && status.documents_processed > 0 {
+        let rate = status.documents_processed as f64 / elapsed_secs;
+        state.metrics.set_dump_import_rate(rate);
+    }
+
+    // Update phase metric
+    if let Ok(phase_num) = status.phase.parse::<u8>() {
+        state
+            .metrics
+            .set_dump_import_phase(&status.index_uid, &id, phase_num);
+    }
+
+    Ok(Json(status))
 }
 
 /// Check if a string looks like base64-encoded data.
@@ -191,6 +223,14 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD
         .decode(s)
         .map_err(|e| format!("base64 decode failed: {}", e))
+}
+
+/// Get current UNIX timestamp in milliseconds.
+fn millis_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[cfg(test)]

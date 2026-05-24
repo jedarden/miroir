@@ -331,6 +331,12 @@ pub struct Metrics {
     antientropy_docs_repaired_total: Counter,
     antientropy_last_scan_completed_seconds: Gauge,
 
+    // ── §13.9 Streaming dump import metrics (always present) ──
+    dump_import_bytes_read_total: Counter,
+    dump_import_documents_routed_total: Counter,
+    dump_import_rate_docs_per_sec: Gauge,
+    dump_import_phase: GaugeVec,
+
     // ── §13.3 Adaptive replica selection metrics (always present) ──
     replica_selection_score: GaugeVec,
     replica_selection_exploration_total: Counter,
@@ -447,6 +453,10 @@ impl Clone for Metrics {
             antientropy_last_scan_completed_seconds: self
                 .antientropy_last_scan_completed_seconds
                 .clone(),
+            dump_import_bytes_read_total: self.dump_import_bytes_read_total.clone(),
+            dump_import_documents_routed_total: self.dump_import_documents_routed_total.clone(),
+            dump_import_rate_docs_per_sec: self.dump_import_rate_docs_per_sec.clone(),
+            dump_import_phase: self.dump_import_phase.clone(),
             replica_selection_score: self.replica_selection_score.clone(),
             replica_selection_exploration_total: self.replica_selection_exploration_total.clone(),
             idempotency_hits_total: self.idempotency_hits_total.clone(),
@@ -1269,6 +1279,35 @@ impl Metrics {
         reg!(antientropy_docs_repaired_total);
         reg!(antientropy_last_scan_completed_seconds);
 
+        // ── §13.9 Streaming dump import metrics (always present) ──
+        let dump_import_bytes_read_total = Counter::with_opts(Opts::new(
+            "miroir_dump_import_bytes_read_total",
+            "Total bytes read during dump imports",
+        ))
+        .expect("create dump_import_bytes_read_total");
+        let dump_import_documents_routed_total = Counter::with_opts(Opts::new(
+            "miroir_dump_import_documents_routed_total",
+            "Total documents routed during dump imports",
+        ))
+        .expect("create dump_import_documents_routed_total");
+        let dump_import_rate_docs_per_sec = Gauge::with_opts(Opts::new(
+            "miroir_dump_import_rate_docs_per_sec",
+            "Current dump import rate in documents per second",
+        ))
+        .expect("create dump_import_rate_docs_per_sec");
+        let dump_import_phase = GaugeVec::new(
+            Opts::new(
+                "miroir_dump_import_phase",
+                "Current phase of dump import (0=idle, 1=reading, 2=routing, 3=applying_settings, 4=complete, 5=failed)",
+            ),
+            &["index_uid", "import_id"],
+        )
+        .expect("create dump_import_phase");
+        reg!(dump_import_bytes_read_total);
+        reg!(dump_import_documents_routed_total);
+        reg!(dump_import_rate_docs_per_sec);
+        reg!(dump_import_phase);
+
         // ── §13.3 Adaptive replica selection metrics (always present) ──
         let replica_selection_score = GaugeVec::new(
             Opts::new(
@@ -1468,6 +1507,10 @@ impl Metrics {
             antientropy_mismatches_found_total,
             antientropy_docs_repaired_total,
             antientropy_last_scan_completed_seconds,
+            dump_import_bytes_read_total,
+            dump_import_documents_routed_total,
+            dump_import_rate_docs_per_sec,
+            dump_import_phase,
             replica_selection_score,
             replica_selection_exploration_total,
             idempotency_hits_total,
@@ -2107,6 +2150,26 @@ impl Metrics {
     pub fn set_antientropy_last_scan_completed(&self, timestamp: u64) {
         self.antientropy_last_scan_completed_seconds
             .set(timestamp as f64);
+    }
+
+    // ── §13.9 Streaming dump import metrics ──
+
+    pub fn inc_dump_import_bytes_read(&self, bytes: u64) {
+        self.dump_import_bytes_read_total.inc_by(bytes as f64);
+    }
+
+    pub fn inc_dump_import_documents_routed(&self, count: u64) {
+        self.dump_import_documents_routed_total.inc_by(count as f64);
+    }
+
+    pub fn set_dump_import_rate(&self, docs_per_sec: f64) {
+        self.dump_import_rate_docs_per_sec.set(docs_per_sec);
+    }
+
+    pub fn set_dump_import_phase(&self, index_uid: &str, import_id: &str, phase: u8) {
+        self.dump_import_phase
+            .with_label_values(&[index_uid, import_id])
+            .set(phase as f64);
     }
 
     // ── §14.9 Resource-pressure ──
