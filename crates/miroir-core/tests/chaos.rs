@@ -311,7 +311,10 @@ impl TestCluster {
     }
 
     /// Wait for a Meilisearch node to be healthy.
-    async fn wait_for_meili_healthy(&self, node_index: usize) -> Result<(), Box<dyn std::error::Error>> {
+    async fn wait_for_meili_healthy(
+        &self,
+        node_index: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let client = reqwest::Client::new();
         let health_url = format!("http://localhost:{}/health", self.meili_port(node_index));
 
@@ -322,11 +325,7 @@ impl TestCluster {
             }
         }
 
-        Err(format!(
-            "Meilisearch node {} not healthy after timeout",
-            node_index
-        )
-        .into())
+        Err(format!("Meilisearch node {} not healthy after timeout", node_index).into())
     }
 }
 
