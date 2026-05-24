@@ -1,9 +1,9 @@
 //! Health check endpoints: /health, /version, /_miroir/ready
 
-use axum::{extract::State, extract::FromRef, Json};
-use serde::Serialize;
-use crate::routes::admin_endpoints::AppState;
 use crate::error_response::ErrorResponse;
+use crate::routes::admin_endpoints::AppState;
+use axum::{extract::FromRef, extract::State, Json};
+use serde::Serialize;
 
 #[derive(Serialize)]
 pub struct HealthResponse {
