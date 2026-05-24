@@ -149,12 +149,16 @@ taskStore:
   url: ""  # for redis: redis://host:6379
 
 # Horizontal Pod Autoscaler (disabled by default for dev)
+# Per plan §14.4, requires prometheus-adapter when custom metrics are enabled
 hpa:
   enabled: false
   minReplicas: 2
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
-  targetMemoryUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 75
+  targetRequestsInFlight: "500"  # type: Pods AverageValue (per-pod metric)
+  targetBackgroundQueueDepth: "10"  # type: External Value (global metric)
+  annotations: {}
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 300

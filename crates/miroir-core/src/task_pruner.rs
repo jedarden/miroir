@@ -1,9 +1,9 @@
 //! Background TTL pruner for the tasks table (plan §4, Phase 3).
 //!
-//! Runs on a configurable interval, acquires an advisory lock via the
-//! `leader_lease` table, and batch-deletes terminal tasks older than
-//! `task_registry.ttl_seconds`. Phase 6 §14.5 Mode A replaces the
-//! single-pod advisory lock with rendezvous-partitioned ownership.
+//! Phase 6 §14.5 Mode A: Each pod prunes tasks where it wins the rendezvous
+//! score for the task's `miroir_id`. This partitions pruning work across pods
+//! without coordination overhead. Single-pod deployments still use the
+//! advisory lock via `leader_lease` table.
 
 use crate::config::TaskRegistryConfig;
 use crate::task_store::TaskStore;
@@ -32,12 +32,27 @@ fn holder_id() -> String {
 
 /// Run a single pruner iteration. Returns the number of tasks deleted.
 ///
-/// 1. Try to acquire the advisory lock (leader_lease).
-/// 2. Compute cutoff = now - ttl_seconds.
-/// 3. Batch-delete terminal tasks older than cutoff.
-/// 4. Update the `miroir_task_registry_size` gauge.
-/// 5. Release the lock.
-pub fn prune_once(store: &dyn TaskStore, cfg: &TaskRegistryConfig) -> usize {
+/// **Mode A (multi-pod)**: Each pod prunes only the tasks it owns via rendezvous hashing.
+/// No advisory lock needed — ownership is deterministic from miroir_id.
+///
+/// **Legacy (single-pod)**: Uses advisory lock to ensure only one pod prunes.
+///
+/// # Arguments
+///
+/// * `store` - Task store
+/// * `cfg` - Task registry configuration
+/// * `mode_a_owner_fn` - Optional Mode A ownership function: `fn(miroir_id: &str) -> bool`
+///                      If provided, only prunes tasks where this returns true.
+pub fn prune_once<F>(store: &dyn TaskStore, cfg: &TaskRegistryConfig, mode_a_owner_fn: Option<F>) -> usize
+where
+    F: Fn(&str) -> bool,
+{
+    // Mode A: No lock needed, partition by miroir_id
+    if let Some(owner_fn) = mode_a_owner_fn {
+        return prune_inner_mode_a(store, cfg, owner_fn);
+    }
+
+    // Legacy: Use advisory lock for single-pod deployments
     let holder = holder_id();
     let now = now_ms();
     let lease_duration_ms = (cfg.prune_interval_s * 1000) + 30_000; // interval + 30s buffer
@@ -66,6 +81,73 @@ pub fn prune_once(store: &dyn TaskStore, cfg: &TaskRegistryConfig) -> usize {
     }
 
     result
+}
+
+/// Mode A pruning: partition tasks by miroir_id ownership.
+fn prune_inner_mode_a<F>(store: &dyn TaskStore, cfg: &TaskRegistryConfig, owner_fn: F) -> usize
+where
+    F: Fn(&str) -> bool,
+{
+    let now = now_ms();
+    let cutoff = now - (cfg.ttl_seconds * 1000) as i64;
+
+    debug!("pruner: running Mode A with cutoff={cutoff}, batch_size={}", cfg.prune_batch_size);
+
+    let mut total_deleted = 0usize;
+    let mut offset = 0i64;
+    let batch_size = cfg.prune_batch_size as i64;
+
+    loop {
+        // List tasks in batches
+        match store.list_terminal_tasks_batch(cutoff, offset, batch_size) {
+            Ok(tasks) => {
+                if tasks.is_empty() {
+                    break;
+                }
+
+                // Filter to only tasks we own
+                let owned_tasks: Vec<_> = tasks
+                    .iter()
+                    .filter(|t| owner_fn(&t.miroir_id))
+                    .map(|t| t.miroir_id.as_str())
+                    .collect();
+
+                if !owned_tasks.is_empty() {
+                    match store.delete_tasks_batch(&owned_tasks) {
+                        Ok(deleted) => {
+                            total_deleted += deleted;
+                        }
+                        Err(e) => {
+                            error!("pruner: delete batch failed: {e}");
+                            break;
+                        }
+                    }
+                }
+
+                if tasks.len() < cfg.prune_batch_size as usize {
+                    break; // no more rows
+                }
+                offset += batch_size;
+            }
+            Err(e) => {
+                error!("pruner: list tasks failed: {e}");
+                break;
+            }
+        }
+    }
+
+    // Update gauge
+    match store.task_count() {
+        Ok(count) => {
+            TASK_REGISTRY_SIZE.store(count, Ordering::Relaxed);
+            info!("pruner: deleted {total_deleted} tasks (Mode A), registry_size={count}");
+        }
+        Err(e) => {
+            error!("pruner: failed to count tasks: {e}");
+        }
+    }
+
+    total_deleted
 }
 
 fn prune_inner(store: &dyn TaskStore, cfg: &TaskRegistryConfig) -> usize {
@@ -108,10 +190,20 @@ fn prune_inner(store: &dyn TaskStore, cfg: &TaskRegistryConfig) -> usize {
 ///
 /// Call this once at startup. The thread is daemon-like: it exits when
 /// the returned `PrunerHandle` is dropped or the process exits.
-pub fn spawn_pruner(
+///
+/// # Arguments
+///
+/// * `store` - Task store
+/// * `cfg` - Task registry configuration
+/// * `mode_a_owner_fn` - Optional Mode A ownership function for multi-pod deployments
+pub fn spawn_pruner<F>(
     store: Arc<dyn TaskStore>,
     cfg: TaskRegistryConfig,
-) -> PrunerHandle {
+    mode_a_owner_fn: Option<F>,
+) -> PrunerHandle
+where
+    F: Fn(&str) -> bool + Send + 'static,
+{
     let interval = Duration::from_secs(cfg.prune_interval_s);
     let stop = std::sync::atomic::AtomicBool::new(false);
     let stop_flag = Arc::new(stop);
@@ -127,7 +219,12 @@ pub fn spawn_pruner(
                     break;
                 }
                 let start = Instant::now();
-                prune_once(store.as_ref(), &cfg);
+                // Call prune_once with the ownership function
+                if let Some(ref owner_fn) = mode_a_owner_fn {
+                    prune_once(store.as_ref(), &cfg, Some(owner_fn));
+                } else {
+                    prune_once(store.as_ref(), &cfg, None::<fn(&str) -> bool>);
+                }
                 let elapsed = start.elapsed();
                 if elapsed < interval {
                     // Sleep in small increments to check stop flag
