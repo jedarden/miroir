@@ -274,6 +274,8 @@ where
             let strategy = strategy.clone();
             let policy = policy;
             let replica_selector = state.replica_selector.clone();
+            let query_planner = state.query_planner.clone();
+            let metrics = state.metrics.clone();
 
             async move {
                 let start = Instant::now();
@@ -287,25 +289,20 @@ where
                 };
 
                 // Use query planner to narrow target shards (plan §13.4)
-                let filter_str = query.filter.as_ref()
-                    .filter(|s| !s.is_empty())
-                    .cloned();
-                let query_plan = state
-                    .query_planner
+                let filter_str = query.filter.as_ref().filter(|s| !s.is_empty()).cloned();
+                let query_plan = query_planner
                     .plan(&query.indexUid, &filter_str, config.shards)
                     .await;
 
                 // Record query planner metrics
-                state.metrics.inc_query_plan_narrowable(query_plan.narrowed);
+                metrics.inc_query_plan_narrowable(query_plan.narrowed);
                 if query_plan.narrowed {
-                    state
-                        .metrics
-                        .observe_query_plan_fanout(query_plan.target_shards.len() as u32);
+                    metrics.observe_query_plan_fanout(query_plan.target_shards.len() as u32);
                     let ratio = query_plan.target_shards.len() as f64 / config.shards as f64;
-                    state.metrics.set_query_plan_narrowing_ratio(ratio);
+                    metrics.set_query_plan_narrowing_ratio(ratio);
                 } else {
-                    state.metrics.observe_query_plan_fanout(config.shards);
-                    state.metrics.set_query_plan_narrowing_ratio(1.0);
+                    metrics.observe_query_plan_fanout(config.shards);
+                    metrics.set_query_plan_narrowing_ratio(1.0);
                 }
 
                 // Plan scatter with narrowed target shards
