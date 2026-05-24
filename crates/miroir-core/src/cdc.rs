@@ -38,6 +38,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
+use crate::task_store::{NewCdcCursor, TaskStore};
+
 #[cfg(feature = "redis-store")]
 use ::redis::AsyncCommands;
 
@@ -138,6 +140,106 @@ pub struct CdcPublisherState {
     pub buffer_bytes: HashMap<String, u64>,
 }
 
+/// Internal queue storage for CDC events (plan §13.13).
+///
+/// Stores events with per-index monotonic sequence numbers for the
+/// `GET /_miroir/changes` endpoint. Events are stored in memory with
+/// optional Redis persistence.
+pub struct CdcInternalQueue {
+    /// Per-index event storage: index -> (sequence -> event)
+    events: Arc<RwLock<HashMap<String, Vec<(u64, CdcEvent)>>>>,
+    /// Per-index sequence numbers: index -> next_sequence
+    sequences: Arc<RwLock<HashMap<String, u64>>>,
+    /// Optional task store for cursor persistence.
+    task_store: Option<Arc<dyn TaskStore>>,
+}
+
+impl CdcInternalQueue {
+    /// Create a new internal queue.
+    pub fn new(task_store: Option<Arc<dyn TaskStore>>) -> Self {
+        Self {
+            events: Arc::new(RwLock::new(HashMap::new())),
+            sequences: Arc::new(RwLock::new(HashMap::new())),
+            task_store,
+        }
+    }
+
+    /// Store an event and return its sequence number.
+    pub async fn store(&self, event: CdcEvent) -> u64 {
+        let index = event.index.clone();
+        let mut sequences = self.sequences.write().await;
+        let seq = sequences.entry(index.clone()).or_insert(0);
+        *seq += 1;
+        let sequence = *seq;
+
+        let mut events = self.events.write().await;
+        events
+            .entry(index.clone())
+            .or_insert_with(Vec::new)
+            .push((sequence, event));
+
+        // Trim old events to keep memory usage bounded (keep last 10,000 per index)
+        if let Some(events_vec) = events.get_mut(&index) {
+            if events_vec.len() > 10_000 {
+                events_vec.drain(0..events_vec.len() - 10_000);
+            }
+        }
+
+        sequence
+    }
+
+    /// Get events for an index since a given cursor (exclusive).
+    /// Returns events with sequence > cursor.
+    pub async fn get_since(&self, index: &str, cursor: u64, limit: usize) -> Vec<CdcEvent> {
+        let events = self.events.read().await;
+        if let Some(events_vec) = events.get(index) {
+            events_vec
+                .iter()
+                .filter(|(seq, _)| *seq > cursor)
+                .take(limit)
+                .map(|(_, event)| event.clone())
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Get the current maximum sequence number for an index.
+    pub async fn max_sequence(&self, index: &str) -> u64 {
+        let sequences = self.sequences.read().await;
+        sequences.get(index).copied().unwrap_or(0)
+    }
+
+    /// Persist a cursor for a sink/index combination.
+    pub async fn persist_cursor(&self, sink_name: &str, index: &str, seq: u64) -> Result<(), CdcError> {
+        if let Some(ref store) = self.task_store {
+            let cursor = NewCdcCursor {
+                sink_name: sink_name.to_string(),
+                index_uid: index.to_string(),
+                last_event_seq: seq as i64,
+                updated_at: chrono::Utc::now().timestamp_millis(),
+            };
+            store
+                .upsert_cdc_cursor(&cursor)
+                .map_err(|e| CdcError::SinkError(format!("cursor persist error: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// Get the persisted cursor for a sink/index combination.
+    pub async fn get_cursor(&self, sink_name: &str, index: &str) -> Result<Option<u64>, CdcError> {
+        if let Some(ref store) = self.task_store {
+            match store.get_cdc_cursor(sink_name, index) {
+                Ok(Some(cursor)) => Ok(Some(cursor.last_event_seq as u64)),
+                Ok(None) => Ok(None),
+                Err(e) => Err(CdcError::SinkError(format!("cursor read error: {e}"))),
+            }
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 /// CDC manager — publishes change events to configured sinks.
 pub struct CdcManager {
     /// Configuration.
@@ -152,6 +254,8 @@ pub struct CdcManager {
     buffers: HashMap<String, Arc<CdcBuffer>>,
     /// Optional callback to increment dropped events metric.
     dropped_metric_callback: Option<CdcDroppedMetricCallback>,
+    /// Internal queue for GET /_miroir/changes endpoint.
+    internal_queue: Arc<CdcInternalQueue>,
 }
 
 /// CDC manager configuration.
@@ -785,14 +889,15 @@ impl Default for CdcConfig {
 impl CdcManager {
     /// Create a new CDC manager.
     pub fn new(config: CdcConfig) -> Self {
-        Self::with_metrics(config, None, None)
+        Self::with_metrics(config, None, None, None)
     }
 
-    /// Create a new CDC manager with optional metric callbacks.
+    /// Create a new CDC manager with optional metric callbacks and task store.
     pub fn with_metrics(
         config: CdcConfig,
         suppressed_metric_callback: Option<CdcSuppressedMetricCallback>,
         dropped_metric_callback: Option<CdcDroppedMetricCallback>,
+        task_store: Option<Arc<dyn TaskStore>>,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let state = Arc::new(RwLock::new(CdcPublisherState {
@@ -802,6 +907,9 @@ impl CdcManager {
             published_count: 0,
             buffer_bytes: HashMap::new(),
         }));
+
+        // Initialize internal queue for GET /_miroir/changes endpoint
+        let internal_queue = Arc::new(CdcInternalQueue::new(task_store));
 
         // Initialize per-sink tiered buffers
         let mut buffers = HashMap::new();
@@ -826,9 +934,16 @@ impl CdcManager {
             let state_clone = state.clone();
             let config_clone = config.clone();
             let buffers_clone = buffers.clone();
+            let internal_queue_clone = internal_queue.clone();
             tokio::spawn(async move {
-                Self::background_publisher(event_rx, state_clone, config_clone, buffers_clone)
-                    .await;
+                Self::background_publisher(
+                    event_rx,
+                    state_clone,
+                    config_clone,
+                    buffers_clone,
+                    internal_queue_clone,
+                )
+                .await;
             });
         }
 
@@ -839,6 +954,7 @@ impl CdcManager {
             suppressed_metric_callback,
             buffers,
             dropped_metric_callback,
+            internal_queue,
         }
     }
 
@@ -883,12 +999,45 @@ impl CdcManager {
         self.state.read().await.clone()
     }
 
+    /// Get events from the internal queue since a given cursor.
+    ///
+    /// # Arguments
+    /// * `index` - Index UID to query
+    /// * `cursor` - Sequence number to start from (exclusive)
+    /// * `limit` - Maximum number of events to return
+    ///
+    /// Returns events with sequence > cursor, up to `limit` events.
+    pub async fn get_changes(&self, index: &str, cursor: u64, limit: usize) -> Vec<CdcEvent> {
+        self.internal_queue.get_since(index, cursor, limit).await
+    }
+
+    /// Get the current maximum sequence number for an index.
+    pub async fn max_sequence(&self, index: &str) -> u64 {
+        self.internal_queue.max_sequence(index).await
+    }
+
+    /// Persist a cursor for a sink/index combination.
+    pub async fn persist_cursor(&self, sink_name: &str, index: &str, seq: u64) -> Result<(), CdcError> {
+        self.internal_queue.persist_cursor(sink_name, index, seq).await
+    }
+
+    /// Get the persisted cursor for a sink/index combination.
+    pub async fn get_cursor(&self, sink_name: &str, index: &str) -> Result<Option<u64>, CdcError> {
+        self.internal_queue.get_cursor(sink_name, index).await
+    }
+
+    /// Get a reference to the internal queue.
+    pub fn internal_queue(&self) -> &Arc<CdcInternalQueue> {
+        &self.internal_queue
+    }
+
     /// Background task that buffers and publishes events to sinks.
     async fn background_publisher(
         mut event_rx: mpsc::UnboundedReceiver<CdcEvent>,
         state: Arc<RwLock<CdcPublisherState>>,
         config: CdcConfig,
         buffers: HashMap<String, Arc<CdcBuffer>>,
+        internal_queue: Arc<CdcInternalQueue>,
     ) {
         info!("CDC: background publisher started");
 
@@ -896,7 +1045,10 @@ impl CdcManager {
         let mut sink_buffers: HashMap<String, Vec<CdcEvent>> = HashMap::new();
 
         while let Some(event) = event_rx.recv().await {
-            // Buffer event for each sink
+            // Store event in internal queue for GET /_miroir/changes endpoint
+            let _sequence = internal_queue.store(event.clone()).await;
+
+            // Buffer event for each sink (use the original event for sinks)
             for sink in &config.sinks {
                 // Push to tiered buffer (memory → overflow)
                 if let Some(buffer) = buffers.get(&sink.url) {
@@ -1012,6 +1164,65 @@ pub enum CdcError {
     SinkError(String),
     #[error("buffer overflow")]
     BufferOverflow,
+}
+
+// Conversion from config::advanced::CdcConfig to cdc::CdcConfig
+impl From<crate::config::advanced::CdcConfig> for CdcConfig {
+    fn from(config: crate::config::advanced::CdcConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            emit_ttl_deletes: config.emit_ttl_deletes,
+            emit_internal_writes: config.emit_internal_writes,
+            sinks: config.sinks.into_iter().map(Into::into).collect(),
+            buffer: config.buffer.into(),
+        }
+    }
+}
+
+impl From<crate::config::advanced::CdcBufferConfig> for CdcBufferConfig {
+    fn from(config: crate::config::advanced::CdcBufferConfig) -> Self {
+        // Convert String to CdcBufferType
+        let primary = match config.primary.to_lowercase().as_str() {
+            "memory" => CdcBufferType::Memory,
+            "redis" => CdcBufferType::Redis,
+            "pvc" => CdcBufferType::Pvc,
+            "drop" => CdcBufferType::Drop,
+            _ => CdcBufferType::Memory, // Default
+        };
+        let overflow = match config.overflow.to_lowercase().as_str() {
+            "memory" => CdcBufferType::Memory,
+            "redis" => CdcBufferType::Redis,
+            "pvc" => CdcBufferType::Pvc,
+            "drop" => CdcBufferType::Drop,
+            _ => CdcBufferType::Redis, // Default
+        };
+        Self {
+            primary,
+            memory_bytes: config.memory_bytes,
+            overflow,
+            redis_bytes: config.redis_bytes,
+        }
+    }
+}
+
+impl From<crate::config::advanced::CdcSinkConfig> for CdcSinkConfig {
+    fn from(config: crate::config::advanced::CdcSinkConfig) -> Self {
+        Self {
+            sink_type: match config.sink_type.as_str() {
+                "webhook" => CdcSinkType::Webhook,
+                "nats" => CdcSinkType::Nats,
+                "kafka" => CdcSinkType::Kafka,
+                "internal" => CdcSinkType::Internal,
+                _ => CdcSinkType::Webhook, // Default to webhook
+            },
+            url: config.url,
+            batch_size: config.batch_size,
+            batch_flush_ms: config.batch_flush_ms,
+            include_body: config.include_body,
+            retry_max_s: config.retry_max_s,
+            subject_prefix: config.subject_prefix,
+        }
+    }
 }
 
 #[cfg(test)]

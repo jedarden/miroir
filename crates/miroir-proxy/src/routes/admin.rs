@@ -2,7 +2,7 @@
 //!
 //! This router requires `admin_endpoints::AppState` to be provided via `.with_state()`.
 
-use super::{admin_endpoints, aliases, canary, explain, session};
+use super::{admin_endpoints, aliases, canary, cdc, explain, session};
 use axum::{
     extract::FromRef,
     routing::{delete, get, post, put},
@@ -21,6 +21,7 @@ where
     aliases::AliasState: FromRef<S>,
     explain::ExplainState: FromRef<S>,
     canary::CanaryState: FromRef<S>,
+    miroir_core::cdc::CdcManager: FromRef<S>,
 {
     Router::new()
         // Admin session endpoints (plan §9, §13.19)
@@ -90,4 +91,6 @@ where
         // Shadow traffic endpoints (plan §13.16)
         .route("/shadow/diff", get(admin_endpoints::get_shadow_diff::<S>))
         .route("/shadow/stats", get(admin_endpoints::get_shadow_stats::<S>))
+        // CDC changes endpoint (plan §13.13)
+        .route("/changes", get(cdc::get_changes::<S>))
 }

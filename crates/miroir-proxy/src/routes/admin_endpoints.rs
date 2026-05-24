@@ -389,6 +389,8 @@ pub struct AppState {
     pub resharding_registry: Arc<tokio::sync::RwLock<ReshardingRegistry>>,
     /// Shadow manager for traffic shadowing (plan §13.16).
     pub shadow_manager: Option<Arc<miroir_core::shadow::ShadowManager>>,
+    /// CDC manager for change data capture (plan §13.13).
+    pub cdc_manager: Option<Arc<miroir_core::cdc::CdcManager>>,
 }
 
 impl AppState {
@@ -727,7 +729,7 @@ impl AppState {
             metrics: metrics.clone(),
             version_state,
             task_registry: Arc::new(task_registry),
-            redis_store,
+            redis_store: redis_store.clone(),
             task_store,
             pod_id,
             seal_key,
@@ -776,6 +778,32 @@ impl AppState {
                 miroir_core::reshard::ReshardingRegistry::new(),
             )),
             shadow_manager: None, // Initialized in main.rs if shadow is enabled
+            cdc_manager: {
+                // Create CDC manager if enabled in config
+                if config.cdc.enabled {
+                    let task_store: Option<Arc<dyn TaskStore>> = match config.task_store.backend.as_str() {
+                        "redis" => redis_store
+                            .as_ref()
+                            .map(|s| Arc::new(s.clone()) as Arc<dyn TaskStore>),
+                        "sqlite" if !config.task_store.path.is_empty() => Some(Arc::new(
+                            miroir_core::task_store::SqliteTaskStore::open(std::path::Path::new(
+                                &config.task_store.path,
+                            ))
+                            .expect("Failed to open SQLite task store"),
+                        )
+                            as Arc<dyn TaskStore>),
+                        _ => None,
+                    };
+                    Some(Arc::new(miroir_core::cdc::CdcManager::with_metrics(
+                        config.cdc.clone().into(), // Convert config::advanced::CdcConfig to cdc::CdcConfig
+                        None, // suppressed_metric_callback
+                        None, // dropped_metric_callback
+                        task_store,
+                    )))
+                } else {
+                    None
+                }
+            },
         }
     }
 
