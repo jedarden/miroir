@@ -3785,7 +3785,9 @@ mod tests_backfill_cleanup {
 
     #[test]
     fn cleanup_error_aborted_display() {
-        let err = CleanupError::CleanupAborted("retention period not reached: 23 hours remaining".to_string());
+        let err = CleanupError::CleanupAborted(
+            "retention period not reached: 23 hours remaining".to_string(),
+        );
         assert!(err.to_string().contains("retention period not reached"));
         assert!(err.to_string().contains("23 hours remaining"));
     }

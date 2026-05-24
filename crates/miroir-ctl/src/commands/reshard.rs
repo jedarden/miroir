@@ -49,10 +49,9 @@ pub enum ReshardSubcommand {
 
 pub async fn run(
     cmd: ReshardSubcommand,
-    _admin_key: &str,
-    _api_url: &str,
+    admin_key: &str,
+    api_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let _ = (_admin_key, _api_url);
     match cmd {
         ReshardSubcommand::Start {
             index,
@@ -61,8 +60,20 @@ pub async fn run(
             schedule_window,
             force,
             dry_run,
-        } => run_start(index, new_shards, throttle, schedule_window, force, dry_run).await,
-        ReshardSubcommand::Status { index } => run_status(index).await,
+        } => {
+            run_start(
+                index,
+                new_shards,
+                throttle,
+                schedule_window,
+                force,
+                dry_run,
+                admin_key,
+                api_url,
+            )
+            .await
+        }
+        ReshardSubcommand::Status { index } => run_status(index, admin_key, api_url).await,
     }
 }
 
@@ -73,6 +84,8 @@ async fn run_start(
     schedule_window: Option<String>,
     force: bool,
     dry_run: bool,
+    admin_key: &str,
+    api_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = load_reshard_config()?;
 
@@ -154,14 +167,133 @@ async fn run_start(
         return Ok(());
     }
 
-    // TODO: Submit reshard job via admin API when proxy is implemented.
-    Err("Reshard start requires admin API (not yet connected). Use --dry-run to validate.".into())
+    // Submit reshard job via admin API
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/indexes/{}/reshard",
+        api_url.trim_end_matches('/'),
+        index
+    );
+
+    let request_body = serde_json::json!({
+        "new_shards": new_shards,
+        "throttle_docs_per_sec": throttle
+    });
+
+    let response = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", admin_key))
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to {}: {}", url, e))?;
+
+    let status = response.status();
+    let body_text = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    if status.as_u16() == 409 {
+        return Err(format!("Resharding already in progress for index '{}'", index).into());
+    }
+
+    if !status.is_success() {
+        return Err(format!(
+            "Reshard request failed: HTTP {} - {}",
+            status.as_u16(),
+            body_text
+        )
+        .into());
+    }
+
+    let result: serde_json::Value =
+        serde_json::from_str(&body_text).map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    println!("Resharding started successfully!");
+    println!("  Operation ID: {}", result["operation_id"]);
+    println!("  Index: {}", result["index_uid"]);
+    println!("  Old shards: {}", result["old_shards"]);
+    println!("  New shards: {}", result["new_shards"]);
+    println!("  Shadow index: {}", result["shadow_index"]);
+    println!("  Current phase: {}", result["phase"]);
+    println!();
+    println!("Monitor progress with:");
+    println!("  miroir-ctl reshard --status --index {}", index);
+
+    Ok(())
 }
 
-async fn run_status(index: String) -> Result<(), Box<dyn std::error::Error>> {
-    // TODO: Query reshard status via admin API when proxy is implemented.
-    let _ = index;
-    Err("Reshard status requires admin API (not yet connected).".into())
+async fn run_status(
+    index: String,
+    admin_key: &str,
+    api_url: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/indexes/{}/reshard/status",
+        api_url.trim_end_matches('/'),
+        index
+    );
+
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", admin_key))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to {}: {}", url, e))?;
+
+    let status = response.status();
+    let body_text = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    if !status.is_success() {
+        return Err(format!(
+            "Status request failed: HTTP {} - {}",
+            status.as_u16(),
+            body_text
+        )
+        .into());
+    }
+
+    let result: serde_json::Value =
+        serde_json::from_str(&body_text).map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    if !result["active"].as_bool().unwrap_or(false) {
+        println!("No active resharding operation for index '{}'", index);
+        return Ok(());
+    }
+
+    let op = &result["operation"];
+    println!("Resharding status for index '{}':", index);
+    println!("  Operation ID: {}", op["id"]);
+    println!("  Current phase: {}", op["phase"]);
+    println!("  Old shards: {}", op["old_shards"]);
+    println!("  New shards: {}", op["new_shards"]);
+    println!("  Shadow index: {}", op["shadow_index"]);
+
+    if let Some(docs) = op["documents_backfilled"].as_u64() {
+        let total = op["total_documents"].as_u64().unwrap_or(0);
+        let progress = op["backfill_progress"].as_f64().unwrap_or(0.0);
+        println!(
+            "  Backfill progress: {} / {} ({:.1}%)",
+            docs,
+            total,
+            progress * 100.0
+        );
+    }
+
+    if let Some(error) = op["last_error"].as_str() {
+        println!("  Last error: {}", error);
+    }
+
+    if let Some(_verify) = op["verification_results"].as_object() {
+        println!("  Verification: completed");
+    }
+
+    Ok(())
 }
 
 /// Load resharding config from the standard config path.
