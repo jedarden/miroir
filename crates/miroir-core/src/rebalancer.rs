@@ -1064,18 +1064,19 @@ impl Rebalancer {
         // Step 1: Mark group as draining (queries stop routing immediately)
         {
             let mut topo = self.topology.write().await;
-            let group = topo.group_mut(request.group_id);
 
-            let Some(grp) = group else {
-                return Err(RebalancerError::GroupNotFound(request.group_id));
-            };
-
-            // Check if this is the last group
+            // Check if this is the last group (before getting mutable reference to group)
             if topo.groups().count() <= 1 {
                 return Err(RebalancerError::InvalidState(
                     "cannot remove the last replica group".into(),
                 ));
             }
+
+            let group = topo.group_mut(request.group_id);
+
+            let Some(grp) = group else {
+                return Err(RebalancerError::GroupNotFound(request.group_id));
+            };
 
             // Check if group is already draining
             if grp.is_draining() {

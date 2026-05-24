@@ -4,9 +4,10 @@
 //! Each canary ID is rendezvous-owned by exactly one pod per interval, ensuring
 //! no duplicate canary runs across the cluster.
 
+#[cfg(feature = "peer-discovery")]
+use crate::mode_a_coordinator::ModeACoordinator;
 use crate::{
     error::{MiroirError, Result},
-    mode_a_coordinator::ModeACoordinator,
     task_store::{CanaryRow, NewCanary, NewCanaryRun, TaskStore},
 };
 use serde::{Deserialize, Serialize};
@@ -119,6 +120,7 @@ pub struct CanaryRunner {
     metrics_emitter: MetricsEmitter,
     settings_version_checker: SettingsVersionChecker,
     /// Mode A coordinator for partitioning canary execution (plan §14.5).
+    #[cfg(feature = "peer-discovery")]
     mode_a_coordinator: Option<Arc<ModeACoordinator>>,
 }
 
@@ -139,6 +141,7 @@ impl CanaryRunner {
             search_executor,
             metrics_emitter,
             settings_version_checker,
+            #[cfg(feature = "peer-discovery")]
             mode_a_coordinator: None,
         }
     }
@@ -147,6 +150,7 @@ impl CanaryRunner {
     ///
     /// When enabled, each pod only runs canaries where it wins the rendezvous
     /// score for the canary ID: `top1_by_score(hash(canary_id || pid) for pid in peers)`.
+    #[cfg(feature = "peer-discovery")]
     pub fn with_mode_a(mut self, coordinator: Arc<ModeACoordinator>) -> Self {
         self.mode_a_coordinator = Some(coordinator);
         self
@@ -177,6 +181,7 @@ impl CanaryRunner {
             }
 
             // Mode A coordination: only run canaries owned by this pod
+            #[cfg(feature = "peer-discovery")]
             if let Some(ref coordinator) = self.mode_a_coordinator {
                 let owns_canary = coordinator.owns_task(&canary.id).await.unwrap_or(true); // Default to true if no coordinator
                 if !owns_canary {
@@ -471,6 +476,7 @@ impl CanaryRunner {
             search_executor: self.search_executor.clone(),
             metrics_emitter: self.metrics_emitter.clone(),
             settings_version_checker: self.settings_version_checker.clone(),
+            #[cfg(feature = "peer-discovery")]
             mode_a_coordinator: self.mode_a_coordinator.clone(),
         }
     }

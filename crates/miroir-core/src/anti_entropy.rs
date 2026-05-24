@@ -18,6 +18,7 @@
 use crate::cdc::ORIGIN_ANTIENTROPY;
 use crate::error::{MiroirError, Result};
 use crate::migration::{MigrationConfig, MigrationError};
+#[cfg(feature = "peer-discovery")]
 use crate::mode_a_coordinator::ModeACoordinator;
 use crate::router::assign_shard_in_group;
 use crate::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, NodeClient, WriteRequest};
@@ -163,6 +164,7 @@ pub struct AntiEntropyReconciler<C: NodeClient> {
     /// Metrics callback.
     metrics_callback: Option<AntiEntropyMetricsCallback>,
     /// Mode A coordinator for shard-partitioned ownership (plan §14.5).
+    #[cfg(feature = "peer-discovery")]
     mode_a_coordinator: Option<Arc<ModeACoordinator>>,
 }
 
@@ -180,6 +182,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
             current_pass: Arc::new(RwLock::new(None)),
             node_client,
             metrics_callback: None,
+            #[cfg(feature = "peer-discovery")]
             mode_a_coordinator: None,
         }
     }
@@ -192,6 +195,7 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
     /// # Parameters
     ///
     /// - `coordinator`: Mode A coordinator that determines shard ownership
+    #[cfg(feature = "peer-discovery")]
     pub fn with_mode_a(mut self, coordinator: Arc<ModeACoordinator>) -> Self {
         self.mode_a_coordinator = Some(coordinator);
         self
@@ -556,35 +560,53 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
 
         // Determine which shards to scan
         let all_shards: Vec<u32> = (0..shard_count).collect();
-        let shards_to_scan = if let Some(ref coordinator) = self.mode_a_coordinator {
-            // Mode A scaling: filter to rendezvous-owned shards (plan §14.5)
-            // Uses rendezvous hashing: owns(s, p) = p == top1_by_score(hash(s || pid) for pid in peers)
-            let mut owned = Vec::new();
-            for shard_id in all_shards {
-                let shard_str = shard_id.to_string();
-                match coordinator.owns_shard(&shard_str).await {
-                    Ok(true) => owned.push(shard_id),
-                    Ok(false) => continue, // Not owned by this pod
-                    Err(e) => {
-                        warn!(
-                            shard_id,
-                            error = %e,
-                            "Failed to check shard ownership, skipping"
-                        );
-                        continue;
+        let shards_to_scan = {
+            #[cfg(feature = "peer-discovery")]
+            {
+                if let Some(ref coordinator) = self.mode_a_coordinator {
+                    // Mode A scaling: filter to rendezvous-owned shards (plan §14.5)
+                    // Uses rendezvous hashing: owns(s, p) = p == top1_by_score(hash(s || pid) for pid in peers)
+                    let mut owned = Vec::new();
+                    for shard_id in all_shards {
+                        let shard_str = shard_id.to_string();
+                        match coordinator.owns_shard(&shard_str).await {
+                            Ok(true) => owned.push(shard_id),
+                            Ok(false) => continue, // Not owned by this pod
+                            Err(e) => {
+                                warn!(
+                                    shard_id,
+                                    error = %e,
+                                    "Failed to check shard ownership, skipping"
+                                );
+                                continue;
+                            }
+                        }
                     }
+                    owned
+                } else if self.config.shards_per_pass == 0 {
+                    // Scan all shards (single-pod deployment or Mode A disabled)
+                    all_shards
+                } else {
+                    // Scan a subset (for throttling)
+                    all_shards
+                        .into_iter()
+                        .take(self.config.shards_per_pass as usize)
+                        .collect()
                 }
             }
-            owned
-        } else if self.config.shards_per_pass == 0 {
-            // Scan all shards (single-pod deployment or Mode A disabled)
-            all_shards
-        } else {
-            // Scan a subset (for throttling)
-            all_shards
-                .into_iter()
-                .take(self.config.shards_per_pass as usize)
-                .collect()
+            #[cfg(not(feature = "peer-discovery"))]
+            {
+                if self.config.shards_per_pass == 0 {
+                    // Scan all shards
+                    all_shards
+                } else {
+                    // Scan a subset (for throttling)
+                    all_shards
+                        .into_iter()
+                        .take(self.config.shards_per_pass as usize)
+                        .collect()
+                }
+            }
         };
 
         info!(
