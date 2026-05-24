@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "miroir.fullname" . }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.miroir.hpa.enabled }}
+  replicas: {{ .Values.miroir.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "miroir.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.miroir.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "miroir.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.miroir.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "miroir.serviceAccountName" . }}
+      containers:
+      - name: miroir
+        {{- with .Values.miroir.image }}
+        image: "{{ .repository }}:{{ .tag | default $.Chart.AppVersion }}"
+        imagePullPolicy: {{ .pullPolicy }}
+        {{- end }}
+        ports:
+        - name: http
+          containerPort: 7700
+          protocol: TCP
+        env:
+        - name: MIROIR_SHARDS
+          value: {{ .Values.miroir.shards | quote }}
+        - name: MIROIR_REPLICATION_FACTOR
+          value: {{ .Values.miroir.replicationFactor | quote }}
+        - name: MIROIR_REPLICA_GROUPS
+          value: {{ .Values.miroir.replicaGroups | quote }}
+        - name: MIROIR_TASK_STORE_BACKEND
+          value: {{ .Values.miroir.taskStore.backend }}
+        {{- if eq .Values.miroir.taskStore.backend "sqlite" }}
+        - name: MIROIR_TASK_STORE_PATH
+          value: {{ .Values.miroir.taskStore.path | quote }}
+        {{- else if eq .Values.miroir.taskStore.backend "redis" }}
+        - name: MIROIR_TASK_STORE_URL
+          value: {{ .Values.miroir.taskStore.url | quote }}
+        {{- end }}
+        {{- if .Values.miroir.existingSecret }}
+        envFrom:
+        - secretRef:
+            name: {{ .Values.miroir.existingSecret }}
+        {{- end }}
+        {{- with .Values.miroir.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.miroir.securityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}

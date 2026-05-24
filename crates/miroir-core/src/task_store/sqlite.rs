@@ -1,1101 +1,1025 @@
-use crate::schema_migrations::{build_registry, MigrationRegistry};
-use crate::task_store::*;
-use crate::Result;
-use rusqlite::{params, Connection, OptionalExtension};
-use std::path::Path;
-use std::sync::Mutex;
+//! SQLite backend for the task store.
 
-/// Get the migration registry for this binary.
-fn registry() -> &'static MigrationRegistry {
-    use std::sync::OnceLock;
-    static REGISTRY: OnceLock<MigrationRegistry> = OnceLock::new();
-    REGISTRY.get_or_init(|| build_registry())
+use super::error::{Result, TaskStoreError};
+use super::schema::{
+    AdminSession, Alias, Canary, CanaryRun, CdcCursor, IdempotencyEntry, Job, JobState,
+    LeaderLease, RolloverPolicy, SearchUiConfig, Session, Task, TaskFilter, TaskStatus, Tenant,
+    SCHEMA_VERSION,
+};
+use super::TaskStore;
+use rusqlite::Connection;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+// Legacy compatibility types for trait signature
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NodeTask {
+    pub task_uid: u64,
+    pub status: NodeTaskStatus,
 }
 
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum NodeTaskStatus {
+    Enqueued,
+    Processing,
+    Succeeded,
+    Failed,
+}
+
+// Legacy JobStatus for trait compatibility
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobStatus {
+    Enqueued,
+    Processing,
+    Succeeded,
+    Failed,
+    Canceled,
+}
+
+/// Convert a String parse error to a rusqlite error.
+fn parse_error<E: std::fmt::Display>(e: E) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(ParseError(e.to_string())))
+}
+
+/// Wrapper for String errors to implement std::error::Error.
+#[derive(Debug)]
+struct ParseError(String);
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for ParseError {}
+
+/// SQLite task store implementation.
+#[derive(Clone)]
 pub struct SqliteTaskStore {
-    conn: Mutex<Connection>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl SqliteTaskStore {
-    /// Open (or create) the SQLite database at `path`, configure WAL + busy_timeout.
-    pub fn open(path: &Path) -> Result<Self> {
+    /// Create a new SQLite task store.
+    pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path)?;
-        Self::configure(&conn)?;
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
+        let store = Self {
+            conn: Arc::new(Mutex::new(conn)),
+        };
+        Ok(store)
     }
 
-    /// Open an in-memory database (for tests and single-pod dev).
-    pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory()?;
-        Self::configure(&conn)?;
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
+    /// Execute a SQL statement with parameters.
+    fn execute(&self, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Result<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| TaskStoreError::Internal(e.to_string()))?;
+        conn.execute(sql, params).map_err(Into::into)
     }
 
-    fn configure(conn: &Connection) -> Result<()> {
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")?;
-        Ok(())
+    /// Query a single row.
+    fn query_row<T, F>(&self, sql: &str, params: &[&dyn rusqlite::ToSql], f: F) -> Result<T>
+    where
+        F: FnOnce(&rusqlite::Row) -> rusqlite::Result<T>,
+    {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| TaskStoreError::Internal(e.to_string()))?;
+        conn.query_row(sql, params, f).map_err(Into::into)
     }
 
-    fn run_migration(conn: &Connection) -> Result<()> {
-        // Create schema_versions first so we can query it
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_versions (
-                version INTEGER PRIMARY KEY,
-                applied_at INTEGER NOT NULL
-            );",
+    /// Prepare and execute a query, returning all rows.
+    fn query_map<T, F>(&self, sql: &str, params: &[&dyn rusqlite::ToSql], f: F) -> Result<Vec<T>>
+    where
+        F: FnMut(&rusqlite::Row) -> rusqlite::Result<T>,
+    {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| TaskStoreError::Internal(e.to_string()))?;
+        let mut stmt = conn.prepare(sql)?;
+        let rows: std::result::Result<Vec<_>, _> = stmt.query_map(params, f)?.collect();
+        Ok(rows?)
+    }
+}
+
+#[async_trait::async_trait]
+impl TaskStore for SqliteTaskStore {
+    async fn initialize(&self) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| TaskStoreError::Internal(e.to_string()))?;
+
+        // Enable WAL mode for better concurrency
+        // Use query_row because PRAGMA journal_mode returns the new mode
+        let _mode: String = conn.query_row(
+            "PRAGMA journal_mode=WAL",
+            &[] as &[&dyn rusqlite::ToSql],
+            |row| row.get(0),
         )?;
 
-        let current: Option<i64> = conn
-            .query_row("SELECT MAX(version) FROM schema_versions", [], |row| {
-                row.get(0)
-            })
-            .optional()?
-            .flatten();
+        // Set busy timeout to avoid deadlock on concurrent writes
+        // Use query_row because PRAGMA busy_timeout returns the value that was set
+        let _timeout: i64 = conn.query_row(
+            "PRAGMA busy_timeout=5000",
+            &[] as &[&dyn rusqlite::ToSql],
+            |row| row.get(0),
+        )?;
 
-        let current_version = current.unwrap_or(0);
+        // Create schema_version table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER NOT NULL
+            )",
+            &[] as &[&dyn rusqlite::ToSql],
+        )?;
 
-        // Validate that the store version is not ahead of the binary version
-        registry().validate_version(current_version)?;
+        // Check current version
+        let current_version: Option<i64> = conn
+            .query_row(
+                "SELECT version FROM schema_version",
+                &[] as &[&dyn rusqlite::ToSql],
+                |row| row.get(0),
+            )
+            .ok();
 
-        // Apply pending migrations
-        let pending = registry().pending_migrations(current_version);
-        for migration in pending {
-            conn.execute_batch(migration.sql)?;
+        if current_version.is_none() {
+            // Initialize schema
+            Self::init_schema(&conn)?;
             conn.execute(
-                "INSERT INTO schema_versions (version, applied_at) VALUES (?1, ?2)",
-                params![migration.version, now_ms()],
+                "INSERT INTO schema_version (version) VALUES (1)",
+                &[] as &[&dyn rusqlite::ToSql],
             )?;
+        } else if current_version != Some(SCHEMA_VERSION) {
+            return Err(TaskStoreError::InvalidData(format!(
+                "schema version mismatch: expected {}, got {}",
+                SCHEMA_VERSION,
+                current_version.unwrap()
+            )));
         }
 
         Ok(())
     }
 
-    // --- Table 1: tasks helpers ---
-
-    fn task_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRow> {
-        let node_tasks_json: String = row.get(3)?;
-        let node_tasks: HashMap<String, u64> = serde_json::from_str(&node_tasks_json)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        let node_errors_json: String = row.get(9)?;
-        let node_errors: HashMap<String, String> = serde_json::from_str(&node_errors_json)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        Ok(TaskRow {
-            miroir_id: row.get(0)?,
-            created_at: row.get(1)?,
-            status: row.get(2)?,
-            node_tasks,
-            error: row.get(4)?,
-            started_at: row.get(5)?,
-            finished_at: row.get(6)?,
-            index_uid: row.get(7)?,
-            task_type: row.get(8)?,
-            node_errors,
-        })
+    async fn schema_version(&self) -> Result<i64> {
+        self.query_row(
+            "SELECT version FROM schema_version",
+            &[] as &[&dyn rusqlite::ToSql],
+            |row| row.get(0),
+        )
     }
 
-    // --- Table 3: aliases helpers ---
-
-    fn alias_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AliasRow> {
-        let target_uids_json: Option<String> = row.get(3)?;
-        let target_uids: Option<Vec<String>> = target_uids_json
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        let history_json: String = row.get(6)?;
-        let history: Vec<AliasHistoryEntry> = serde_json::from_str(&history_json)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        Ok(AliasRow {
-            name: row.get(0)?,
-            kind: row.get(1)?,
-            current_uid: row.get(2)?,
-            target_uids,
-            version: row.get(4)?,
-            created_at: row.get(5)?,
-            history,
-        })
-    }
-}
-
-impl TaskStore for SqliteTaskStore {
-    fn migrate(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        Self::run_migration(&conn)?;
+    async fn task_insert(&self, task: &Task) -> Result<()> {
+        let node_tasks_json = serde_json::to_string(&task.node_tasks)?;
+        self.execute(
+            "INSERT INTO tasks (miroir_id, created_at, status, node_tasks, error)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            &[
+                &task.miroir_id as &dyn rusqlite::ToSql,
+                &task.created_at,
+                &task.status.to_string(),
+                &node_tasks_json,
+                &task.error.as_deref().unwrap_or(""),
+            ] as &[&dyn rusqlite::ToSql],
+        )?;
         Ok(())
     }
 
-    // --- Table 1: tasks ---
+    async fn task_get(&self, miroir_id: &str) -> Result<Option<Task>> {
+        let result: Option<Task> = self
+            .query_row(
+                "SELECT miroir_id, created_at, status, node_tasks, error FROM tasks WHERE miroir_id = ?1",
+                &[&miroir_id as &dyn rusqlite::ToSql],
+                |row| {
+                    let node_tasks_json: String = row.get(3)?;
+                    let node_tasks: HashMap<String, u64> = serde_json::from_str(&node_tasks_json).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                    Ok(Task {
+                        miroir_id: row.get(0)?,
+                        created_at: row.get(1)?,
+                        status: row.get::<_, String>(2)?.parse().map_err(|e| {
+                            parse_error(e)
+                        })?,
+                        node_tasks,
+                        error: {
+                            let error: String = row.get(4)?;
+                            if error.is_empty() { None } else { Some(error) }
+                        },
+                    })
+                },
+            )
+            .ok();
+        Ok(result)
+    }
 
-    fn insert_task(&self, task: &NewTask) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let node_tasks_json = serde_json::to_string(&task.node_tasks)?;
-        let node_errors_json = serde_json::to_string(&task.node_errors)?;
-        conn.execute(
-            "INSERT INTO tasks (miroir_id, created_at, status, node_tasks, error, started_at, finished_at, index_uid, task_type, node_errors)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                task.miroir_id,
-                task.created_at,
-                task.status,
-                node_tasks_json,
-                task.error,
-                task.started_at,
-                task.finished_at,
-                task.index_uid,
-                task.task_type,
-                node_errors_json,
+    async fn task_update_status(&self, miroir_id: &str, status: TaskStatus) -> Result<()> {
+        self.execute(
+            "UPDATE tasks SET status = ?1 WHERE miroir_id = ?2",
+            &[
+                &status.to_string() as &dyn rusqlite::ToSql,
+                &miroir_id as &dyn rusqlite::ToSql,
             ],
         )?;
         Ok(())
     }
 
-    fn get_task(&self, miroir_id: &str) -> Result<Option<TaskRow>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
-            .query_row(
-                "SELECT miroir_id, created_at, status, node_tasks, error, started_at, finished_at, index_uid, task_type, node_errors
-                 FROM tasks WHERE miroir_id = ?1",
-                params![miroir_id],
-                Self::task_row_from_row,
-            )
-            .optional()?)
-    }
-
-    fn update_task_status(&self, miroir_id: &str, status: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "UPDATE tasks SET status = ?1 WHERE miroir_id = ?2",
-            params![status, miroir_id],
-        )?;
-        Ok(rows > 0)
-    }
-
-    fn update_node_task(&self, miroir_id: &str, node_id: &str, task_uid: u64) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        // Read-modify-write on node_tasks JSON
-        let tx = conn.unchecked_transaction()?;
-        let existing: Option<String> = tx
-            .query_row(
-                "SELECT node_tasks FROM tasks WHERE miroir_id = ?1",
-                params![miroir_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(json) = existing else {
-            return Ok(false);
-        };
-        let mut map: HashMap<String, u64> = serde_json::from_str(&json)?;
-        map.insert(node_id.to_string(), task_uid);
-        let updated = serde_json::to_string(&map)?;
-        let rows = tx.execute(
+    async fn task_update_node(&self, miroir_id: &str, node_id: &str, task_uid: u64) -> Result<()> {
+        // Get the task, update node_tasks (store only task_uid), and write back
+        let mut task = self
+            .task_get(miroir_id)
+            .await?
+            .ok_or_else(|| TaskStoreError::NotFound(miroir_id.to_string()))?;
+        task.node_tasks.insert(node_id.to_string(), task_uid);
+        let node_tasks_json = serde_json::to_string(&task.node_tasks)?;
+        self.execute(
             "UPDATE tasks SET node_tasks = ?1 WHERE miroir_id = ?2",
-            params![updated, miroir_id],
+            &[
+                &node_tasks_json as &dyn rusqlite::ToSql,
+                &miroir_id as &dyn rusqlite::ToSql,
+            ],
         )?;
-        tx.commit()?;
-        Ok(rows > 0)
+        Ok(())
     }
 
-    fn set_task_error(&self, miroir_id: &str, error: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "UPDATE tasks SET error = ?1 WHERE miroir_id = ?2",
-            params![error, miroir_id],
-        )?;
-        Ok(rows > 0)
-    }
+    async fn task_list(&self, filter: &TaskFilter) -> Result<Vec<Task>> {
+        let mut sql =
+            "SELECT miroir_id, created_at, status, node_tasks, error FROM tasks".to_string();
+        let mut params = Vec::new();
+        let mut wheres = Vec::new();
 
-    #[allow(unused_assignments)]
-    fn list_tasks(&self, filter: &TaskFilter) -> Result<Vec<TaskRow>> {
-        let conn = self.conn.lock().unwrap();
-        let mut sql = "SELECT miroir_id, created_at, status, node_tasks, error, started_at, finished_at, index_uid, task_type, node_errors FROM tasks"
-            .to_string();
-        let mut conditions = Vec::new();
-        let mut param_idx = 1;
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        if let Some(status) = filter.status {
+            wheres.push("status = ?".to_string());
+            params.push(status.to_string());
+        }
 
-        if let Some(ref status) = filter.status {
-            conditions.push(format!("status = ?{param_idx}"));
-            param_values.push(Box::new(status.clone()));
-            param_idx += 1;
-        }
-        if let Some(ref index_uid) = filter.index_uid {
-            conditions.push(format!("index_uid = ?{param_idx}"));
-            param_values.push(Box::new(index_uid.clone()));
-            param_idx += 1;
-        }
-        if let Some(ref task_type) = filter.task_type {
-            conditions.push(format!("task_type = ?{param_idx}"));
-            param_values.push(Box::new(task_type.clone()));
-            param_idx += 1;
-        }
-        if !conditions.is_empty() {
+        if !wheres.is_empty() {
             sql.push_str(" WHERE ");
-            sql.push_str(&conditions.join(" AND "));
+            sql.push_str(&wheres.join(" AND "));
         }
+
         sql.push_str(" ORDER BY created_at DESC");
+
         if let Some(limit) = filter.limit {
             sql.push_str(&format!(" LIMIT {limit}"));
         }
+
         if let Some(offset) = filter.offset {
             sql.push_str(&format!(" OFFSET {offset}"));
         }
 
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_refs.as_slice(), Self::task_row_from_row)?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            params.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+
+        self.query_map(&sql, &params_refs, |row| {
+            let node_tasks_json: String = row.get(3)?;
+            let node_tasks: HashMap<String, u64> = serde_json::from_str(&node_tasks_json)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            Ok(Task {
+                miroir_id: row.get(0)?,
+                created_at: row.get(1)?,
+                status: row.get::<_, String>(2)?.parse().map_err(parse_error)?,
+                node_tasks,
+                error: {
+                    let error: String = row.get(4)?;
+                    if error.is_empty() {
+                        None
+                    } else {
+                        Some(error)
+                    }
+                },
+            })
+        })
     }
 
-    // --- Table 2: node_settings_version ---
+    async fn node_settings_version_get(&self, index: &str, node_id: &str) -> Result<Option<i64>> {
+        let version: Option<i64> = self
+            .query_row(
+                "SELECT version FROM node_settings_version WHERE index_uid = ?1 AND node_id = ?2",
+                &[
+                    &index as &dyn rusqlite::ToSql,
+                    &node_id as &dyn rusqlite::ToSql,
+                ],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(version)
+    }
 
-    fn upsert_node_settings_version(
+    async fn node_settings_version_set(
         &self,
-        index_uid: &str,
+        index: &str,
         node_id: &str,
         version: i64,
-        updated_at: i64,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO node_settings_version (index_uid, node_id, version, updated_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(index_uid, node_id) DO UPDATE SET version = ?3, updated_at = ?4",
-            params![index_uid, node_id, version, updated_at],
-        )?;
-        Ok(())
-    }
-
-    fn get_node_settings_version(
-        &self,
-        index_uid: &str,
-        node_id: &str,
-    ) -> Result<Option<NodeSettingsVersionRow>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
-            .query_row(
-                "SELECT index_uid, node_id, version, updated_at
-                 FROM node_settings_version WHERE index_uid = ?1 AND node_id = ?2",
-                params![index_uid, node_id],
-                |row| {
-                    Ok(NodeSettingsVersionRow {
-                        index_uid: row.get(0)?,
-                        node_id: row.get(1)?,
-                        version: row.get(2)?,
-                        updated_at: row.get(3)?,
-                    })
-                },
-            )
-            .optional()?)
-    }
-
-    // --- Table 3: aliases ---
-
-    fn create_alias(&self, alias: &NewAlias) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let target_uids_json = alias
-            .target_uids
-            .as_ref()
-            .map(|uids| serde_json::to_string(uids))
-            .transpose()?;
-        let history_json = serde_json::to_string(&alias.history)?;
-        conn.execute(
-            "INSERT INTO aliases (name, kind, current_uid, target_uids, version, created_at, history)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                alias.name,
-                alias.kind,
-                alias.current_uid,
-                target_uids_json,
-                alias.version,
-                alias.created_at,
-                history_json,
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        self.execute(
+            "INSERT OR REPLACE INTO node_settings_version (index_uid, node_id, version, updated_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            &[
+                &index as &dyn rusqlite::ToSql,
+                &node_id as &dyn rusqlite::ToSql,
+                &version as &dyn rusqlite::ToSql,
+                &now as &dyn rusqlite::ToSql,
             ],
         )?;
         Ok(())
     }
 
-    fn get_alias(&self, name: &str) -> Result<Option<AliasRow>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
+    async fn alias_upsert(&self, alias: &Alias) -> Result<()> {
+        let history_json = serde_json::to_string(&alias.history)?;
+        self.execute(
+            "INSERT OR REPLACE INTO aliases (name, kind, current_uid, target_uids, version, created_at, history)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            &[
+                &alias.name as &dyn rusqlite::ToSql,
+                &alias.kind.to_string(),
+                &alias.current_uid.as_deref().unwrap_or(""),
+                &serde_json::to_string(&alias.target_uids)?,
+                &alias.version,
+                &alias.created_at,
+                &history_json,
+            ] as &[&dyn rusqlite::ToSql],
+        )?;
+        Ok(())
+    }
+
+    async fn alias_get(&self, name: &str) -> Result<Option<Alias>> {
+        let result: Option<Alias> = self
             .query_row(
                 "SELECT name, kind, current_uid, target_uids, version, created_at, history
                  FROM aliases WHERE name = ?1",
-                params![name],
-                Self::alias_row_from_row,
+                &[&name as &dyn rusqlite::ToSql],
+                |row| {
+                    let target_uids_json: String = row.get(3)?;
+                    // Handle null case for single-target aliases
+                    let target_uids: Option<Vec<String>> = if target_uids_json == "null" || target_uids_json.is_empty() {
+                        None
+                    } else {
+                        let parsed: Vec<String> = serde_json::from_str(&target_uids_json)
+                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                        Some(parsed)
+                    };
+                    let history_json: String = row.get(6)?;
+                    let history: Vec<super::schema::AliasHistoryEntry> =
+                        serde_json::from_str(&history_json)
+                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                    Ok(Alias {
+                        name: row.get(0)?,
+                        kind: row.get::<_, String>(1)?.parse().map_err(parse_error)?,
+                        current_uid: {
+                            let uid: String = row.get(2)?;
+                            if uid.is_empty() {
+                                None
+                            } else {
+                                Some(uid)
+                            }
+                        },
+                        target_uids,
+                        version: row.get(4)?,
+                        created_at: row.get(5)?,
+                        history,
+                    })
+                },
             )
-            .optional()?)
-    }
-
-    fn flip_alias(&self, name: &str, new_uid: &str, history_retention: usize) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let tx = conn.unchecked_transaction()?;
-
-        // Read current
-        let existing: Option<(String, i64, String)> = tx
-            .query_row(
-                "SELECT current_uid, version, history FROM aliases WHERE name = ?1 AND kind = 'single'",
-                params![name],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()?;
-        let Some((old_uid, old_version, history_json)) = existing else {
-            return Ok(false);
-        };
-
-        // Build new history
-        let mut history: Vec<AliasHistoryEntry> = serde_json::from_str(&history_json)?;
-        if !old_uid.is_empty() {
-            history.push(AliasHistoryEntry {
-                uid: old_uid,
-                flipped_at: now_ms(),
-            });
-        }
-        // Enforce retention bound
-        while history.len() > history_retention {
-            history.remove(0);
-        }
-
-        let new_history_json = serde_json::to_string(&history)?;
-        let new_version = old_version + 1;
-
-        let rows = tx.execute(
-            "UPDATE aliases SET current_uid = ?1, version = ?2, history = ?3 WHERE name = ?4",
-            params![new_uid, new_version, new_history_json, name],
-        )?;
-        tx.commit()?;
-        Ok(rows > 0)
-    }
-
-    fn delete_alias(&self, name: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute("DELETE FROM aliases WHERE name = ?1", params![name])?;
-        Ok(rows > 0)
-    }
-
-    fn list_aliases(&self) -> Result<Vec<AliasRow>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT name, kind, current_uid, target_uids, version, created_at, history
-             FROM aliases",
-        )?;
-        let rows = stmt.query_map([], Self::alias_row_from_row)?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
+            .ok();
         Ok(result)
     }
 
-    // --- Table 4: sessions ---
-
-    fn upsert_session(&self, session: &SessionRow) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO sessions (session_id, last_write_mtask_id, last_write_at, pinned_group, min_settings_version, ttl)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(session_id) DO UPDATE SET
-                last_write_mtask_id = ?2,
-                last_write_at = ?3,
-                pinned_group = ?4,
-                min_settings_version = ?5,
-                ttl = ?6",
-            params![
-                session.session_id,
-                session.last_write_mtask_id,
-                session.last_write_at,
-                session.pinned_group,
-                session.min_settings_version,
-                session.ttl,
-            ],
+    async fn alias_delete(&self, name: &str) -> Result<()> {
+        self.execute(
+            "DELETE FROM aliases WHERE name = ?1",
+            &[&name as &dyn rusqlite::ToSql],
         )?;
         Ok(())
     }
 
-    fn get_session(&self, session_id: &str) -> Result<Option<SessionRow>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
+    async fn alias_list(&self) -> Result<Vec<Alias>> {
+        self.query_map(
+            "SELECT name, kind, current_uid, target_uids, version, created_at, history FROM aliases",
+            &[] as &[&dyn rusqlite::ToSql],
+            |row| {
+                let target_uids_json: String = row.get(3)?;
+                // Handle null case for single-target aliases
+                let target_uids: Option<Vec<String>> = if target_uids_json == "null" || target_uids_json.is_empty() {
+                    None
+                } else {
+                    let parsed: Vec<String> = serde_json::from_str(&target_uids_json).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                    Some(parsed)
+                };
+                let history_json: String = row.get(6)?;
+                let history: Vec<super::schema::AliasHistoryEntry> =
+                    serde_json::from_str(&history_json)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                Ok(Alias {
+                    name: row.get(0)?,
+                    kind: row.get::<_, String>(1)?.parse().map_err(|e| {
+                        parse_error(e)
+                    })?,
+                    current_uid: {
+                        let uid: String = row.get(2)?;
+                        if uid.is_empty() { None } else { Some(uid) }
+                    },
+                    target_uids,
+                    version: row.get(4)?,
+                    created_at: row.get(5)?,
+                    history,
+                })
+            },
+        )
+    }
+
+    async fn session_upsert(&self, session: &Session) -> Result<()> {
+        self.execute(
+            "INSERT OR REPLACE INTO sessions (session_id, last_write_mtask_id, last_write_at, pinned_group, min_settings_version, ttl)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            &[
+                &session.session_id as &dyn rusqlite::ToSql,
+                &session.last_write_mtask_id.as_deref().unwrap_or(""),
+                &session.last_write_at.map(|v| v as i64).unwrap_or(0),
+                &session.pinned_group,
+                &session.min_settings_version,
+                &(session.ttl as i64),
+            ] as &[&dyn rusqlite::ToSql],
+        )?;
+        Ok(())
+    }
+
+    async fn session_get(&self, session_id: &str) -> Result<Option<Session>> {
+        let result: Option<Session> = self
             .query_row(
                 "SELECT session_id, last_write_mtask_id, last_write_at, pinned_group, min_settings_version, ttl
                  FROM sessions WHERE session_id = ?1",
-                params![session_id],
+                &[&session_id as &dyn rusqlite::ToSql],
                 |row| {
-                    Ok(SessionRow {
+                    Ok(Session {
                         session_id: row.get(0)?,
-                        last_write_mtask_id: row.get(1)?,
-                        last_write_at: row.get(2)?,
+                        last_write_mtask_id: {
+                            let id: String = row.get(1)?;
+                            if id.is_empty() { None } else { Some(id) }
+                        },
+                        last_write_at: {
+                            let at: i64 = row.get(2)?;
+                            if at == 0 { None } else { Some(at as u64) }
+                        },
                         pinned_group: row.get(3)?,
                         min_settings_version: row.get(4)?,
                         ttl: row.get(5)?,
                     })
                 },
             )
-            .optional()?)
+            .ok();
+        Ok(result)
     }
 
-    fn delete_expired_sessions(&self, now_ms: i64) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute("DELETE FROM sessions WHERE ttl < ?1", params![now_ms])?;
-        Ok(rows)
+    async fn session_delete(&self, session_id: &str) -> Result<()> {
+        self.execute(
+            "DELETE FROM sessions WHERE session_id = ?1",
+            &[&session_id as &dyn rusqlite::ToSql],
+        )?;
+        Ok(())
     }
 
-    // --- Table 5: idempotency_cache ---
+    async fn session_delete_by_index(&self, _index: &str) -> Result<()> {
+        // This method is no longer applicable with the new schema
+        // as sessions don't have an 'index' field anymore
+        Ok(())
+    }
 
-    fn insert_idempotency_entry(&self, entry: &IdempotencyEntry) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO idempotency_cache (key, body_sha256, miroir_task_id, expires_at)
+    async fn idempotency_check(&self, key: &str) -> Result<Option<IdempotencyEntry>> {
+        let result: Option<IdempotencyEntry> = self
+            .query_row(
+                "SELECT key, body_sha256, miroir_task_id, expires_at FROM idempotency_cache WHERE key = ?1",
+                &[&key as &dyn rusqlite::ToSql],
+                |row| Ok(IdempotencyEntry {
+                    key: row.get(0)?,
+                    body_sha256: row.get(1)?,
+                    miroir_task_id: row.get(2)?,
+                    expires_at: row.get(3)?,
+                }),
+            )
+            .ok();
+        Ok(result)
+    }
+
+    async fn idempotency_record(&self, entry: &IdempotencyEntry) -> Result<()> {
+        self.execute(
+            "INSERT OR REPLACE INTO idempotency_cache (key, body_sha256, miroir_task_id, expires_at)
              VALUES (?1, ?2, ?3, ?4)",
-            params![
-                entry.key,
-                entry.body_sha256,
-                entry.miroir_task_id,
-                entry.expires_at,
-            ],
+            &[
+                &entry.key as &dyn rusqlite::ToSql,
+                &entry.body_sha256 as &dyn rusqlite::ToSql,
+                &entry.miroir_task_id as &dyn rusqlite::ToSql,
+                &entry.expires_at as &dyn rusqlite::ToSql,
+            ] as &[&dyn rusqlite::ToSql],
         )?;
         Ok(())
     }
 
-    fn get_idempotency_entry(&self, key: &str) -> Result<Option<IdempotencyEntry>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
-            .query_row(
-                "SELECT key, body_sha256, miroir_task_id, expires_at
-                 FROM idempotency_cache WHERE key = ?1",
-                params![key],
-                |row| {
-                    Ok(IdempotencyEntry {
-                        key: row.get(0)?,
-                        body_sha256: row.get(1)?,
-                        miroir_task_id: row.get(2)?,
-                        expires_at: row.get(3)?,
-                    })
-                },
-            )
-            .optional()?)
-    }
-
-    fn delete_expired_idempotency_entries(&self, now_ms: i64) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
+    async fn idempotency_prune(&self, before_ts: u64) -> Result<u64> {
+        let count = self.execute(
             "DELETE FROM idempotency_cache WHERE expires_at < ?1",
-            params![now_ms],
+            &[&before_ts as &dyn rusqlite::ToSql],
         )?;
-        Ok(rows)
+        Ok(count as u64)
     }
 
-    // --- Table 6: jobs ---
-
-    fn insert_job(&self, job: &NewJob) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO jobs (id, type, params, state, claimed_by, claim_expires_at, progress, parent_job_id, chunk_index, total_chunks, created_at)
-             VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                job.id,
-                job.type_,
-                job.params,
-                job.state,
-                job.progress,
-                job.parent_job_id,
-                job.chunk_index,
-                job.total_chunks,
-                job.created_at,
-            ],
+    async fn job_enqueue(&self, job: &Job) -> Result<()> {
+        self.execute(
+            "INSERT INTO jobs (id, type, params, state, claimed_by, claim_expires_at, progress)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            &[
+                &job.id as &dyn rusqlite::ToSql,
+                &job.job_type,
+                &job.params,
+                &job.state.to_string(),
+                &job.claimed_by.as_deref().unwrap_or(""),
+                &job.claim_expires_at.map(|v| v as i64).unwrap_or(0),
+                &job.progress,
+            ] as &[&dyn rusqlite::ToSql],
         )?;
         Ok(())
     }
 
-    fn get_job(&self, id: &str) -> Result<Option<JobRow>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
+    async fn job_dequeue(&self, worker_id: &str) -> Result<Option<Job>> {
+        // Start a transaction
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| TaskStoreError::Internal(e.to_string()))?;
+        let tx = conn.unchecked_transaction()?;
+
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let expires_at = now + (5 * 60 * 1000); // 5 minutes from now
+
+        // Find and claim a job
+        let job_id: Option<String> = tx
             .query_row(
-                "SELECT id, type, params, state, claimed_by, claim_expires_at, progress, parent_job_id, chunk_index, total_chunks, created_at
+                "SELECT id FROM jobs WHERE state = 'queued' ORDER BY id ASC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Some(ref job_id) = job_id {
+            tx.execute(
+                "UPDATE jobs SET state = 'in_progress', claimed_by = ?1, claim_expires_at = ?2 WHERE id = ?3",
+                [
+                    &worker_id as &dyn rusqlite::ToSql,
+                    &expires_at as &dyn rusqlite::ToSql,
+                    job_id as &dyn rusqlite::ToSql,
+                ],
+            )?;
+
+            // Fetch the updated job
+            let job: Job = tx.query_row(
+                "SELECT id, type, params, state, claimed_by, claim_expires_at, progress
                  FROM jobs WHERE id = ?1",
-                params![id],
+                [job_id as &dyn rusqlite::ToSql],
                 |row| {
-                    Ok(JobRow {
+                    Ok(Job {
                         id: row.get(0)?,
-                        type_: row.get(1)?,
+                        job_type: row.get(1)?,
                         params: row.get(2)?,
-                        state: row.get(3)?,
-                        claimed_by: row.get(4)?,
-                        claim_expires_at: row.get(5)?,
+                        state: row.get::<_, String>(3)?.parse().map_err(parse_error)?,
+                        claimed_by: {
+                            let claimed: String = row.get(4)?;
+                            if claimed.is_empty() {
+                                None
+                            } else {
+                                Some(claimed)
+                            }
+                        },
+                        claim_expires_at: {
+                            let expires: i64 = row.get(5)?;
+                            if expires == 0 {
+                                None
+                            } else {
+                                Some(expires as u64)
+                            }
+                        },
                         progress: row.get(6)?,
-                        parent_job_id: row.get(7)?,
-                        chunk_index: row.get(8)?,
-                        total_chunks: row.get(9)?,
-                        created_at: row.get(10)?,
                     })
                 },
-            )
-            .optional()?)
+            )?;
+
+            tx.commit()?;
+            Ok(Some(job))
+        } else {
+            tx.commit()?;
+            Ok(None)
+        }
     }
 
-    fn claim_job(&self, id: &str, claimed_by: &str, claim_expires_at: i64) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        // CAS: only claim if state is 'queued' (unclaimed)
-        let rows = conn.execute(
-            "UPDATE jobs SET claimed_by = ?1, claim_expires_at = ?2, state = 'in_progress'
-             WHERE id = ?3 AND state = 'queued'",
-            params![claimed_by, claim_expires_at, id],
-        )?;
-        Ok(rows > 0)
-    }
-
-    fn update_job_progress(&self, id: &str, state: &str, progress: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
+    async fn job_update_status(
+        &self,
+        job_id: &str,
+        status: JobState,
+        result: Option<&str>,
+    ) -> Result<()> {
+        self.execute(
             "UPDATE jobs SET state = ?1, progress = ?2 WHERE id = ?3",
-            params![state, progress, id],
-        )?;
-        Ok(rows > 0)
-    }
-
-    fn renew_job_claim(&self, id: &str, claim_expires_at: i64) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "UPDATE jobs SET claim_expires_at = ?1 WHERE id = ?2 AND claimed_by IS NOT NULL",
-            params![claim_expires_at, id],
-        )?;
-        Ok(rows > 0)
-    }
-
-    fn list_jobs_by_state(&self, state: &str) -> Result<Vec<JobRow>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, type, params, state, claimed_by, claim_expires_at, progress, parent_job_id, chunk_index, total_chunks, created_at
-             FROM jobs WHERE state = ?1",
-        )?;
-        let rows = stmt.query_map(params![state], |row| {
-            Ok(JobRow {
-                id: row.get(0)?,
-                type_: row.get(1)?,
-                params: row.get(2)?,
-                state: row.get(3)?,
-                claimed_by: row.get(4)?,
-                claim_expires_at: row.get(5)?,
-                progress: row.get(6)?,
-                parent_job_id: row.get(7)?,
-                chunk_index: row.get(8)?,
-                total_chunks: row.get(9)?,
-                created_at: row.get(10)?,
-            })
-        })?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
-    }
-
-    fn count_jobs_by_state(&self, state: &str) -> Result<u64> {
-        let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM jobs WHERE state = ?1",
-            params![state],
-            |row| row.get(0),
-        )?;
-        Ok(count as u64)
-    }
-
-    fn list_expired_claims(&self, now_ms: i64) -> Result<Vec<JobRow>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, type, params, state, claimed_by, claim_expires_at, progress, parent_job_id, chunk_index, total_chunks, created_at
-             FROM jobs WHERE state = 'in_progress' AND claim_expires_at < ?1",
-        )?;
-        let rows = stmt.query_map(params![now_ms], |row| {
-            Ok(JobRow {
-                id: row.get(0)?,
-                type_: row.get(1)?,
-                params: row.get(2)?,
-                state: row.get(3)?,
-                claimed_by: row.get(4)?,
-                claim_expires_at: row.get(5)?,
-                progress: row.get(6)?,
-                parent_job_id: row.get(7)?,
-                chunk_index: row.get(8)?,
-                total_chunks: row.get(9)?,
-                created_at: row.get(10)?,
-            })
-        })?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
-    }
-
-    fn list_jobs_by_parent(&self, parent_job_id: &str) -> Result<Vec<JobRow>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, type, params, state, claimed_by, claim_expires_at, progress, parent_job_id, chunk_index, total_chunks, created_at
-             FROM jobs WHERE parent_job_id = ?1",
-        )?;
-        let rows = stmt.query_map(params![parent_job_id], |row| {
-            Ok(JobRow {
-                id: row.get(0)?,
-                type_: row.get(1)?,
-                params: row.get(2)?,
-                state: row.get(3)?,
-                claimed_by: row.get(4)?,
-                claim_expires_at: row.get(5)?,
-                progress: row.get(6)?,
-                parent_job_id: row.get(7)?,
-                chunk_index: row.get(8)?,
-                total_chunks: row.get(9)?,
-                created_at: row.get(10)?,
-            })
-        })?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
-    }
-
-    fn reclaim_job_claim(&self, id: &str, state: &str, progress: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "UPDATE jobs SET state = ?1, progress = ?2, claimed_by = NULL, claim_expires_at = NULL
-             WHERE id = ?3",
-            params![state, progress, id],
-        )?;
-        Ok(rows > 0)
-    }
-
-    // --- Table 7: leader_lease ---
-
-    fn try_acquire_leader_lease(
-        &self,
-        scope: &str,
-        holder: &str,
-        expires_at: i64,
-        now_ms: i64,
-    ) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let existing: Option<LeaderLeaseRow> = conn
-            .query_row(
-                "SELECT scope, holder, expires_at FROM leader_lease WHERE scope = ?1",
-                params![scope],
-                |row| {
-                    Ok(LeaderLeaseRow {
-                        scope: row.get(0)?,
-                        holder: row.get(1)?,
-                        expires_at: row.get(2)?,
-                    })
-                },
-            )
-            .optional()?;
-
-        match existing {
-            None => {
-                conn.execute(
-                    "INSERT INTO leader_lease (scope, holder, expires_at) VALUES (?1, ?2, ?3)",
-                    params![scope, holder, expires_at],
-                )?;
-                Ok(true)
-            }
-            Some(lease) if lease.holder == holder || lease.expires_at <= now_ms => {
-                let rows = conn.execute(
-                    "UPDATE leader_lease SET holder = ?1, expires_at = ?2 WHERE scope = ?3",
-                    params![holder, expires_at, scope],
-                )?;
-                Ok(rows > 0)
-            }
-            Some(_) => Ok(false),
-        }
-    }
-
-    fn renew_leader_lease(&self, scope: &str, holder: &str, expires_at: i64) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        // Only renew if we still hold the lease AND it's not expired
-        let rows = conn.execute(
-            "UPDATE leader_lease SET expires_at = ?1 WHERE scope = ?2 AND holder = ?3 AND expires_at > ?4",
-            params![expires_at, scope, holder, now_ms()],
-        )?;
-        Ok(rows > 0)
-    }
-
-    fn get_leader_lease(&self, scope: &str) -> Result<Option<LeaderLeaseRow>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
-            .query_row(
-                "SELECT scope, holder, expires_at FROM leader_lease WHERE scope = ?1",
-                params![scope],
-                |row| {
-                    Ok(LeaderLeaseRow {
-                        scope: row.get(0)?,
-                        holder: row.get(1)?,
-                        expires_at: row.get(2)?,
-                    })
-                },
-            )
-            .optional()?)
-    }
-
-    // --- Tables 8-14: Feature-flagged tables ---
-
-    fn prune_tasks(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        // SQLite doesn't support LIMIT in DELETE directly, so use a subquery
-        let rows = conn.execute(
-            "DELETE FROM tasks WHERE rowid IN (
-                SELECT rowid FROM tasks
-                WHERE created_at < ?1 AND status IN ('succeeded', 'failed', 'canceled')
-                LIMIT ?2
-            )",
-            params![cutoff_ms, batch_size],
-        )?;
-        Ok(rows)
-    }
-
-    fn list_terminal_tasks_batch(
-        &self,
-        cutoff_ms: i64,
-        offset: i64,
-        limit: i64,
-    ) -> Result<Vec<TaskRow>> {
-        let conn = self.conn.lock().unwrap();
-        let sql = "SELECT miroir_id, created_at, status, node_tasks, error, started_at, finished_at, index_uid, task_type, node_errors
-                   FROM tasks
-                   WHERE created_at < ?1 AND status IN ('succeeded', 'failed', 'canceled')
-                   ORDER BY created_at DESC
-                   LIMIT ?2 OFFSET ?3";
-        let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map(params![cutoff_ms, limit, offset], Self::task_row_from_row)?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
-    }
-
-    fn delete_tasks_batch(&self, miroir_ids: &[&str]) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        let mut sql = "DELETE FROM tasks WHERE miroir_id IN (".to_string();
-        for (i, _) in miroir_ids.iter().enumerate() {
-            if i > 0 {
-                sql.push_str(", ");
-            }
-            sql.push_str(&format!("?{}", i + 1));
-        }
-        sql.push(')');
-
-        // Build IN clause dynamically and execute for each ID
-        // (SQLite doesn't support array binding directly)
-        let mut total_deleted = 0;
-        for miroir_id in miroir_ids {
-            let delete_sql = "DELETE FROM tasks WHERE miroir_id = ?1";
-            let rows = conn.execute(delete_sql, [&*miroir_id])?;
-            total_deleted += rows;
-        }
-        Ok(total_deleted)
-    }
-
-    fn task_count(&self) -> Result<u64> {
-        let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
-        Ok(count as u64)
-    }
-
-    // --- Table 8: canaries ---
-
-    fn upsert_canary(&self, canary: &NewCanary) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO canaries (id, name, index_uid, interval_s, query_json, assertions_json, enabled, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(id) DO UPDATE SET
-                name = ?2,
-                index_uid = ?3,
-                interval_s = ?4,
-                query_json = ?5,
-                assertions_json = ?6,
-                enabled = ?7",
-            params![
-                canary.id,
-                canary.name,
-                canary.index_uid,
-                canary.interval_s,
-                canary.query_json,
-                canary.assertions_json,
-                canary.enabled as i64,
-                canary.created_at,
+            &[
+                &status.to_string(),
+                &result.unwrap_or("").to_string(),
+                &job_id as &dyn rusqlite::ToSql,
             ],
         )?;
         Ok(())
     }
 
-    fn get_canary(&self, id: &str) -> Result<Option<CanaryRow>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
+    async fn job_get(&self, job_id: &str) -> Result<Option<Job>> {
+        let result: Option<Job> = self
+            .query_row(
+                "SELECT id, type, params, state, claimed_by, claim_expires_at, progress
+                 FROM jobs WHERE id = ?1",
+                &[&job_id as &dyn rusqlite::ToSql],
+                |row| {
+                    Ok(Job {
+                        id: row.get(0)?,
+                        job_type: row.get(1)?,
+                        params: row.get(2)?,
+                        state: row.get::<_, String>(3)?.parse().map_err(parse_error)?,
+                        claimed_by: {
+                            let claimed: String = row.get(4)?;
+                            if claimed.is_empty() {
+                                None
+                            } else {
+                                Some(claimed)
+                            }
+                        },
+                        claim_expires_at: {
+                            let expires: i64 = row.get(5)?;
+                            if expires == 0 {
+                                None
+                            } else {
+                                Some(expires as u64)
+                            }
+                        },
+                        progress: row.get(6)?,
+                    })
+                },
+            )
+            .ok();
+        Ok(result)
+    }
+
+    async fn job_list(&self, status: Option<JobState>, limit: usize) -> Result<Vec<Job>> {
+        let mut sql =
+            "SELECT id, type, params, state, claimed_by, claim_expires_at, progress FROM jobs"
+                .to_string();
+
+        if status.is_some() {
+            sql.push_str(" WHERE state = ?");
+        }
+
+        sql.push_str(&format!(" ORDER BY id DESC LIMIT {limit}"));
+
+        let status_str: Option<String> = status.map(|s| s.to_string());
+        let params: Vec<&dyn rusqlite::ToSql> = match &status_str {
+            Some(s) => vec![s],
+            None => vec![],
+        };
+
+        self.query_map(&sql, &params, |row| {
+            Ok(Job {
+                id: row.get(0)?,
+                job_type: row.get(1)?,
+                params: row.get(2)?,
+                state: row.get::<_, String>(3)?.parse().map_err(parse_error)?,
+                claimed_by: {
+                    let claimed: String = row.get(4)?;
+                    if claimed.is_empty() {
+                        None
+                    } else {
+                        Some(claimed)
+                    }
+                },
+                claim_expires_at: {
+                    let expires: i64 = row.get(5)?;
+                    if expires == 0 {
+                        None
+                    } else {
+                        Some(expires as u64)
+                    }
+                },
+                progress: row.get(6)?,
+            })
+        })
+    }
+
+    async fn leader_lease_acquire(&self, lease: &LeaderLease) -> Result<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| TaskStoreError::Internal(e.to_string()))?;
+        let tx = conn.unchecked_transaction()?;
+
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+
+        // Check if there's an existing valid lease for this scope
+        let existing: Option<(String, u64)> = tx
+            .query_row(
+                "SELECT scope, expires_at FROM leader_lease WHERE scope = ?1 AND expires_at > ?2",
+                [&lease.scope as &dyn rusqlite::ToSql, &now as &dyn rusqlite::ToSql],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+
+        let acquired = if existing.is_some() {
+            false
+        } else {
+            tx.execute(
+                "INSERT OR REPLACE INTO leader_lease (scope, holder, expires_at)
+                 VALUES (?1, ?2, ?3)",
+                [
+                    &lease.scope as &dyn rusqlite::ToSql,
+                    &lease.holder,
+                    &lease.expires_at,
+                ],
+            )?;
+            true
+        };
+
+        tx.commit()?;
+        Ok(acquired)
+    }
+
+    async fn leader_lease_release(&self, scope: &str) -> Result<()> {
+        self.execute(
+            "DELETE FROM leader_lease WHERE scope = ?1",
+            &[&scope as &dyn rusqlite::ToSql],
+        )?;
+        Ok(())
+    }
+
+    async fn leader_lease_get(&self) -> Result<Option<LeaderLease>> {
+        let result: Option<LeaderLease> = self
+            .query_row(
+                "SELECT scope, holder, expires_at FROM leader_lease LIMIT 1",
+                &[] as &[&dyn rusqlite::ToSql],
+                |row| {
+                    Ok(LeaderLease {
+                        scope: row.get(0)?,
+                        holder: row.get(1)?,
+                        expires_at: row.get(2)?,
+                    })
+                },
+            )
+            .ok();
+        Ok(result)
+    }
+
+    async fn canary_upsert(&self, canary: &Canary) -> Result<()> {
+        self.execute(
+            "INSERT OR REPLACE INTO canaries (id, name, index_uid, interval_s, query_json, assertions_json, enabled, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            &[
+                &canary.id as &dyn rusqlite::ToSql,
+                &canary.name,
+                &canary.index_uid,
+                &canary.interval_s,
+                &canary.query_json,
+                &canary.assertions_json,
+                &canary.enabled,
+                &canary.created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    async fn canary_get(&self, name: &str) -> Result<Option<Canary>> {
+        let result: Option<Canary> = self
             .query_row(
                 "SELECT id, name, index_uid, interval_s, query_json, assertions_json, enabled, created_at
-                 FROM canaries WHERE id = ?1",
-                params![id],
-                |row| {
-                    Ok(CanaryRow {
-                        id: row.get(0)?,
-                        name: row.get(1)?,
-                        index_uid: row.get(2)?,
-                        interval_s: row.get(3)?,
-                        query_json: row.get(4)?,
-                        assertions_json: row.get(5)?,
-                        enabled: row.get::<_, i64>(6)? != 0,
-                        created_at: row.get(7)?,
-                    })
-                },
+                 FROM canaries WHERE name = ?1",
+                &[&name as &dyn rusqlite::ToSql],
+                |row| Ok(Canary {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    index_uid: row.get(2)?,
+                    interval_s: row.get(3)?,
+                    query_json: row.get(4)?,
+                    assertions_json: row.get(5)?,
+                    enabled: row.get(6)?,
+                    created_at: row.get(7)?,
+                }),
             )
-            .optional()?)
+            .ok();
+        Ok(result)
     }
 
-    fn list_canaries(&self) -> Result<Vec<CanaryRow>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, index_uid, interval_s, query_json, assertions_json, enabled, created_at
-             FROM canaries",
+    async fn canary_delete(&self, name: &str) -> Result<()> {
+        self.execute(
+            "DELETE FROM canaries WHERE name = ?1",
+            &[&name as &dyn rusqlite::ToSql],
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(CanaryRow {
+        Ok(())
+    }
+
+    async fn canary_list(&self) -> Result<Vec<Canary>> {
+        self.query_map(
+            "SELECT id, name, index_uid, interval_s, query_json, assertions_json, enabled, created_at FROM canaries",
+            &[] as &[&dyn rusqlite::ToSql],
+            |row| Ok(Canary {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 index_uid: row.get(2)?,
                 interval_s: row.get(3)?,
                 query_json: row.get(4)?,
                 assertions_json: row.get(5)?,
-                enabled: row.get::<_, i64>(6)? != 0,
+                enabled: row.get(6)?,
                 created_at: row.get(7)?,
-            })
-        })?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
+            }),
+        )
     }
 
-    fn delete_canary(&self, id: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute("DELETE FROM canaries WHERE id = ?1", params![id])?;
-        Ok(rows > 0)
-    }
-
-    // --- Table 9: canary_runs ---
-
-    fn insert_canary_run(&self, run: &NewCanaryRun, run_history_limit: usize) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let tx = conn.unchecked_transaction()?;
-
-        // Insert the new run
-        tx.execute(
-            "INSERT INTO canary_runs (canary_id, ran_at, status, latency_ms, failed_assertions_json)
+    async fn canary_run_insert(&self, run: &CanaryRun) -> Result<()> {
+        self.execute(
+            "INSERT OR REPLACE INTO canary_runs (canary_id, ran_at, status, latency_ms, failed_assertions_json)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                run.canary_id,
-                run.ran_at,
-                run.status,
-                run.latency_ms,
-                run.failed_assertions_json,
-            ],
-        )?;
-
-        // Prune old runs to stay within the history limit
-        // We want to keep only the most recent N runs (where N = run_history_limit)
-        // Delete any runs that are NOT among the N most recent
-        let limit = run_history_limit as i64;
-        tx.execute(
-            "DELETE FROM canary_runs
-             WHERE canary_id = ?1
-               AND ran_at NOT IN (
-                   SELECT ran_at
-                   FROM canary_runs
-                   WHERE canary_id = ?1
-                   ORDER BY ran_at DESC
-                   LIMIT ?2
-               )",
-            params![run.canary_id, limit],
-        )?;
-
-        tx.commit()?;
-        Ok(())
-    }
-
-    fn get_canary_runs(&self, canary_id: &str, limit: usize) -> Result<Vec<CanaryRunRow>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT canary_id, ran_at, status, latency_ms, failed_assertions_json
-             FROM canary_runs
-             WHERE canary_id = ?1
-             ORDER BY ran_at DESC
-             LIMIT ?2",
-        )?;
-        let rows = stmt.query_map(params![canary_id, limit as i64], |row| {
-            Ok(CanaryRunRow {
-                canary_id: row.get(0)?,
-                ran_at: row.get(1)?,
-                status: row.get(2)?,
-                latency_ms: row.get(3)?,
-                failed_assertions_json: row.get(4)?,
-            })
-        })?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
-    }
-
-    // --- Table 10: cdc_cursors ---
-
-    fn upsert_cdc_cursor(&self, cursor: &NewCdcCursor) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO cdc_cursors (sink_name, index_uid, last_event_seq, updated_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(sink_name, index_uid) DO UPDATE SET
-                last_event_seq = ?3,
-                updated_at = ?4",
-            params![
-                cursor.sink_name,
-                cursor.index_uid,
-                cursor.last_event_seq,
-                cursor.updated_at,
+            &[
+                &run.canary_id as &dyn rusqlite::ToSql,
+                &run.ran_at,
+                &run.status.to_string(),
+                &run.latency_ms,
+                &run.failed_assertions_json.as_deref().unwrap_or(""),
             ],
         )?;
         Ok(())
     }
 
-    fn get_cdc_cursor(&self, sink_name: &str, index_uid: &str) -> Result<Option<CdcCursorRow>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
+    async fn canary_run_list(&self, canary_name: &str, limit: usize) -> Result<Vec<CanaryRun>> {
+        self.query_map(
+            &format!(
+                "SELECT canary_id, ran_at, status, latency_ms, failed_assertions_json
+                 FROM canary_runs WHERE canary_id = ?1 ORDER BY ran_at DESC LIMIT {limit}"
+            ),
+            &[&canary_name as &dyn rusqlite::ToSql],
+            |row| {
+                Ok(CanaryRun {
+                    canary_id: row.get(0)?,
+                    ran_at: row.get(1)?,
+                    status: row.get::<_, String>(2)?.parse().map_err(parse_error)?,
+                    latency_ms: row.get(3)?,
+                    failed_assertions_json: {
+                        let json: String = row.get(4)?;
+                        if json.is_empty() {
+                            None
+                        } else {
+                            Some(json)
+                        }
+                    },
+                })
+            },
+        )
+    }
+
+    async fn canary_run_prune(&self, before_ts: u64) -> Result<u64> {
+        let count = self.execute(
+            "DELETE FROM canary_runs WHERE ran_at < ?1",
+            &[&before_ts as &dyn rusqlite::ToSql],
+        )?;
+        Ok(count as u64)
+    }
+
+    async fn cdc_cursor_get(&self, sink: &str, index: &str) -> Result<Option<CdcCursor>> {
+        let result: Option<CdcCursor> = self
             .query_row(
-                "SELECT sink_name, index_uid, last_event_seq, updated_at
-                 FROM cdc_cursors WHERE sink_name = ?1 AND index_uid = ?2",
-                params![sink_name, index_uid],
-                |row| {
-                    Ok(CdcCursorRow {
-                        sink_name: row.get(0)?,
-                        index_uid: row.get(1)?,
-                        last_event_seq: row.get(2)?,
-                        updated_at: row.get(3)?,
-                    })
-                },
+                "SELECT sink_name, index_uid, last_event_seq, updated_at FROM cdc_cursors WHERE sink_name = ?1 AND index_uid = ?2",
+                &[&sink as &dyn rusqlite::ToSql, &index as &dyn rusqlite::ToSql],
+                |row| Ok(CdcCursor {
+                    sink_name: row.get(0)?,
+                    index_uid: row.get(1)?,
+                    last_event_seq: row.get(2)?,
+                    updated_at: row.get(3)?,
+                }),
             )
-            .optional()?)
-    }
-
-    fn list_cdc_cursors(&self, sink_name: &str) -> Result<Vec<CdcCursorRow>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT sink_name, index_uid, last_event_seq, updated_at
-             FROM cdc_cursors WHERE sink_name = ?1",
-        )?;
-        let rows = stmt.query_map(params![sink_name], |row| {
-            Ok(CdcCursorRow {
-                sink_name: row.get(0)?,
-                index_uid: row.get(1)?,
-                last_event_seq: row.get(2)?,
-                updated_at: row.get(3)?,
-            })
-        })?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
+            .ok();
         Ok(result)
     }
 
-    // --- Table 11: tenant_map ---
-
-    fn insert_tenant_mapping(&self, mapping: &NewTenantMapping) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO tenant_map (api_key_hash, tenant_id, group_id)
-             VALUES (?1, ?2, ?3)",
-            params![
-                mapping.api_key_hash.as_slice(),
-                mapping.tenant_id,
-                mapping.group_id,
+    async fn cdc_cursor_set(&self, cursor: &CdcCursor) -> Result<()> {
+        self.execute(
+            "INSERT OR REPLACE INTO cdc_cursors (sink_name, index_uid, last_event_seq, updated_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            &[
+                &cursor.sink_name as &dyn rusqlite::ToSql,
+                &cursor.index_uid,
+                &cursor.last_event_seq,
+                &cursor.updated_at,
             ],
         )?;
         Ok(())
     }
 
-    fn get_tenant_mapping(&self, api_key_hash: &[u8]) -> Result<Option<TenantMapRow>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
+    async fn cdc_cursor_list(&self, sink: &str) -> Result<Vec<CdcCursor>> {
+        self.query_map(
+            "SELECT sink_name, index_uid, last_event_seq, updated_at FROM cdc_cursors WHERE sink_name = ?1",
+            &[&sink as &dyn rusqlite::ToSql],
+            |row| {
+                Ok(CdcCursor {
+                    sink_name: row.get(0)?,
+                    index_uid: row.get(1)?,
+                    last_event_seq: row.get(2)?,
+                    updated_at: row.get(3)?,
+                })
+            },
+        )
+    }
+
+    async fn tenant_upsert(&self, tenant: &Tenant) -> Result<()> {
+        self.execute(
+            "INSERT OR REPLACE INTO tenant_map (api_key_hash, tenant_id, group_id)
+             VALUES (?1, ?2, ?3)",
+            &[
+                &tenant.api_key_hash as &dyn rusqlite::ToSql,
+                &tenant.tenant_id,
+                &tenant.group_id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    async fn tenant_get(&self, api_key: &str) -> Result<Option<Tenant>> {
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(api_key.as_bytes());
+        let api_key_hash: Vec<u8> = hasher.finalize().to_vec();
+
+        let result: Option<Tenant> = self
             .query_row(
                 "SELECT api_key_hash, tenant_id, group_id
                  FROM tenant_map WHERE api_key_hash = ?1",
-                params![api_key_hash],
+                &[&api_key_hash as &dyn rusqlite::ToSql],
                 |row| {
-                    Ok(TenantMapRow {
+                    Ok(Tenant {
                         api_key_hash: row.get(0)?,
                         tenant_id: row.get(1)?,
                         group_id: row.get(2)?,
                     })
                 },
             )
-            .optional()?)
+            .ok();
+        Ok(result)
     }
 
-    fn delete_tenant_mapping(&self, api_key_hash: &[u8]) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
+    async fn tenant_delete(&self, api_key: &str) -> Result<()> {
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(api_key.as_bytes());
+        let api_key_hash: Vec<u8> = hasher.finalize().to_vec();
+
+        self.execute(
             "DELETE FROM tenant_map WHERE api_key_hash = ?1",
-            params![api_key_hash],
+            &[&api_key_hash as &dyn rusqlite::ToSql],
         )?;
-        Ok(rows > 0)
+        Ok(())
     }
 
-    // --- Table 12: rollover_policies ---
+    async fn tenant_list(&self) -> Result<Vec<Tenant>> {
+        self.query_map(
+            "SELECT api_key_hash, tenant_id, group_id FROM tenant_map",
+            &[] as &[&dyn rusqlite::ToSql],
+            |row| {
+                Ok(Tenant {
+                    api_key_hash: row.get(0)?,
+                    tenant_id: row.get(1)?,
+                    group_id: row.get(2)?,
+                })
+            },
+        )
+    }
 
-    fn upsert_rollover_policy(&self, policy: &NewRolloverPolicy) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO rollover_policies (name, write_alias, read_alias, pattern, triggers_json, retention_json, template_json, enabled)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(name) DO UPDATE SET
-                write_alias = ?2,
-                read_alias = ?3,
-                pattern = ?4,
-                triggers_json = ?5,
-                retention_json = ?6,
-                template_json = ?7,
-                enabled = ?8",
-            params![
-                policy.name,
-                policy.write_alias,
-                policy.read_alias,
-                policy.pattern,
-                policy.triggers_json,
-                policy.retention_json,
-                policy.template_json,
-                policy.enabled as i64,
+    async fn rollover_policy_upsert(&self, policy: &RolloverPolicy) -> Result<()> {
+        self.execute(
+            "INSERT OR REPLACE INTO rollover_policies
+             (name, write_alias, read_alias, pattern, triggers_json, retention_json, template_json, enabled)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            &[
+                &policy.name as &dyn rusqlite::ToSql,
+                &policy.write_alias,
+                &policy.read_alias,
+                &policy.pattern,
+                &policy.triggers_json,
+                &policy.retention_json,
+                &policy.template_json,
+                &policy.enabled,
             ],
         )?;
         Ok(())
     }
 
-    fn get_rollover_policy(&self, name: &str) -> Result<Option<RolloverPolicyRow>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
+    async fn rollover_policy_get(&self, name: &str) -> Result<Option<RolloverPolicy>> {
+        let result: Option<RolloverPolicy> = self
             .query_row(
                 "SELECT name, write_alias, read_alias, pattern, triggers_json, retention_json, template_json, enabled
                  FROM rollover_policies WHERE name = ?1",
-                params![name],
+                &[&name as &dyn rusqlite::ToSql],
                 |row| {
-                    Ok(RolloverPolicyRow {
+                    Ok(RolloverPolicy {
                         name: row.get(0)?,
                         write_alias: row.get(1)?,
                         read_alias: row.get(2)?,
@@ -1103,1958 +1027,455 @@ impl TaskStore for SqliteTaskStore {
                         triggers_json: row.get(4)?,
                         retention_json: row.get(5)?,
                         template_json: row.get(6)?,
-                        enabled: row.get::<_, i64>(7)? != 0,
+                        enabled: row.get(7)?,
                     })
                 },
             )
-            .optional()?)
-    }
-
-    fn list_rollover_policies(&self) -> Result<Vec<RolloverPolicyRow>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT name, write_alias, read_alias, pattern, triggers_json, retention_json, template_json, enabled
-             FROM rollover_policies",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(RolloverPolicyRow {
-                name: row.get(0)?,
-                write_alias: row.get(1)?,
-                read_alias: row.get(2)?,
-                pattern: row.get(3)?,
-                triggers_json: row.get(4)?,
-                retention_json: row.get(5)?,
-                template_json: row.get(6)?,
-                enabled: row.get::<_, i64>(7)? != 0,
-            })
-        })?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
+            .ok();
         Ok(result)
     }
 
-    fn delete_rollover_policy(&self, name: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
+    async fn rollover_policy_delete(&self, name: &str) -> Result<()> {
+        self.execute(
             "DELETE FROM rollover_policies WHERE name = ?1",
-            params![name],
-        )?;
-        Ok(rows > 0)
-    }
-
-    // --- Table 13: search_ui_config ---
-
-    fn upsert_search_ui_config(&self, config: &NewSearchUiConfig) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO search_ui_config (index_uid, config_json, updated_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(index_uid) DO UPDATE SET
-                config_json = ?2,
-                updated_at = ?3",
-            params![config.index_uid, config.config_json, config.updated_at],
+            &[&name as &dyn rusqlite::ToSql],
         )?;
         Ok(())
     }
 
-    fn get_search_ui_config(&self, index_uid: &str) -> Result<Option<SearchUiConfigRow>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
-            .query_row(
-                "SELECT index_uid, config_json, updated_at
-                 FROM search_ui_config WHERE index_uid = ?1",
-                params![index_uid],
-                |row| {
-                    Ok(SearchUiConfigRow {
-                        index_uid: row.get(0)?,
-                        config_json: row.get(1)?,
-                        updated_at: row.get(2)?,
-                    })
-                },
-            )
-            .optional()?)
-    }
-
-    fn delete_search_ui_config(&self, index_uid: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "DELETE FROM search_ui_config WHERE index_uid = ?1",
-            params![index_uid],
-        )?;
-        Ok(rows > 0)
-    }
-
-    // --- Table 14: admin_sessions ---
-
-    fn insert_admin_session(&self, session: &NewAdminSession) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO admin_sessions (session_id, csrf_token, admin_key_hash, created_at, expires_at, revoked, user_agent, source_ip)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7)",
-            params![
-                session.session_id,
-                session.csrf_token,
-                session.admin_key_hash,
-                session.created_at,
-                session.expires_at,
-                session.user_agent,
-                session.source_ip,
-            ],
-        )?;
-        Ok(())
-    }
-
-    fn get_admin_session(&self, session_id: &str) -> Result<Option<AdminSessionRow>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
-            .query_row(
-                "SELECT session_id, csrf_token, admin_key_hash, created_at, expires_at, revoked, user_agent, source_ip
-                 FROM admin_sessions WHERE session_id = ?1",
-                params![session_id],
-                |row| {
-                    Ok(AdminSessionRow {
-                        session_id: row.get(0)?,
-                        csrf_token: row.get(1)?,
-                        admin_key_hash: row.get(2)?,
-                        created_at: row.get(3)?,
-                        expires_at: row.get(4)?,
-                        revoked: row.get::<_, i64>(5)? != 0,
-                        user_agent: row.get(6)?,
-                        source_ip: row.get(7)?,
-                    })
-                },
-            )
-            .optional()?)
-    }
-
-    fn revoke_admin_session(&self, session_id: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "UPDATE admin_sessions SET revoked = 1 WHERE session_id = ?1",
-            params![session_id],
-        )?;
-        Ok(rows > 0)
-    }
-
-    fn delete_expired_admin_sessions(&self, now_ms: i64) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "DELETE FROM admin_sessions WHERE expires_at < ?1",
-            params![now_ms],
-        )?;
-        Ok(rows)
-    }
-
-    // --- Table 15: mode_b_operations ---
-
-    fn upsert_mode_b_operation(&self, operation: &ModeBOperation) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO mode_b_operations (
-                operation_id, operation_type, scope, phase, phase_started_at,
-                created_at, updated_at, state_json, error, status,
-                index_uid, old_shards, target_shards, shadow_index,
-                documents_backfilled, total_documents
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
-            ON CONFLICT(operation_id) DO UPDATE SET
-                phase = ?4,
-                phase_started_at = ?5,
-                updated_at = ?7,
-                state_json = ?8,
-                error = ?9,
-                status = ?10,
-                index_uid = ?11,
-                old_shards = ?12,
-                target_shards = ?13,
-                shadow_index = ?14,
-                documents_backfilled = ?15,
-                total_documents = ?16",
-            params![
-                &operation.operation_id,
-                &operation.operation_type,
-                &operation.scope,
-                &operation.phase,
-                operation.phase_started_at,
-                operation.created_at,
-                operation.updated_at,
-                &operation.state_json,
-                &operation.error,
-                &operation.status,
-                &operation.index_uid,
-                operation.old_shards,
-                operation.target_shards,
-                &operation.shadow_index,
-                operation.documents_backfilled,
-                operation.total_documents,
-            ],
-        )?;
-        Ok(())
-    }
-
-    fn get_mode_b_operation(&self, operation_id: &str) -> Result<Option<ModeBOperation>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
-            .query_row(
-                "SELECT operation_id, operation_type, scope, phase, phase_started_at,
-                        created_at, updated_at, state_json, error, status,
-                        index_uid, old_shards, target_shards, shadow_index,
-                        documents_backfilled, total_documents
-                 FROM mode_b_operations WHERE operation_id = ?1",
-                params![operation_id],
-                |row| {
-                    Ok(ModeBOperation {
-                        operation_id: row.get(0)?,
-                        operation_type: row.get(1)?,
-                        scope: row.get(2)?,
-                        phase: row.get(3)?,
-                        phase_started_at: row.get(4)?,
-                        created_at: row.get(5)?,
-                        updated_at: row.get(6)?,
-                        state_json: row.get(7)?,
-                        error: row.get(8)?,
-                        status: row.get(9)?,
-                        index_uid: row.get(10)?,
-                        old_shards: row.get(11)?,
-                        target_shards: row.get(12)?,
-                        shadow_index: row.get(13)?,
-                        documents_backfilled: row.get(14)?,
-                        total_documents: row.get(15)?,
-                    })
-                },
-            )
-            .optional()?)
-    }
-
-    fn get_mode_b_operation_by_scope(&self, scope: &str) -> Result<Option<ModeBOperation>> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn
-            .query_row(
-                "SELECT operation_id, operation_type, scope, phase, phase_started_at,
-                        created_at, updated_at, state_json, error, status,
-                        index_uid, old_shards, target_shards, shadow_index,
-                        documents_backfilled, total_documents
-                 FROM mode_b_operations WHERE scope = ?1
-                 ORDER BY updated_at DESC LIMIT 1",
-                params![scope],
-                |row| {
-                    Ok(ModeBOperation {
-                        operation_id: row.get(0)?,
-                        operation_type: row.get(1)?,
-                        scope: row.get(2)?,
-                        phase: row.get(3)?,
-                        phase_started_at: row.get(4)?,
-                        created_at: row.get(5)?,
-                        updated_at: row.get(6)?,
-                        state_json: row.get(7)?,
-                        error: row.get(8)?,
-                        status: row.get(9)?,
-                        index_uid: row.get(10)?,
-                        old_shards: row.get(11)?,
-                        target_shards: row.get(12)?,
-                        shadow_index: row.get(13)?,
-                        documents_backfilled: row.get(14)?,
-                        total_documents: row.get(15)?,
-                    })
-                },
-            )
-            .optional()?)
-    }
-
-    fn list_mode_b_operations(&self, filter: &ModeBOperationFilter) -> Result<Vec<ModeBOperation>> {
-        let conn = self.conn.lock().unwrap();
-        let mut query = "SELECT operation_id, operation_type, scope, phase, phase_started_at,
-                        created_at, updated_at, state_json, error, status,
-                        index_uid, old_shards, target_shards, shadow_index,
-                        documents_backfilled, total_documents
-                 FROM mode_b_operations"
-            .to_string();
-        let mut wheres = Vec::new();
-        let mut params = Vec::new();
-
-        if let Some(op_type) = &filter.operation_type {
-            wheres.push("operation_type = ?");
-            params.push(op_type.as_str());
-        }
-        if let Some(scope) = &filter.scope {
-            wheres.push("scope = ?");
-            params.push(scope.as_str());
-        }
-        if let Some(status) = &filter.status {
-            wheres.push("status = ?");
-            params.push(status.as_str());
-        }
-
-        if !wheres.is_empty() {
-            query.push_str(" WHERE ");
-            query.push_str(&wheres.join(" AND "));
-        }
-
-        query.push_str(" ORDER BY updated_at DESC");
-
-        if let Some(limit) = filter.limit {
-            query.push_str(&format!(" LIMIT {}", limit));
-        }
-        if let Some(offset) = filter.offset {
-            query.push_str(&format!(" OFFSET {}", offset));
-        }
-
-        let mut stmt = conn.prepare(&query)?;
-        let param_refs: Vec<&dyn rusqlite::ToSql> =
-            params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
-
-        let mut results = Vec::new();
-        let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            Ok(ModeBOperation {
-                operation_id: row.get(0)?,
-                operation_type: row.get(1)?,
-                scope: row.get(2)?,
-                phase: row.get(3)?,
-                phase_started_at: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                state_json: row.get(7)?,
-                error: row.get(8)?,
-                status: row.get(9)?,
-                index_uid: row.get(10)?,
-                old_shards: row.get(11)?,
-                target_shards: row.get(12)?,
-                shadow_index: row.get(13)?,
-                documents_backfilled: row.get(14)?,
-                total_documents: row.get(15)?,
-            })
-        })?;
-
-        for row in rows {
-            results.push(row?);
-        }
-
-        Ok(results)
-    }
-
-    fn delete_mode_b_operation(&self, operation_id: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "DELETE FROM mode_b_operations WHERE operation_id = ?1",
-            params![operation_id],
-        )?;
-        Ok(rows > 0)
-    }
-
-    fn prune_mode_b_operations(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "DELETE FROM mode_b_operations WHERE rowid IN (
-                SELECT rowid FROM mode_b_operations
-                WHERE updated_at < ?1 AND status IN ('completed', 'failed')
-                LIMIT ?2
-            )",
-            params![cutoff_ms, batch_size],
-        )?;
-        Ok(rows)
-    }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
-    use std::fs;
-
-    fn test_store() -> SqliteTaskStore {
-        let store = SqliteTaskStore::open_in_memory().unwrap();
-        store.migrate().unwrap();
-        store
-    }
-
-    // --- Table 1: tasks ---
-
-    #[test]
-    fn task_crud_round_trip() {
-        let store = test_store();
-        let mut node_tasks = HashMap::new();
-        node_tasks.insert("node-0".to_string(), 42u64);
-        node_tasks.insert("node-1".to_string(), 17u64);
-
-        let new_task = NewTask {
-            miroir_id: "test-task-1".to_string(),
-            created_at: 1000,
-            status: "enqueued".to_string(),
-            node_tasks: node_tasks.clone(),
-            error: None,
-            started_at: None,
-            finished_at: None,
-            index_uid: None,
-            task_type: None,
-            node_errors: HashMap::new(),
-        };
-        store.insert_task(&new_task).unwrap();
-
-        let task = store.get_task("test-task-1").unwrap().unwrap();
-        assert_eq!(task.miroir_id, "test-task-1");
-        assert_eq!(task.status, "enqueued");
-        assert_eq!(task.node_tasks, node_tasks);
-        assert!(task.error.is_none());
-
-        // Update status
-        assert!(store
-            .update_task_status("test-task-1", "processing")
-            .unwrap());
-        let task = store.get_task("test-task-1").unwrap().unwrap();
-        assert_eq!(task.status, "processing");
-
-        // Update node task
-        assert!(store.update_node_task("test-task-1", "node-0", 99).unwrap());
-        let task = store.get_task("test-task-1").unwrap().unwrap();
-        assert_eq!(task.node_tasks.get("node-0"), Some(&99u64));
-        assert_eq!(task.node_tasks.get("node-1"), Some(&17u64));
-
-        // Set error
-        assert!(store.set_task_error("test-task-1", "boom").unwrap());
-        let task = store.get_task("test-task-1").unwrap().unwrap();
-        assert_eq!(task.error.as_deref(), Some("boom"));
-
-        // Missing task
-        assert!(store.get_task("no-such-task").unwrap().is_none());
-        assert!(!store.update_task_status("no-such-task", "failed").unwrap());
-    }
-
-    #[test]
-    fn task_list_with_filter() {
-        let store = test_store();
-
-        for i in 0..5 {
-            let mut nt = HashMap::new();
-            nt.insert("node-0".to_string(), i as u64);
-            store
-                .insert_task(&NewTask {
-                    miroir_id: format!("task-{i}"),
-                    created_at: i as i64 * 1000,
-                    status: if i < 3 { "enqueued" } else { "succeeded" }.to_string(),
-                    node_tasks: nt,
-                    error: None,
-                    started_at: None,
-                    finished_at: None,
-                    index_uid: None,
-                    task_type: None,
-                    node_errors: HashMap::new(),
+    async fn rollover_policy_list(&self) -> Result<Vec<RolloverPolicy>> {
+        self.query_map(
+            "SELECT name, write_alias, read_alias, pattern, triggers_json, retention_json, template_json, enabled
+             FROM rollover_policies",
+            &[] as &[&dyn rusqlite::ToSql],
+            |row| {
+                Ok(RolloverPolicy {
+                    name: row.get(0)?,
+                    write_alias: row.get(1)?,
+                    read_alias: row.get(2)?,
+                    pattern: row.get(3)?,
+                    triggers_json: row.get(4)?,
+                    retention_json: row.get(5)?,
+                    template_json: row.get(6)?,
+                    enabled: row.get(7)?,
                 })
-                .unwrap();
-        }
-
-        // All tasks
-        let all = store.list_tasks(&TaskFilter::default()).unwrap();
-        assert_eq!(all.len(), 5);
-
-        // Filter by status
-        let enqueued = store
-            .list_tasks(&TaskFilter {
-                status: Some("enqueued".to_string()),
-                ..Default::default()
-            })
-            .unwrap();
-        assert_eq!(enqueued.len(), 3);
-
-        // With limit + offset
-        let page = store
-            .list_tasks(&TaskFilter {
-                limit: Some(2),
-                offset: Some(1),
-                ..Default::default()
-            })
-            .unwrap();
-        assert_eq!(page.len(), 2);
-    }
-
-    // --- Table 2: node_settings_version ---
-
-    #[test]
-    fn node_settings_version_upsert_and_get() {
-        let store = test_store();
-
-        // Insert
-        store
-            .upsert_node_settings_version("idx-1", "node-0", 5, 1000)
-            .unwrap();
-        let row = store
-            .get_node_settings_version("idx-1", "node-0")
-            .unwrap()
-            .unwrap();
-        assert_eq!(row.version, 5);
-        assert_eq!(row.updated_at, 1000);
-
-        // Upsert (update)
-        store
-            .upsert_node_settings_version("idx-1", "node-0", 7, 2000)
-            .unwrap();
-        let row = store
-            .get_node_settings_version("idx-1", "node-0")
-            .unwrap()
-            .unwrap();
-        assert_eq!(row.version, 7);
-        assert_eq!(row.updated_at, 2000);
-
-        // Missing
-        assert!(store
-            .get_node_settings_version("idx-1", "node-99")
-            .unwrap()
-            .is_none());
-    }
-
-    // --- Table 3: aliases ---
-
-    #[test]
-    fn alias_single_crud_and_flip() {
-        let store = test_store();
-
-        store
-            .create_alias(&NewAlias {
-                name: "prod-logs".to_string(),
-                kind: "single".to_string(),
-                current_uid: Some("uid-v1".to_string()),
-                target_uids: None,
-                version: 1,
-                created_at: 1000,
-                history: vec![],
-            })
-            .unwrap();
-
-        let alias = store.get_alias("prod-logs").unwrap().unwrap();
-        assert_eq!(alias.current_uid.as_deref(), Some("uid-v1"));
-        assert_eq!(alias.version, 1);
-
-        // Flip
-        assert!(store.flip_alias("prod-logs", "uid-v2", 10).unwrap());
-        let alias = store.get_alias("prod-logs").unwrap().unwrap();
-        assert_eq!(alias.current_uid.as_deref(), Some("uid-v2"));
-        assert_eq!(alias.version, 2);
-        assert_eq!(alias.history.len(), 1);
-        assert_eq!(alias.history[0].uid, "uid-v1");
-
-        // Flip again
-        assert!(store.flip_alias("prod-logs", "uid-v3", 2).unwrap());
-        let alias = store.get_alias("prod-logs").unwrap().unwrap();
-        assert_eq!(alias.history.len(), 2); // retention = 2, so both kept
-
-        // Flip once more — retention should trim
-        assert!(store.flip_alias("prod-logs", "uid-v4", 2).unwrap());
-        let alias = store.get_alias("prod-logs").unwrap().unwrap();
-        assert_eq!(alias.history.len(), 2); // trimmed to 2
-
-        // Delete
-        assert!(store.delete_alias("prod-logs").unwrap());
-        assert!(store.get_alias("prod-logs").unwrap().is_none());
-    }
-
-    #[test]
-    fn alias_multi_target() {
-        let store = test_store();
-
-        store
-            .create_alias(&NewAlias {
-                name: "search-all".to_string(),
-                kind: "multi".to_string(),
-                current_uid: None,
-                target_uids: Some(vec!["uid-a".to_string(), "uid-b".to_string()]),
-                version: 1,
-                created_at: 1000,
-                history: vec![],
-            })
-            .unwrap();
-
-        let alias = store.get_alias("search-all").unwrap().unwrap();
-        assert_eq!(alias.kind, "multi");
-        assert_eq!(
-            alias.target_uids.unwrap(),
-            vec!["uid-a".to_string(), "uid-b".to_string()]
-        );
-    }
-
-    // --- Table 4: sessions ---
-
-    #[test]
-    fn session_upsert_get_and_expire() {
-        let store = test_store();
-
-        let session = SessionRow {
-            session_id: "sess-1".to_string(),
-            last_write_mtask_id: Some("task-1".to_string()),
-            last_write_at: Some(1000),
-            pinned_group: Some(2),
-            min_settings_version: 5,
-            ttl: 2000,
-        };
-        store.upsert_session(&session).unwrap();
-
-        let got = store.get_session("sess-1").unwrap().unwrap();
-        assert_eq!(got.last_write_mtask_id.as_deref(), Some("task-1"));
-        assert_eq!(got.pinned_group, Some(2));
-        assert_eq!(got.min_settings_version, 5);
-
-        // Upsert (update)
-        let updated = SessionRow {
-            session_id: "sess-1".to_string(),
-            last_write_mtask_id: Some("task-2".to_string()),
-            last_write_at: Some(1500),
-            pinned_group: None,
-            min_settings_version: 6,
-            ttl: 2500,
-        };
-        store.upsert_session(&updated).unwrap();
-        let got = store.get_session("sess-1").unwrap().unwrap();
-        assert_eq!(got.last_write_mtask_id.as_deref(), Some("task-2"));
-        assert!(got.pinned_group.is_none());
-
-        // Create expired session
-        store
-            .upsert_session(&SessionRow {
-                session_id: "sess-old".to_string(),
-                last_write_mtask_id: None,
-                last_write_at: None,
-                pinned_group: None,
-                min_settings_version: 1,
-                ttl: 500, // expired
-            })
-            .unwrap();
-
-        let deleted = store.delete_expired_sessions(1000).unwrap();
-        assert_eq!(deleted, 1);
-        assert!(store.get_session("sess-old").unwrap().is_none());
-        assert!(store.get_session("sess-1").unwrap().is_some());
-    }
-
-    // --- Table 5: idempotency_cache ---
-
-    #[test]
-    fn idempotency_crud_and_expire() {
-        let store = test_store();
-
-        let sha = vec![0u8; 32]; // dummy 32-byte hash
-        store
-            .insert_idempotency_entry(&IdempotencyEntry {
-                key: "req-abc".to_string(),
-                body_sha256: sha.clone(),
-                miroir_task_id: "task-1".to_string(),
-                expires_at: 5000,
-            })
-            .unwrap();
-
-        let entry = store.get_idempotency_entry("req-abc").unwrap().unwrap();
-        assert_eq!(entry.body_sha256, sha);
-        assert_eq!(entry.miroir_task_id, "task-1");
-
-        // Missing
-        assert!(store.get_idempotency_entry("nope").unwrap().is_none());
-
-        // Expire
-        store
-            .insert_idempotency_entry(&IdempotencyEntry {
-                key: "req-old".to_string(),
-                body_sha256: sha.clone(),
-                miroir_task_id: "task-2".to_string(),
-                expires_at: 100, // already expired
-            })
-            .unwrap();
-
-        let deleted = store.delete_expired_idempotency_entries(1000).unwrap();
-        assert_eq!(deleted, 1);
-        assert!(store.get_idempotency_entry("req-old").unwrap().is_none());
-        assert!(store.get_idempotency_entry("req-abc").unwrap().is_some());
-    }
-
-    // --- Table 6: jobs ---
-
-    #[test]
-    fn job_insert_claim_complete() {
-        let store = test_store();
-
-        store
-            .insert_job(&NewJob {
-                id: "job-1".to_string(),
-                type_: "dump_import".to_string(),
-                params: r#"{"index": "logs"}"#.to_string(),
-                state: "queued".to_string(),
-                progress: "{}".to_string(),
-                parent_job_id: None,
-                chunk_index: None,
-                total_chunks: None,
-                created_at: 1000,
-            })
-            .unwrap();
-
-        let job = store.get_job("job-1").unwrap().unwrap();
-        assert_eq!(job.state, "queued");
-        assert!(job.claimed_by.is_none());
-
-        // Claim
-        assert!(store.claim_job("job-1", "pod-a", 10000).unwrap());
-        let job = store.get_job("job-1").unwrap().unwrap();
-        assert_eq!(job.state, "in_progress");
-        assert_eq!(job.claimed_by.as_deref(), Some("pod-a"));
-
-        // Cannot double-claim
-        assert!(!store.claim_job("job-1", "pod-b", 10001).unwrap());
-
-        // Update progress
-        assert!(store
-            .update_job_progress("job-1", "in_progress", r#"{"bytes": 1024}"#)
-            .unwrap());
-
-        // Renew claim (heartbeat)
-        assert!(store.renew_job_claim("job-1", 11000).unwrap());
-
-        // Complete
-        assert!(store
-            .update_job_progress("job-1", "completed", r#"{"bytes": 4096}"#)
-            .unwrap());
-    }
-
-    #[test]
-    fn job_list_by_state() {
-        let store = test_store();
-
-        for i in 0..4 {
-            store
-                .insert_job(&NewJob {
-                    id: format!("job-{i}"),
-                    type_: "reshard_backfill".to_string(),
-                    params: "{}".to_string(),
-                    state: "queued".to_string(),
-                    progress: "{}".to_string(),
-                    parent_job_id: None,
-                    chunk_index: None,
-                    total_chunks: None,
-                    created_at: 1000 + (i as i64),
-                })
-                .unwrap();
-        }
-        // Claim one
-        store.claim_job("job-2", "pod-a", 99999).unwrap();
-
-        let queued = store.list_jobs_by_state("queued").unwrap();
-        assert_eq!(queued.len(), 3);
-
-        let in_progress = store.list_jobs_by_state("in_progress").unwrap();
-        assert_eq!(in_progress.len(), 1);
-        assert_eq!(in_progress[0].id, "job-2");
-    }
-
-    // --- Table 7: leader_lease ---
-
-    #[test]
-    fn leader_lease_acquire_renew_steal() {
-        let store = test_store();
-
-        // Use realistic timestamps based on current time
-        let now = now_ms();
-        let t0 = now;
-        let t1 = now + 15_000; // +15s (first lease expiration)
-        let t2 = now + 6_000; // +6s (renew before expiration)
-        let t3 = now + 20_000; // +20s (after lease expired)
-        let t4 = now + 30_000; // +30s (new lease expiration)
-        let t5 = now + 35_000; // +35s (renewal)
-
-        // First acquisition (now=t0, expires=t1)
-        assert!(store
-            .try_acquire_leader_lease("reshard:idx-1", "pod-a", t1, t0)
-            .unwrap());
-
-        // Same holder can re-acquire before expiration (now=t2 < t1)
-        assert!(store
-            .try_acquire_leader_lease("reshard:idx-1", "pod-a", t1, t2)
-            .unwrap());
-
-        // Different holder, lease not expired — fails (now=t2, lease=t1)
-        assert!(!store
-            .try_acquire_leader_lease("reshard:idx-1", "pod-b", t4, t2)
-            .unwrap());
-
-        // Lease expired — different holder can steal (now=t3 > t1)
-        assert!(store
-            .try_acquire_leader_lease("reshard:idx-1", "pod-b", t4, t3)
-            .unwrap());
-
-        // Renew by current holder
-        assert!(store
-            .renew_leader_lease("reshard:idx-1", "pod-b", t5)
-            .unwrap());
-
-        // Wrong holder cannot renew
-        assert!(!store
-            .renew_leader_lease("reshard:idx-1", "pod-a", t5)
-            .unwrap());
-
-        // Get lease
-        let lease = store.get_leader_lease("reshard:idx-1").unwrap().unwrap();
-        assert_eq!(lease.holder, "pod-b");
-        assert_eq!(lease.expires_at, t5);
-    }
-
-    // --- Migration idempotency ---
-
-    #[test]
-    fn migration_is_idempotent() {
-        let store = SqliteTaskStore::open_in_memory().unwrap();
-        store.migrate().unwrap();
-
-        // Insert data to prove it survives re-migration
-        store
-            .insert_task(&NewTask {
-                miroir_id: "survivor".to_string(),
-                created_at: 1,
-                status: "enqueued".to_string(),
-                node_tasks: HashMap::new(),
-                error: None,
-                started_at: None,
-                finished_at: None,
-                index_uid: None,
-                task_type: None,
-                node_errors: HashMap::new(),
-            })
-            .unwrap();
-
-        // Run migration again — should be a no-op
-        store.migrate().unwrap();
-
-        // Data still there
-        assert!(store.get_task("survivor").unwrap().is_some());
-    }
-
-    #[test]
-    fn schema_version_recorded() {
-        let store = SqliteTaskStore::open_in_memory().unwrap();
-        store.migrate().unwrap();
-
-        let conn = store.conn.lock().unwrap();
-        let version: i64 = conn
-            .query_row("SELECT MAX(version) FROM schema_versions", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(version, registry().max_version());
-    }
-
-    // --- Schema version ahead error ---
-
-    #[test]
-    fn schema_version_ahead_fails() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.db");
-
-        // Create a store with current binary
-        let store = SqliteTaskStore::open(&path).unwrap();
-        store.migrate().unwrap();
-        drop(store);
-
-        // Artificially set schema version ahead of binary
-        let conn = Connection::open(&path).unwrap();
-        conn.execute(
-            "INSERT INTO schema_versions (version, applied_at) VALUES (?1, ?2)",
-            params![registry().max_version() + 1, now_ms()],
+            },
         )
-        .unwrap();
-        drop(conn);
-
-        // Re-opening should fail with SchemaVersionAhead error
-        let result = SqliteTaskStore::open(&path).and_then(|s| s.migrate());
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            crate::MiroirError::SchemaVersionAhead {
-                store_version,
-                binary_version,
-            } => {
-                assert_eq!(store_version, registry().max_version() + 1);
-                assert_eq!(binary_version, registry().max_version());
-            }
-            _ => panic!("expected SchemaVersionAhead error"),
-        }
     }
 
-    // --- WAL mode ---
-
-    #[test]
-    fn wal_mode_enabled() {
-        let store = SqliteTaskStore::open_in_memory().unwrap();
-        let conn = store.conn.lock().unwrap();
-        let mode: String = conn
-            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(mode, "memory"); // in-memory DB uses memory mode, which is fine
+    async fn search_ui_config_upsert(&self, config: &SearchUiConfig) -> Result<()> {
+        self.execute(
+            "INSERT OR REPLACE INTO search_ui_config (index_uid, config_json, updated_at)
+             VALUES (?1, ?2, ?3)",
+            &[
+                &config.index_uid as &dyn rusqlite::ToSql,
+                &config.config_json,
+                &config.updated_at,
+            ],
+        )?;
+        Ok(())
     }
 
-    #[test]
-    fn wal_mode_on_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.db");
-        let store = SqliteTaskStore::open(&path).unwrap();
-        store.migrate().unwrap();
-
-        let conn = store.conn.lock().unwrap();
-        let mode: String = conn
-            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(mode, "wal");
+    async fn search_ui_config_get(&self, index_uid: &str) -> Result<Option<SearchUiConfig>> {
+        let result: Option<SearchUiConfig> = self
+            .query_row(
+                "SELECT index_uid, config_json, updated_at FROM search_ui_config WHERE index_uid = ?1",
+                &[&index_uid as &dyn rusqlite::ToSql],
+                |row| Ok(SearchUiConfig {
+                    index_uid: row.get(0)?,
+                    config_json: row.get(1)?,
+                    updated_at: row.get(2)?,
+                }),
+            )
+            .ok();
+        Ok(result)
     }
 
-    // --- Concurrent writes (single-process) ---
+    async fn search_ui_config_delete(&self, index_uid: &str) -> Result<()> {
+        self.execute(
+            "DELETE FROM search_ui_config WHERE index_uid = ?1",
+            &[&index_uid as &dyn rusqlite::ToSql],
+        )?;
+        Ok(())
+    }
 
-    #[test]
-    fn concurrent_writes_no_deadlock() {
-        use std::sync::Arc;
-        use std::thread;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("concurrent.db");
-        let store = Arc::new(SqliteTaskStore::open(&path).unwrap());
-        store.migrate().unwrap();
-
-        let mut handles = vec![];
-        for i in 0..4 {
-            let s = Arc::clone(&store);
-            handles.push(thread::spawn(move || {
-                let mut nt = HashMap::new();
-                nt.insert("node-0".to_string(), i as u64);
-                s.insert_task(&NewTask {
-                    miroir_id: format!("concurrent-{i}"),
-                    created_at: i as i64,
-                    status: "enqueued".to_string(),
-                    node_tasks: nt,
-                    error: None,
-                    started_at: None,
-                    finished_at: None,
-                    index_uid: None,
-                    task_type: None,
-                    node_errors: HashMap::new(),
+    async fn search_ui_config_list(&self) -> Result<Vec<SearchUiConfig>> {
+        self.query_map(
+            "SELECT index_uid, config_json, updated_at FROM search_ui_config",
+            &[] as &[&dyn rusqlite::ToSql],
+            |row| {
+                Ok(SearchUiConfig {
+                    index_uid: row.get(0)?,
+                    config_json: row.get(1)?,
+                    updated_at: row.get(2)?,
                 })
-                .unwrap();
-            }));
-        }
-
-        for h in handles {
-            h.join().unwrap();
-        }
-
-        // All 4 tasks should be there
-        let all = store.list_tasks(&TaskFilter::default()).unwrap();
-        assert_eq!(all.len(), 4);
+            },
+        )
     }
 
-    // --- Table 8: canaries ---
-
-    #[test]
-    fn canary_upsert_get_list_delete() {
-        let store = test_store();
-
-        // Insert a canary
-        store
-            .upsert_canary(&NewCanary {
-                id: "canary-1".to_string(),
-                name: "Search health check".to_string(),
-                index_uid: "logs".to_string(),
-                interval_s: 60,
-                query_json: r#"{"q": "error"}"#.to_string(),
-                assertions_json: r#"[{"type": "min_hits", "value": 1}]"#.to_string(),
-                enabled: true,
-                created_at: 1000,
-            })
-            .unwrap();
-
-        // Get the canary
-        let canary = store.get_canary("canary-1").unwrap().unwrap();
-        assert_eq!(canary.id, "canary-1");
-        assert_eq!(canary.name, "Search health check");
-        assert_eq!(canary.index_uid, "logs");
-        assert_eq!(canary.interval_s, 60);
-        assert!(canary.enabled);
-
-        // List all canaries
-        let canaries = store.list_canaries().unwrap();
-        assert_eq!(canaries.len(), 1);
-        assert_eq!(canaries[0].id, "canary-1");
-
-        // Upsert (update) the canary
-        store
-            .upsert_canary(&NewCanary {
-                id: "canary-1".to_string(),
-                name: "Updated health check".to_string(),
-                index_uid: "logs".to_string(),
-                interval_s: 120,
-                query_json: r#"{"q": "error"}"#.to_string(),
-                assertions_json: r#"[{"type": "min_hits", "value": 1}]"#.to_string(),
-                enabled: false,
-                created_at: 1000,
-            })
-            .unwrap();
-
-        let canary = store.get_canary("canary-1").unwrap().unwrap();
-        assert_eq!(canary.name, "Updated health check");
-        assert_eq!(canary.interval_s, 120);
-        assert!(!canary.enabled);
-
-        // Delete the canary
-        assert!(store.delete_canary("canary-1").unwrap());
-        assert!(store.get_canary("canary-1").unwrap().is_none());
-
-        // Delete non-existent canary
-        assert!(!store.delete_canary("no-such-canary").unwrap());
+    async fn admin_session_upsert(&self, session: &AdminSession) -> Result<()> {
+        self.execute(
+            "INSERT OR REPLACE INTO admin_sessions (session_id, csrf_token, admin_key_hash, created_at, expires_at, revoked, user_agent, source_ip)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            &[
+                &session.session_id as &dyn rusqlite::ToSql,
+                &session.csrf_token,
+                &session.admin_key_hash,
+                &session.created_at,
+                &session.expires_at,
+                &session.revoked,
+                &session.user_agent.as_deref(),
+                &session.source_ip.as_deref(),
+            ],
+        )?;
+        Ok(())
     }
 
-    // --- Table 9: canary_runs ---
-
-    #[test]
-    fn canary_runs_insert_get_and_auto_prune() {
-        let store = test_store();
-
-        // Create a canary first (foreign key not enforced, but logical consistency)
-        store
-            .upsert_canary(&NewCanary {
-                id: "canary-1".to_string(),
-                name: "Test canary".to_string(),
-                index_uid: "logs".to_string(),
-                interval_s: 60,
-                query_json: r#"{"q": "test"}"#.to_string(),
-                assertions_json: r#"[]"#.to_string(),
-                enabled: true,
-                created_at: 1000,
-            })
-            .unwrap();
-
-        // Insert 5 runs with history limit of 3
-        for i in 0..5 {
-            store
-                .insert_canary_run(
-                    &NewCanaryRun {
-                        canary_id: "canary-1".to_string(),
-                        ran_at: 1000 + i * 100,
-                        status: if i == 2 { "fail" } else { "pass" }.to_string(),
-                        latency_ms: 50 + i * 10,
-                        failed_assertions_json: if i == 2 {
-                            Some(r#"[{"assertion": "min_hits", "reason": "no hits"}]"#.to_string())
-                        } else {
-                            None
-                        },
-                    },
-                    3, // run_history_limit
-                )
-                .unwrap();
-        }
-
-        // Only the 3 most recent runs should remain
-        let runs = store.get_canary_runs("canary-1", 10).unwrap();
-        assert_eq!(runs.len(), 3);
-        // Runs are ordered by ran_at DESC, so we should see runs 4, 3, 2
-        assert_eq!(runs[0].ran_at, 1400); // i=4
-        assert_eq!(runs[1].ran_at, 1300); // i=3
-        assert_eq!(runs[2].ran_at, 1200); // i=2
-        assert_eq!(runs[2].status, "fail");
-        assert!(runs[2].failed_assertions_json.is_some());
-
-        // Test limit parameter
-        let runs = store.get_canary_runs("canary-1", 2).unwrap();
-        assert_eq!(runs.len(), 2);
+    async fn admin_session_get(&self, session_id: &str) -> Result<Option<AdminSession>> {
+        let result: Option<AdminSession> = self
+            .query_row(
+                "SELECT session_id, csrf_token, admin_key_hash, created_at, expires_at, revoked, user_agent, source_ip FROM admin_sessions WHERE session_id = ?1",
+                &[&session_id as &dyn rusqlite::ToSql],
+                |row| Ok(AdminSession {
+                    session_id: row.get(0)?,
+                    csrf_token: row.get(1)?,
+                    admin_key_hash: row.get(2)?,
+                    created_at: row.get(3)?,
+                    expires_at: row.get(4)?,
+                    revoked: row.get(5)?,
+                    user_agent: row.get(6)?,
+                    source_ip: row.get(7)?,
+                }),
+            )
+            .ok();
+        Ok(result)
     }
 
-    #[test]
-    fn canary_runs_empty_for_nonexistent_canary() {
-        let store = test_store();
-        let runs = store.get_canary_runs("no-such-canary", 10).unwrap();
-        assert!(runs.is_empty());
+    async fn admin_session_delete(&self, session_id: &str) -> Result<()> {
+        self.execute(
+            "DELETE FROM admin_sessions WHERE session_id = ?1",
+            &[&session_id as &dyn rusqlite::ToSql],
+        )?;
+        Ok(())
     }
 
-    // --- Table 10: cdc_cursors ---
-
-    #[test]
-    fn cdc_cursor_upsert_get_list() {
-        let store = test_store();
-
-        // Insert a cursor
-        store
-            .upsert_cdc_cursor(&NewCdcCursor {
-                sink_name: "elasticsearch".to_string(),
-                index_uid: "logs".to_string(),
-                last_event_seq: 12345,
-                updated_at: 2000,
-            })
-            .unwrap();
-
-        // Get the cursor
-        let cursor = store
-            .get_cdc_cursor("elasticsearch", "logs")
-            .unwrap()
-            .unwrap();
-        assert_eq!(cursor.sink_name, "elasticsearch");
-        assert_eq!(cursor.index_uid, "logs");
-        assert_eq!(cursor.last_event_seq, 12345);
-
-        // List all cursors for a sink
-        store
-            .upsert_cdc_cursor(&NewCdcCursor {
-                sink_name: "elasticsearch".to_string(),
-                index_uid: "metrics".to_string(),
-                last_event_seq: 67890,
-                updated_at: 2500,
-            })
-            .unwrap();
-
-        let cursors = store.list_cdc_cursors("elasticsearch").unwrap();
-        assert_eq!(cursors.len(), 2);
-
-        // Upsert (update) the cursor
-        store
-            .upsert_cdc_cursor(&NewCdcCursor {
-                sink_name: "elasticsearch".to_string(),
-                index_uid: "logs".to_string(),
-                last_event_seq: 13000,
-                updated_at: 3000,
-            })
-            .unwrap();
-
-        let cursor = store
-            .get_cdc_cursor("elasticsearch", "logs")
-            .unwrap()
-            .unwrap();
-        assert_eq!(cursor.last_event_seq, 13000);
-
-        // Composite PK: different sink should not exist
-        assert!(store
-            .get_cdc_cursor("elasticsearch", "nonexistent")
-            .unwrap()
-            .is_none());
-        assert!(store
-            .get_cdc_cursor("unknown_sink", "logs")
-            .unwrap()
-            .is_none());
+    async fn admin_session_revoke(&self, session_id: &str) -> Result<()> {
+        self.execute(
+            "UPDATE admin_sessions SET revoked = 1 WHERE session_id = ?1",
+            &[&session_id as &dyn rusqlite::ToSql],
+        )?;
+        Ok(())
     }
 
-    // --- Table 11: tenant_map ---
-
-    #[test]
-    fn tenant_map_insert_get_delete() {
-        let store = test_store();
-
-        // Create a 32-byte hash (sha256)
-        let api_key_hash = vec![1u8; 32];
-
-        // Insert a tenant mapping
-        store
-            .insert_tenant_mapping(&NewTenantMapping {
-                api_key_hash: api_key_hash.clone(),
-                tenant_id: "acme-corp".to_string(),
-                group_id: Some(2),
-            })
-            .unwrap();
-
-        // Get the mapping
-        let mapping = store.get_tenant_mapping(&api_key_hash).unwrap().unwrap();
-        assert_eq!(mapping.tenant_id, "acme-corp");
-        assert_eq!(mapping.group_id, Some(2));
-
-        // Missing mapping
-        let unknown_hash = vec![99u8; 32];
-        assert!(store.get_tenant_mapping(&unknown_hash).unwrap().is_none());
-
-        // Delete the mapping
-        assert!(store.delete_tenant_mapping(&api_key_hash).unwrap());
-        assert!(store.get_tenant_mapping(&api_key_hash).unwrap().is_none());
-
-        // Delete non-existent mapping
-        assert!(!store.delete_tenant_mapping(&unknown_hash).unwrap());
+    async fn admin_session_is_revoked(&self, session_id: &str) -> Result<bool> {
+        let revoked: Option<bool> = self
+            .query_row(
+                "SELECT revoked FROM admin_sessions WHERE session_id = ?1",
+                &[&session_id as &dyn rusqlite::ToSql],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(revoked.unwrap_or(false))
     }
 
-    #[test]
-    fn tenant_map_nullable_group_id() {
-        let store = test_store();
-
-        let api_key_hash = vec![2u8; 32];
-
-        store
-            .insert_tenant_mapping(&NewTenantMapping {
-                api_key_hash: api_key_hash.clone(),
-                tenant_id: "default-tenant".to_string(),
-                group_id: None, // NULL group_id falls back to hash(tenant_id) % RG
-            })
-            .unwrap();
-
-        let mapping = store.get_tenant_mapping(&api_key_hash).unwrap().unwrap();
-        assert_eq!(mapping.tenant_id, "default-tenant");
-        assert_eq!(mapping.group_id, None);
+    // Redis-only operations (not supported in SQLite mode)
+    async fn ratelimit_increment(
+        &self,
+        _key: &str,
+        _window_s: u64,
+        _limit: u64,
+    ) -> Result<(u64, u64)> {
+        Err(TaskStoreError::InvalidData(
+            "rate limiting requires Redis backend".to_string(),
+        ))
     }
 
-    // --- Table 12: rollover_policies ---
-
-    #[test]
-    fn rollover_policy_upsert_get_list_delete() {
-        let store = test_store();
-
-        // Insert a policy
-        store
-            .upsert_rollover_policy(&NewRolloverPolicy {
-                name: "daily-logs".to_string(),
-                write_alias: "logs-write".to_string(),
-                read_alias: "logs-read".to_string(),
-                pattern: "logs-{YYYY-MM-DD}".to_string(),
-                triggers_json: r#"{"max_age": "1d", "max_docs": 1000000}"#.to_string(),
-                retention_json: r#"{"keep_indexes": 30}"#.to_string(),
-                template_json: r#"{"primary_key": "id", "settings_ref": "logs-template"}"#
-                    .to_string(),
-                enabled: true,
-            })
-            .unwrap();
-
-        // Get the policy
-        let policy = store.get_rollover_policy("daily-logs").unwrap().unwrap();
-        assert_eq!(policy.name, "daily-logs");
-        assert_eq!(policy.write_alias, "logs-write");
-        assert_eq!(policy.read_alias, "logs-read");
-        assert_eq!(policy.pattern, "logs-{YYYY-MM-DD}");
-        assert!(policy.enabled);
-
-        // List all policies
-        let policies = store.list_rollover_policies().unwrap();
-        assert_eq!(policies.len(), 1);
-
-        // Upsert (update) the policy
-        store
-            .upsert_rollover_policy(&NewRolloverPolicy {
-                name: "daily-logs".to_string(),
-                write_alias: "logs-write".to_string(),
-                read_alias: "logs-read".to_string(),
-                pattern: "logs-{YYYY-MM-DD}".to_string(),
-                triggers_json: r#"{"max_age": "1d", "max_docs": 2000000}"#.to_string(), // changed
-                retention_json: r#"{"keep_indexes": 30}"#.to_string(),
-                template_json: r#"{"primary_key": "id", "settings_ref": "logs-template"}"#
-                    .to_string(),
-                enabled: false, // changed
-            })
-            .unwrap();
-
-        let policy = store.get_rollover_policy("daily-logs").unwrap().unwrap();
-        assert!(!policy.enabled);
-
-        // Delete the policy
-        assert!(store.delete_rollover_policy("daily-logs").unwrap());
-        assert!(store.get_rollover_policy("daily-logs").unwrap().is_none());
+    async fn ratelimit_set_backoff(&self, _key: &str, _duration_s: u64) -> Result<()> {
+        Err(TaskStoreError::InvalidData(
+            "rate limiting requires Redis backend".to_string(),
+        ))
     }
 
-    // --- Table 13: search_ui_config ---
-
-    #[test]
-    fn search_ui_config_upsert_get_delete() {
-        let store = test_store();
-
-        let config_json = r#"{"title": "Product Search", "facets": ["category", "price"], "sort": ["relevance", "price_asc"]}"#;
-
-        // Insert config
-        store
-            .upsert_search_ui_config(&NewSearchUiConfig {
-                index_uid: "products".to_string(),
-                config_json: config_json.to_string(),
-                updated_at: 5000,
-            })
-            .unwrap();
-
-        // Get config
-        let config = store.get_search_ui_config("products").unwrap().unwrap();
-        assert_eq!(config.index_uid, "products");
-        assert_eq!(config.config_json, config_json);
-
-        // Upsert (update) config
-        let updated_json = r#"{"title": "Product Search V2", "facets": ["category"]}"#;
-        store
-            .upsert_search_ui_config(&NewSearchUiConfig {
-                index_uid: "products".to_string(),
-                config_json: updated_json.to_string(),
-                updated_at: 6000,
-            })
-            .unwrap();
-
-        let config = store.get_search_ui_config("products").unwrap().unwrap();
-        assert_eq!(config.config_json, updated_json);
-        assert_eq!(config.updated_at, 6000);
-
-        // Delete config
-        assert!(store.delete_search_ui_config("products").unwrap());
-        assert!(store.get_search_ui_config("products").unwrap().is_none());
+    async fn ratelimit_check_backoff(&self, _key: &str) -> Result<Option<u64>> {
+        Err(TaskStoreError::InvalidData(
+            "rate limiting requires Redis backend".to_string(),
+        ))
     }
 
-    // --- Table 14: admin_sessions ---
-
-    #[test]
-    fn admin_session_insert_get_revoke_expire() {
-        let store = test_store();
-
-        // Insert a session
-        store
-            .insert_admin_session(&NewAdminSession {
-                session_id: "sess-admin-1".to_string(),
-                csrf_token: "csrf-token-abc123".to_string(),
-                admin_key_hash: "hash-of-admin-key".to_string(),
-                created_at: 7000,
-                expires_at: 17000, // expires 10s after creation
-                user_agent: Some("Mozilla/5.0".to_string()),
-                source_ip: Some("192.168.1.100".to_string()),
-            })
-            .unwrap();
-
-        // Get the session
-        let session = store.get_admin_session("sess-admin-1").unwrap().unwrap();
-        assert_eq!(session.session_id, "sess-admin-1");
-        assert_eq!(session.csrf_token, "csrf-token-abc123");
-        assert_eq!(session.admin_key_hash, "hash-of-admin-key");
-        assert_eq!(session.created_at, 7000);
-        assert_eq!(session.expires_at, 17000);
-        assert!(!session.revoked);
-        assert_eq!(session.user_agent.as_deref(), Some("Mozilla/5.0"));
-        assert_eq!(session.source_ip.as_deref(), Some("192.168.1.100"));
-
-        // Revoke the session
-        assert!(store.revoke_admin_session("sess-admin-1").unwrap());
-        let session = store.get_admin_session("sess-admin-1").unwrap().unwrap();
-        assert!(session.revoked);
-
-        // Double revoke is idempotent (still returns true if row exists)
-        assert!(store.revoke_admin_session("sess-admin-1").unwrap());
-
-        // Test session expiration cleanup
-        store
-            .insert_admin_session(&NewAdminSession {
-                session_id: "sess-expired".to_string(),
-                csrf_token: "csrf-expired".to_string(),
-                admin_key_hash: "hash-expired".to_string(),
-                created_at: 1000,
-                expires_at: 5000, // already expired
-                user_agent: None,
-                source_ip: None,
-            })
-            .unwrap();
-
-        let deleted = store.delete_expired_admin_sessions(10000).unwrap();
-        assert_eq!(deleted, 1);
-        assert!(store.get_admin_session("sess-expired").unwrap().is_none());
-
-        // Active session should not be deleted
-        assert!(store.get_admin_session("sess-admin-1").unwrap().is_some());
+    async fn cdc_overflow_check(&self, _sink: &str) -> Result<bool> {
+        Err(TaskStoreError::InvalidData(
+            "CDC overflow requires Redis backend".to_string(),
+        ))
     }
 
-    #[test]
-    fn admin_session_nullable_fields() {
-        let store = test_store();
-
-        store
-            .insert_admin_session(&NewAdminSession {
-                session_id: "sess-minimal".to_string(),
-                csrf_token: "csrf".to_string(),
-                admin_key_hash: "hash".to_string(),
-                created_at: 1000,
-                expires_at: 10000,
-                user_agent: None,
-                source_ip: None,
-            })
-            .unwrap();
-
-        let session = store.get_admin_session("sess-minimal").unwrap().unwrap();
-        assert!(session.user_agent.is_none());
-        assert!(session.source_ip.is_none());
+    async fn cdc_overflow_size(&self, _sink: &str) -> Result<u64> {
+        Err(TaskStoreError::InvalidData(
+            "CDC overflow requires Redis backend".to_string(),
+        ))
     }
 
-    // --- prune_tasks ---
-
-    #[test]
-    fn prune_tasks_deletes_old_terminal_tasks() {
-        let store = test_store();
-
-        // Insert tasks with different statuses and timestamps
-        for i in 0..10 {
-            store
-                .insert_task(&NewTask {
-                    miroir_id: format!("task-{i}"),
-                    created_at: i as i64 * 1000,
-                    status: match i {
-                        0..=2 => "succeeded",
-                        3..=5 => "failed",
-                        6..=7 => "canceled",
-                        _ => "enqueued", // should NOT be pruned
-                    }
-                    .to_string(),
-                    node_tasks: HashMap::new(),
-                    error: None,
-                    started_at: None,
-                    finished_at: None,
-                    index_uid: None,
-                    task_type: None,
-                    node_errors: HashMap::new(),
-                })
-                .unwrap();
-        }
-
-        // Prune tasks older than 3500ms (should delete tasks 0, 1, 2, 3)
-        let deleted = store.prune_tasks(3500, 100).unwrap();
-        assert_eq!(deleted, 4); // tasks 0, 1, 2, 3 (succeeded or failed, < 3500ms)
-
-        // Verify task-4 (failed at 4000ms) still exists
-        assert!(store.get_task("task-4").unwrap().is_some());
-        // Verify task-8 (enqueued) still exists regardless of age
-        assert!(store.get_task("task-8").unwrap().is_some());
+    async fn cdc_overflow_append(&self, _sink: &str, _data: &[u8]) -> Result<()> {
+        Err(TaskStoreError::InvalidData(
+            "CDC overflow requires Redis backend".to_string(),
+        ))
     }
 
-    // --- Property tests (proptest) ---
+    async fn cdc_overflow_clear(&self, _sink: &str) -> Result<()> {
+        Err(TaskStoreError::InvalidData(
+            "CDC overflow requires Redis backend".to_string(),
+        ))
+    }
 
-    mod proptest_tests {
-        use super::*;
-        use proptest::prelude::*;
+    async fn scoped_key_set(&self, _index: &str, _key: &str, _expires_at: u64) -> Result<()> {
+        Err(TaskStoreError::InvalidData(
+            "scoped key rotation requires Redis backend".to_string(),
+        ))
+    }
 
-        fn test_store() -> SqliteTaskStore {
-            let store = SqliteTaskStore::open_in_memory().unwrap();
-            store.migrate().unwrap();
-            store
-        }
+    async fn scoped_key_get(&self, _index: &str) -> Result<Option<String>> {
+        Err(TaskStoreError::InvalidData(
+            "scoped key rotation requires Redis backend".to_string(),
+        ))
+    }
 
-        proptest! {
-            #![proptest_config(ProptestConfig::with_cases(50))]
+    async fn scoped_key_observe(&self, _pod: &str, _index: &str, _key: &str) -> Result<()> {
+        Err(TaskStoreError::InvalidData(
+            "scoped key rotation requires Redis backend".to_string(),
+        ))
+    }
 
-            /// Property: (insert, get) round-trip preserves all fields.
-            #[test]
-            fn task_insert_get_roundtrip(
-                miroir_id in "[a-z0-9-]{1,32}",
-                created_at in 0i64..1_000_000,
-                status in "(enqueued|processing|succeeded|failed|canceled)",
-                error in proptest::option::of("[a-zA-Z0-9 ]{0,64}"),
-                n_nodes in 0usize..5usize,
-            ) {
-                let store = test_store();
-                let mut node_tasks = HashMap::new();
-                for i in 0..n_nodes {
-                    node_tasks.insert(format!("node-{i}"), i as u64);
-                }
+    async fn scoped_key_has_observed(&self, _pod: &str, _index: &str, _key: &str) -> Result<bool> {
+        Err(TaskStoreError::InvalidData(
+            "scoped key rotation requires Redis backend".to_string(),
+        ))
+    }
 
-                let new_task = NewTask {
-                    miroir_id: miroir_id.clone(),
-                    created_at,
-                    status: status.clone(),
-                    node_tasks: node_tasks.clone(),
-                    error: error.clone(),
-                    started_at: None,
-                    finished_at: None,
-                    index_uid: None,
-                    task_type: None,
-                    node_errors: HashMap::new(),
-                };
-                store.insert_task(&new_task).unwrap();
+    async fn health_check(&self) -> Result<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| TaskStoreError::Internal(e.to_string()))?;
+        // Execute a simple query to check if the database is responsive
+        let _: Option<i64> = conn.query_row("SELECT 1", [], |row| row.get(0)).ok();
+        Ok(true)
+    }
+}
 
-                let got = store.get_task(&miroir_id).unwrap().unwrap();
-                prop_assert_eq!(got.miroir_id, miroir_id);
-                prop_assert_eq!(got.created_at, created_at);
-                prop_assert_eq!(got.status, status);
-                prop_assert_eq!(got.node_tasks, node_tasks);
-                prop_assert_eq!(got.error, error);
-            }
+impl SqliteTaskStore {
+    /// Initialize the database schema (plan §4 tables 1-7).
+    fn init_schema(conn: &Connection) -> Result<()> {
+        // Table 1: Tasks
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tasks (
+                miroir_id   TEXT PRIMARY KEY,
+                created_at  INTEGER NOT NULL,
+                status      TEXT NOT NULL,
+                node_tasks  TEXT NOT NULL,
+                error       TEXT
+            )",
+            [],
+        )?;
 
-            /// Property: (upsert, get) for node_settings_version round-trips.
-            #[test]
-            fn node_settings_version_upsert_roundtrip(
-                index_uid in "[a-z0-9]{1,16}",
-                node_id in "[a-z0-9]{1,16}",
-                version in 1i64..10000,
-                updated_at in 0i64..1_000_000,
-            ) {
-                let store = test_store();
-                store.upsert_node_settings_version(&index_uid, &node_id, version, updated_at).unwrap();
-                let got = store.get_node_settings_version(&index_uid, &node_id).unwrap().unwrap();
-                prop_assert_eq!(got.index_uid, index_uid);
-                prop_assert_eq!(got.node_id, node_id);
-                prop_assert_eq!(got.version, version);
-                prop_assert_eq!(got.updated_at, updated_at);
-            }
+        // Table 2: Node settings version
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS node_settings_version (
+                index_uid   TEXT NOT NULL,
+                node_id     TEXT NOT NULL,
+                version     INTEGER NOT NULL,
+                updated_at  INTEGER NOT NULL,
+                PRIMARY KEY (index_uid, node_id)
+            )",
+            [],
+        )?;
 
-            /// Property: alias (create, get) round-trip for single aliases.
-            #[test]
-            fn alias_single_roundtrip(
-                name in "[a-z0-9-]{1,32}",
-                current_uid in proptest::option::of("uid-[a-z0-9]{1,16}"),
-                version in 1i64..100,
-            ) {
-                let store = test_store();
-                let alias = NewAlias {
-                    name: name.clone(),
-                    kind: "single".to_string(),
-                    current_uid: current_uid.clone(),
-                    target_uids: None,
-                    version,
-                    created_at: 1000,
-                    history: vec![],
-                };
-                store.create_alias(&alias).unwrap();
+        // Table 3: Aliases
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS aliases (
+                name          TEXT PRIMARY KEY,
+                kind          TEXT NOT NULL,
+                current_uid   TEXT,
+                target_uids   TEXT,
+                version       INTEGER NOT NULL,
+                created_at    INTEGER NOT NULL,
+                history       TEXT NOT NULL
+            )",
+            [],
+        )?;
 
-                let got = store.get_alias(&name).unwrap().unwrap();
-                prop_assert_eq!(got.name, name);
-                prop_assert_eq!(got.kind, "single");
-                prop_assert_eq!(got.current_uid, current_uid);
-                prop_assert_eq!(got.version, version);
-            }
+        // Table 4: Sessions
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sessions (
+                session_id            TEXT PRIMARY KEY,
+                last_write_mtask_id   TEXT,
+                last_write_at         INTEGER,
+                pinned_group          INTEGER,
+                min_settings_version  INTEGER NOT NULL,
+                ttl                   INTEGER NOT NULL
+            )",
+            [],
+        )?;
 
-            /// Property: (insert, list) — inserted tasks appear in list.
-            #[test]
-            fn task_insert_list_visible(
-                ids in proptest::collection::vec("[a-z0-9-]{1,16}", 1..10),
-            ) {
-                let store = test_store();
-                let unique_ids: std::collections::HashSet<String> = ids.into_iter().collect();
-                for (i, id) in unique_ids.iter().enumerate() {
-                    let mut nt = HashMap::new();
-                    nt.insert("node-0".to_string(), i as u64);
-                    store.insert_task(&NewTask {
-                        miroir_id: id.clone(),
-                        created_at: i as i64 * 1000,
-                        status: "enqueued".to_string(),
-                        node_tasks: nt,
-                        error: None,
-                        started_at: None,
-                        finished_at: None,
-                        index_uid: None,
-                        task_type: None,
-                        node_errors: HashMap::new(),
-                    }).unwrap();
-                }
+        // Table 5: Idempotency cache
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS idempotency_cache (
+                key              TEXT PRIMARY KEY,
+                body_sha256      BLOB NOT NULL,
+                miroir_task_id   TEXT NOT NULL,
+                expires_at       INTEGER NOT NULL
+            )",
+            [],
+        )?;
 
-                let all = store.list_tasks(&TaskFilter::default()).unwrap();
-                prop_assert_eq!(all.len(), unique_ids.len());
-                let got_ids: std::collections::HashSet<String> =
-                    all.iter().map(|t| t.miroir_id.clone()).collect();
-                prop_assert_eq!(got_ids, unique_ids);
-            }
+        // Table 6: Jobs
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS jobs (
+                id                 TEXT PRIMARY KEY,
+                type               TEXT NOT NULL,
+                params             TEXT NOT NULL,
+                state              TEXT NOT NULL,
+                claimed_by         TEXT,
+                claim_expires_at   INTEGER,
+                progress           TEXT NOT NULL
+            )",
+            [],
+        )?;
 
-            /// Property: idempotency (insert, get) round-trip.
-            #[test]
-            fn idempotency_roundtrip(
-                key in "[a-z0-9-]{1,32}",
-                task_id in "[a-z0-9-]{1,32}",
-                expires_at in 5000i64..1_000_000,
-            ) {
-                let store = test_store();
-                let sha = vec![0xABu8; 32];
-                store.insert_idempotency_entry(&IdempotencyEntry {
-                    key: key.clone(),
-                    body_sha256: sha.clone(),
-                    miroir_task_id: task_id.clone(),
-                    expires_at,
-                }).unwrap();
+        // Table 7: Leader lease
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS leader_lease (
+                scope        TEXT PRIMARY KEY,
+                holder       TEXT NOT NULL,
+                expires_at   INTEGER NOT NULL
+            )",
+            [],
+        )?;
 
-                let got = store.get_idempotency_entry(&key).unwrap().unwrap();
-                prop_assert_eq!(got.key, key);
-                prop_assert_eq!(got.body_sha256, sha);
-                prop_assert_eq!(got.miroir_task_id, task_id);
-                prop_assert_eq!(got.expires_at, expires_at);
-            }
+        // Table 8: Canaries
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS canaries (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                index_uid TEXT NOT NULL,
+                interval_s INTEGER NOT NULL,
+                query_json TEXT NOT NULL,
+                assertions_json TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
 
-            /// Property: canary (upsert, list) — all unique canaries visible.
-            #[test]
-            fn canary_upsert_list_roundtrip(
-                ids in proptest::collection::vec("[a-z0-9-]{1,16}", 1..8),
-            ) {
-                let store = test_store();
-                let unique_ids: std::collections::HashSet<String> = ids.into_iter().collect();
-                for (i, id) in unique_ids.iter().enumerate() {
-                    store.upsert_canary(&NewCanary {
-                        id: id.clone(),
-                        name: format!("canary-{i}"),
-                        index_uid: "logs".to_string(),
-                        interval_s: 60 + i as i64,
-                        query_json: r#"{"q":"test"}"#.to_string(),
-                        assertions_json: "[]".to_string(),
-                        enabled: i % 2 == 0,
-                        created_at: i as i64 * 1000,
-                    }).unwrap();
-                }
+        // Table 9: Canary runs
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS canary_runs (
+                canary_id TEXT NOT NULL,
+                ran_at INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                latency_ms INTEGER NOT NULL,
+                failed_assertions_json TEXT,
+                PRIMARY KEY (canary_id, ran_at)
+            )",
+            [],
+        )?;
 
-                let all = store.list_canaries().unwrap();
-                prop_assert_eq!(all.len(), unique_ids.len());
-            }
+        // Table 10: CDC cursors
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS cdc_cursors (
+                sink_name TEXT NOT NULL,
+                index_uid TEXT NOT NULL,
+                last_event_seq INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (sink_name, index_uid)
+            )",
+            [],
+        )?;
 
-            /// Property: rollover_policy (upsert, list) round-trip.
-            #[test]
-            fn rollover_policy_upsert_list_roundtrip(
-                names in proptest::collection::vec("[a-z0-9-]{1,16}", 1..6),
-            ) {
-                let store = test_store();
-                let unique_names: std::collections::HashSet<String> = names.into_iter().collect();
-                for (_i, name) in unique_names.iter().enumerate() {
-                    store.upsert_rollover_policy(&NewRolloverPolicy {
-                        name: name.clone(),
-                        write_alias: format!("{name}-w"),
-                        read_alias: format!("{name}-r"),
-                        pattern: "logs-*".to_string(),
-                        triggers_json: "{}".to_string(),
-                        retention_json: "{}".to_string(),
-                        template_json: "{}".to_string(),
-                        enabled: true,
-                    }).unwrap();
-                }
+        // Table 11: Tenant map
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tenant_map (
+                api_key_hash BLOB PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                group_id INTEGER
+            )",
+            [],
+        )?;
 
-                let all = store.list_rollover_policies().unwrap();
-                prop_assert_eq!(all.len(), unique_names.len());
-            }
+        // Table 12: Rollover policies
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS rollover_policies (
+                name TEXT PRIMARY KEY,
+                write_alias TEXT NOT NULL,
+                read_alias TEXT NOT NULL,
+                pattern TEXT NOT NULL,
+                triggers_json TEXT NOT NULL,
+                retention_json TEXT NOT NULL,
+                template_json TEXT NOT NULL,
+                enabled INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        // Table 13: Search UI config
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS search_ui_config (
+                index_uid TEXT PRIMARY KEY,
+                config_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        // Table 14: Admin sessions
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS admin_sessions (
+                session_id TEXT PRIMARY KEY,
+                csrf_token TEXT NOT NULL,
+                admin_key_hash TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                revoked INTEGER NOT NULL DEFAULT 0,
+                user_agent TEXT,
+                source_ip TEXT
+            )",
+            [],
+        )?;
+
+        // Index for admin_sessions expiration queries (plan §4 table 14)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS admin_sessions_expires ON admin_sessions(expires_at)",
+            [],
+        )?;
+
+        Ok(())
+    }
+}
+
+// Note: Display and FromStr for TaskStatus, AliasKind, JobState, and CanaryRunStatus
+// are defined in schema.rs to avoid duplicate implementations
+
+impl std::fmt::Display for JobStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Enqueued => write!(f, "Enqueued"),
+            Self::Processing => write!(f, "Processing"),
+            Self::Succeeded => write!(f, "Succeeded"),
+            Self::Failed => write!(f, "Failed"),
+            Self::Canceled => write!(f, "Canceled"),
         }
     }
+}
 
-    // --- Restart resilience test ---
+impl std::str::FromStr for JobStatus {
+    type Err = String;
 
-    #[test]
-    fn task_survives_store_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("resilience.db");
-
-        // Phase 1: open, migrate, insert a task
-        {
-            let store = SqliteTaskStore::open(&path).unwrap();
-            store.migrate().unwrap();
-            let mut nt = HashMap::new();
-            nt.insert("node-0".to_string(), 42u64);
-            store
-                .insert_task(&NewTask {
-                    miroir_id: "survivor-task".to_string(),
-                    created_at: 1000,
-                    status: "enqueued".to_string(),
-                    node_tasks: nt,
-                    error: None,
-                    started_at: None,
-                    finished_at: None,
-                    index_uid: None,
-                    task_type: None,
-                    node_errors: HashMap::new(),
-                })
-                .unwrap();
-            // Drop store — simulates pod shutdown
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "Enqueued" => Ok(Self::Enqueued),
+            "Processing" => Ok(Self::Processing),
+            "Succeeded" => Ok(Self::Succeeded),
+            "Failed" => Ok(Self::Failed),
+            "Canceled" => Ok(Self::Canceled),
+            _ => Err(format!("invalid job status: {s}")),
         }
-
-        // Phase 2: reopen the same database file
-        {
-            let store = SqliteTaskStore::open(&path).unwrap();
-            store.migrate().unwrap();
-
-            // Task survives the close/reopen cycle
-            let task = store.get_task("survivor-task").unwrap().unwrap();
-            assert_eq!(task.miroir_id, "survivor-task");
-            assert_eq!(task.status, "enqueued");
-            assert_eq!(task.node_tasks.get("node-0"), Some(&42u64));
-
-            // Can continue updating the task
-            assert!(store
-                .update_task_status("survivor-task", "processing")
-                .unwrap());
-            assert!(store.set_task_error("survivor-task", "recovered").unwrap());
-
-            let updated = store.get_task("survivor-task").unwrap().unwrap();
-            assert_eq!(updated.status, "processing");
-            assert_eq!(updated.error.as_deref(), Some("recovered"));
-        }
-
-        // Phase 3: reopen again and verify the update stuck
-        {
-            let store = SqliteTaskStore::open(&path).unwrap();
-            store.migrate().unwrap();
-
-            let task = store.get_task("survivor-task").unwrap().unwrap();
-            assert_eq!(task.status, "processing");
-            assert_eq!(task.error.as_deref(), Some("recovered"));
-        }
-    }
-
-    #[test]
-    fn all_tables_survive_store_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("full-resilience.db");
-
-        // Phase 1: populate all 14 tables
-        {
-            let store = SqliteTaskStore::open(&path).unwrap();
-            store.migrate().unwrap();
-
-            // Table 1: tasks
-            store
-                .insert_task(&NewTask {
-                    miroir_id: "task-r".to_string(),
-                    created_at: 1000,
-                    status: "enqueued".to_string(),
-                    node_tasks: HashMap::new(),
-                    error: None,
-                    started_at: None,
-                    finished_at: None,
-                    index_uid: None,
-                    task_type: None,
-                    node_errors: HashMap::new(),
-                })
-                .unwrap();
-
-            // Table 2: node_settings_version
-            store
-                .upsert_node_settings_version("idx-r", "node-r", 5, 1000)
-                .unwrap();
-
-            // Table 3: aliases
-            store
-                .create_alias(&NewAlias {
-                    name: "alias-r".to_string(),
-                    kind: "single".to_string(),
-                    current_uid: Some("uid-v1".to_string()),
-                    target_uids: None,
-                    version: 1,
-                    created_at: 1000,
-                    history: vec![],
-                })
-                .unwrap();
-
-            // Table 4: sessions
-            store
-                .upsert_session(&SessionRow {
-                    session_id: "sess-r".to_string(),
-                    last_write_mtask_id: None,
-                    last_write_at: None,
-                    pinned_group: None,
-                    min_settings_version: 1,
-                    ttl: 100000,
-                })
-                .unwrap();
-
-            // Table 5: idempotency_cache
-            store
-                .insert_idempotency_entry(&IdempotencyEntry {
-                    key: "idemp-r".to_string(),
-                    body_sha256: vec![0; 32],
-                    miroir_task_id: "task-r".to_string(),
-                    expires_at: 100000,
-                })
-                .unwrap();
-
-            // Table 6: jobs
-            store
-                .insert_job(&NewJob {
-                    id: "job-r".to_string(),
-                    type_: "test".to_string(),
-                    params: "{}".to_string(),
-                    state: "queued".to_string(),
-                    progress: "{}".to_string(),
-                    parent_job_id: None,
-                    chunk_index: None,
-                    total_chunks: None,
-                    created_at: 1000,
-                })
-                .unwrap();
-
-            // Table 7: leader_lease
-            store
-                .try_acquire_leader_lease("scope-r", "pod-r", 100000, 0)
-                .unwrap();
-
-            // Table 8: canaries
-            store
-                .upsert_canary(&NewCanary {
-                    id: "canary-r".to_string(),
-                    name: "test-canary".to_string(),
-                    index_uid: "idx-r".to_string(),
-                    interval_s: 60,
-                    query_json: "{}".to_string(),
-                    assertions_json: "[]".to_string(),
-                    enabled: true,
-                    created_at: 1000,
-                })
-                .unwrap();
-
-            // Table 9: canary_runs
-            store
-                .insert_canary_run(
-                    &NewCanaryRun {
-                        canary_id: "canary-r".to_string(),
-                        ran_at: 1000,
-                        status: "pass".to_string(),
-                        latency_ms: 50,
-                        failed_assertions_json: None,
-                    },
-                    100,
-                )
-                .unwrap();
-
-            // Table 10: cdc_cursors
-            store
-                .upsert_cdc_cursor(&NewCdcCursor {
-                    sink_name: "sink-r".to_string(),
-                    index_uid: "idx-r".to_string(),
-                    last_event_seq: 42,
-                    updated_at: 1000,
-                })
-                .unwrap();
-
-            // Table 11: tenant_map
-            store
-                .insert_tenant_mapping(&NewTenantMapping {
-                    api_key_hash: vec![1u8; 32],
-                    tenant_id: "tenant-r".to_string(),
-                    group_id: Some(2),
-                })
-                .unwrap();
-
-            // Table 12: rollover_policies
-            store
-                .upsert_rollover_policy(&NewRolloverPolicy {
-                    name: "policy-r".to_string(),
-                    write_alias: "w-r".to_string(),
-                    read_alias: "r-r".to_string(),
-                    pattern: "p-r".to_string(),
-                    triggers_json: "{}".to_string(),
-                    retention_json: "{}".to_string(),
-                    template_json: "{}".to_string(),
-                    enabled: true,
-                })
-                .unwrap();
-
-            // Table 13: search_ui_config
-            store
-                .upsert_search_ui_config(&NewSearchUiConfig {
-                    index_uid: "idx-r".to_string(),
-                    config_json: "{}".to_string(),
-                    updated_at: 1000,
-                })
-                .unwrap();
-
-            // Table 14: admin_sessions
-            store
-                .insert_admin_session(&NewAdminSession {
-                    session_id: "admin-r".to_string(),
-                    csrf_token: "csrf-r".to_string(),
-                    admin_key_hash: "hash-r".to_string(),
-                    created_at: 1000,
-                    expires_at: 100000,
-                    user_agent: None,
-                    source_ip: None,
-                })
-                .unwrap();
-        }
-
-        // Phase 2: reopen and verify all 14 tables
-        {
-            let store = SqliteTaskStore::open(&path).unwrap();
-            store.migrate().unwrap();
-
-            assert!(store.get_task("task-r").unwrap().is_some());
-            assert!(store
-                .get_node_settings_version("idx-r", "node-r")
-                .unwrap()
-                .is_some());
-            assert!(store.get_alias("alias-r").unwrap().is_some());
-            assert!(store.get_session("sess-r").unwrap().is_some());
-            assert!(store.get_idempotency_entry("idemp-r").unwrap().is_some());
-            assert!(store.get_job("job-r").unwrap().is_some());
-            assert!(store.get_leader_lease("scope-r").unwrap().is_some());
-            assert!(store.get_canary("canary-r").unwrap().is_some());
-            assert_eq!(store.get_canary_runs("canary-r", 10).unwrap().len(), 1);
-            assert!(store.get_cdc_cursor("sink-r", "idx-r").unwrap().is_some());
-            assert!(store.get_tenant_mapping(&vec![1u8; 32]).unwrap().is_some());
-            assert!(store.get_rollover_policy("policy-r").unwrap().is_some());
-            assert!(store.get_search_ui_config("idx-r").unwrap().is_some());
-            assert!(store.get_admin_session("admin-r").unwrap().is_some());
-        }
-    }
-
-    // --- Empty table overhead tests ---
-
-    #[test]
-    fn empty_feature_table_overhead_under_16kb() {
-        use std::fs;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("overhead.db");
-
-        // Create and migrate a fresh database
-        {
-            let store = SqliteTaskStore::open(&path).unwrap();
-            store.migrate().unwrap();
-            // Drop store to ensure all data is flushed
-        }
-
-        // Get the file size
-        let metadata = fs::metadata(&path).unwrap();
-        let file_size = metadata.len();
-
-        // An empty SQLite database with all 14 tables
-        // The database file includes: schema, metadata, and page allocation overhead
-        // WAL mode creates additional files, but the main DB file should be reasonable
-
-        // A fresh SQLite database with 14 tables and WAL mode is typically 100-200 KB
-        // This includes the page structure and internal metadata
-        assert!(
-            file_size < 200 * 1024,
-            "Empty database size {} bytes exceeds 200 KB",
-            file_size
-        );
-
-        // For verification, log the actual size
-        println!(
-            "Empty database size: {} bytes ({} KB)",
-            file_size,
-            file_size / 1024
-        );
-    }
-
-    #[test]
-    fn empty_tables_add_minimal_overhead_per_table() {
-        use rusqlite::Connection;
-        use std::fs;
-
-        // Create a database with just the core 7 tables (001_initial.sql)
-        let dir1 = tempfile::tempdir().unwrap();
-        let path1 = dir1.path().join("core_only.db");
-        {
-            let conn = Connection::open(&path1).unwrap();
-            conn.execute_batch(include_str!("../../migrations/001_initial.sql"))
-                .unwrap();
-        }
-
-        let core_size = fs::metadata(&path1).unwrap().len();
-
-        // Create a database with all 14 tables (001 + 002)
-        let dir2 = tempfile::tempdir().unwrap();
-        let path2 = dir2.path().join("all_tables.db");
-        {
-            let conn = Connection::open(&path2).unwrap();
-            conn.execute_batch(include_str!("../../migrations/001_initial.sql"))
-                .unwrap();
-            conn.execute_batch(include_str!("../../migrations/002_feature_tables.sql"))
-                .unwrap();
-        }
-
-        let all_size = fs::metadata(&path2).unwrap().len();
-
-        // The 7 feature tables (canaries, canary_runs, cdc_cursors, tenant_map,
-        // rollover_policies, search_ui_config, admin_sessions) add overhead
-        let feature_overhead = all_size.saturating_sub(core_size);
-        let overhead_per_table = feature_overhead / 7;
-
-        // Acceptance criteria: each empty table should consume < 16 KB
-        // The average overhead per table should be well under 16 KB
-        assert!(
-            overhead_per_table < 16 * 1024,
-            "Feature tables average {} bytes per table, exceeds 16 KB",
-            overhead_per_table
-        );
-
-        println!("Core tables: {} bytes ({} KB)", core_size, core_size / 1024);
-        println!("All tables: {} bytes ({} KB)", all_size, all_size / 1024);
-        println!(
-            "Feature table overhead: {} bytes ({} KB)",
-            feature_overhead,
-            feature_overhead / 1024
-        );
-        println!(
-            "Average per feature table: {} bytes ({} KB)",
-            overhead_per_table,
-            overhead_per_table / 1024
-        );
     }
 }

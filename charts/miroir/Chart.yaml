@@ -1,34 +1,20 @@
 apiVersion: v2
 name: miroir
+description: Multi-node Index Replication Orchestrator for Meilisearch
+type: application
 version: 0.1.0
-appVersion: 0.1.0
-description: RAID-like sharding and HA for Meilisearch Community Edition
+appVersion: "0.1.0"
 keywords:
-  - search
   - meilisearch
+  - search
+  - replication
   - sharding
-  - kubernetes
 home: https://github.com/jedarden/miroir
 sources:
   - https://github.com/jedarden/miroir
 maintainers:
   - name: jedarden
-    url: https://github.com/jedarden
-icon: https://raw.githubusercontent.com/meilisearch/meilisearch/main/assets/logo.svg
+    email: dev@example.com
 annotations:
   artifacthub.io/category: database
   artifacthub.io/license: MIT
-  artifacthub.io/links: |
-    - name: Documentation
-      url: https://github.com/jedarden/miroir
-  artifacthub.io/operator: "false"
-  artifacthub.io/prerelease: "false"
-kubeVersion: ">=1.25.0-0"
-# Prometheus Adapter dependency (plan §14.4)
-# Required for HPA custom metrics: miroir_requests_in_flight, miroir_background_queue_depth
-dependencies:
-  - name: prometheus-adapter
-    version: "4.x"
-    repository: "https://prometheus-community.github.io/helm-charts"
-    condition: prometheusAdapter.enabled
-    alias: prometheusAdapter

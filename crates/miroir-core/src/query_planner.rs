@@ -47,12 +47,14 @@ impl Default for QueryPlannerConfig {
 pub struct QueryPlan {
     /// Whether the query was narrowable.
     pub narrowed: bool,
-    /// Reason for narrowing (or not).
+    /// Human-readable reason for narrowing (or not).
     pub reason: String,
     /// Target shard IDs (empty if not narrowed).
     pub target_shards: Vec<u32>,
     /// Warnings generated during planning.
     pub warnings: Vec<String>,
+    /// Original filter expression (for debugging).
+    pub filter: Option<String>,
 }
 
 /// Query planner.
@@ -97,6 +99,7 @@ impl QueryPlanner {
                 reason: "query planner disabled".to_string(),
                 target_shards: vec![],
                 warnings: vec![],
+                filter: filter.clone(),
             };
         }
 
@@ -108,6 +111,7 @@ impl QueryPlanner {
                     reason: "no filter specified".to_string(),
                     target_shards: vec![],
                     warnings: vec![],
+                    filter: None,
                 }
             }
         };
@@ -121,6 +125,7 @@ impl QueryPlanner {
                     reason: "primary key not configured for index".to_string(),
                     target_shards: vec![],
                     warnings: vec![],
+                    filter: Some(filter.clone()),
                 }
             }
         };
@@ -134,6 +139,7 @@ impl QueryPlanner {
                     reason: format!("PK equality: {} = {}", pk_field, literal),
                     target_shards: vec![shard_id],
                     warnings: vec![],
+                    filter: Some(filter.clone()),
                 }
             }
             Ok(PkConstraint::In(literals))
@@ -151,6 +157,7 @@ impl QueryPlanner {
                     reason: format!("PK IN list: {} values", literals.len()),
                     target_shards: shards,
                     warnings: vec![],
+                    filter: Some(filter.clone()),
                 }
             }
             Ok(PkConstraint::In(literals)) => {
@@ -164,6 +171,7 @@ impl QueryPlanner {
                     ),
                     target_shards: vec![],
                     warnings: vec![],
+                    filter: Some(filter.clone()),
                 }
             }
             Err(e) => QueryPlan {
@@ -171,6 +179,7 @@ impl QueryPlanner {
                 reason: format!("filter not narrowable: {}", e),
                 target_shards: vec![],
                 warnings: vec![],
+                filter: Some(filter.clone()),
             },
         }
     }
@@ -260,6 +269,11 @@ impl QueryPlanner {
         }
 
         Ok(result)
+    }
+
+    /// Get configuration.
+    pub fn config(&self) -> &QueryPlannerConfig {
+        &self.config
     }
 }
 
@@ -359,5 +373,48 @@ mod tests {
 
         assert!(!plan.narrowed);
         assert!(plan.reason.contains("primary key not configured"));
+    }
+
+    #[test]
+    fn test_pk_equality_narrowing() {
+        let planner = QueryPlanner::default();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        rt.block_on(async {
+            planner.set_primary_key("test".into(), "id".into()).await;
+            let plan = planner.plan("test", &Some("id = \"test-doc\"".to_string()), 16).await;
+            assert!(plan.narrowed);
+            assert_eq!(plan.target_shards.len(), 1);
+        });
+    }
+
+    #[test]
+    fn test_pk_in_narrowing() {
+        let planner = QueryPlanner::default();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        rt.block_on(async {
+            planner.set_primary_key("test".into(), "id".into()).await;
+            let plan = planner
+                .plan("test", &Some("id IN [\"a\", \"b\", \"c\"]".to_string()), 16)
+                .await;
+            assert!(plan.narrowed);
+            assert_eq!(plan.target_shards.len(), 3);
+        });
+    }
+
+    #[test]
+    fn test_pk_and_narrowing() {
+        let planner = QueryPlanner::default();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        rt.block_on(async {
+            planner.set_primary_key("test".into(), "id".into()).await;
+            let plan = planner
+                .plan("test", &Some("id = \"test\" AND category = \"books\"".to_string()), 16)
+                .await;
+            assert!(plan.narrowed);
+            assert_eq!(plan.target_shards.len(), 1);
+        });
     }
 }

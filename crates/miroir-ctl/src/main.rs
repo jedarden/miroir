@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. ~/.config/miroir/credentials
     // 3. --admin-key flag
     let admin_key =
-        load_admin_key(cli.admin_key).map_err(|e| format!("Failed to load credentials: {}", e))?;
+        load_admin_key(cli.admin_key).map_err(|e| format!("Failed to load credentials: {e}"))?;
 
     if admin_key.is_none() {
         eprintln!("Error: No admin API key found.");

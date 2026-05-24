@@ -50,7 +50,7 @@ impl TimeWindow {
     pub fn parse(s: &str) -> Result<Self, String> {
         let (start, end) = s
             .split_once('-')
-            .ok_or_else(|| format!("expected HH:MM-HH:MM, got {}", s))?;
+            .ok_or_else(|| format!("expected HH:MM-HH:MM, got {s}"))?;
         Ok(TimeWindow {
             start_mins: Self::parse_hm(start)?,
             end_mins: Self::parse_hm(end)?,
@@ -60,11 +60,11 @@ impl TimeWindow {
     fn parse_hm(hm: &str) -> Result<u16, String> {
         let (h, m) = hm
             .split_once(':')
-            .ok_or_else(|| format!("expected HH:MM, got {}", hm))?;
-        let h: u16 = h.parse().map_err(|_| format!("invalid hour: {}", h))?;
-        let m: u16 = m.parse().map_err(|_| format!("invalid minute: {}", m))?;
+            .ok_or_else(|| format!("expected HH:MM, got {hm}"))?;
+        let h: u16 = h.parse().map_err(|_| format!("invalid hour: {h}"))?;
+        let m: u16 = m.parse().map_err(|_| format!("invalid minute: {m}"))?;
         if h >= 24 || m >= 60 {
-            return Err(format!("time out of range: {}", hm));
+            return Err(format!("time out of range: {hm}"));
         }
         Ok(h * 60 + m)
     }
@@ -274,7 +274,7 @@ pub fn simulate(params: &SimParams) -> SimResult {
         .map(|g| {
             let mut group = Group::new(g);
             for n in 0..nodes_per_group {
-                group.add_node(NodeId::new(format!("node-g{}-n{}", g, n)));
+                group.add_node(NodeId::new(format!("node-g{g}-n{n}")));
             }
             group
         })
@@ -293,7 +293,7 @@ pub fn simulate(params: &SimParams) -> SimResult {
     let mut node_storage_new: Vec<u64> = vec![0; total_nodes];
 
     for i in 0..total_docs {
-        let key = format!("doc-{}", i);
+        let key = format!("doc-{i}");
         let old_shard = shard_for_key(&key, params.old_shards);
         let new_shard = shard_for_key(&key, params.new_shards);
 

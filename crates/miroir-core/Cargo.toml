@@ -7,30 +7,49 @@ repository.workspace = true
 autobenches = false
 
 [dependencies]
+# Core serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = "0.9"
 twox-hash = "2"
+
+# Error handling and logging
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+# UUIDs
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# Configuration
 config = "0.14"
-rusqlite = { workspace = true }
-futures-util = "0.3"
-# Redis support (optional — enable via `redis-store` feature)
-redis = { version = "0.27", features = ["aio", "tokio-comp", "connection-manager"], optional = true }
+
+# Crypto
+rand = "0.8"
+sha2 = "0.10"
 hex = "0.4"
+
+# Task store backends
+rusqlite = { workspace = true }
+redis = { version = "0.27", features = ["aio", "tokio-comp", "connection-manager"], optional = true }
+
+# Async runtime
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "macros", "fs", "io-util"] }
 async-trait = "0.1"
-rand = "0.8"
+futures-util = "0.3"
+
+# HTTP
 reqwest = { version = "0.12", features = ["json"], default-features = false }
 urlencoding = "2"
-sha2 = "0.10"
+
+# Utilities
 indexmap = "2"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
+
+# DNS peer discovery (optional)
 trust-dns-resolver = { version = "0.12", optional = true }
-# Axum integration (optional — enable via `axum` feature)
+
+# Axum integration (optional)
 axum = { version = "0.7", optional = true }
 
 # Raft prototype (P12.OP2 research) — not for production use
@@ -45,13 +64,18 @@ redis-store = ["redis"]
 axum = ["dep:axum"]
 peer-discovery = ["trust-dns-resolver"]
 test-helpers = []
+
 # Enable when openraft compiles on stable Rust:
 # raft-full = ["openraft", "bincode"]
 # (openraft dep removed from manifest — restore when upstream fixes let_chains on stable)
 
-[[bin]]
-name = "bench-reshard-load"
-path = "benches/reshard_load.rs"
+[[bench]]
+name = "reshard_load"
+harness = false
+
+[[bench]]
+name = "score_comparability"
+harness = false
 
 [[bench]]
 name = "merger_bench"
@@ -68,9 +92,10 @@ harness = false
 [dev-dependencies]
 tempfile = "3"
 proptest = "1"
-criterion = "0.5"
+criterion = { workspace = true }
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["redis"] }
 mockall = "0.13"
 meilisearch-sdk = { workspace = true }
+arbitrary = { version = "1", features = ["derive"] }

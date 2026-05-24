@@ -1,25 +1,42 @@
-Miroir has been installed!
+Miroir has been deployed successfully!
 
-Get the service URL:
-  export POD_NAME=$(kubectl get pods -n {{ .Release.Namespace }} -l "app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=miroir" -o jsonpath="{.items[0].metadata.name}")
-  kubectl port-forward -n {{ .Release.Namespace }} "$POD_NAME" 7700:7700
+{{- if .Values.miroir.ingress.enabled }}
 
-Then visit http://localhost:7700/health to verify the proxy is running.
-
-Components deployed:
-  - Miroir proxy ({{ .Values.miroir.replicas }} replica(s))
-  - Meilisearch ({{ .Values.meilisearch.replicas }} node(s))
-{{- if eq (include "miroir.redisEnabled" .) "true" }}
-  - Redis (task store)
-{{- else }}
-  - SQLite task store (embedded)
+Your Miroir instance is accessible at:
+{{- range .Values.miroir.ingress.hosts }}
+  http{{ if $.Values.miroir.ingress.tls }}s{{ end }}://{{ .host }}
 {{- end }}
 
-!!! PRODUCTION UPGRADE PATH !!!
-These defaults are for dev/CI (single-pod evaluation). For production, override:
-  miroir.replicas=2+
-  miroir.replicationFactor=2
-  miroir.replicaGroups=2
-  taskStore.backend=redis
-  redis.enabled=true
-  hpa.enabled=true
+{{- else if contains "NodePort" .Values.miroir.service.type }}
+
+Get the NodePort by running:
+  export NODE_PORT=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "miroir.fullname" . }} -o jsonpath='{.spec.ports[0].nodePort}')
+  echo "URL: http://$NODE_PORT"
+
+{{- else if contains "LoadBalancer" .Values.miroir.service.type }}
+
+Get the LoadBalancer IP by running:
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "miroir.fullname" . }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+  echo "URL: http://$SERVICE_IP:{{ .Values.miroir.service.port }}"
+
+{{- else if contains "ClusterIP" .Values.miroir.service.type }}
+
+Get the application URL by running these commands in the same shell:
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "miroir.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  echo "Visit http://127.0.0.1:7700 to use your application"
+  kubectl port-forward --namespace {{ .Release.Namespace }} $POD_NAME 7700:7700
+
+{{- end }}
+
+{{- if eq .Values.miroir.taskStore.backend "redis" }}
+
+Redis is deployed and accessible at:
+  {{ include "miroir.fullname" . }}-redis:6379
+
+{{- end }}
+
+To verify the deployment, run:
+  kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "miroir.name" . }},app.kubernetes.io/instance={{ .Release.Name }}"
+
+For more information, see the documentation at:
+  https://github.com/jedarden/miroir

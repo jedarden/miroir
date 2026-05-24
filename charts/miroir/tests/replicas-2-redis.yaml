@@ -1,0 +1,7 @@
+# Test case: replicas: 2, backend: redis -> should PASS
+# Multiple replicas MUST use Redis (shared backend)
+miroir:
+  replicas: 2
+  taskStore:
+    backend: redis
+    url: redis://redis:6379

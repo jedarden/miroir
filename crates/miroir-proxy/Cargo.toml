@@ -22,11 +22,21 @@ tokio = { version = "1", features = ["rt-multi-thread", "signal"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_qs = "0.13"
 config = "0.14"
+chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-prometheus = "0.13"
-uuid = { version = "1.11", features = ["v7"] }
+prometheus = { version = "0.13", features = ["process"] }
+once_cell = "1.20"
+futures = "0.3"
+futures-util = "0.3"
+
+# Core miroir library
+miroir-core = { path = "../miroir-core", features = ["axum", "redis-store", "peer-discovery"] }
+
+# Crypto
+uuid = { version = "1.11", features = ["v4", "v7", "serde"] }
 subtle = "2"
 hmac = "0.12"
 sha2 = "0.10"
@@ -35,12 +45,11 @@ chacha20poly1305 = "0.10"
 rand = "0.8"
 dashmap = "6"
 hex = "0.4"
+
+# HTTP / Tower
 tower = "0.5"
-miroir-core = { path = "../miroir-core", features = ["axum", "redis-store", "peer-discovery"] }
 rust-embed = "8"
 mime_guess = "2"
-chrono = "0.4"
-futures-util = "0.3"
 
 # OpenTelemetry (optional - use feature flag to enable)
 opentelemetry = { version = "0.27", optional = true }

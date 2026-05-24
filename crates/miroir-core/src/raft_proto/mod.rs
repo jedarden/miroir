@@ -9,7 +9,7 @@
 //!
 //! ## Why self-contained instead of depending on openraft
 //!
-//! openraft 0.9.22 depends on `validit 0.2.5` which uses `let_chains` — an unstable
+//! openraft 0.9.20 depends on `validit 0.2.5` which uses `let_chains` — an unstable
 //! Rust feature not available on stable 1.87. This compilation failure is itself
 //! a data point against Raft in the near term. The prototype simulates the Raft
 //! architecture to benchmark the state machine apply path, which is the performance-
@@ -27,11 +27,21 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Simulated Raft consensus overhead — used by benchmark tests only.
+/// Simulated Raft consensus overhead.
+///
+/// In a real Raft cluster, every write goes through:
+/// 1. Serialize command → log entry
+/// 2. Send to majority of peers (network RTT)
+/// 3. Each peer persists to disk (fsync)
+/// 4. Majority ACK → leader commits
+/// 5. Apply to state machine
+///
+/// The network + fsync dominates. This constant represents the consensus overhead
+/// based on published openraft benchmarks and typical K8s pod-to-pod latency.
 #[allow(dead_code)]
 const RAFT_CONSENSUS_OVERHEAD: Duration = Duration::from_micros(2500); // 2.5ms median
 
-/// Redis network overhead — used by benchmark tests only.
+/// Redis network overhead (same cluster, pod-to-pod).
 #[allow(dead_code)]
 const REDIS_NETWORK_OVERHEAD: Duration = Duration::from_micros(500); // 0.5ms median
 

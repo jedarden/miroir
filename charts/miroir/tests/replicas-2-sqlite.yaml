@@ -1,0 +1,7 @@
+# Test case: replicas: 2, backend: sqlite -> should FAIL
+# Multiple replicas CANNOT use SQLite (single-writer cannot be shared)
+miroir:
+  replicas: 2
+  taskStore:
+    backend: sqlite
+    path: /data/miroir-tasks.db
