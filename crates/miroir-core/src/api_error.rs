@@ -23,6 +23,17 @@ pub enum ErrorType {
     System,
 }
 
+impl std::fmt::Display for ErrorType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRequest => write!(f, "invalid_request"),
+            Self::Auth => write!(f, "auth"),
+            Self::Internal => write!(f, "internal"),
+            Self::System => write!(f, "system"),
+        }
+    }
+}
+
 /// Miroir-specific error codes with associated metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MiroirCode {

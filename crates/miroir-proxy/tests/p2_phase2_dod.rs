@@ -133,7 +133,7 @@ async fn test_unique_keyword_search_deduplication() {
     let mut mock = MockNodeClient::default();
 
     // Compute covering set for query_seq=0
-    let plan = plan_search_scatter(&topo, 0, 2, shards);
+    let plan = plan_search_scatter(&topo, 0, 2, shards, None).await;
 
     // Build per-node responses by accumulating all docs for each node.
     // Multiple shards may map to the same node; a real Meilisearch node
@@ -273,7 +273,7 @@ async fn test_paging_preserves_global_ordering() {
     let mut mock = MockNodeClient::default();
 
     // Build covering set for page 1
-    let plan1 = plan_search_scatter(&topo, 0, 3, shards);
+    let plan1 = plan_search_scatter(&topo, 0, 3, shards, None).await;
 
     for (shard_id, node_id) in &plan1.shard_to_node {
         let mut hits = Vec::new();
@@ -317,7 +317,7 @@ async fn test_paging_preserves_global_ordering() {
     ).await.unwrap();
 
     // Page 2: offset=5, limit=5 (different query_seq to get different covering set)
-    let plan2 = plan_search_scatter(&topo, 1, 3, shards);
+    let plan2 = plan_search_scatter(&topo, 1, 3, shards, None).await;
     // Re-use same mock responses since the node set is the same for this topology
     let req2 = SearchRequest {
         index_uid: "test".to_string(),
