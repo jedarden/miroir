@@ -586,488 +586,380 @@
       "description": "Visible when resharding feature is enabled. Shows resharding progress, current phase, and backfill rate.",
       "type": "row",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 72 },
-      "collapsed": true,
-      "panels": [
+      "collapsed": true
+    },
+    {
+      "title": "Reshard In Progress",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 73 },
+      "targets": [
         {
-          "title": "Reshard In Progress",
-          "type": "stat",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
-          "targets": [
-            {
-              "expr": "miroir_reshard_in_progress",
-              "instant": true,
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "short",
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  { "color": "green", "value": null },
-                  { "color": "blue", "value": 1 }
-                ]
-              },
-              "mappings": [
-                { "type": "value", "options": { "0": { "text": "Idle", "index": 0 }, "1": { "text": "Active", "index": 1 } } }
-              ]
-            }
-          },
-          "options": {
-            "colorMode": "background",
-            "graphMode": "none",
-            "reduceOptions": { "calcs": ["lastNotNull"] }
-          }
-        },
-        {
-          "title": "Reshard Phase",
-          "type": "gauge",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
-          "targets": [
-            {
-              "expr": "miroir_reshard_phase",
-              "instant": true,
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "min": 0,
-              "max": 5,
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  { "color": "green", "value": null },
-                  { "color": "yellow", "value": 2 },
-                  { "color": "blue", "value": 4 }
-                ]
-              },
-              "mappings": [
-                { "type": "value", "options": { "0": { "text": "Idle", "index": 0 }, "1": { "text": "Planning", "index": 1 }, "2": { "text": "Provisioning", "index": 2 }, "3": { "text": "Backfilling", "index": 3 }, "4": { "text": "Cutover", "index": 4 }, "5": { "text": "Cleanup", "index": 5 } } }
-              ]
-            }
-          }
-        },
-        {
-          "title": "Documents Backfilled",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
-          "targets": [
-            {
-              "expr": "rate(miroir_reshard_documents_backfilled_total[$__rate_interval])",
-              "legendFormat": "docs/s",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "ops",
-              "custom": { "fillOpacity": 10 }
-            }
-          }
+          "expr": "miroir_reshard_in_progress",
+          "instant": true,
+          "refId": "A"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "blue", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "Idle", "index": 0 }, "1": { "text": "Active", "index": 1 } } }
+          ]
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "title": "Reshard Phase",
+      "type": "gauge",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 73 },
+      "targets": [
+        {
+          "expr": "miroir_reshard_phase",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 5,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2 },
+              { "color": "blue", "value": 4 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "Idle", "index": 0 }, "1": { "text": "Planning", "index": 1 }, "2": { "text": "Provisioning", "index": 2 }, "3": { "text": "Backfilling", "index": 3 }, "4": { "text": "Cutover", "index": 4 }, "5": { "text": "Cleanup", "index": 5 } } }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Documents Backfilled",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 73 },
+      "targets": [
+        {
+          "expr": "rate(miroir_reshard_documents_backfilled_total[$__rate_interval])",
+          "legendFormat": "docs/s",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "fillOpacity": 10 }
+        }
+      }
     },
 
     {
       "title": "Multi-Search (§13.11)",
       "description": "Visible when multi_search feature is enabled. Shows batch sizes, partial failures, and tenant pin overrides.",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 73 },
-      "collapsed": true,
-      "panels": [
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 81 },
+      "collapsed": true
+    },
+    {
+      "title": "Queries per Batch",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 82 },
+      "targets": [
         {
-          "title": "Queries per Batch",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
-          "targets": [
-            {
-              "expr": "histogram_quantile(0.50, sum by (le) (rate(miroir_multisearch_queries_per_batch_bucket[$__rate_interval])))",
-              "legendFormat": "p50",
-              "refId": "A"
-            },
-            {
-              "expr": "histogram_quantile(0.95, sum by (le) (rate(miroir_multisearch_queries_per_batch_bucket[$__rate_interval])))",
-              "legendFormat": "p95",
-              "refId": "B"
-            }
-          ],
-          "fieldConfig": { "defaults": { "unit": "short" } }
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(miroir_multisearch_queries_per_batch_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
+          "refId": "A"
         },
         {
-          "title": "Batches / Partial Failures",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
-          "targets": [
-            {
-              "expr": "rate(miroir_multisearch_batches_total[$__rate_interval])",
-              "legendFormat": "batches/s",
-              "refId": "A"
-            },
-            {
-              "expr": "rate(miroir_multisearch_partial_failures_total[$__rate_interval])",
-              "legendFormat": "partial failures/s",
-              "refId": "B"
-            }
-          ],
-          "fieldConfig": { "defaults": { "unit": "ops" } }
-        },
-        {
-          "title": "Tenant Pin Overrides",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
-          "targets": [
-            {
-              "expr": "sum by (tenant) (rate(miroir_tenant_session_pin_override_total[$__rate_interval]))",
-              "legendFormat": "{{tenant}}",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": { "defaults": { "unit": "ops" } }
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(miroir_multisearch_queries_per_batch_bucket[$__rate_interval])))",
+          "legendFormat": "p95",
+          "refId": "B"
         }
-      ]
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Batches / Partial Failures",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 82 },
+      "targets": [
+        {
+          "expr": "rate(miroir_multisearch_batches_total[$__rate_interval])",
+          "legendFormat": "batches/s",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(miroir_multisearch_partial_failures_total[$__rate_interval])",
+          "legendFormat": "partial failures/s",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
     },
 
     {
       "title": "Anti-Entropy (§13.8)",
       "description": "Visible when anti-entropy is active. Shows shards scanned, mismatches found, and documents repaired.",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 74 },
-      "collapsed": true,
-      "panels": [
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 90 },
+      "collapsed": true
+    },
+    {
+      "title": "Shards Scanned / Mismatches / Repairs",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 91 },
+      "targets": [
         {
-          "title": "Shards Scanned / Mismatches / Repairs",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 16, "x": 0, "y": 1 },
-          "targets": [
-            {
-              "expr": "rate(miroir_antientropy_shards_scanned_total[$__rate_interval])",
-              "legendFormat": "scanned/s",
-              "refId": "A"
-            },
-            {
-              "expr": "rate(miroir_antientropy_mismatches_found_total[$__rate_interval])",
-              "legendFormat": "mismatches/s",
-              "refId": "B"
-            },
-            {
-              "expr": "rate(miroir_antientropy_docs_repaired_total[$__rate_interval])",
-              "legendFormat": "repaired/s",
-              "refId": "C"
-            }
-          ],
-          "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+          "expr": "rate(miroir_antientropy_shards_scanned_total[$__rate_interval])",
+          "legendFormat": "scanned/s",
+          "refId": "A"
         },
         {
-          "title": "Last Scan Completed",
-          "type": "stat",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
-          "targets": [
-            {
-              "expr": "time() - miroir_antientropy_last_scan_completed_seconds",
-              "instant": true,
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "s",
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  { "color": "green", "value": null },
-                  { "color": "yellow", "value": 3600 },
-                  { "color": "red", "value": 86400 }
-                ]
-              }
-            }
-          },
-          "options": {
-            "graphMode": "none",
-            "reduceOptions": { "calcs": ["lastNotNull"] }
+          "expr": "rate(miroir_antientropy_mismatches_found_total[$__rate_interval])",
+          "legendFormat": "mismatches/s",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(miroir_antientropy_docs_repaired_total[$__rate_interval])",
+          "legendFormat": "repaired/s",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "title": "Last Scan Completed",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 91 },
+      "targets": [
+        {
+          "expr": "time() - miroir_antientropy_last_scan_completed_seconds",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 3600 },
+              { "color": "red", "value": 86400 }
+            ]
           }
         }
-      ]
+      },
+      "options": {
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
     },
 
     {
       "title": "Settings Broadcast (§13.5)",
       "description": "Settings divergence detection and drift repairs.",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 75 },
-      "collapsed": true,
-      "panels": [
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 99 },
+      "collapsed": true
+    },
+    {
+      "title": "Settings Hash Mismatches / Drift Repairs",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 100 },
+      "targets": [
         {
-          "title": "Settings Hash Mismatches / Drift Repairs",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
-          "targets": [
-            {
-              "expr": "rate(miroir_settings_hash_mismatch_total[$__rate_interval])",
-              "legendFormat": "mismatches/s",
-              "refId": "A"
-            },
-            {
-              "expr": "rate(miroir_settings_drift_repair_total[$__rate_interval])",
-              "legendFormat": "repairs/s",
-              "refId": "B"
-            }
-          ],
-          "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+          "expr": "rate(miroir_settings_hash_mismatch_total[$__rate_interval])",
+          "legendFormat": "mismatches/s",
+          "refId": "A"
         },
         {
-          "title": "Node Settings Values",
-          "type": "stat",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
-          "targets": [
-            {
-              "expr": "miroir_node_setting_value",
-              "instant": true,
-              "legendFormat": "{{setting}}",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": { "defaults": { "unit": "short" } },
-          "options": {
-            "colorMode": "background",
-            "reduceOptions": { "calcs": ["lastNotNull"] }
-          }
+          "expr": "sum by (index) (rate(miroir_settings_drift_repair_total[$__rate_interval]))",
+          "legendFormat": "repairs/s {{index}}",
+          "refId": "B"
         }
-      ]
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
     },
 
     {
       "title": "CDC (§13.13)",
       "description": "Change Data Capture lag, buffer usage, and events by sink.",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 76 },
-      "collapsed": true,
-      "panels": [
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 108 },
+      "collapsed": true
+    },
+    {
+      "title": "CDC Lag by Sink",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 109 },
+      "targets": [
         {
-          "title": "CDC Lag by Sink",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
-          "targets": [
-            {
-              "expr": "miroir_cdc_lag_seconds",
-              "legendFormat": "{{sink}}",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "s",
-              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 30 }] }
-            }
-          }
-        },
-        {
-          "title": "CDC Buffer Bytes by Sink",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
-          "targets": [
-            {
-              "expr": "miroir_cdc_buffer_bytes",
-              "legendFormat": "{{sink}}",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": { "defaults": { "unit": "bytes" } }
-        },
-        {
-          "title": "CDC Events by Sink",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
-          "targets": [
-            {
-              "expr": "sum by (sink) (rate(miroir_cdc_events_published_total[$__rate_interval]))",
-              "legendFormat": "{{sink}}",
-              "refId": "A"
-            },
-            {
-              "expr": "sum by (sink) (rate(miroir_cdc_dropped_total[$__rate_interval]))",
-              "legendFormat": "{{sink}} dropped",
-              "refId": "B"
-            }
-          ],
-          "fieldConfig": { "defaults": { "unit": "ops" } }
+          "expr": "miroir_cdc_lag_seconds",
+          "legendFormat": "{{sink}}",
+          "refId": "A"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 30 }] }
+        }
+      }
+    },
+    {
+      "title": "CDC Buffer Bytes by Sink",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 109 },
+      "targets": [
+        {
+          "expr": "miroir_cdc_buffer_bytes",
+          "legendFormat": "{{sink}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" } }
+    },
+    {
+      "title": "CDC Events by Sink",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 109 },
+      "targets": [
+        {
+          "expr": "sum by (sink) (rate(miroir_cdc_events_published_total[$__rate_interval]))",
+          "legendFormat": "{{sink}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (sink) (rate(miroir_cdc_dropped_total[$__rate_interval]))",
+          "legendFormat": "{{sink}} dropped",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
     },
 
     {
       "title": "Canary Tests (§13.18)",
       "description": "Canary pass/fail results and assertion failures as a heatmap-style table.",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 77 },
-      "collapsed": true,
-      "panels": [
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 117 },
+      "collapsed": true
+    },
+    {
+      "title": "Canary Results",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 118 },
+      "targets": [
         {
-          "title": "Canary Results",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
-          "targets": [
-            {
-              "expr": "sum by (canary, result) (rate(miroir_canary_runs_total[$__rate_interval]))",
-              "legendFormat": "{{canary}} {{result}}",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
-        },
-        {
-          "title": "Canary Latency (p95)",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
-          "targets": [
-            {
-              "expr": "histogram_quantile(0.95, sum by (le, canary) (rate(miroir_canary_latency_ms_bucket[$__rate_interval])))",
-              "legendFormat": "{{canary}}",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": { "defaults": { "unit": "ms" } }
-        },
-        {
-          "title": "Assertion Failures",
-          "type": "table",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 9 },
-          "targets": [
-            {
-              "expr": "topk(20, sum by (canary, assertion_type) (rate(miroir_canary_assertion_failures_total[$__rate_interval])))",
-              "format": "table",
-              "instant": true,
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {},
-            "overrides": [
-              {
-                "matcher": { "id": "byName", "options": "Time" },
-                "properties": [{ "id": "custom.hidden", "value": true }]
-              },
-              {
-                "matcher": { "id": "byName", "options": "__name__" },
-                "properties": [{ "id": "custom.hidden", "value": true }]
-              },
-              {
-                "matcher": { "id": "byName", "options": "Value" },
-                "properties": [
-                  {
-                    "id": "custom.cellOptions",
-                    "value": { "type": "color-background", "mode": "basic" }
-                  },
-                  {
-                    "id": "thresholds",
-                    "value": {
-                      "mode": "absolute",
-                      "steps": [
-                        { "color": "transparent", "value": null },
-                        { "color": "red", "value": 0.001 }
-                      ]
-                    }
-                  },
-                  { "id": "unit", "value": "ops" }
-                ]
-              }
-            ]
-          }
+          "expr": "sum by (canary, result) (rate(miroir_canary_runs_total[$__rate_interval]))",
+          "legendFormat": "{{canary}} {{result}}",
+          "refId": "A"
         }
-      ]
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "title": "Canary Latency (p95)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 118 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, canary) (rate(miroir_canary_latency_ms_bucket[$__rate_interval])))",
+          "legendFormat": "{{canary}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
     },
 
     {
       "title": "Search UI (§13.21)",
       "description": "Search UI sessions, queries, zero-hit rate, click-through, and client-reported p95 latency.",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 78 },
-      "collapsed": true,
-      "panels": [
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 126 },
+      "collapsed": true
+    },
+    {
+      "title": "Sessions / Queries",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 127 },
+      "targets": [
         {
-          "title": "Sessions / Queries",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
-          "targets": [
-            {
-              "expr": "rate(miroir_search_ui_sessions_total[$__rate_interval])",
-              "legendFormat": "sessions/s",
-              "refId": "A"
-            },
-            {
-              "expr": "sum by (index) (rate(miroir_search_ui_queries_total[$__rate_interval]))",
-              "legendFormat": "queries {{index}}",
-              "refId": "B"
-            }
-          ],
-          "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+          "expr": "rate(miroir_search_ui_sessions_total[$__rate_interval])",
+          "legendFormat": "sessions/s",
+          "refId": "A"
         },
         {
-          "title": "Zero-Hit Rate by Index",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
-          "targets": [
-            {
-              "expr": "sum by (index) (rate(miroir_search_ui_zero_hits_total[$__rate_interval]))",
-              "legendFormat": "{{index}}",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
-        },
-        {
-          "title": "Client p95 Latency by Index",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
-          "targets": [
-            {
-              "expr": "miroir_search_ui_p95_ms",
-              "legendFormat": "{{index}}",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "ms",
-              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 200 }, { "color": "red", "value": 500 }] }
-            }
-          }
-        },
-        {
-          "title": "Click-Through by Index",
-          "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 9 },
-          "targets": [
-            {
-              "expr": "sum by (index) (rate(miroir_search_ui_click_through_total[$__rate_interval]))",
-              "legendFormat": "{{index}}",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+          "expr": "sum by (index) (rate(miroir_search_ui_queries_total[$__rate_interval]))",
+          "legendFormat": "queries {{index}}",
+          "refId": "B"
         }
-      ]
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "title": "Zero-Hit Rate by Index",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 127 },
+      "targets": [
+        {
+          "expr": "sum by (index) (rate(miroir_search_ui_zero_hits_total[$__rate_interval]))",
+          "legendFormat": "{{index}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "title": "Client p95 Latency by Index",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 127 },
+      "targets": [
+        {
+          "expr": "miroir_search_ui_p95_ms",
+          "legendFormat": "{{index}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 200 }, { "color": "red", "value": 500 }] }
+        }
+      }
     }
   ],
   "refresh": "1m",
@@ -1098,5 +990,5 @@
   "timezone": "browser",
   "title": "Miroir Overview",
   "uid": "miroir-overview",
-  "version": 0
+  "version": 1
 }
