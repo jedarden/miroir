@@ -163,6 +163,30 @@ miroir:
   # Existing secret with keys: masterKey, nodeMasterKey, adminApiKey
   existingSecret: ""
 
+  # CDC (Change Data Capture) configuration (plan §13.13)
+  cdc:
+    enabled: false
+    emit_ttl_deletes: false
+    emit_internal_writes: false
+    sinks: []
+    # Example sink configurations:
+    # - type: webhook
+    #   url: https://internal/cdc
+    #   batch_size: 100
+    #   batch_flush_ms: 1000
+    #   include_body: false
+    #   retry_max_s: 3600
+    # - type: nats
+    #   url: nats://nats.messaging.svc:4222
+    #   subject_prefix: miroir.cdc
+    buffer:
+      primary: memory           # memory | redis | pvc
+      memory_bytes: 67108864    # 64 MiB — fits within §14.2 per-pod budget
+      overflow: redis           # redis | pvc | drop
+      redis_bytes: 1073741824   # 1 GiB per-pod budget in Redis for overflow
+      pvc_size: 10Gi            # Size of PVC when primary or overflow is pvc
+      pvc_storage_class: ""     # Empty uses default storage class
+
 # Redis deployment (when taskStore.backend=redis)
 redis:
   enabled: false

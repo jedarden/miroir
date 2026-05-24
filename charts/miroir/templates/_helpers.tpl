@@ -56,6 +56,13 @@ Redis enabled
 {{- end }}
 
 {{/*
+CDC PVC enabled — only rendered when cdc.buffer.primary=="pvc" or cdc.buffer.overflow=="pvc" (plan §13.13)
+*/}}
+{{- define "miroir.cdcPvcEnabled" -}}
+{{- or (eq .Values.miroir.cdc.buffer.primary "pvc") (eq .Values.miroir.cdc.buffer.overflow "pvc") }}
+{{- end }}
+
+{{/*
 Service Account Name
 */}}
 {{- define "miroir.serviceAccountName" -}}
