@@ -21,9 +21,11 @@ use crate::error_response::ErrorResponse;
 use rust_embed::RustEmbed as Embed;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::auth::{build_csp_header, jwt_encode, JwtClaims, JwtHeader, KID_PRIMARY};
+use crate::routes::indexes::MeilisearchClient;
+use crate::scoped_key_rotation::mint_scoped_key;
 
 use super::admin_endpoints::AppState;
 
@@ -331,12 +333,38 @@ async fn get_or_create_scoped_key(
         );
     }
 
-    // TODO: Create new scoped key via Meilisearch API
-    // For now, return an error indicating the key needs to be created
-    Err(ErrorResponse::internal_error(format!(
-        "scoped key for index '{}' needs to be created via background rotation",
-        index_uid
-    )))
+    // Create new scoped key via Meilisearch API (plan §13.21)
+    info!(index = %index_uid, "creating new scoped search-only key");
+
+    let client = MeilisearchClient::new(state.config.node_master_key.clone());
+    let (new_key, new_uid) = mint_scoped_key(&client, &state.config, index_uid)
+        .await
+        .map_err(|e| ErrorResponse::internal_error(format!("failed to mint scoped key: {}", e)))?;
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let scoped_key = SearchUiScopedKey {
+        index_uid: index_uid.to_string(),
+        primary_key: new_key.clone(),
+        primary_uid: new_uid.clone(),
+        previous_key: None,
+        previous_uid: None,
+        rotated_at: now_ms,
+        generation: 1,
+    };
+
+    // Store in Redis
+    redis_store
+        .set_search_ui_scoped_key(&scoped_key)
+        .map_err(|e| ErrorResponse::internal_error(format!("failed to store scoped key: {}", e)))?;
+
+    info!(
+        index = %index_uid,
+        uid = %new_uid,
+        generation = 1,
+        "created new scoped search-only key"
+    );
+
+    Ok(scoped_key)
 }
 
 /// Get per-index search UI configuration (plan §13.21).
