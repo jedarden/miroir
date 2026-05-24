@@ -432,7 +432,7 @@ impl SearchRequest {
             if body
                 .get("q")
                 .and_then(|v| v.as_str())
-                .map_or(false, |s| !s.is_empty())
+                .is_some_and(|s| !s.is_empty())
             {
                 // Has both vector and query → hybrid
                 return VectorMode::Hybrid;
@@ -445,7 +445,7 @@ impl SearchRequest {
             if body
                 .get("q")
                 .and_then(|v| v.as_str())
-                .map_or(false, |s| !s.is_empty())
+                .is_some_and(|s| !s.is_empty())
             {
                 return VectorMode::Hybrid;
             }
@@ -1381,7 +1381,7 @@ impl NodeClient for MockNodeClient {
             .write_responses
             .get(node)
             .cloned()
-            .unwrap_or_else(|| WriteResponse {
+            .unwrap_or(WriteResponse {
                 success: true,
                 task_uid: Some(1),
                 message: None,

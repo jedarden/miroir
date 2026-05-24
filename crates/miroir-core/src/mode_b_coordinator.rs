@@ -14,12 +14,10 @@
 
 use crate::error::{MiroirError, Result};
 use crate::leader_election::LeaderElection;
-use crate::task_store::{
-    mode_b_status, mode_b_type, ModeBOperation, ModeBOperationFilter, TaskStore,
-};
+use crate::task_store::{mode_b_status, mode_b_type, ModeBOperation, TaskStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Phase state for a Mode B operation.
 ///
@@ -212,7 +210,7 @@ impl<E: Serialize + for<'de> Deserialize<'de>> ModeBOpLeader<E> {
             created_at: millis_now(),
             updated_at: millis_now(),
             state_json: serde_json::to_string(&self.extra_state).map_err(|e| {
-                MiroirError::TaskStore(format!("failed to serialize extra state: {}", e))
+                MiroirError::TaskStore(format!("failed to serialize extra state: {e}"))
             })?,
             error: self.phase_state.error.clone(),
             status: mode_b_status::RUNNING.to_string(),
@@ -250,7 +248,7 @@ impl<E: Serialize + for<'de> Deserialize<'de>> ModeBOpLeader<E> {
             created_at: millis_now(),
             updated_at: millis_now(),
             state_json: serde_json::to_string(&self.extra_state).map_err(|e| {
-                MiroirError::TaskStore(format!("failed to serialize extra state: {}", e))
+                MiroirError::TaskStore(format!("failed to serialize extra state: {e}"))
             })?,
             error: Some(error),
             status: mode_b_status::FAILED.to_string(),
@@ -281,7 +279,7 @@ impl<E: Serialize + for<'de> Deserialize<'de>> ModeBOpLeader<E> {
             created_at: millis_now(),
             updated_at: millis_now(),
             state_json: serde_json::to_string(&self.extra_state).map_err(|e| {
-                MiroirError::TaskStore(format!("failed to serialize extra state: {}", e))
+                MiroirError::TaskStore(format!("failed to serialize extra state: {e}"))
             })?,
             error: None,
             status: mode_b_status::COMPLETED.to_string(),
@@ -331,7 +329,7 @@ impl<E: Serialize + for<'de> Deserialize<'de>> ModeBOpLeader<E> {
             // Resume extra state if present
             if !op.state_json.is_empty() {
                 self.extra_state = serde_json::from_str(&op.state_json).map_err(|e| {
-                    MiroirError::TaskStore(format!("failed to deserialize extra state: {}", e))
+                    MiroirError::TaskStore(format!("failed to deserialize extra state: {e}"))
                 })?;
             }
 
