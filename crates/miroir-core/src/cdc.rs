@@ -432,8 +432,8 @@ impl CdcRedisOverflow {
         sink_name: String,
         max_bytes: u64,
     ) -> Result<Self, CdcError> {
-        let list_key = format!("miroir:cdc:overflow:{}", sink_name);
-        let bytes_key = format!("miroir:cdc:overflow_bytes:{}", sink_name);
+        let list_key = format!("miroir:cdc:overflow:{sink_name}");
+        let bytes_key = format!("miroir:cdc:overflow_bytes:{sink_name}");
         Ok(Self {
             pool: Some(pool),
             sink_name,
@@ -446,8 +446,8 @@ impl CdcRedisOverflow {
     /// Create a Redis overflow backend that connects lazily on first use.
     #[cfg(feature = "redis-store")]
     pub fn lazy_new(sink_name: String, max_bytes: u64, _redis_url: String) -> Self {
-        let list_key = format!("miroir:cdc:overflow:{}", sink_name);
-        let bytes_key = format!("miroir:cdc:overflow_bytes:{}", sink_name);
+        let list_key = format!("miroir:cdc:overflow:{sink_name}");
+        let bytes_key = format!("miroir:cdc:overflow_bytes:{sink_name}");
         Self {
             pool: None,
             sink_name,
@@ -483,7 +483,7 @@ impl CdcRedisOverflow {
             while current_bytes + size > self.max_bytes {
                 pipe.rpop(&self.list_key, None);
             }
-            pipe.query_async(&mut *conn)
+            pipe.query_async::<()>(&mut *conn)
                 .await
                 .map_err(|e| CdcError::SinkError(format!("redis rpop error: {e}")))?;
         }
@@ -493,7 +493,7 @@ impl CdcRedisOverflow {
             .lpush(&self.list_key, json)
             .incr(&self.bytes_key, size as i64)
             .expire(&self.bytes_key, 86400) // 24h TTL
-            .query_async(&mut *conn)
+            .query_async::<()>(&mut *conn)
             .await
             .map_err(|e| CdcError::SinkError(format!("redis lpush error: {e}")))?;
 
@@ -580,10 +580,10 @@ impl CdcOverflowBackend for CdcRedisOverflow {
         {
             if let Some(pool) = &self.pool {
                 let mut conn = pool.manager.lock().await;
-                conn.del(&self.list_key)
+                conn.del::<_, ()>(&self.list_key)
                     .await
                     .map_err(|e| CdcError::SinkError(format!("redis del error: {e}")))?;
-                conn.set(&self.bytes_key, 0i64)
+                conn.set::<_, _, ()>(&self.bytes_key, 0i64)
                     .await
                     .map_err(|e| CdcError::SinkError(format!("redis set error: {e}")))?;
                 return Ok(());
@@ -1079,14 +1079,12 @@ impl CdcManager {
                     }
                 }
 
-                let buffer = sink_buffers
-                    .entry(sink.url.clone())
-                    .or_insert_with(Vec::new);
+                let buffer = sink_buffers.entry(sink.url.clone()).or_default();
                 buffer.push(event.clone());
 
                 // Flush if buffer size reached
                 if buffer.len() >= sink.batch_size as usize {
-                    if let Err(e) = Self::flush_sink(&sink, buffer, &state).await {
+                    if let Err(e) = Self::flush_sink(sink, buffer, &state).await {
                         error!("CDC: failed to flush sink {}: {}", sink.url, e);
                     }
                     sink_buffers.insert(sink.url.clone(), Vec::new());
@@ -1148,7 +1146,7 @@ impl CdcManager {
             Ok(())
         } else {
             let status = response.status();
-            Err(CdcError::SinkError(format!("webhook returned {}", status)))
+            Err(CdcError::SinkError(format!("webhook returned {status}")))
         }
     }
 
