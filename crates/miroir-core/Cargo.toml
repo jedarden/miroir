@@ -73,3 +73,4 @@ tokio = { version = "1", features = ["rt", "macros", "time"] }
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["redis"] }
 mockall = "0.13"
+meilisearch-sdk = { workspace = true }
