@@ -6,6 +6,8 @@ services:
   meili-0:
     image: getmeili/meilisearch:v1.37.0
     container_name: miroir-meili-0
+    cap_add:
+      - NET_ADMIN
     environment:
       - MEILI_ENV=development
       - MEILI_MASTER_KEY=dev-node-key
@@ -24,6 +26,8 @@ services:
   meili-1:
     image: getmeili/meilisearch:v1.37.0
     container_name: miroir-meili-1
+    cap_add:
+      - NET_ADMIN
     environment:
       - MEILI_ENV=development
       - MEILI_MASTER_KEY=dev-node-key
@@ -42,6 +46,8 @@ services:
   meili-2:
     image: getmeili/meilisearch:v1.37.0
     container_name: miroir-meili-2
+    cap_add:
+      - NET_ADMIN
     environment:
       - MEILI_ENV=development
       - MEILI_MASTER_KEY=dev-node-key
