@@ -4,7 +4,7 @@
 
 use clap::{Parser, Subcommand};
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::io::{self, Write};
 
@@ -72,7 +72,7 @@ struct MeiliKeysResponse {
     results: Vec<MeiliKey>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct MeiliKey {
     uid: String,
     key: String,
@@ -95,7 +95,7 @@ struct TopologyResponse {
     nodes: Vec<TopologyNode>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct TopologyNode {
     id: String,
     address: String,
@@ -493,4 +493,108 @@ fn epoch_seconds() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_epoch_seconds_returns_non_zero() {
+        let now = epoch_seconds();
+        assert!(now > 0, "epoch_seconds should return a positive value");
+        assert!(
+            now > 1700000000,
+            "epoch_seconds should be reasonably recent (post-2023)"
+        );
+    }
+
+    #[test]
+    fn test_rotate_node_master_args_defaults() {
+        let args = RotateNodeMasterArgs {
+            dry_run: true,
+            current_key: Some("test-key".to_string()),
+            nodes: vec![],
+            key_name: "miroir-node-master".to_string(),
+            expires_at: None,
+            namespace: "search".to_string(),
+            secret_name: "miroir-keys".to_string(),
+            yes: false,
+        };
+
+        assert!(args.dry_run);
+        assert_eq!(args.current_key, Some("test-key".to_string()));
+        assert!(args.nodes.is_empty());
+        assert_eq!(args.key_name, "miroir-node-master");
+        assert_eq!(args.namespace, "search");
+        assert_eq!(args.secret_name, "miroir-keys");
+        assert!(!args.yes);
+    }
+
+    #[test]
+    fn test_dry_run_plan_format() {
+        let args = RotateNodeMasterArgs {
+            dry_run: true,
+            current_key: Some("test-key-abc123".to_string()),
+            nodes: vec![
+                "http://meili-0:7700".to_string(),
+                "http://meili-1:7700".to_string(),
+            ],
+            key_name: "test-key".to_string(),
+            expires_at: Some("2026-12-31T23:59:59Z".to_string()),
+            namespace: "test-ns".to_string(),
+            secret_name: "test-secret".to_string(),
+            yes: false,
+        };
+
+        let nodes = args.nodes.clone();
+        let current_key = args.current_key.as_ref().unwrap();
+        let result = print_dry_run(&args, &nodes, current_key);
+
+        assert!(result.is_ok(), "dry_run should succeed");
+
+        // The function prints to stdout, we can't easily capture it in unit tests
+        // but we can verify it doesn't error
+    }
+
+    #[test]
+    fn test_meili_key_serialization() {
+        let key = MeiliKey {
+            uid: "test-uid".to_string(),
+            key: "test-key-value".to_string(),
+            name: Some("test-key-name".to_string()),
+            description: Some("test description".to_string()),
+            actions: vec![serde_json::json!("*")],
+            indexes: vec![serde_json::json!("*")],
+        };
+
+        // Verify the struct can be serialized
+        let json = serde_json::to_string(&key);
+        assert!(json.is_ok(), "MeiliKey should serialize");
+
+        let parsed: Result<MeiliKey, _> = serde_json::from_str(&json.unwrap());
+        assert!(parsed.is_ok(), "MeiliKey should deserialize");
+        let parsed_key = parsed.unwrap();
+        assert_eq!(parsed_key.uid, "test-uid");
+        assert_eq!(parsed_key.key, "test-key-value");
+    }
+
+    #[test]
+    fn test_topology_node_serialization() {
+        let node = TopologyNode {
+            id: "node-0".to_string(),
+            address: "http://meili-0:7700".to_string(),
+            status: "healthy".to_string(),
+        };
+
+        let json = serde_json::to_string(&node);
+        assert!(json.is_ok(), "TopologyNode should serialize");
+
+        let parsed: Result<TopologyNode, _> = serde_json::from_str(&json.unwrap());
+        assert!(parsed.is_ok(), "TopologyNode should deserialize");
+        let parsed_node = parsed.unwrap();
+        assert_eq!(parsed_node.id, "node-0");
+        assert_eq!(parsed_node.address, "http://meili-0:7700");
+        assert_eq!(parsed_node.status, "healthy");
+    }
 }

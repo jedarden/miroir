@@ -132,6 +132,7 @@ pub async fn run(
                 println!("Shard count: {}", shard_count);
                 println!("\nTo check status, run:");
                 println!("  miroir-ctl dump status --id {}", task_id);
+                Ok(())
             } else {
                 let error = response.text().await?;
                 Err(format!("Dump import failed: {}", error).into())
@@ -180,20 +181,12 @@ pub async fn run(
 
                 println!("Dump Import Status");
                 println!("==================");
-                println!(
-                    "ID: {}",
-                    status["id"].as_str().unwrap_or(&serde_json::Value::Null)
-                );
+                println!("ID: {}", status["id"].as_str().unwrap_or("<null>"));
                 println!(
                     "Index: {}",
-                    status["index_uid"]
-                        .as_str()
-                        .unwrap_or(&serde_json::Value::Null)
+                    status["index_uid"].as_str().unwrap_or("<null>")
                 );
-                println!(
-                    "Phase: {}",
-                    status["phase"].as_str().unwrap_or(&serde_json::Value::Null)
-                );
+                println!("Phase: {}", status["phase"].as_str().unwrap_or("<null>"));
                 println!(
                     "Documents Processed: {}",
                     status["documents_processed"].as_u64().unwrap_or(0)
