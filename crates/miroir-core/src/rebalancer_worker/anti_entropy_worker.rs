@@ -53,9 +53,9 @@ pub struct AntiEntropyWorkerConfig {
 impl Default for AntiEntropyWorkerConfig {
     fn default() -> Self {
         Self {
-            interval_s: 6 * 3600, // 6 hours
+            interval_s: 6 * 3600,            // 6 hours
             lease_renewal_interval_ms: 5000, // 5 seconds
-            lease_ttl_secs: 30, // 30 seconds
+            lease_ttl_secs: 30,              // 30 seconds
         }
     }
 }

@@ -60,7 +60,7 @@ impl Default for DriftReconcilerConfig {
             interval_s: 300, // 5 minutes
             auto_repair: true,
             lease_renewal_interval_ms: 5000, // 5 seconds
-            lease_ttl_secs: 30, // 30 seconds
+            lease_ttl_secs: 30,              // 30 seconds
         }
     }
 }
