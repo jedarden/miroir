@@ -8,45 +8,86 @@
 </head>
 <body>
     <div id="app">
-        <header class="header">
+        <header class="header" role="banner">
             <div class="header-content">
                 <h1 class="logo" id="logo">Search</h1>
+                <button id="darkModeToggle" class="dark-mode-toggle" aria-label="Toggle dark mode" type="button">
+                    <svg class="sun-icon" width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                        <circle cx="10" cy="10" r="4" stroke="currentColor" stroke-width="2"/>
+                        <path d="M10 2v2M10 16v2M18 10h-2M4 10H2M15.66 4.34l-1.4 1.4M5.74 13.26l-1.4 1.4M15.66 15.66l-1.4-1.4M5.74 6.74l-1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <svg class="moon-icon" width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                        <path d="M17 10.5A7 7 0 1 1 9.5 3a5.5 5.5 0 0 0 7.5 7.5z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                    </svg>
+                </button>
             </div>
         </header>
 
-        <main class="main">
+        <main class="main" role="main">
             <div class="search-container">
-                <div class="search-box">
+                <div class="search-box" role="search">
+                    <label for="searchInput" class="visually-hidden">Search</label>
                     <input
                         type="text"
                         id="searchInput"
                         class="search-input"
                         placeholder="Search..."
                         autocomplete="off"
+                        aria-label="Search query"
+                        aria-describedby="searchHint"
                     >
-                    <button id="searchBtn" class="search-button">
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <span id="searchHint" class="visually-hidden">Type to search. Press / to focus. Use arrow keys to navigate results.</span>
+                    <button id="searchBtn" class="search-button" aria-label="Search">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                             <path d="M9 17A8 8 0 1 0 9 1a8 8 0 0 0 0 16zM19 19l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                         </svg>
                     </button>
+                    <button id="facetToggle" class="facet-toggle-button" type="button" aria-expanded="false" aria-controls="facets">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                            <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                        Filters
+                        <span id="activeFilterCount" class="filter-count" aria-live="polite"></span>
+                    </button>
                 </div>
 
-                <div id="facets" class="facets">
+                <div class="search-controls">
+                    <div class="sort-selector">
+                        <label for="sortSelect">Sort:</label>
+                        <select id="sortSelect" class="select-input" aria-label="Sort results">
+                            <option value="">Relevance</option>
+                        </select>
+                    </div>
+
+                    <div class="per-page-selector">
+                        <label for="perPageSelect">Per page:</label>
+                        <select id="perPageSelect" class="select-input" aria-label="Results per page">
+                            <option value="12">12</option>
+                            <option value="24" selected>24</option>
+                            <option value="48">48</option>
+                        </select>
+                    </div>
+                </div>
+
+                <nav id="facets" class="facets" aria-label="Search filters">
                     <!-- Facets loaded dynamically -->
-                </div>
+                </nav>
 
-                <div id="results" class="results">
+                <div id="results" class="results" role="list" aria-live="polite" aria-atomic="true">
                     <!-- Results loaded dynamically -->
                 </div>
 
-                <div id="pagination" class="pagination">
+                <nav id="pagination" class="pagination" role="navigation" aria-label="Search results pagination">
                     <!-- Pagination loaded dynamically -->
-                </div>
+                </nav>
             </div>
         </main>
 
-        <footer class="footer">
-            <span id="resultCount"></span>
+        <footer class="footer" role="contentinfo">
+            <span id="resultCount" aria-live="polite"></span>
+            <div class="keyboard-shortcuts" aria-label="Keyboard shortcuts">
+                Press <kbd>/</kbd> to focus · <kbd>↑</kbd><kbd>↓</kbd> to navigate · <kbd>Enter</kbd> to open · <kbd>Esc</kbd> to clear
+            </div>
         </footer>
     </div>
 
