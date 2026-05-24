@@ -1,7 +1,7 @@
 //! HTTP client for communicating with Meilisearch nodes.
 
 use miroir_core::scatter::{
-    DeleteByIdsRequest, DeleteByFilterRequest, DeleteResponse, NodeClient, NodeError,
+    DeleteByIdsRequest, DeleteByFilterRequest, DeleteResponse, FetchDocumentsRequest, NodeClient, NodeError,
     PreflightRequest, PreflightResponse, SearchRequest, TaskStatusRequest, TaskStatusResponse,
     TermStats, WriteRequest, WriteResponse,
 };
@@ -526,6 +526,76 @@ impl NodeClient for HttpClient {
                     .map(|s| s.to_string()),
             })
         }
+    }
+}
+
+impl miroir_core::group_sync_worker::SyncNodeClient for HttpClient {
+    async fn fetch_documents(
+        &self,
+        node: &NodeId,
+        address: &str,
+        request: &FetchDocumentsRequest,
+    ) -> std::result::Result<serde_json::Value, String> {
+        let url = self.documents_url(address, &request.index_uid);
+        let filter_json = serde_json::to_string(&request.filter)
+            .map_err(|e| format!("Failed to serialize filter: {}", e))?;
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.master_key))
+            .query(&[
+                ("filter", &filter_json),
+                ("limit", &request.limit.to_string()),
+                ("offset", &request.offset.to_string()),
+            ])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        let status = response.status();
+        let body_text = response
+            .text()
+            .await
+            .map_err(|e| format!("Failed to read response: {}", e))?;
+
+        if !status.is_success() {
+            return Err(format!("HTTP {}: {}", status.as_u16(), body_text));
+        }
+
+        serde_json::from_str(&body_text)
+            .map_err(|e| format!("Failed to parse JSON: {}", e))
+    }
+
+    async fn write_documents(
+        &self,
+        node: &NodeId,
+        address: &str,
+        index_uid: &str,
+        documents: Vec<serde_json::Value>,
+    ) -> std::result::Result<(), String> {
+        let url = self.documents_url(address, index_uid);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.master_key))
+            .json(&documents)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        let status = response.status();
+        let body_text = response
+            .text()
+            .await
+            .map_err(|e| format!("Failed to read response: {}", e))?;
+
+        if !status.is_success() {
+            return Err(format!("HTTP {}: {}", status.as_u16(), body_text));
+        }
+
+        Ok(())
     }
 }
 

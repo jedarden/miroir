@@ -55,8 +55,7 @@ pub enum MiroirCode {
 
 impl MiroirCode {
     /// All variants, used for iteration in tests.
-    #[cfg(test)]
-    const ALL: [MiroirCode; 14] = [
+    pub const ALL: [MiroirCode; 14] = [
         MiroirCode::PrimaryKeyRequired,
         MiroirCode::NoQuorum,
         MiroirCode::ShardUnavailable,
@@ -157,7 +156,7 @@ impl MiroirCode {
 ///
 /// Both Miroir-specific and forwarded Meilisearch-native errors use this shape
 /// so that existing SDK error handling branches remain functional.
-#[derive(Debug, Clone, thiserror::Error, Serialize)]
+#[derive(Debug, Clone, thiserror::Error, Serialize, serde::Deserialize)]
 #[error("{message}")]
 pub struct MeilisearchError {
     pub message: String,
