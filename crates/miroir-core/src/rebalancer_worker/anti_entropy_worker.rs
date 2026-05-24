@@ -1,12 +1,14 @@
 //! Anti-entropy worker background task (plan §13.8).
 //!
 //! Runs periodic anti-entropy passes to detect and repair replica drift:
-//! - Acquires leader lease (only one pod runs anti-entropy)
+//! - Mode A shard-partitioned coordination (plan §14.5, §14.6)
+//! - Each pod fingerprints and repairs only its rendezvous-owned shards
 //! - Parses schedule config to determine interval
 //! - Runs fingerprint → diff → repair pipeline
 //! - Self-throttles to <2% CPU target
 
 use crate::anti_entropy::{AntiEntropyConfig, AntiEntropyReconciler};
+use crate::mode_a_coordinator::ModeACoordinator;
 use crate::scatter::{
     FetchDocumentsRequest, FetchDocumentsResponse, NodeClient, NodeError,
     PreflightRequest, PreflightResponse, SearchRequest,
@@ -26,18 +28,12 @@ use tracing::{debug, error, info, warn};
 pub struct AntiEntropyWorkerConfig {
     /// Schedule interval in seconds (parsed from "every 6h" format).
     pub interval_s: u64,
-    /// Leader lease TTL in seconds.
-    pub lease_ttl_secs: u64,
-    /// Lease renewal interval in milliseconds.
-    pub lease_renewal_interval_ms: u64,
 }
 
 impl Default for AntiEntropyWorkerConfig {
     fn default() -> Self {
         Self {
             interval_s: 6 * 3600, // 6 hours
-            lease_ttl_secs: 10,
-            lease_renewal_interval_ms: 2000,
         }
     }
 }
@@ -376,14 +372,16 @@ impl NodeClient for HttpNodeClient {
 
 /// Anti-entropy background worker.
 ///
-/// Runs periodic anti-entropy passes with leader election to ensure
-/// only one pod runs the fingerprinting at a time.
+/// Runs periodic anti-entropy passes with Mode A coordination (plan §14.5, §14.6).
+/// Each pod fingerprints and repairs only its rendezvous-owned shards.
 pub struct AntiEntropyWorker {
     config: AntiEntropyWorkerConfig,
     reconciler: AntiEntropyReconciler<HttpNodeClient>,
     topology: Arc<RwLock<Topology>>,
     task_store: Arc<dyn TaskStore>,
     pod_id: String,
+    /// Mode A coordinator for shard-partitioned ownership (plan §14.5 Mode A).
+    mode_a_coordinator: Option<Arc<ModeACoordinator>>,
     /// Total shards in the cluster (for Mode A scaling).
     total_shards: u32,
     /// This pod's replica group ID (for Mode A scaling).
@@ -439,6 +437,7 @@ impl AntiEntropyWorker {
             topology,
             task_store,
             pod_id,
+            mode_a_coordinator: None,
             total_shards: 0, // Will be set when Mode A is enabled
             replica_group_id: None,
             num_pods: None,
@@ -449,6 +448,12 @@ impl AntiEntropyWorker {
             metrics_docs_repaired: None,
             metrics_scan_completed: None,
         }
+    }
+
+    /// Set the Mode A coordinator for shard-partitioned ownership (plan §14.5 Mode A).
+    pub fn with_mode_a_coordinator(mut self, coordinator: Arc<ModeACoordinator>) -> Self {
+        self.mode_a_coordinator = Some(coordinator);
+        self
     }
 
     /// Set Mode A scaling parameters (plan §14.6).
@@ -489,59 +494,43 @@ impl AntiEntropyWorker {
 
     /// Start the background worker.
     ///
-    /// This runs in a loop:
-    /// 1. Try to acquire leader lease (scope: anti_entropy)
-    /// 2. If acquired, run anti-entropy pass
-    /// 3. Renew lease periodically
-    /// 4. If lease lost, go back to step 1
+    /// This runs in a loop using Mode A coordination (plan §14.5):
+    /// 1. Refresh peer set
+    /// 2. Run anti-entropy pass on owned shards
+    /// 3. Wait for configured interval
+    /// 4. Repeat
+    ///
+    /// No leader election is used — each pod independently scans its
+    /// rendezvous-owned shards.
     pub async fn run(&self) {
         info!(
             pod_id = %self.pod_id,
             interval_s = self.config.interval_s,
-            "anti-entropy worker starting"
+            "anti-entropy worker starting (Mode A coordination)"
         );
 
-        let scope = "anti_entropy";
+        let interval = Duration::from_secs(self.config.interval_s);
 
         loop {
-            let now_ms = now_ms();
-            let expires_at = now_ms + (self.config.lease_ttl_secs * 1000) as i64;
-
-            // Try to acquire leader lease
-            match tokio::task::spawn_blocking({
-                let task_store = self.task_store.clone();
-                let scope = scope.to_string();
-                let pod_id = self.pod_id.clone();
-                move || {
-                    task_store.try_acquire_leader_lease(&scope, &pod_id, expires_at, now_ms)
-                }
-            })
-            .await
-            {
-                Ok(Ok(true)) => {
-                    info!(scope = %scope, pod_id = %self.pod_id, "acquired leader lease");
-
-                    // We are the leader - run anti-entropy pass cycle
-                    if let Err(e) = self.run_pass_cycle().await {
-                        error!(error = %e, "anti-entropy pass cycle failed");
+            // Refresh peer set for Mode A coordination
+            if let Some(ref coordinator) = self.mode_a_coordinator {
+                match coordinator.refresh_peers().await {
+                    Ok(peer_count) => {
+                        debug!(peer_count, "refreshed peer set for anti-entropy");
                     }
-                }
-                Ok(Ok(false)) => {
-                    debug!(scope = %scope, "leader lease already held");
-                }
-                Ok(Err(e)) => {
-                    error!(scope = %scope, error = %e, "failed to acquire leader lease");
-                }
-                Err(e) => {
-                    error!(scope = %scope, error = %e, "spawn_blocking task failed");
+                    Err(e) => {
+                        warn!(error = %e, "failed to refresh peer set, using cached peers");
+                    }
                 }
             }
 
-            // Wait before retrying lease acquisition
-            tokio::time::sleep(Duration::from_millis(
-                self.config.lease_renewal_interval_ms,
-            ))
-            .await;
+            // Run anti-entropy pass on owned shards
+            if let Err(e) = self.run_single_pass().await {
+                error!(error = %e, "anti-entropy pass failed");
+            }
+
+            // Wait for next interval
+            tokio::time::sleep(interval).await;
         }
     }
 

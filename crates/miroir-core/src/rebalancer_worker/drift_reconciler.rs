@@ -1,12 +1,16 @@
 //! Settings drift reconciler background task (plan §13.5).
 //!
 //! Detects and repairs settings drift across nodes:
-//! - Runs as Mode B leader for the broadcast
-//! - Mode A rendezvous-partitioned for the drift check (plan §14.6)
+//! - Mode A rendezvous-partitioned for the drift check (plan §14.5, §14.6)
+//! - Each pod polls a subset of (index, node) settings-hash pairs via rendezvous hashing
 //! - Every `settings_drift_check.interval_s` (default 5 min), hash each node's settings and repair mismatches
 //! - Catches out-of-band changes (operator SSH'd to a node and called PATCH directly)
+//!
+//! Mode A coordination: Each pod owns a subset of (index, node) pairs based on rendezvous hashing.
+//! The pair key for rendezvous is "index_uid:node_address" to ensure even distribution.
 
 use crate::error::{MiroirError, Result};
+use crate::mode_a_coordinator::ModeACoordinator;
 use crate::settings::{fingerprint_settings, SettingsBroadcast};
 use crate::task_store::TaskStore;
 use reqwest::Client;
@@ -24,10 +28,6 @@ pub struct DriftReconcilerConfig {
     pub interval_s: u64,
     /// Whether to automatically repair drift.
     pub auto_repair: bool,
-    /// Leader lease TTL in seconds.
-    pub lease_ttl_secs: u64,
-    /// Lease renewal interval in milliseconds.
-    pub lease_renewal_interval_ms: u64,
 }
 
 impl Default for DriftReconcilerConfig {
@@ -35,16 +35,14 @@ impl Default for DriftReconcilerConfig {
         Self {
             interval_s: 300,     // 5 minutes
             auto_repair: true,
-            lease_ttl_secs: 10,
-            lease_renewal_interval_ms: 2000,
         }
     }
 }
 
 /// Settings drift reconciler background worker.
 ///
-/// Runs as a Tokio task, acquires a leader lease, and periodically checks
-/// for settings drift across all nodes for all indexes.
+/// Runs as a Tokio task, uses Mode A rendezvous hashing to partition
+/// drift checks across pods, and periodically checks for settings drift.
 pub struct DriftReconciler {
     config: DriftReconcilerConfig,
     settings_broadcast: Arc<SettingsBroadcast>,
@@ -52,6 +50,8 @@ pub struct DriftReconciler {
     node_addresses: Vec<String>,
     node_master_key: String,
     pod_id: String,
+    /// Mode A coordinator for partitioning drift checks (plan §14.5 Mode A).
+    mode_a_coordinator: Option<Arc<ModeACoordinator>>,
 }
 
 impl DriftReconciler {
@@ -71,123 +71,62 @@ impl DriftReconciler {
             node_addresses,
             node_master_key,
             pod_id,
+            mode_a_coordinator: None,
         }
+    }
+
+    /// Set the Mode A coordinator for partitioning drift checks (plan §14.5 Mode A).
+    pub fn with_mode_a_coordinator(mut self, coordinator: Arc<ModeACoordinator>) -> Self {
+        self.mode_a_coordinator = Some(coordinator);
+        self
     }
 
     /// Start the background worker.
     ///
-    /// This runs in a loop:
-    /// 1. Try to acquire leader lease (scope: drift_reconciler)
-    /// 2. If acquired, run drift checks and repairs
-    /// 3. Renew lease periodically
-    /// 4. If lease lost, go back to step 1
+    /// This runs in a loop using Mode A coordination (plan §14.5):
+    /// 1. Refresh peer set
+    /// 2. Run drift checks on owned (index, node) pairs
+    /// 3. Wait for configured interval
+    /// 4. Repeat
+    ///
+    /// No leader election is used — each pod independently checks its
+    /// rendezvous-owned (index, node) pairs.
     pub async fn run(&self) {
         info!(
             pod_id = %self.pod_id,
-            "drift reconciler starting"
+            "drift reconciler starting (Mode A coordination)"
         );
 
-        let scope = "drift_reconciler";
         let client = Client::new();
+        let interval = Duration::from_secs(self.config.interval_s);
 
         loop {
-            let now_ms = now_ms();
-            let expires_at = now_ms + (self.config.lease_ttl_secs * 1000) as i64;
-
-            // Try to acquire leader lease
-            match tokio::task::spawn_blocking({
-                let task_store = self.task_store.clone();
-                let scope = scope.to_string();
-                let pod_id = self.pod_id.clone();
-                move || {
-                    task_store.try_acquire_leader_lease(&scope, &pod_id, expires_at, now_ms)
-                }
-            })
-            .await
-            {
-                Ok(Ok(true)) => {
-                    info!(scope = %scope, pod_id = %self.pod_id, "acquired leader lease");
-
-                    // We are the leader - run drift check cycle
-                    if let Err(e) = self.run_check_cycle(&client).await {
-                        error!(error = %e, "drift check cycle failed");
-                    }
-                }
-                Ok(Ok(false)) => {
-                    debug!(scope = %scope, "leader lease already held");
-                }
-                Ok(Err(e)) => {
-                    error!(scope = %scope, error = %e, "failed to acquire leader lease");
-                }
-                Err(e) => {
-                    error!(scope = %scope, error = %e, "spawn_blocking task failed");
-                }
-            }
-
-            // Wait before retrying
-            tokio::time::sleep(Duration::from_millis(
-                self.config.lease_renewal_interval_ms,
-            ))
-            .await;
-        }
-    }
-
-    /// Run a single drift check and repair cycle.
-    async fn run_check_cycle(&self, client: &Client) -> Result<()> {
-        let scope = "drift_reconciler";
-        let mut lease_renewal = tokio::time::interval(Duration::from_millis(
-            self.config.lease_renewal_interval_ms,
-        ));
-
-        // Run drift check immediately on acquiring lease
-        self.check_and_repair_all_indexes(client).await?;
-
-        // Then wait for interval or lease expiry
-        let check_interval = tokio::time::sleep(Duration::from_secs(self.config.interval_s));
-
-        tokio::select! {
-            _ = lease_renewal.tick() => {
-                // Renew lease
-                let now_ms = now_ms();
-                let expires_at = now_ms + (self.config.lease_ttl_secs * 1000) as i64;
-
-                match tokio::task::spawn_blocking({
-                    let task_store = self.task_store.clone();
-                    let scope = scope.to_string();
-                    let pod_id = self.pod_id.clone();
-                    move || {
-                        task_store.renew_leader_lease(&scope, &pod_id, expires_at)
-                    }
-                })
-                .await
-                {
-                    Ok(Ok(true)) => {
-                        debug!(scope = %scope, "renewed leader lease");
-                    }
-                    Ok(Ok(false)) => {
-                        info!(scope = %scope, "lost leader lease");
-                        return Ok(());
-                    }
-                    Ok(Err(e)) => {
-                        error!(scope = %scope, error = %e, "failed to renew leader lease");
-                        return Err(e.into());
+            // Refresh peer set for Mode A coordination
+            if let Some(ref coordinator) = self.mode_a_coordinator {
+                match coordinator.refresh_peers().await {
+                    Ok(peer_count) => {
+                        debug!(peer_count, "refreshed peer set for drift reconciler");
                     }
                     Err(e) => {
-                        error!(scope = %scope, error = %e, "spawn_blocking task failed");
-                        return Err(MiroirError::InvalidState(format!("spawn_blocking task failed: {}", e)));
+                        warn!(error = %e, "failed to refresh peer set, using cached peers");
                     }
                 }
             }
-            _ = check_interval => {
-                // Interval passed - run drift check
-                self.check_and_repair_all_indexes(client).await?;
-            }
-        }
 
-        Ok(())
+            // Run drift check on owned pairs
+            if let Err(e) = self.check_and_repair_all_indexes(&client).await {
+                error!(error = %e, "drift check cycle failed");
+            }
+
+            // Wait for next interval
+            tokio::time::sleep(interval).await;
+        }
     }
 
     /// Check all indexes for drift and repair if needed.
+    ///
+    /// Uses Mode A coordination to filter (index, node) pairs to only those
+    /// owned by this pod via rendezvous hashing.
     async fn check_and_repair_all_indexes(&self, client: &Client) -> Result<()> {
         // Get all indexes from the first node
         let first_address = self.node_addresses.first()
@@ -206,12 +145,28 @@ impl DriftReconciler {
     }
 
     /// Check a single index for drift and repair if needed.
+    ///
+    /// Uses Mode A coordination to only check (index, node) pairs owned by this pod.
+    /// Each pair is keyed as "index_uid:node_address" for rendezvous hashing.
     async fn check_and_repair_index(&self, client: &Client, index: &str) -> Result<()> {
         // Get settings from all nodes
         let mut node_settings: HashMap<String, Value> = HashMap::new();
         let mut node_hashes: HashMap<String, String> = HashMap::new();
 
         for address in &self.node_addresses {
+            // Mode A coordination: only check pairs we own
+            // Key is "index_uid:node_address" for rendezvous hashing
+            let pair_key = format!("{}:{}", index, address);
+
+            if let Some(ref coordinator) = self.mode_a_coordinator {
+                // Check if we own this (index, node) pair
+                let owns_pair = coordinator.owns_task(&pair_key).await.unwrap_or(true); // Default to true if no coordinator
+                if !owns_pair {
+                    debug!(index = %index, node = %address, "skipping (index, node) pair not owned by this pod");
+                    continue;
+                }
+            }
+
             let path = format!("/indexes/{}/settings", index);
             match self.get_settings(client, address, &path).await {
                 Ok(settings) => {
@@ -226,7 +181,7 @@ impl DriftReconciler {
         }
 
         if node_settings.is_empty() {
-            warn!(index = %index, "no nodes returned settings, skipping drift check");
+            debug!(index = %index, "no nodes returned settings for owned pairs, skipping drift check");
             return Ok(());
         }
 
@@ -398,7 +353,5 @@ mod tests {
         let config = DriftReconcilerConfig::default();
         assert_eq!(config.interval_s, 300);
         assert!(config.auto_repair);
-        assert_eq!(config.lease_ttl_secs, 10);
-        assert_eq!(config.lease_renewal_interval_ms, 2000);
     }
 }

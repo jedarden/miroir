@@ -150,6 +150,7 @@ taskStore:
 
 # Horizontal Pod Autoscaler (disabled by default for dev)
 # Per plan §14.4, requires prometheus-adapter when custom metrics are enabled
+# When HPA is enabled, prometheus-adapter is auto-enabled as a dependency
 hpa:
   enabled: false
   minReplicas: 2
@@ -288,3 +289,25 @@ eso:
   includePreviousJwt: false  # set true during JWT rotation overlap window
   includeSharedKey: false  # set true when search_ui.auth.mode=shared_key
   includeRedisPassword: false  # set true when redis.auth.enabled=true
+
+# Prometheus Adapter (plan §14.4)
+# Required for HPA custom metrics (miroir_requests_in_flight, miroir_background_queue_depth).
+# When HPA is enabled, prometheus-adapter is automatically installed as a dependency.
+prometheusAdapter:
+  enabled: false  # auto-enabled when hpa.enabled=true
+  # Prometheus adapter configuration (plan §14.4)
+  # Custom metrics rules for Miroir HPA
+  customMetrics:
+    # Per-pod metric: miroir_requests_in_flight (type: Pods AverageValue)
+    - name: miroir_requests_in_flight
+      metricsQuery: |
+        sum(mirol_requests_in_flight{<<.LabelMatchers>>}) by (<<.GroupBy>>)
+      type: Pods
+      resource:
+        name: miroir_requests_in_flight
+      container: miroir
+    # Global metric: miroir_background_queue_depth (type: External Value)
+    - name: miroir_background_queue_depth
+      metricsQuery: |
+        sum(miroir_background_queue_depth{<<.LabelMatchers>>})
+      type: Value

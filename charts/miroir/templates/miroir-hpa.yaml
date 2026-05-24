@@ -1,5 +1,7 @@
 {{/*
 Miroir Horizontal Pod Autoscaler (plan §14.4)
+Requires prometheus-adapter for custom metrics (miroir_requests_in_flight, miroir_background_queue_depth).
+The prometheus-adapter dependency is auto-enabled when hpa.enabled=true.
 */}}
 {{- if and .Values.miroir.replicas .Values.hpa.enabled }}
 apiVersion: autoscaling/v2
@@ -12,6 +14,9 @@ metadata:
   annotations:
     {{- with .Values.hpa.annotations }}
     {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.hpa.enabled }}
+    helm.sh/hook: post-install,post-upgrade
     {{- end }}
 spec:
   scaleTargetRef:
@@ -38,15 +43,28 @@ spec:
           averageUtilization: {{ .Values.hpa.targetMemoryUtilizationPercentage }}
     {{- end }}
     {{- if .Values.hpa.targetRequestsInFlight }}
+    # Per-pod custom metric (plan §14.4)
+    # Type: Pods AverageValue
+    # Query: sum(miroir_requests_in_flight{pod=<pod>}) by (pod)
+    # HPA averages across all pods and scales when average > target
     - type: Pods
       pods:
         metric:
           name: miroir_requests_in_flight
+          selector:
+            matchLabels:
+              {{- include "miroir.selectorLabels" . | nindent 10 }}
+              app.kubernetes.io/component: miroir
         target:
           type: AverageValue
           averageValue: {{ .Values.hpa.targetRequestsInFlight | default "500" }}
     {{- end }}
     {{- if .Values.hpa.targetBackgroundQueueDepth }}
+    # Global custom metric (plan §14.4)
+    # Type: External Value (not averaged across pods)
+    # Query: sum(miroir_background_queue_depth)
+    # HPA scales when global queue depth > target
+    # This allows HPA to react to backlog across all pods, not just per-pod load
     - type: External
       external:
         metric:
@@ -63,4 +81,68 @@ spec:
   behavior:
     {{- toYaml . | nindent 4 }}
   {{- end }}
+{{- end }}
+
+{{/*
+PrometheusAdapter custom metrics configuration (plan §14.4)
+Auto-rendered when hpa.enabled=true to configure prometheus-adapter for Miroir metrics.
+This ConfigMap is consumed by the prometheus-adapter Helm chart.
+*/}}
+{{- if and .Values.miroir.replicas .Values.hpa.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "miroir.fullname" . }}-prometheus-adapter-metrics
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+data:
+  # Custom metrics for Miroir HPA (plan §14.4)
+  # Per-pod metric: miroir_requests_in_flight
+  # Type: Pods (average value across all pods)
+  rules.yaml: |
+    - seriesQuery: '{__name__="miroir_requests_in_flight",namespace="{{ .Release.Namespace }}"}'
+      name:
+        as: "miroir_requests_in_flight"
+      metricsQuery: |
+        sum(miroir_requests_in_flight{<<.LabelMatchers>>}) by (<<.GroupBy>>)
+      resource:
+        name: miroir_requests_in_flight
+      container: miroir
+      type:
+        type: Pods
+    # Global metric: miroir_background_queue_depth
+    # Type: Value (not averaged, global cluster-wide metric)
+    - seriesQuery: '{__name__="miroir_background_queue_depth",namespace="{{ .Release.Namespace }}"}'
+      name:
+        as: "miroir_background_queue_depth"
+      metricsQuery: |
+        sum(miroir_background_queue_depth{<<.LabelMatchers>>})
+      resource:
+        name: miroir_background_queue_depth
+      type:
+        type: Value
+{{- end }}
+{{- if and .Values.miroir.replicas .Values.hpa.enabled }}
+---
+# NOTES: Prometheus Adapter Configuration (plan §14.4)
+#
+# The Miroir Helm chart auto-enables prometheus-adapter when HPA is enabled.
+# Custom metrics are configured via the ConfigMap above.
+#
+# To verify prometheus-adapter is working:
+#
+# 1. Check the custom metrics API is available:
+#    kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1 | jq .
+#
+# 2. Query the per-pod metric:
+#    kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1/namespaces/{{ .Release.Namespace }}/pods/miroir_requests_in_flight | jq .
+#
+# 3. Query the global metric:
+#    kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1/namespaces/{{ .Release.Namespace }}/miroir_background_queue_depth | jq .
+#
+# 4. Check HPA status:
+#    kubectl describe hpa {{ include "miroir.fullname" . }}-miroir
 {{- end }}

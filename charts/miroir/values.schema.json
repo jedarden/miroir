@@ -347,6 +347,13 @@
           }
         }
       }
+    },
+    "prometheusAdapter": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "customMetrics": { "type": "array" }
+      }
     }
   },
   "allOf": [

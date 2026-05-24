@@ -24,3 +24,11 @@ annotations:
   artifacthub.io/operator: "false"
   artifacthub.io/prerelease: "false"
 kubeVersion: ">=1.25.0-0"
+# Prometheus Adapter dependency (plan §14.4)
+# Required for HPA custom metrics: miroir_requests_in_flight, miroir_background_queue_depth
+dependencies:
+  - name: prometheus-adapter
+    version: "4.x"
+    repository: "https://prometheus-community.github.io/helm-charts"
+    condition: prometheusAdapter.enabled
+    alias: prometheusAdapter
