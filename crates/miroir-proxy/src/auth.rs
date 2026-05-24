@@ -35,6 +35,11 @@ type HmacSha256 = Hmac<Sha256>;
 #[derive(Debug, Clone)]
 pub struct AdminSessionId(pub String);
 
+/// Extension carried in the request after successful JWT validation.
+/// Handlers extract this to access JWT claims like injected_filter.
+#[derive(Debug, Clone)]
+pub struct JwtClaimsExtension(pub JwtClaims);
+
 /// State for CSRF middleware, combining AuthState with task store access.
 #[derive(Clone)]
 pub struct CsrfState {
@@ -61,6 +66,13 @@ pub struct JwtClaims {
     pub iat: u64,
     /// Expiration timestamp (seconds since epoch).
     pub exp: u64,
+    /// Optional injected filter for oauth_proxy mode (plan §13.21).
+    /// When present, this filter is ANDed with any user-supplied filter.
+    pub injected_filter: Option<String>,
+    /// User identifier from oauth_proxy headers (for observability).
+    pub user: Option<String>,
+    /// Groups from oauth_proxy headers (for observability).
+    pub groups: Option<Vec<String>>,
 }
 
 /// Key ID embedded in the JWT header to identify which secret signed it.
@@ -188,7 +200,16 @@ impl AuthState {
     /// Create a new signed JWT session token for the given index (plan §13.21).
     /// Always signs with the primary secret; `kid` header identifies it.
     /// Scope defaults to ["search", "multi_search", "beacon"] for search UI sessions.
-    pub fn sign_jwt(&self, sub: &str, idx: &str, scope: &[&str], ttl_s: u64) -> Option<String> {
+    pub fn sign_jwt(
+        &self,
+        sub: &str,
+        idx: &str,
+        scope: &[&str],
+        ttl_s: u64,
+        injected_filter: Option<String>,
+        user: Option<String>,
+        groups: Option<Vec<String>>,
+    ) -> Option<String> {
         let secret = self.jwt_primary.as_ref()?;
         let now = epoch_seconds();
         let claims = JwtClaims {
@@ -198,6 +219,9 @@ impl AuthState {
             scope: scope.iter().map(|s| s.to_string()).collect(),
             iat: now,
             exp: now + ttl_s,
+            injected_filter,
+            user,
+            groups,
         };
         let header = JwtHeader {
             alg: "HS256".to_string(),
@@ -799,6 +823,22 @@ pub async fn auth_middleware(State(state): State<AuthState>, req: Request, next:
     let verdict = dispatch_bearer(&method, &path, bearer, &state);
 
     match verdict {
+        AuthVerdict::Authenticated(TokenKind::Jwt) => {
+            // JWT validated successfully - extract claims and attach to request
+            if let Some(token) = bearer {
+                if let Ok(claims) = state.validate_jwt(token) {
+                    let mut req = req;
+                    req.extensions_mut().insert(JwtClaimsExtension(claims));
+                    return next.run(req).await;
+                }
+            }
+            // Shouldn't reach here if dispatch returned Jwt, but handle gracefully
+            MeilisearchError::new(
+                MiroirCode::JwtInvalid,
+                "The provided JWT is invalid or expired.",
+            )
+            .into_response()
+        }
         AuthVerdict::Authenticated(_) | AuthVerdict::Exempt => next.run(req).await,
         AuthVerdict::JwtInvalid => MeilisearchError::new(
             MiroirCode::JwtInvalid,
@@ -1312,7 +1352,7 @@ mod tests {
     fn sign_and_validate_primary_jwt() {
         let state = test_state_with_jwt();
         let token = state
-            .sign_jwt("user1", "products", &["search"], 900)
+            .sign_jwt("user1", "products", &["search"], 900, None, None, None)
             .unwrap();
 
         let claims = state.validate_jwt(&token).unwrap();
@@ -1325,7 +1365,7 @@ mod tests {
     fn signed_jwt_authenticates_via_dispatch() {
         let state = test_state_with_jwt();
         let token = state
-            .sign_jwt("user1", "products", &["search"], 900)
+            .sign_jwt("user1", "products", &["search"], 900, None, None, None)
             .unwrap();
 
         let verdict = dispatch_bearer(&Method::GET, "/indexes/products", Some(&token), &state);
@@ -1343,6 +1383,9 @@ mod tests {
             scope: vec!["search".to_string()],
             iat: now - 3600,
             exp: now - 100, // expired well beyond 30s leeway
+            injected_filter: None,
+            user: None,
+            groups: None,
         };
         let header = JwtHeader {
             alg: "HS256".to_string(),
@@ -1364,7 +1407,7 @@ mod tests {
     fn tampered_signature_returns_invalid_signature() {
         let state = test_state_with_jwt();
         let mut token = state
-            .sign_jwt("user1", "products", &["search"], 900)
+            .sign_jwt("user1", "products", &["search"], 900, None, None, None)
             .unwrap();
         // Tamper with the signature
         let parts: Vec<&str> = token.split('.').collect();
@@ -1392,6 +1435,9 @@ mod tests {
             scope: vec!["search".to_string()],
             iat: now,
             exp: now + 900,
+            injected_filter: None,
+            user: None,
+            groups: None,
         };
         let header = JwtHeader {
             alg: "HS256".to_string(),
@@ -1427,7 +1473,9 @@ mod tests {
     #[test]
     fn rotation_new_token_validates_via_primary_secret() {
         let state = test_state_with_dual_jwt();
-        let new_token = state.sign_jwt("user2", "orders", &["search"], 900).unwrap();
+        let new_token = state
+            .sign_jwt("user2", "orders", &["search"], 900, None, None, None)
+            .unwrap();
 
         let validated = state.validate_jwt(&new_token).unwrap();
         assert_eq!(validated.sub, "user2");
@@ -1459,6 +1507,9 @@ mod tests {
             scope: vec!["search".to_string()],
             iat: now,
             exp: now + 900,
+            injected_filter: None,
+            user: None,
+            groups: None,
         };
         let header = JwtHeader {
             alg: "HS256".to_string(),
@@ -1515,7 +1566,7 @@ mod tests {
 
         // Tokens signed with current primary work
         let token = state
-            .sign_jwt("user1", "products", &["search"], 900)
+            .sign_jwt("user1", "products", &["search"], 900, None, None, None)
             .unwrap();
         assert!(state.validate_jwt(&token).is_ok());
 
@@ -1527,6 +1578,9 @@ mod tests {
             scope: vec!["search".to_string()],
             iat: epoch_seconds() - 100,
             exp: epoch_seconds() + 800,
+            injected_filter: None,
+            user: None,
+            groups: None,
         };
         let old_header = JwtHeader {
             alg: "HS256".to_string(),
@@ -1565,7 +1619,9 @@ mod tests {
             ))
             .unwrap(),
         };
-        let token_v1 = pre.sign_jwt("alice", "idx", &["search"], 900).unwrap();
+        let token_v1 = pre
+            .sign_jwt("alice", "idx", &["search"], 900, None, None, None)
+            .unwrap();
         assert!(pre.validate_jwt(&token_v1).is_ok());
 
         // During rotation: v2 primary, v1 previous
@@ -1585,7 +1641,9 @@ mod tests {
         // Old token still validates
         assert!(during.validate_jwt(&token_v1).is_ok());
         // New tokens work too
-        let token_v2 = during.sign_jwt("bob", "idx", &["search"], 900).unwrap();
+        let token_v2 = during
+            .sign_jwt("bob", "idx", &["search"], 900, None, None, None)
+            .unwrap();
         assert!(during.validate_jwt(&token_v2).is_ok());
 
         // Post-rotation: only v2
@@ -1908,6 +1966,9 @@ mod tests {
             ],
             iat: epoch_seconds(),
             exp: epoch_seconds() + 900,
+            injected_filter: None,
+            user: None,
+            groups: None,
         };
 
         let result = validate_jwt_scope(&claims, &Method::POST, "/indexes/products/search");
@@ -1927,6 +1988,9 @@ mod tests {
             ],
             iat: epoch_seconds(),
             exp: epoch_seconds() + 900,
+            injected_filter: None,
+            user: None,
+            groups: None,
         };
 
         let result = validate_jwt_scope(&claims, &Method::POST, "/indexes/orders/search");
@@ -1942,6 +2006,9 @@ mod tests {
             scope: vec!["beacon".to_string()], // missing "search"
             iat: epoch_seconds(),
             exp: epoch_seconds() + 900,
+            injected_filter: None,
+            user: None,
+            groups: None,
         };
 
         let result = validate_jwt_scope(&claims, &Method::POST, "/indexes/products/search");
@@ -1961,6 +2028,9 @@ mod tests {
             ],
             iat: epoch_seconds(),
             exp: epoch_seconds() + 900,
+            injected_filter: None,
+            user: None,
+            groups: None,
         };
 
         let result = validate_jwt_scope(&claims, &Method::POST, "/multi-search");
@@ -1976,6 +2046,9 @@ mod tests {
             scope: vec!["search".to_string()], // missing "multi_search"
             iat: epoch_seconds(),
             exp: epoch_seconds() + 900,
+            injected_filter: None,
+            user: None,
+            groups: None,
         };
 
         let result = validate_jwt_scope(&claims, &Method::POST, "/multi-search");
@@ -1995,6 +2068,9 @@ mod tests {
             ],
             iat: epoch_seconds(),
             exp: epoch_seconds() + 900,
+            injected_filter: None,
+            user: None,
+            groups: None,
         };
 
         let result =
@@ -2015,6 +2091,9 @@ mod tests {
             ],
             iat: epoch_seconds(),
             exp: epoch_seconds() + 900,
+            injected_filter: None,
+            user: None,
+            groups: None,
         };
 
         let result = validate_jwt_scope(&claims, &Method::POST, "/_miroir/ui/search/orders/beacon");
@@ -2030,6 +2109,9 @@ mod tests {
             scope: vec!["search".to_string()],
             iat: epoch_seconds(),
             exp: epoch_seconds() + 900,
+            injected_filter: None,
+            user: None,
+            groups: None,
         };
 
         // Endpoints that don't require scope validation should pass
@@ -2042,7 +2124,7 @@ mod tests {
     fn dispatch_with_jwt_scope_denied_returns_scope_denied_verdict() {
         let state = test_state_with_jwt();
         let token = state
-            .sign_jwt("user1", "products", &["search"], 900)
+            .sign_jwt("user1", "products", &["search"], 900, None, None, None)
             .unwrap();
 
         // Token should be valid, but trying to use it on a different index should fail
@@ -2064,6 +2146,9 @@ mod tests {
                 "products",
                 &["search", "multi_search", "beacon"],
                 900,
+                None,
+                None,
+                None,
             )
             .unwrap();
 

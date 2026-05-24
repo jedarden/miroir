@@ -386,4 +386,36 @@ mod tests {
         cfg.admin_ui.allowed_origins = vec!["same-origin".to_string()];
         assert!(validate(&cfg).is_ok());
     }
+
+    #[test]
+    fn rejects_scoped_key_rotate_before_equal_to_max_age() {
+        let mut cfg = dev_config();
+        cfg.search_ui.scoped_key_max_age_days = 60;
+        cfg.search_ui.scoped_key_rotate_before_expiry_days = 60;
+        let err = validate(&cfg).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("scoped_key_rotate_before_expiry_days"));
+        assert!(err.to_string().contains("strictly less than"));
+    }
+
+    #[test]
+    fn rejects_scoped_key_rotate_before_greater_than_max_age() {
+        let mut cfg = dev_config();
+        cfg.search_ui.scoped_key_max_age_days = 30;
+        cfg.search_ui.scoped_key_rotate_before_expiry_days = 35;
+        let err = validate(&cfg).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("scoped_key_rotate_before_expiry_days"));
+        assert!(err.to_string().contains("strictly less than"));
+    }
+
+    #[test]
+    fn allows_scoped_key_rotate_before_less_than_max_age() {
+        let mut cfg = dev_config();
+        cfg.search_ui.scoped_key_max_age_days = 60;
+        cfg.search_ui.scoped_key_rotate_before_expiry_days = 30;
+        assert!(validate(&cfg).is_ok());
+    }
 }

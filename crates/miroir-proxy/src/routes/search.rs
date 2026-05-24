@@ -171,6 +171,7 @@ async fn search_handler(
     Path(index): Path<String>,
     Extension(state): Extension<Arc<AppState>>,
     session_id: Option<Extension<crate::middleware::SessionId>>,
+    jwt_claims: Option<Extension<crate::auth::JwtClaimsExtension>>,
     headers: HeaderMap,
     Json(body): Json<SearchRequestBody>,
 ) -> Response<Body> {
@@ -578,6 +579,31 @@ async fn search_handler(
     // Record scatter fan-out size before executing
     state.metrics.record_scatter_fan_out(node_count);
 
+    // Apply filter injection from JWT claims (plan §13.21)
+    // When a JWT has an injected_filter claim, AND it with any user-supplied filter
+    let filter = if let Some(Extension(jwt_ext)) = jwt_claims {
+        if let Some(ref injected_filter) = jwt_ext.0.injected_filter {
+            // JWT has an injected filter - AND it with user-supplied filter
+            match body.filter {
+                None => Some(serde_json::from_str(injected_filter).unwrap_or_else(|_| {
+                    // If parse fails, treat as string filter
+                    serde_json::json!(injected_filter)
+                })),
+                Some(ref user_filter) => {
+                    // Combine filters: (user_filter) AND (injected_filter)
+                    // Meilisearch filter syntax: ["user_filter", "injected_filter"]
+                    Some(serde_json::json!([user_filter, injected_filter]))
+                }
+            }
+        } else {
+            // No injected filter, use user-supplied filter as-is
+            body.filter
+        }
+    } else {
+        // No JWT claims, use user-supplied filter as-is
+        body.filter
+    };
+
     // Build search request
     // Clone facets for fingerprinting before moving into SearchRequest
     let facets_clone = body.facets.clone();
@@ -587,7 +613,7 @@ async fn search_handler(
         query: body.q,
         offset: body.offset.unwrap_or(0),
         limit: body.limit.unwrap_or(20),
-        filter: body.filter,
+        filter,
         facets: body.facets,
         ranking_score: client_requested_score,
         body: rest_body,
