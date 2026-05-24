@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Dump import configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DumpImportConfig {
     /// Import mode: "streaming" or "broadcast".
     #[serde(default = "default_mode")]
@@ -134,14 +134,14 @@ pub struct DumpImportManager<C: NodeClient + Send + Sync + 'static> {
     /// Active imports (ID -> status).
     active_imports: Arc<RwLock<HashMap<String, DumpImportStatus>>>,
     /// Topology for routing.
-    topology: Arc<Topology>,
+    topology: Arc<RwLock<Topology>>,
     /// HTTP client for posting documents.
     client: Arc<C>,
 }
 
 impl<C: NodeClient + Send + Sync + 'static> DumpImportManager<C> {
     /// Create a new dump import manager.
-    pub fn new(config: DumpImportConfig, topology: Arc<Topology>, client: C) -> Self {
+    pub fn new(config: DumpImportConfig, topology: Arc<RwLock<Topology>>, client: C) -> Self {
         Self {
             config,
             active_imports: Arc::new(RwLock::new(HashMap::new())),
@@ -226,7 +226,7 @@ impl<C: NodeClient + Send + Sync + 'static> DumpImportManager<C> {
         dump_data: Vec<u8>,
         primary_key: String,
         shard_count: u32,
-        topology: Arc<Topology>,
+        topology: Arc<RwLock<Topology>>,
         config: DumpImportConfig,
         imports: Arc<RwLock<HashMap<String, DumpImportStatus>>>,
         client: Arc<C>,
@@ -243,6 +243,9 @@ impl<C: NodeClient + Send + Sync + 'static> DumpImportManager<C> {
 
         let mut processed = 0u64;
         let bytes_read = dump_data.len() as u64;
+
+        // Acquire topology read lock for routing
+        let topology = topology.read().await;
 
         for line in data_str.lines() {
             if line.is_empty() {
@@ -476,7 +479,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_status_nonexistent() {
-        let topology = Arc::new(Topology::new(64, 2, 1));
+        let topology = Arc::new(RwLock::new(Topology::new(64, 2, 1)));
         let client = MockNodeClient::default();
         let manager = DumpImportManager::new(DumpImportConfig::default(), topology, client);
 
@@ -490,7 +493,7 @@ mod tests {
             mode: "broadcast".into(),
             ..Default::default()
         };
-        let topology = Arc::new(Topology::new(64, 2, 1));
+        let topology = Arc::new(RwLock::new(Topology::new(64, 2, 1)));
         let client = MockNodeClient::default();
         let manager = DumpImportManager::new(config, topology, client);
 
@@ -516,7 +519,7 @@ mod tests {
             0,
         ));
 
-        let topology = Arc::new(topology);
+        let topology = Arc::new(RwLock::new(topology));
 
         // Create mock client
         let mut client = MockNodeClient::default();
@@ -569,7 +572,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_import_invalid_json() {
-        let topology = Arc::new(Topology::new(64, 2, 1));
+        let topology = Arc::new(RwLock::new(Topology::new(64, 2, 1)));
         let client = MockNodeClient::default();
         let manager = DumpImportManager::new(DumpImportConfig::default(), topology, client);
 

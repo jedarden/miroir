@@ -113,20 +113,20 @@ pub struct ShardMigrationProgress {
 
 /// Per-shard migration state for the worker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ShardState {
+pub struct ShardState {
     /// Current phase.
-    phase: ShardMigrationPhase,
+    pub phase: ShardMigrationPhase,
     /// Documents migrated so far.
-    docs_migrated: u64,
+    pub docs_migrated: u64,
     /// Last offset for pagination resume.
-    last_offset: u32,
+    pub last_offset: u32,
     /// Source node for migration.
-    source_node: Option<String>,
+    pub source_node: Option<String>,
     /// Target node for migration.
-    target_node: String,
+    pub target_node: String,
     /// When this shard migration started.
     #[serde(skip, default = "Instant::now")]
-    started_at: Instant,
+    pub started_at: Instant,
 }
 
 /// Migration phases for a single shard.
@@ -150,25 +150,25 @@ pub enum ShardMigrationPhase {
 
 /// State machine for a rebalance job (per index).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct RebalanceJob {
+pub struct RebalanceJob {
     /// Job ID.
-    id: RebalanceJobId,
+    pub id: RebalanceJobId,
     /// Index UID being rebalanced.
-    index_uid: String,
+    pub index_uid: String,
     /// Replica group being rebalanced.
-    replica_group: u32,
+    pub replica_group: u32,
     /// Per-shard migration state.
-    shards: HashMap<u32, ShardState>,
+    pub shards: HashMap<u32, ShardState>,
     /// Job started at.
     #[serde(skip, default = "Instant::now")]
-    started_at: Instant,
+    pub started_at: Instant,
     /// Job completed at (if finished).
     #[serde(skip, default)]
-    completed_at: Option<Instant>,
+    pub completed_at: Option<Instant>,
     /// Total documents migrated.
-    total_docs_migrated: u64,
+    pub total_docs_migrated: u64,
     /// Whether the job is paused.
-    paused: bool,
+    pub paused: bool,
 }
 
 /// Configuration for the rebalancer worker.
@@ -285,6 +285,11 @@ impl RebalancerWorker {
     /// Get a sender for topology change events.
     pub fn event_sender(&self) -> mpsc::Sender<TopologyChangeEvent> {
         self.event_tx.clone()
+    }
+
+    /// Get all active rebalance jobs.
+    pub async fn jobs(&self) -> HashMap<RebalanceJobId, RebalanceJob> {
+        self.jobs.read().await.clone()
     }
 
     /// Start the background worker.

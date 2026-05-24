@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+// Re-export DumpImportConfig from dump_import module to avoid duplication
+pub use crate::dump_import::DumpImportConfig;
+
 // ---------------------------------------------------------------------------
 // 13.1  Online resharding
 // ---------------------------------------------------------------------------
@@ -251,29 +254,6 @@ impl Default for AntiEntropyConfig {
 // ---------------------------------------------------------------------------
 // 13.9  Streaming dump import
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct DumpImportConfig {
-    /// `streaming` or `broadcast` (legacy).
-    pub mode: String,
-    pub batch_size: u32,
-    pub parallel_target_writes: u32,
-    pub memory_buffer_bytes: u64,
-    pub chunk_size_bytes: u64,
-}
-
-impl Default for DumpImportConfig {
-    fn default() -> Self {
-        Self {
-            mode: "streaming".into(),
-            batch_size: 1000,
-            parallel_target_writes: 8,
-            memory_buffer_bytes: 134_217_728, // 128 MiB
-            chunk_size_bytes: 268_435_456,    // 256 MiB
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // 13.10  Idempotency keys
