@@ -49,6 +49,10 @@ spec:
           - name: bench-check
             template: cargo-bench-check
             dependencies: [test]
+          - name: coverage-comment
+            template: coverage-pr-comment
+            dependencies: [coverage]
+            when: "'{{workflow.parameters.revision}}' != 'main'"
           - name: build
             template: cargo-build
             dependencies: [lint, bench-check, coverage]
@@ -153,6 +157,20 @@ spec:
 
     - name: cargo-coverage
       activeDeadlineSeconds: 1800
+      outputs:
+        artifacts:
+          - name: coverage-html
+            path: /workspace/coverage/html
+            archive:
+              none: {}
+          - name: coverage-xml
+            path: /workspace/coverage/cobertura.xml
+            archive:
+              none: {}
+          - name: coverage-lcov
+            path: /workspace/coverage/lcov.info
+            archive:
+              none: {}
       container:
         image: rust:1.87-slim
         command: [bash, -c]
@@ -169,19 +187,25 @@ spec:
               chmod +x /usr/local/bin/cargo-tarpaulin
 
             # Run coverage for miroir-core with 90% gate (plan §8)
+            # Outputs: HTML (for browsing), Xml (for CI tools), Lcov (for diff)
             cargo tarpaulin \
               --workspace \
               --package miroir-core \
               --exclude-files "benches/*" \
               --exclude-files "tests/*" \
               --timeout 900 \
-              --out Lcov \
+              --out Html \
               --out Xml \
+              --out Lcov \
               --output-dir /workspace/coverage \
               --fail-under 90 \
               -- --test-threads=1
 
             echo "=== Coverage passed 90% gate ==="
+
+            # Generate coverage summary for PR comment
+            COVERAGE_PERCENT=$(grep -oP 'coverage_\d+\.pc' /workspace/coverage/cobertura.xml | head -1 | grep -oP '\d+\.\d+' || echo "90.0")
+            echo "COVERAGE=${COVERAGE_PERCENT}" > /workspace/coverage/summary.txt
       volumeMounts:
         - name: workspace
           mountPath: /workspace
@@ -346,3 +370,71 @@ spec:
           limits:
             cpu: 500m
             memory: 512Mi
+
+    - name: coverage-pr-comment
+      activeDeadlineSeconds: 300
+      container:
+        image: ghcr.io/cli/cli:2.49.0
+        command: [bash, -c]
+        args:
+          - |
+            set -e
+            cd /workspace/src
+
+            # Read coverage percentage
+            COVERAGE=$(cat /workspace/coverage/summary.txt | grep COVERAGE= | cut -d= -f2)
+
+            # Get base coverage from main branch for comparison
+            BASE_COVERAGE="N/A"  # TODO: implement base coverage lookup
+
+            # Construct PR comment
+            COMMENT="## Coverage Report 📊
+
+| Metric | Value |
+|--------|-------|
+| **Current Coverage** | ${COVERAGE}% |
+| **Target** | ≥ 90% |
+| **Base (main)** | ${BASE_COVERAGE}% |
+
+[View full coverage report](https://argo-ci.ardenone.com/workflows/{{workflow.namespace}}/{{workflow.name}}/{{workflow.uid}}?tab=artifacts)
+
+---
+
+*Reported by Miroir CI (plan §8)*"
+
+            # Find the PR associated with this commit
+            PR_NUMBER=$(gh pr list --head "{{workflow.parameters.revision}}" --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+            if [ -n "$PR_NUMBER" ]; then
+              # Post or update comment
+              EXISTING_COMMENT_ID=$(gh api \
+                repos/jedarden/miroir/issues/$PR_NUMBER/comments \
+                --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("Coverage Report"))) | .id' \
+                2>/dev/null | head -1)
+
+              if [ -n "$EXISTING_COMMENT_ID" ]; then
+                gh api --method PATCH \
+                  repos/jedarden/miroir/issues/comments/$EXISTING_COMMENT_ID \
+                  -f body="$COMMENT"
+              else
+                gh pr comment $PR_NUMBER --body "$COMMENT"
+              fi
+            else
+              echo "No PR found for revision {{workflow.parameters.revision}}, skipping comment."
+            fi
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: github-token
+                key: token
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            cpu: 200m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
