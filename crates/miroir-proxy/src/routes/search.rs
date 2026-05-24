@@ -626,9 +626,9 @@ async fn search_handler(
         // Record over-fetch metric (plan §13.12)
         state.metrics.inc_vector_search_over_fetched();
         // Record merge strategy metric
-        state.metrics.inc_vector_merge_strategy(
-            &state.config.vector_search.merge_strategy
-        );
+        state
+            .metrics
+            .inc_vector_merge_strategy(&state.config.vector_search.merge_strategy);
         over_fetch_factor
     } else {
         1 // No over-fetch for pure keyword queries
@@ -1078,9 +1078,9 @@ async fn search_multi_targets(
         // Record over-fetch metric (plan §13.12)
         state.metrics.inc_vector_search_over_fetched();
         // Record merge strategy metric
-        state.metrics.inc_vector_merge_strategy(
-            &state.config.vector_search.merge_strategy
-        );
+        state
+            .metrics
+            .inc_vector_merge_strategy(&state.config.vector_search.merge_strategy);
         over_fetch_factor
     } else {
         1 // No over-fetch for pure keyword queries
