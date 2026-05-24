@@ -4,12 +4,11 @@
 //! Uses testcontainers for spinning up Meilisearch instances.
 
 use miroir_core::config::{Config, NodeConfig};
-use miroir_core::topology::{Node, NodeId, Topology};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::time::sleep;
-use testcontainers::{clients, ImageExt};
+use testcontainers::{ImageExt, runners::AsyncRunner};
 use testcontainers_modules::meilisearch::Meilisearch;
 
 /// Test configuration helper.
@@ -22,14 +21,12 @@ struct TestSetup {
 
 impl TestSetup {
     async fn new() -> anyhow::Result<Self> {
-        let docker = clients::Cli::default();
-
         // Start 3 Meilisearch nodes
         let mut meilisearch_urls = Vec::new();
         for i in 0..3 {
             let meilisearch = Meilisearch::default()
-                .with_cmd_arg(format!("--master-key=key{}", i))
-                .start(&docker)
+                .with_cmd([format!("--master-key=key{}", i)])
+                .start()
                 .await?;
 
             let port = meilisearch.get_host_port_ipv4(7700).await?;
@@ -198,7 +195,7 @@ async fn test_1000_documents_indexed_and_retrievable() {
         .collect();
 
     // Add documents
-    let task = setup.add_documents(index_uid, documents).await.expect("Failed to add documents");
+    let _task = setup.add_documents(index_uid, documents).await.expect("Failed to add documents");
 
     // Wait for task to complete
     sleep(Duration::from_secs(2)).await;
@@ -399,10 +396,11 @@ async fn test_error_format_parity_with_meilisearch() {
     // Test various error conditions and verify format
 
     // 1. Invalid request (empty document batch)
+    let empty_docs: [Value; 0] = [];
     let resp = setup.client
         .post(&format!("{}/indexes/test/documents", setup.proxy_url))
         .header("Authorization", format!("Bearer {}", setup.master_key))
-        .json(&[])
+        .json(&empty_docs)
         .send()
         .await
         .expect("Request failed");
