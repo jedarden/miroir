@@ -43,9 +43,12 @@ spec:
           - name: test
             template: cargo-test
             dependencies: [checkout]
+          - name: bench-check
+            template: cargo-bench-check
+            dependencies: [test]
           - name: build
             template: cargo-build
-            dependencies: [lint, test]
+            dependencies: [lint, bench-check]
           - name: docker
             template: docker-build-push
             dependencies: [build]
@@ -120,8 +123,30 @@ spec:
             cd /workspace/src
             export CARGO_TARGET_DIR=/workspace/target-test
             cargo test --all --all-features
-            # Plan §8 Phase 1: compile benchmarks on every build (without running)
-            cargo bench --no-run
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            cpu: 2000m
+            memory: 4Gi
+          limits:
+            cpu: 4000m
+            memory: 8Gi
+
+    - name: cargo-bench-check
+      activeDeadlineSeconds: 600
+      container:
+        image: rust:1.87-slim
+        command: [bash, -c]
+        args:
+          - |
+            set -e
+            apt-get update -qq && apt-get install -y -qq pkg-config libssl-dev >/dev/null 2>&1
+            cd /workspace/src
+            export CARGO_TARGET_DIR=/workspace/target-bench
+            # Phase 8: Compile benches to verify they still work (plan §8 regression gate)
+            cargo bench --no-run -p miroir-core
         volumeMounts:
           - name: workspace
             mountPath: /workspace
@@ -148,24 +173,24 @@ spec:
             cargo build --release --target x86_64-unknown-linux-musl \
               -p miroir-proxy -p miroir-ctl
 
-            mkdir -p /workspace/artifacts
+            mkdir -p /workspace/dist
             cp target/x86_64-unknown-linux-musl/release/miroir-proxy \
-              /workspace/artifacts/miroir-proxy-linux-amd64
+              /workspace/dist/miroir-proxy-linux-amd64
             cp target/x86_64-unknown-linux-musl/release/miroir-ctl \
-              /workspace/artifacts/miroir-ctl-linux-amd64
+              /workspace/dist/miroir-ctl-linux-amd64
 
-            sha256sum /workspace/artifacts/miroir-proxy-linux-amd64 \
-              > /workspace/artifacts/miroir-proxy-linux-amd64.sha256
-            sha256sum /workspace/artifacts/miroir-ctl-linux-amd64 \
-              > /workspace/artifacts/miroir-ctl-linux-amd64.sha256
+            sha256sum /workspace/dist/miroir-proxy-linux-amd64 \
+              > /workspace/dist/miroir-proxy-linux-amd64.sha256
+            sha256sum /workspace/dist/miroir-ctl-linux-amd64 \
+              > /workspace/dist/miroir-ctl-linux-amd64.sha256
 
             # Copy proxy binary to source dir for docker context (Dockerfile expects it there)
-            cp /workspace/artifacts/miroir-proxy-linux-amd64 \
+            cp /workspace/dist/miroir-proxy-linux-amd64 \
               /workspace/src/miroir-proxy-linux-amd64
 
             echo "=== build checksums ==="
-            cat /workspace/artifacts/miroir-proxy-linux-amd64.sha256
-            cat /workspace/artifacts/miroir-ctl-linux-amd64.sha256
+            cat /workspace/dist/miroir-proxy-linux-amd64.sha256
+            cat /workspace/dist/miroir-ctl-linux-amd64.sha256
         volumeMounts:
           - name: workspace
             mountPath: /workspace
@@ -264,10 +289,10 @@ spec:
               --notes "${NOTES}" \
               ${PRERELEASE_FLAG} \
               --target "{{workflow.parameters.revision}}" \
-              /workspace/artifacts/miroir-proxy-linux-amd64 \
-              /workspace/artifacts/miroir-proxy-linux-amd64.sha256 \
-              /workspace/artifacts/miroir-ctl-linux-amd64 \
-              /workspace/artifacts/miroir-ctl-linux-amd64.sha256
+              /workspace/dist/miroir-proxy-linux-amd64 \
+              /workspace/dist/miroir-proxy-linux-amd64.sha256 \
+              /workspace/dist/miroir-ctl-linux-amd64 \
+              /workspace/dist/miroir-ctl-linux-amd64.sha256
 
             echo "Release ${TAG} created successfully."
         env:
