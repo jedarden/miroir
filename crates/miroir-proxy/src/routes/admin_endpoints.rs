@@ -2819,10 +2819,92 @@ where
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
 
-            // In a full implementation, we would also:
-            // - Persist the operation to the task store for recovery
-            // - Start a background task for phases 2-6
-            // - Emit metrics
+            // Spawn a background task to run the full orchestrator (phases 2-6)
+            let index_uid_clone = index_uid.clone();
+            let shadow_index_clone = shadow_index.clone();
+            let registry = app_state.resharding_registry.clone();
+            let topology = app_state.topology.clone();
+            let master_key_clone = master_key.clone();
+            let task_store = app_state.task_store.clone();
+
+            tokio::spawn(async move {
+                info!(
+                    index_uid = %index_uid_clone,
+                    "Starting background reshard orchestrator for phases 2-6"
+                );
+
+                // Get primary key from topology
+                let topo = topology.read().await;
+                let primary_key = "id"; // Default - should be fetched from index schema
+                drop(topo);
+
+                // Get node addresses again
+                let topo = topology.read().await;
+                let node_addresses: Vec<String> = topo.nodes().map(|n| n.address.clone()).collect();
+                drop(topo);
+
+                // Configure the orchestrator
+                let config = miroir_core::reshard::ReshardOrchestratorConfig {
+                    index_uid: index_uid_clone.clone(),
+                    target_shards: req.new_shards,
+                    node_addresses,
+                    master_key: master_key_clone,
+                    primary_key: primary_key.to_string(),
+                    throttle_docs_per_sec: req.throttle_docs_per_sec,
+                    backfill_batch_size: 1000,
+                    retain_old_index_hours: 48,
+                    verify_before_swap: true,
+                    alias_history_retention: 10,
+                    task_store: task_store.clone(),
+                    metrics_callback: None, // TODO: wire up metrics
+                };
+
+                // Run the full orchestrator
+                match miroir_core::reshard::execute_reshard(config).await {
+                    Ok(result) => {
+                        info!(
+                            index_uid = %index_uid_clone,
+                            documents_backfilled = result.documents_backfilled,
+                            duration_secs = result.total_duration_secs,
+                            final_phase = ?result.final_phase,
+                            "Reshard orchestrator completed successfully"
+                        );
+
+                        // Update registry to final phase
+                        let mut reg = registry.write().await;
+                        if let Err(e) = reg.update_phase(
+                            &index_uid_clone,
+                            miroir_core::reshard::ReshardPhase::Complete,
+                        ) {
+                            error!(
+                                index_uid = %index_uid_clone,
+                                error = %e,
+                                "failed to update resharding phase to Complete"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            index_uid = %index_uid_clone,
+                            error = %e,
+                            "Reshard orchestrator failed"
+                        );
+
+                        // Update registry to failed state
+                        let mut reg = registry.write().await;
+                        if let Err(err) = reg.update_phase(
+                            &index_uid_clone,
+                            miroir_core::reshard::ReshardPhase::Failed,
+                        ) {
+                            error!(
+                                index_uid = %index_uid_clone,
+                                error = %err,
+                                "failed to update resharding phase to Failed"
+                            );
+                        }
+                    }
+                }
+            });
 
             Ok(Json(ReshardResponse {
                 operation_id: format!("reshard-{}-{}", index_uid, now),
