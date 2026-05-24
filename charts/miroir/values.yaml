@@ -22,9 +22,65 @@ miroir:
     path: /data/miroir-tasks.db
     url: ""  # for redis: redis://host:6379
 
-  # Admin UI
-  admin:
+  # Admin UI (plan §13.19)
+  admin_ui:
     enabled: true
+    path: /_miroir/admin
+    auth: key  # key | oauth (future) | none (dev only)
+    session_ttl_s: 3600
+    read_only_mode: false
+    allowed_origins: [same-origin]
+    cors_allowed_origins: []
+    rate_limit:
+      per_ip: "10/minute"
+      backend: redis  # redis | local (per-pod); redis required when replicas > 1
+      redis_key_prefix: "miroir:ratelimit:adminlogin:"
+      redis_ttl_s: 60
+    theme:
+      accent_color: "#2563eb"
+      default_mode: auto
+    features:
+      sandbox: true
+      shadow_viewer: true
+      cdc_inspector: true
+
+  # Search UI (plan §13.21)
+  search_ui:
+    enabled: true
+    path: /ui/search
+    widget_script_enabled: true
+    embeddable: true
+    auth:
+      mode: public  # public | shared_key | oauth_proxy
+      shared_key_env: ""
+      session_ttl_s: 900
+      session_rate_limit: "10/minute"
+      jwt_secret_env: SEARCH_UI_JWT_SECRET
+      oauth_proxy:
+        user_header: X-Forwarded-User
+        groups_header: X-Forwarded-Groups
+        filter_template: null
+        attribute_map:
+          groups: groups_array
+          user: user_id_string
+    allowed_origins: ["*"]
+    scoped_key_max_age_days: 60
+    scoped_key_rotate_before_expiry_days: 30
+    scoped_key_rotation_drain_s: 120
+    rate_limit:
+      per_ip: "60/minute"
+      backend: redis  # redis | local (per-pod); redis required when replicas > 1
+      redis_key_prefix: "miroir:ratelimit:searchui:"
+      redis_ttl_s: 60
+    cors_allowed_origins: []
+    csp_overrides:
+      script_src: []
+      img_src: []
+      connect_src: []
+    csp: "default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'"
+    analytics:
+      enabled: false
+      sink: cdc
 
   # Scatter policy for unavailable shards
   scatter:

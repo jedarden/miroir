@@ -14,5 +14,5 @@ search_ui:
   rate_limit:
     backend: redis
 admin_ui:
-  login_rate_limit:
+  rate_limit:
     backend: redis

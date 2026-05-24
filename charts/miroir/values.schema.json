@@ -42,11 +42,108 @@
           },
           "required": ["backend"]
         },
-        "admin": {
+        "admin_ui": {
           "type": "object",
           "properties": {
-            "enabled": {"type": "boolean"}
+            "enabled": {"type": "boolean"},
+            "path": {"type": "string"},
+            "auth": {"type": "string", "enum": ["key", "oauth", "none"]},
+            "session_ttl_s": {"type": "integer", "minimum": 1},
+            "read_only_mode": {"type": "boolean"},
+            "allowed_origins": {"type": "array", "items": {"type": "string"}},
+            "cors_allowed_origins": {"type": "array", "items": {"type": "string"}},
+            "rate_limit": {
+              "type": "object",
+              "properties": {
+                "per_ip": {"type": "string"},
+                "backend": {"type": "string", "enum": ["redis", "local"]},
+                "redis_key_prefix": {"type": "string"},
+                "redis_ttl_s": {"type": "integer", "minimum": 1}
+              },
+              "required": ["backend"]
+            },
+            "theme": {
+              "type": "object",
+              "properties": {
+                "accent_color": {"type": "string"},
+                "default_mode": {"type": "string", "enum": ["auto", "light", "dark"]}
+              }
+            },
+            "features": {
+              "type": "object",
+              "properties": {
+                "sandbox": {"type": "boolean"},
+                "shadow_viewer": {"type": "boolean"},
+                "cdc_inspector": {"type": "boolean"}
+              }
+            }
           }
+        },
+        "search_ui": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "path": {"type": "string"},
+            "widget_script_enabled": {"type": "boolean"},
+            "embeddable": {"type": "boolean"},
+            "auth": {
+              "type": "object",
+              "properties": {
+                "mode": {"type": "string", "enum": ["public", "shared_key", "oauth_proxy"]},
+                "shared_key_env": {"type": "string"},
+                "session_ttl_s": {"type": "integer", "minimum": 1},
+                "session_rate_limit": {"type": "string"},
+                "jwt_secret_env": {"type": "string"},
+                "oauth_proxy": {
+                  "type": "object",
+                  "properties": {
+                    "user_header": {"type": "string"},
+                    "groups_header": {"type": "string"},
+                    "filter_template": {"type": ["string", "null"]},
+                    "attribute_map": {
+                      "type": "object",
+                      "properties": {
+                        "groups": {"type": "string"},
+                        "user": {"type": "string"}
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "allowed_origins": {"type": "array", "items": {"type": "string"}},
+            "scoped_key_max_age_days": {"type": "integer", "minimum": 2},
+            "scoped_key_rotate_before_expiry_days": {"type": "integer", "minimum": 1},
+            "scoped_key_rotation_drain_s": {"type": "integer", "minimum": 0},
+            "rate_limit": {
+              "type": "object",
+              "properties": {
+                "per_ip": {"type": "string"},
+                "backend": {"type": "string", "enum": ["redis", "local"]},
+                "redis_key_prefix": {"type": "string"},
+                "redis_ttl_s": {"type": "integer", "minimum": 1}
+              },
+              "required": ["backend"]
+            },
+            "cors_allowed_origins": {"type": "array", "items": {"type": "string"}},
+            "csp_overrides": {
+              "type": "object",
+              "properties": {
+                "script_src": {"type": "array", "items": {"type": "string"}},
+                "img_src": {"type": "array", "items": {"type": "string"}},
+                "connect_src": {"type": "array", "items": {"type": "string"}}
+              }
+            },
+            "csp": {"type": "string"},
+            "analytics": {
+              "type": "object",
+              "properties": {
+                "enabled": {"type": "boolean"},
+                "sink": {"type": "string"}
+              }
+            }
+          },
+          "allOf": []
         },
         "scatter": {
           "type": "object",
@@ -185,6 +282,52 @@
               }
             },
             "errorMessage": "HPA requires replicas >= 2 and taskStore.backend='redis'"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "replicas": {"minimum": 2}
+            },
+            "required": ["replicas"]
+          },
+          "then": {
+            "properties": {
+              "search_ui": {
+                "properties": {
+                  "rate_limit": {
+                    "properties": {
+                      "backend": {"const": "redis"}
+                    },
+                    "required": ["backend"]
+                  }
+                }
+              }
+            },
+            "errorMessage": "search_ui.rate_limit.backend must be 'redis' when replicas > 1 (local rate limiting is per-pod and produces effective rate of per_ip × pod_count)"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "replicas": {"minimum": 2}
+            },
+            "required": ["replicas"]
+          },
+          "then": {
+            "properties": {
+              "admin_ui": {
+                "properties": {
+                  "rate_limit": {
+                    "properties": {
+                      "backend": {"const": "redis"}
+                    },
+                    "required": ["backend"]
+                  }
+                }
+              }
+            },
+            "errorMessage": "admin_ui.rate_limit.backend must be 'redis' when replicas > 1 (local rate limiting is per-pod and produces effective rate of per_ip × pod_count)"
           }
         }
       ]

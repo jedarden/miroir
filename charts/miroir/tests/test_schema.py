@@ -72,6 +72,7 @@ def validate_schema(schema: dict, instance: dict, path: str = "") -> list:
                     # Check nested properties in 'then'
                     if "properties" in then_schema:
                         for prop, prop_schema in then_schema["properties"].items():
+                            # Handle direct property constraints (e.g., taskStore.backend)
                             if prop in instance:
                                 if "properties" in prop_schema:
                                     for nested, nested_schema in prop_schema["properties"].items():
@@ -79,10 +80,32 @@ def validate_schema(schema: dict, instance: dict, path: str = "") -> list:
                                             actual = instance[prop][nested]
                                             if "const" in nested_schema:
                                                 if actual != nested_schema["const"]:
-                                                    msg = f"{path}{prop}.{nested}: expected {nested_schema['const']}, got {actual}"
-                                                    if "errorMessage" in constraint:
-                                                        msg = constraint["errorMessage"]
+                                                    msg = constraint.get("errorMessage",
+                                                        f"{path}{prop}.{nested}: expected {nested_schema['const']}, got {actual}")
                                                     errors.append(msg)
+
+                                # Handle minimum constraints (e.g., replicas minimum)
+                                if "minimum" in prop_schema:
+                                    if instance[prop] < prop_schema["minimum"]:
+                                        msg = constraint.get("errorMessage",
+                                            f"{path}{prop}: must be at least {prop_schema['minimum']}")
+                                        errors.append(msg)
+
+                            # Handle nested object constraints (e.g., search_ui.rate_limit.backend)
+                            if "properties" in prop_schema:
+                                for nested, nested_schema in prop_schema["properties"].items():
+                                    if "properties" in nested_schema:
+                                        for double_nested, double_nested_schema in nested_schema["properties"].items():
+                                            if "const" in double_nested_schema:
+                                                # Check if the nested path exists in instance
+                                                if prop in instance and isinstance(instance[prop], dict):
+                                                    if nested in instance[prop] and isinstance(instance[prop][nested], dict):
+                                                        if double_nested in instance[prop][nested]:
+                                                            actual = instance[prop][nested][double_nested]
+                                                            if actual != double_nested_schema["const"]:
+                                                                msg = constraint.get("errorMessage",
+                                                                    f"{path}{prop}.{nested}.{double_nested}: expected {double_nested_schema['const']}, got {actual}")
+                                                                errors.append(msg)
 
                     # Check required fields in 'then'
                     if "required" in then_schema:
@@ -114,6 +137,68 @@ def test_schema_constraints():
         instance = {
             "replicas": replicas,
             "taskStore": {"backend": backend}
+        }
+
+        miroir_schema = schema["properties"]["miroir"]
+        errors = validate_schema(miroir_schema, instance)
+
+        is_valid = len(errors) == 0
+
+        if is_valid == should_pass:
+            print(f"✓ {description}")
+            passed += 1
+        else:
+            print(f"✗ {description}")
+            for err in errors:
+                print(f"  Error: {err}")
+            failed += 1
+
+    # Test search_ui.rate_limit.backend constraint
+    search_ui_tests = [
+        # (replicas, rate_limit_backend, should_pass, description)
+        (1, "local", True, "replicas: 1 + search_ui.rate_limit.backend: local should PASS"),
+        (2, "local", False, "replicas: 2 + search_ui.rate_limit.backend: local should FAIL"),
+        (2, "redis", True, "replicas: 2 + search_ui.rate_limit.backend: redis should PASS"),
+    ]
+
+    for replicas, rate_limit_backend, should_pass, description in search_ui_tests:
+        instance = {
+            "replicas": replicas,
+            "taskStore": {"backend": "redis"},
+            "search_ui": {
+                "rate_limit": {"backend": rate_limit_backend}
+            }
+        }
+
+        miroir_schema = schema["properties"]["miroir"]
+        errors = validate_schema(miroir_schema, instance)
+
+        is_valid = len(errors) == 0
+
+        if is_valid == should_pass:
+            print(f"✓ {description}")
+            passed += 1
+        else:
+            print(f"✗ {description}")
+            for err in errors:
+                print(f"  Error: {err}")
+            failed += 1
+
+    # Test admin_ui.rate_limit.backend constraint
+    admin_ui_tests = [
+        # (replicas, rate_limit_backend, should_pass, description)
+        (1, "local", True, "replicas: 1 + admin_ui.rate_limit.backend: local should PASS"),
+        (2, "local", False, "replicas: 2 + admin_ui.rate_limit.backend: local should FAIL"),
+        (2, "redis", True, "replicas: 2 + admin_ui.rate_limit.backend: redis should PASS"),
+    ]
+
+    for replicas, rate_limit_backend, should_pass, description in admin_ui_tests:
+        instance = {
+            "replicas": replicas,
+            "taskStore": {"backend": "redis"},
+            "admin_ui": {
+                "rate_limit": {"backend": rate_limit_backend}
+            }
         }
 
         miroir_schema = schema["properties"]["miroir"]
