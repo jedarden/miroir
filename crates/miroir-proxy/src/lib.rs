@@ -1,4 +1,5 @@
 pub mod admin_session;
+pub mod admin_ui;
 pub mod auth;
 pub mod client;
 pub mod error_response;

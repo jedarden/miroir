@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Miroir Admin</title>
+    <link rel="stylesheet" href="/_miroir/admin/styles.css">
+</head>
+<body>
+    <div class="app">
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <h1>Miroir</h1>
+                <span class="subtitle">Admin Console</span>
+            </div>
+            <ul class="nav-links">
+                <li><a href="#overview" data-section="overview" class="active">
+                    <span class="icon">📊</span> Overview
+                </a></li>
+                <li><a href="#topology" data-section="topology">
+                    <span class="icon">🔷</span> Topology
+                </a></li>
+                <li><a href="#indexes" data-section="indexes">
+                    <span class="icon">📚</span> Indexes
+                </a></li>
+                <li><a href="#aliases" data-section="aliases">
+                    <span class="icon">🔖</span> Aliases
+                </a></li>
+                <li><a href="#documents" data-section="documents">
+                    <span class="icon">📄</span> Documents
+                </a></li>
+                <li><a href="#query" data-section="query">
+                    <span class="icon">🔍</span> Query Sandbox
+                </a></li>
+                <li><a href="#tasks" data-section="tasks">
+                    <span class="icon">⚙️</span> Tasks
+                </a></li>
+                <li><a href="#canaries" data-section="canaries">
+                    <span class="icon">🐤</span> Canaries
+                </a></li>
+                <li><a href="#shadow" data-section="shadow">
+                    <span class="icon">👻</span> Shadow Diff
+                </a></li>
+                <li><a href="#cdc" data-section="cdc">
+                    <span class="icon">📡</span> CDC Inspector
+                </a></li>
+                <li><a href="#metrics" data-section="metrics">
+                    <span class="icon">📈</span> Metrics
+                </a></li>
+                <li><a href="#settings" data-section="settings">
+                    <span class="icon">⚙️</span> Settings
+                </a></li>
+            </ul>
+            <div class="sidebar-footer">
+                <div class="connection-status" id="connectionStatus">
+                    <span class="status-dot"></span> Connected
+                </div>
+            </div>
+        </nav>
+
+        <main class="main-content">
+            <header class="top-bar">
+                <button class="mobile-menu-toggle" id="mobileMenuToggle">☰</button>
+                <h2 id="sectionTitle">Overview</h2>
+                <div class="top-bar-actions">
+                    <button class="refresh-btn" id="refreshBtn" title="Refresh data">🔄</button>
+                </div>
+            </header>
+
+            <div class="content-area">
+                <!-- Overview Section -->
+                <section id="overview" class="section active">
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">Cluster Status</div>
+                            <div class="stat-value" id="clusterStatus">Loading...</div>
+                            <div class="stat-sub" id="clusterStatusSub"></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Total Shards</div>
+                            <div class="stat-value" id="totalShards">-</div>
+                            <div class="stat-sub"><span id="replicationFactor"></span>x replication</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Nodes</div>
+                            <div class="stat-value" id="totalNodes">-</div>
+                            <div class="stat-sub"><span id="degradedNodes">0</span> degraded</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Replica Groups</div>
+                            <div class="stat-value" id="totalGroups">-</div>
+                            <div class="stat-sub">Fully covered</div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h3>Active Operations</h3>
+                        <div id="activeOperations">
+                            <p class="placeholder">No active operations</p>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h3>Recent Activity</h3>
+                        <div id="recentActivity">
+                            <p class="placeholder">No recent activity</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Topology Section -->
+                <section id="topology" class="section">
+                    <div class="card">
+                        <h3>Node Health</h3>
+                        <div class="table-container">
+                            <table class="data-table" id="nodeTable">
+                                <thead>
+                                    <tr>
+                                        <th>Node ID</th>
+                                        <th>Address</th>
+                                        <th>Status</th>
+                                        <th>Replica Group</th>
+                                        <th>Shards</th>
+                                        <th>Last Seen</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="nodeTableBody">
+                                    <tr><td colspan="6" class="loading">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h3>Shard Coverage Map</h3>
+                        <p class="card-subtitle">Visual representation of shard distribution across nodes</p>
+                        <div id="shardCoverageMap" class="shard-coverage-map">
+                            <p class="placeholder">Loading...</p>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h3>Rebalance Progress</h3>
+                        <div id="rebalanceProgress">
+                            <p class="placeholder">No rebalance in progress</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Other sections (placeholders) -->
+                <section id="indexes" class="section">
+                    <div class="card">
+                        <h3>Index Management</h3>
+                        <p class="placeholder">Coming soon — List, create, delete indexes with 2PC settings preview</p>
+                    </div>
+                </section>
+
+                <section id="aliases" class="section">
+                    <div class="card">
+                        <h3>Alias Management</h3>
+                        <p class="placeholder">Coming soon — List, create, flip, delete aliases with history timeline</p>
+                    </div>
+                </section>
+
+                <section id="documents" class="section">
+                    <div class="card">
+                        <h3>Document Browser</h3>
+                        <p class="placeholder">Coming soon — Paginated document browser with filter builder and CSV/NDJSON import</p>
+                    </div>
+                </section>
+
+                <section id="query" class="section">
+                    <div class="card">
+                        <h3>Query Sandbox</h3>
+                        <p class="placeholder">Coming soon — Filter builder, sort builder, facet-request builder with per-shard latency breakdown</p>
+                    </div>
+                </section>
+
+                <section id="tasks" class="section">
+                    <div class="card">
+                        <h3>Active Tasks</h3>
+                        <p class="placeholder">Coming soon — Active and recent tasks with per-node breakdown</p>
+                    </div>
+                </section>
+
+                <section id="canaries" class="section">
+                    <div class="card">
+                        <h3>Canary Tests</h3>
+                        <p class="placeholder">Coming soon — List, create, edit, disable canaries with pass-fail heatmap</p>
+                    </div>
+                </section>
+
+                <section id="shadow" class="section">
+                    <div class="card">
+                        <h3>Shadow Diff</h3>
+                        <p class="placeholder">Coming soon — Live stream and aggregated summary from shadow traffic</p>
+                    </div>
+                </section>
+
+                <section id="cdc" class="section">
+                    <div class="card">
+                        <h3>CDC Inspector</h3>
+                        <p class="placeholder">Coming soon — Live tail of change events with filter by index/operation</p>
+                    </div>
+                </section>
+
+                <section id="metrics" class="section">
+                    <div class="card">
+                        <h3>Metrics Dashboard</h3>
+                        <p class="placeholder">Coming soon — Embedded Grafana iframe or direct Prometheus panel render</p>
+                    </div>
+                </section>
+
+                <section id="settings" class="section">
+                    <div class="card">
+                        <h3>Miroir Settings</h3>
+                        <p class="placeholder">Coming soon — Read and edit Miroir's own config with restart hints</p>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <script src="/_miroir/admin/app.js"></script>
+</body>
+</html>

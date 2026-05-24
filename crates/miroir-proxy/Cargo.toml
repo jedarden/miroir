@@ -48,7 +48,7 @@ hex = "0.4"
 
 # HTTP / Tower
 tower = "0.5"
-rust-embed = "8"
+rust-embed = { version = "8", features = ["include-exclude"] }
 mime_guess = "2"
 
 # OpenTelemetry (optional - use feature flag to enable)
