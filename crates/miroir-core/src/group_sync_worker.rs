@@ -382,6 +382,7 @@ mod tests {
     use super::*;
     use crate::group_addition::{GroupAdditionConfig, GroupAdditionCoordinator};
     use crate::scatter::FetchDocumentsResponse;
+    use crate::topology::Node;
     use std::sync::Arc;
 
     // Mock node client for testing
