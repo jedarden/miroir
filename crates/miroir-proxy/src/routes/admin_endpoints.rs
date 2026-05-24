@@ -8,11 +8,13 @@ use axum::{
 };
 use miroir_core::{
     config::MiroirConfig,
+    group_addition::{GroupAdditionCoordinator, GroupAdditionId},
+    group_sync_worker::GroupSyncWorker,
     leader_election::{LeaderElection, LeaderElectionMetricsCallback},
     migration::{MigrationConfig, MigrationCoordinator},
     rebalancer::{MigrationExecutor, Rebalancer, RebalancerConfig, RebalancerMetrics},
     rebalancer_worker::{RebalancerMetricsCallback, RebalancerWorker, RebalancerWorkerConfig, TopologyChangeEvent},
- replica_selection::{ReplicaSelector, SelectionObserver},
+    replica_selection::{ReplicaSelector, SelectionObserver},
     router,
     scatter::{DeleteByFilterRequest, FetchDocumentsRequest, FetchDocumentsResponse, WriteRequest},
     task_registry::TaskRegistryImpl,
@@ -360,6 +362,10 @@ pub struct AppState {
     pub idempotency_cache: Arc<miroir_core::idempotency::IdempotencyCache>,
     /// Query coalescer for read deduplication (plan §13.10).
     pub query_coalescer: Arc<miroir_core::idempotency::QueryCoalescer>,
+    /// Group addition coordinator for replica group addition flow (plan §2).
+    pub group_addition_coordinator: Option<Arc<RwLock<GroupAdditionCoordinator>>>,
+    /// Group sync worker for background document sync.
+    pub group_sync_worker: Option<Arc<GroupSyncWorker<HttpClient>>>,
 }
 
 impl AppState {
@@ -513,6 +519,9 @@ impl AppState {
         } else {
             Arc::new(miroir_core::settings::SettingsBroadcast::new())
         };
+
+        // Check if task store is available before moving it
+        let has_task_store = task_store.is_some();
 
         // Create drift reconciler worker (§13.5) if task store is available
         let drift_reconciler = if let Some(ref store) = task_store {
@@ -672,6 +681,16 @@ impl AppState {
                 config.query_coalescing.max_pending_queries as usize,
                 config.query_coalescing.max_subscribers as usize,
             )),
+            group_addition_coordinator: if has_task_store {
+                Some(Arc::new(RwLock::new(
+                    miroir_core::group_addition::GroupAdditionCoordinator::new(
+                        miroir_core::group_addition::GroupAdditionConfig::default()
+                    )
+                )))
+            } else {
+                None
+            },
+            group_sync_worker: None, // Initialized later if needed
         }
     }
 
@@ -1542,6 +1561,12 @@ where
 ///   ]
 /// }
 /// ```
+///
+/// Implements plan §2 group addition flow:
+/// 1. Provision new nodes; assign replica_group: G_new in config
+/// 2. Mark new group initializing; queries NOT routed here
+/// 3. Background sync: for each shard, copy all docs from any healthy existing group
+/// 4. When all shards synced, mark group active — queries begin routing in round-robin
 pub async fn add_replica_group<S>(
     State(state): State<S>,
     Json(body): Json<serde_json::Value>,
@@ -1552,9 +1577,6 @@ where
 {
     let app_state = AppState::from_ref(&state);
 
-    let rebalancer = app_state.rebalancer.as_ref()
-        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Rebalancer not initialized".into()))?;
-
     let group_id = body.get("group_id")
         .and_then(|v| v.as_u64())
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'group_id' field".into()))?
@@ -1564,7 +1586,24 @@ where
         .and_then(|v| v.as_array())
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'nodes' field".into()))?;
 
-    let mut nodes = Vec::new();
+    // Check if group addition coordinator is available
+    let coordinator = app_state.group_addition_coordinator.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Group addition coordinator not initialized".into()))?;
+
+    // Get current topology to find healthy source groups
+    let source_groups: Vec<u32> = {
+        let topo = app_state.topology.read().await;
+        topo.groups()
+            .filter(|g| g.id != group_id && g.is_active())
+            .map(|g| g.id)
+            .collect()
+    };
+
+    if source_groups.is_empty() {
+        return Err((StatusCode::PRECONDITION_FAILED, "No active source groups available for sync".into()));
+    }
+
+    // Add nodes to topology in initializing state
     for node_obj in nodes_array {
         let id = node_obj.get("id")
             .and_then(|v| v.as_str())
@@ -1576,26 +1615,144 @@ where
             .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing node 'address'".into()))?
             .to_string();
 
-        use miroir_core::rebalancer::GroupNodeSpec;
-        nodes.push(GroupNodeSpec { id, address });
-    }
+        let mut topo = app_state.topology.write().await;
+        let node_id = NodeId::new(id.clone());
+        let node = Node::new(node_id, address, group_id);
+        topo.add_node(node);
 
-    use miroir_core::rebalancer::AddReplicaGroupRequest;
-    let request = AddReplicaGroupRequest { group_id, nodes };
-
-    match rebalancer.add_replica_group(request).await {
-        Ok(result) => {
-            info!(group_id, "Replica group addition completed");
-            Ok(Json(serde_json::json!({
-                "operation_id": result.id,
-                "message": result.message,
-            })))
-        }
-        Err(e) => {
-            error!(error = %e, group_id, "Replica group addition failed");
-            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        // Mark the new group as initializing
+        if let Some(g) = topo.group_mut(group_id) {
+            g.set_state(miroir_core::topology::GroupState::Initializing);
         }
     }
+
+    // Start group addition operation
+    let shard_count = {
+        let topo = app_state.topology.read().await;
+        topo.shards
+    };
+
+    let mut coord = coordinator.write().await;
+    let addition_id = coord.begin_addition(group_id, shard_count, &source_groups)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to start group addition: {}", e)))?;
+
+    // Start background sync
+    coord.begin_sync(addition_id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to start sync: {}", e)))?;
+
+    info!(group_id, addition_id = %addition_id, "Replica group addition started");
+
+    Ok(Json(serde_json::json!({
+        "addition_id": addition_id.0,
+        "group_id": group_id,
+        "message": format!("Replica group {} addition started, syncing {} shards from {} source groups",
+            group_id, shard_count, source_groups.len()),
+        "phase": "initializing",
+    })))
+}
+
+/// GET /_miroir/replica_groups/{id}/status — Get the status of a replica group addition.
+pub async fn get_group_addition_status<S>(
+    State(state): State<S>,
+    Path(group_id): Path<u32>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let coordinator = app_state.group_addition_coordinator.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Group addition coordinator not initialized".into()))?;
+
+    let coord = coordinator.read().await;
+
+    // Find the addition for this group
+    let addition = coord.get_all_additions().values()
+        .find(|a| a.group_id == group_id)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("No active addition for group {}", group_id)))?;
+
+    let progress = coord.sync_progress(addition.id).unwrap_or(0.0);
+
+    // Count shards by state
+    let mut pending = 0;
+    let mut syncing = 0;
+    let mut complete = 0;
+    let mut failed = 0;
+
+    for shard_state in addition.shard_states.values() {
+        match shard_state {
+            miroir_core::group_addition::ShardSyncState::Pending => pending += 1,
+            miroir_core::group_addition::ShardSyncState::Syncing { .. } => syncing += 1,
+            miroir_core::group_addition::ShardSyncState::Complete { .. } => complete += 1,
+            miroir_core::group_addition::ShardSyncState::Failed { .. } => failed += 1,
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "addition_id": addition.id.0,
+        "group_id": group_id,
+        "phase": addition.phase,
+        "progress_percent": progress,
+        "shards": {
+            "total": addition.shard_states.len(),
+            "pending": pending,
+            "syncing": syncing,
+            "complete": complete,
+            "failed": failed,
+        },
+        "started_at": addition.started_at.map(|t| format!("{:?}", t)),
+    })))
+}
+
+/// POST /_miroir/replica_groups/{id}/activate — Mark a replica group as active.
+///
+/// This should only be called after verifying that the group has synced all data
+/// (via GET /_miroir/replica_groups/{id}/status showing 100% progress).
+pub async fn activate_replica_group<S>(
+    State(state): State<S>,
+    Path(group_id): Path<u32>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let coordinator = app_state.group_addition_coordinator.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Group addition coordinator not initialized".into()))?;
+
+    // Find the addition for this group
+    let addition_id = {
+        let coord = coordinator.read().await;
+        coord.get_all_additions().values()
+            .find(|a| a.group_id == group_id && matches!(a.phase, miroir_core::group_addition::GroupAdditionPhase::SyncComplete))
+            .map(|a| a.id)
+            .ok_or_else(|| (StatusCode::PRECONDITION_FAILED, format!("Group {} is not ready for activation (sync not complete)", group_id)))?
+    };
+
+    // Mark group as active
+    {
+        let mut coord = coordinator.write().await;
+        coord.mark_group_active(addition_id)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to activate group: {}", e)))?;
+    }
+
+    // Update topology to mark group as active
+    {
+        let mut topo = app_state.topology.write().await;
+        if let Some(g) = topo.group_mut(group_id) {
+            g.set_state(miroir_core::topology::GroupState::Active);
+        }
+    }
+
+    info!(group_id, "Replica group activated");
+
+    Ok(Json(serde_json::json!({
+        "group_id": group_id,
+        "message": format!("Replica group {} is now active and serving queries", group_id),
+        "phase": "active",
+    })))
 }
 
 /// DELETE /_miroir/replica_groups/{id} — Remove a replica group.

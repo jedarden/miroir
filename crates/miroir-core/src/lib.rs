@@ -12,6 +12,8 @@ pub mod drift_reconciler;
 pub mod dump;
 pub mod dump_chunking;
 pub mod dump_import;
+pub mod group_addition;
+pub mod group_sync_worker;
 pub mod error;
 pub mod explainer;
 pub mod hedging;

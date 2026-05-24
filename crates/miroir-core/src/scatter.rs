@@ -391,7 +391,7 @@ pub async fn plan_search_scatter(
     shard_count: u32,
     replica_selector: Option<&ReplicaSelector>,
 ) -> ScatterPlan {
-    let chosen_group = query_group(query_seq, topology.replica_group_count());
+    let chosen_group = crate::router::query_group_active(query_seq, topology);
 
     let group = match topology.group(chosen_group) {
         Some(g) => g,

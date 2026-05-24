@@ -95,11 +95,42 @@ pub fn write_targets_with_migration(
 /// Select the replica group for a query (round-robin by query counter).
 ///
 /// Returns 0 when there are no replica groups (caller handles the empty case).
+/// NOTE: This function does NOT filter by group state - use query_group_active
+/// for production query routing which skips initializing groups.
 pub fn query_group(query_seq: u64, replica_groups: u32) -> u32 {
     if replica_groups == 0 {
         return 0;
     }
     (query_seq % replica_groups as u64) as u32
+}
+
+/// Select an ACTIVE replica group for a query (round-robin by query counter).
+///
+/// This function implements the group addition flow from plan §2: queries are
+/// NOT routed to initializing groups, only active groups. When no groups are
+/// active, returns 0 as a fallback (caller handles the empty case).
+///
+/// # Arguments
+/// * `query_seq` - The query sequence number for round-robin
+/// * `topology` - The cluster topology to query active groups from
+///
+/// # Returns
+/// The ID of the selected active replica group
+pub fn query_group_active(query_seq: u64, topology: &Topology) -> u32 {
+    // Collect all active group IDs
+    let active_groups: Vec<u32> = topology
+        .groups()
+        .filter(|g| g.is_active())
+        .map(|g| g.id)
+        .collect();
+
+    if active_groups.is_empty() {
+        // Fallback: no active groups, return 0 (caller handles empty case)
+        return 0;
+    }
+
+    // Round-robin among active groups only
+    active_groups[query_seq as usize % active_groups.len()]
 }
 
 /// The covering set for a search: one node per shard within the chosen group.

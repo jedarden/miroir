@@ -37,6 +37,17 @@ impl std::fmt::Display for NodeId {
     }
 }
 
+/// State of a replica group during group addition (plan §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupState {
+    /// Group is being provisioned; queries NOT routed here.
+    #[default]
+    Initializing,
+    /// Group is fully synced and serving queries.
+    Active,
+}
+
 /// Health status of a node, with state-machine transitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -205,15 +216,44 @@ pub struct Group {
 
     /// Node IDs in this group.
     nodes: Vec<NodeId>,
+
+    /// Group state (initializing → active during group addition).
+    #[serde(default)]
+    pub state: GroupState,
 }
 
 impl Group {
-    /// Create a new group.
+    /// Create a new group (defaults to Initializing state).
     pub fn new(id: u32) -> Self {
         Self {
             id,
             nodes: Vec::new(),
+            state: GroupState::default(),
         }
+    }
+
+    /// Create a new group in the specified state.
+    pub fn new_with_state(id: u32, state: GroupState) -> Self {
+        Self {
+            id,
+            nodes: Vec::new(),
+            state,
+        }
+    }
+
+    /// Set the group state.
+    pub fn set_state(&mut self, state: GroupState) {
+        self.state = state;
+    }
+
+    /// Get the group state.
+    pub fn state(&self) -> GroupState {
+        self.state
+    }
+
+    /// Check if this group is active (can serve queries).
+    pub fn is_active(&self) -> bool {
+        matches!(self.state, GroupState::Active)
     }
 
     /// Add a node to this group.
@@ -323,6 +363,11 @@ impl Topology {
         self.groups.get(id as usize).filter(|g| g.node_count() > 0)
     }
 
+    /// Get a mutable reference to a group by ID.
+    pub fn group_mut(&mut self, id: u32) -> Option<&mut Group> {
+        self.groups.get_mut(id as usize).filter(|g| g.node_count() > 0)
+    }
+
     /// Iterate over all groups in ascending order by ID.
     pub fn groups(&self) -> impl Iterator<Item = &Group> {
         self.groups.iter().filter(|g| g.node_count() > 0)
@@ -390,7 +435,18 @@ impl Topology {
             .max()
             .map_or(self.replica_groups as usize, |m| (m as usize + 1).max(self.replica_groups as usize));
 
-        self.groups = (0..num_groups).map(|i| Group::new(i as u32)).collect();
+        // Preserve existing group states when rebuilding
+        let old_states: std::collections::HashMap<u32, GroupState> = self.groups
+            .iter()
+            .map(|g| (g.id, g.state))
+            .collect();
+
+        self.groups = (0..num_groups)
+            .map(|i| {
+                let state = old_states.get(&(i as u32)).copied().unwrap_or_default();
+                Group::new_with_state(i as u32, state)
+            })
+            .collect();
         for node in &self.nodes {
             if let Some(group) = self.groups.get_mut(node.replica_group as usize) {
                 group.add_node(node.id.clone());
@@ -1063,5 +1119,96 @@ nodes:
         assert!(topo.group(0).is_none());
         assert!(topo.node(&NodeId::new("g0-n1".into())).is_none());
         assert!(topo.group(1).is_some());
+    }
+
+    // ── GroupState tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn group_state_default_is_initializing() {
+        let state = GroupState::default();
+        assert_eq!(state, GroupState::Initializing);
+    }
+
+    #[test]
+    fn group_new_defaults_to_initializing() {
+        let group = Group::new(0);
+        assert_eq!(group.state(), GroupState::Initializing);
+        assert!(!group.is_active());
+    }
+
+    #[test]
+    fn group_new_with_state_sets_state() {
+        let group = Group::new_with_state(1, GroupState::Active);
+        assert_eq!(group.state(), GroupState::Active);
+        assert!(group.is_active());
+    }
+
+    #[test]
+    fn group_set_state_updates_state() {
+        let mut group = Group::new(0);
+        assert_eq!(group.state(), GroupState::Initializing);
+
+        group.set_state(GroupState::Active);
+        assert_eq!(group.state(), GroupState::Active);
+        assert!(group.is_active());
+    }
+
+    #[test]
+    fn group_state_serialization_round_trip() {
+        let mut group = Group::new(0);
+        group.set_state(GroupState::Active);
+
+        let yaml = serde_yaml::to_string(&group).unwrap();
+        let deserialized: Group = serde_yaml::from_str(&yaml).unwrap();
+
+        assert_eq!(deserialized.id, 0);
+        assert_eq!(deserialized.state(), GroupState::Active);
+    }
+
+    #[test]
+    fn rebuild_groups_preserves_state() {
+        let mut topo = Topology::new(64, 2, 1);
+        topo.add_node(Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0));
+
+        // Mark group 0 as active
+        if let Some(g) = topo.group_mut(0) {
+            g.set_state(GroupState::Active);
+        }
+
+        // Rebuild groups (simulating a topology change)
+        topo.rebuild_groups();
+
+        // State should be preserved
+        let g0 = topo.group(0).unwrap();
+        assert_eq!(g0.state(), GroupState::Active);
+    }
+
+    #[test]
+    fn group_initializing_not_active() {
+        let group = Group::new_with_state(0, GroupState::Initializing);
+        assert!(!group.is_active());
+    }
+
+    #[test]
+    fn group_active_is_active() {
+        let group = Group::new_with_state(0, GroupState::Active);
+        assert!(group.is_active());
+    }
+
+    #[test]
+    fn topology_with_initializing_group() {
+        let mut topo = Topology::new(64, 2, 1);
+        topo.add_node(Node::new(NodeId::new("n0".into()), "http://n0:7700".into(), 0));
+        topo.add_node(Node::new(NodeId::new("n1".into()), "http://n1:7700".into(), 1));
+
+        // Group 0 is initializing (default)
+        let g0 = topo.group(0).unwrap();
+        assert_eq!(g0.state(), GroupState::Initializing);
+        assert!(!g0.is_active());
+
+        // Group 1 is also initializing (default)
+        let g1 = topo.group(1).unwrap();
+        assert_eq!(g1.state(), GroupState::Initializing);
+        assert!(!g1.is_active());
     }
 }
