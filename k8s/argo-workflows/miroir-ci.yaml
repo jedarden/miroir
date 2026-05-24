@@ -43,12 +43,15 @@ spec:
           - name: test
             template: cargo-test
             dependencies: [checkout]
+          - name: coverage
+            template: cargo-coverage
+            dependencies: [checkout]
           - name: bench-check
             template: cargo-bench-check
             dependencies: [test]
           - name: build
             template: cargo-build
-            dependencies: [lint, bench-check]
+            dependencies: [lint, bench-check, coverage]
           - name: docker
             template: docker-build-push
             dependencies: [build]
@@ -147,16 +150,48 @@ spec:
             export CARGO_TARGET_DIR=/workspace/target-bench
             # Phase 8: Compile benches to verify they still work (plan §8 regression gate)
             cargo bench --no-run -p miroir-core
-        volumeMounts:
-          - name: workspace
-            mountPath: /workspace
-        resources:
-          requests:
-            cpu: 2000m
-            memory: 4Gi
-          limits:
-            cpu: 4000m
-            memory: 8Gi
+
+    - name: cargo-coverage
+      activeDeadlineSeconds: 1800
+      container:
+        image: rust:1.87-slim
+        command: [bash, -c]
+        args:
+          - |
+            set -e
+            apt-get update -qq && apt-get install -y -qq pkg-config libssl-dev libcurl4-openssl-dev zlib1g-dev >/dev/null 2>&1
+            cd /workspace/src
+            export CARGO_TARGET_DIR=/workspace/target-coverage
+
+            # Install tarpaulin from binaries (faster than compiling)
+            curl -sL https://github.com/xd009642/tarpaulin/releases/download/v0.31.4/cargo-tarpaulin-x86_64-unknown-linux-gnu.gz | \
+              gunzip -c > /usr/local/bin/cargo-tarpaulin && \
+              chmod +x /usr/local/bin/cargo-tarpaulin
+
+            # Run coverage for miroir-core with 90% gate (plan §8)
+            cargo tarpaulin \
+              --workspace \
+              --package miroir-core \
+              --exclude-files "benches/*" \
+              --exclude-files "tests/*" \
+              --timeout 900 \
+              --out Lcov \
+              --out Xml \
+              --output-dir /workspace/coverage \
+              --fail-under 90 \
+              -- --test-threads=1
+
+            echo "=== Coverage passed 90% gate ==="
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+      resources:
+        requests:
+          cpu: 2000m
+          memory: 4Gi
+        limits:
+          cpu: 4000m
+          memory: 8Gi
 
     - name: cargo-build
       activeDeadlineSeconds: 1800
