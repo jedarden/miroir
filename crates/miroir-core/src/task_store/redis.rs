@@ -579,8 +579,10 @@ impl TaskStore for RedisTaskStore {
                 let mut p = pipe();
                 p.hget(&key, "created_at");
                 p.hget(&key, "status");
-                let result: (Option<String>, Option<String>) =
-                    pool.pipeline_query(&mut p).await.map_err(|e| MiroirError::Redis(e.to_string()))?;
+                let result: (Option<String>, Option<String>) = pool
+                    .pipeline_query(&mut p)
+                    .await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
                 if let (Some(created_at_str), Some(status)) = result {
                     if !terminal_statuses.contains(&status.as_str()) {
@@ -614,15 +616,20 @@ impl TaskStore for RedisTaskStore {
                     let status = get_field_string(&fields, "status")?;
                     let node_tasks_json = get_field_string(&fields, "node_tasks")?;
                     let node_tasks: HashMap<String, u64> = serde_json::from_str(&node_tasks_json)
-                        .map_err(|e| MiroirError::TaskStore(format!("invalid node_tasks JSON: {e}")))?;
+                        .map_err(|e| {
+                        MiroirError::TaskStore(format!("invalid node_tasks JSON: {e}"))
+                    })?;
                     let error = opt_field(&fields, "error");
                     let started_at = opt_field_i64(&fields, "started_at");
                     let finished_at = opt_field_i64(&fields, "finished_at");
                     let index_uid = opt_field(&fields, "index_uid");
                     let task_type = opt_field(&fields, "task_type");
-                    let node_errors_json = opt_field(&fields, "node_errors").unwrap_or_else(|| "{}".to_string());
-                    let node_errors: HashMap<String, String> = serde_json::from_str(&node_errors_json)
-                        .map_err(|e| MiroirError::TaskStore(format!("invalid node_errors JSON: {e}")))?;
+                    let node_errors_json =
+                        opt_field(&fields, "node_errors").unwrap_or_else(|| "{}".to_string());
+                    let node_errors: HashMap<String, String> =
+                        serde_json::from_str(&node_errors_json).map_err(|e| {
+                            MiroirError::TaskStore(format!("invalid node_errors JSON: {e}"))
+                        })?;
 
                     results.push(TaskRow {
                         miroir_id,
