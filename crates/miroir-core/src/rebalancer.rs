@@ -1099,9 +1099,6 @@ impl Rebalancer {
         // Create operation record
         let op_id = self.next_op_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        // TODO: Schedule background replication to restore RF if needed
-        // For now, just record the failure
-
         let operation = TopologyOperation {
             id: op_id,
             op_type: TopologyOperationType::NodeFailure,
@@ -1124,6 +1121,249 @@ impl Rebalancer {
             message: format!("Node {} marked as failed", node_id),
             migrations_count: 0,
         })
+    }
+
+    /// Handle a node recovery and restore RF within the group.
+    pub async fn handle_node_recovery(
+        &self,
+        node_id: &str,
+    ) -> Result<TopologyOperationResult, RebalancerError> {
+        info!(node_id = %node_id, "handling node recovery and RF restore");
+
+        let node_id_obj = TopologyNodeId::new(node_id.to_string());
+
+        // Mark node as recovered and get group info
+        let (replica_group, has_rf_to_restore) = {
+            let topo = self.topology.read().await;
+            let node = topo.node(&node_id_obj).ok_or_else(|| {
+                RebalancerError::NodeNotFound(node_id.to_string())
+            })?;
+
+            if node.status != NodeStatus::Failed && node.status != NodeStatus::Degraded {
+                return Err(RebalancerError::InvalidState(format!(
+                    "node {} is not in a failed state (current: {:?})",
+                    node_id, node.status
+                )));
+            }
+
+            let replica_group = node.replica_group;
+
+            // Check if RF needs to be restored (other healthy nodes exist in group)
+            let group = topo.groups().find(|g| g.id == replica_group);
+            let has_other_healthy = group.map_or(false, |g| {
+                g.nodes().iter().any(|nid| {
+                    nid != &node_id_obj && topo.node(nid).map(|n| n.is_healthy()).unwrap_or(false)
+                })
+            });
+
+            (replica_group, has_other_healthy)
+        };
+
+        if !has_rf_to_restore {
+            // No other healthy nodes in group - just mark as active
+            let mut topo = self.topology.write().await;
+            let node = topo.node_mut(&node_id_obj).ok_or_else(|| {
+                RebalancerError::NodeNotFound(node_id.to_string())
+            })?;
+            node.status = NodeStatus::Active;
+
+            return Ok(TopologyOperationResult {
+                id: 0,
+                message: format!("Node {} recovered (no RF restore needed - no other healthy nodes in group)", node_id),
+                migrations_count: 0,
+            });
+        }
+
+        // Create operation record
+        let op_id = self.next_op_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        // Mark node as active
+        {
+            let mut topo = self.topology.write().await;
+            let node = topo.node_mut(&node_id_obj).ok_or_else(|| {
+                RebalancerError::NodeNotFound(node_id.to_string())
+            })?;
+            node.status = NodeStatus::Active;
+        }
+
+        // Compute shards that need RF restore (shards where this node should be a replica)
+        let shards_to_restore = self.compute_shards_for_rf_restore(node_id, replica_group).await?;
+
+        if !shards_to_restore.is_empty() {
+            // Create migrations for RF restore
+            let migrations = {
+                let mut coordinator = self.migration_coordinator.write().await;
+                let mut migs = Vec::new();
+
+                for shard in shards_to_restore {
+                    // Find a healthy source node in the same group
+                    let source_node = self.find_healthy_source_for_shard(shard, replica_group, node_id).await?;
+
+                    let mut old_owners = HashMap::new();
+                    old_owners.insert(shard, topo_to_migration_node_id(&source_node));
+
+                    let mid = coordinator.begin_migration(
+                        topo_to_migration_node_id(&node_id_obj),
+                        replica_group,
+                        old_owners,
+                    )?;
+
+                    migs.push(mid);
+                }
+
+                // Start dual-write for all migrations
+                for mid in &migs {
+                    coordinator.begin_dual_write(*mid)?;
+                }
+
+                migs
+            };
+
+            let migrations_count = migrations.len();
+
+            // Record operation (before moving migrations)
+            let operation = TopologyOperation {
+                id: op_id,
+                op_type: TopologyOperationType::NodeFailure, // Reuse NodeFailure type for recovery
+                status: TopologyOperationStatus::InProgress,
+                target_node: Some(node_id.to_string()),
+                target_group: Some(replica_group),
+                migrations: migrations.clone(),
+                started_at: Some(now_ms()),
+                completed_at: None,
+                error: None,
+            };
+
+            {
+                let mut ops = self.operations.write().await;
+                ops.insert(op_id, operation);
+            }
+
+            // Start background RF restore task
+            let topo_arc = self.topology.clone();
+            let coord_arc = self.migration_coordinator.clone();
+            let ops_arc = self.operations.clone();
+            let active_arc = self.active_migrations.clone();
+            let config = self.config.clone();
+            let executor = self.migration_executor.clone();
+            let metrics_arc = self.metrics.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) = run_migration_task(
+                    topo_arc,
+                    coord_arc,
+                    ops_arc,
+                    active_arc,
+                    op_id,
+                    migrations,
+                    config,
+                    executor,
+                    metrics_arc,
+                )
+                .await
+                {
+                    error!(error = %e, op_id = op_id, "RF restore task failed");
+                }
+            });
+
+            Ok(TopologyOperationResult {
+                id: op_id,
+                message: format!(
+                    "Node {} recovered with RF restore ({} shards)",
+                    node_id,
+                    migrations_count
+                ),
+                migrations_count,
+            })
+        } else {
+            // No shards need restoration
+            let operation = TopologyOperation {
+                id: op_id,
+                op_type: TopologyOperationType::NodeFailure,
+                status: TopologyOperationStatus::Complete,
+                target_node: Some(node_id.to_string()),
+                target_group: Some(replica_group),
+                migrations: Vec::new(),
+                started_at: Some(now_ms()),
+                completed_at: Some(now_ms()),
+                error: None,
+            };
+
+            {
+                let mut ops = self.operations.write().await;
+                ops.insert(op_id, operation);
+            }
+
+            Ok(TopologyOperationResult {
+                id: op_id,
+                message: format!("Node {} recovered (no shards needed restoration)", node_id),
+                migrations_count: 0,
+            })
+        }
+    }
+
+    /// Compute which shards need RF restore for a recovered node.
+    /// Returns shards where the recovered node should be a replica but may have lost data.
+    async fn compute_shards_for_rf_restore(
+        &self,
+        recovered_node_id: &str,
+        replica_group: u32,
+    ) -> Result<Vec<ShardId>, RebalancerError> {
+        let topo = self.topology.read().await;
+        let recovered_node = TopologyNodeId::new(recovered_node_id.to_string());
+        let rf = topo.rf();
+
+        let group = topo
+            .groups()
+            .find(|g| g.id == replica_group)
+            .ok_or_else(|| RebalancerError::GroupNotFound(replica_group))?;
+
+        let mut shards_to_restore = Vec::new();
+
+        // For each shard, check if the recovered node should be a replica
+        for shard_id in 0..topo.shards {
+            let assignment = assign_shard_in_group(shard_id, group.nodes(), rf);
+
+            if assignment.contains(&recovered_node) {
+                // This node should be a replica for this shard
+                shards_to_restore.push(ShardId(shard_id));
+            }
+        }
+
+        Ok(shards_to_restore)
+    }
+
+    /// Find a healthy source node for RF restore of a specific shard.
+    async fn find_healthy_source_for_shard(
+        &self,
+        shard: ShardId,
+        replica_group: u32,
+        exclude_node_id: &str,
+    ) -> Result<TopologyNodeId, RebalancerError> {
+        let topo = self.topology.read().await;
+        let exclude_node = TopologyNodeId::new(exclude_node_id.to_string());
+
+        let group = topo
+            .groups()
+            .find(|g| g.id == replica_group)
+            .ok_or_else(|| RebalancerError::GroupNotFound(replica_group))?;
+
+        let assignment = assign_shard_in_group(shard.0, group.nodes(), topo.rf());
+
+        // Find a healthy replica (excluding the recovered node)
+        for node in assignment {
+            if node != exclude_node {
+                if let Some(n) = topo.node(&node) {
+                    if n.is_healthy() {
+                        return Ok(node);
+                    }
+                }
+            }
+        }
+
+        Err(RebalancerError::InvalidState(
+            format!("no healthy source found for shard {} in group {}", shard.0, replica_group)
+        ))
     }
 
     /// Compute which shards should move to a new node.

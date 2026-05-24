@@ -742,7 +742,7 @@ async fn integration_session_pin_with_scatter_plan() {
     }
 
     // Plan scatter for pinned group 1
-    let plan = plan_search_scatter_for_group(&topo, 0, 2, 4, 1);
+    let plan = plan_search_scatter_for_group(&topo, 0, 2, 4, 1, None).await;
 
     assert!(plan.is_some(), "Plan should be created for pinned group");
     let plan = plan.unwrap();

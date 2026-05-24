@@ -406,16 +406,56 @@ pub async fn plan_search_scatter(
     let _covering = covering_set(shard_count, group, rf, query_seq);
 
     let mut shard_to_node = HashMap::new();
+    let node_map = topology.node_map();
+
     for shard_id in 0..shard_count {
         let replicas = crate::router::assign_shard_in_group(shard_id, group.nodes(), rf);
 
-        let selected = if let Some(selector) = replica_selector {
-            match selector.select(&replicas, chosen_group).await {
-                Some(node) => node,
-                None => replicas[(query_seq as usize) % replicas.len()].clone(),
+        // Filter to only healthy nodes within the group
+        let healthy_replicas: Vec<NodeId> = replicas
+            .iter()
+            .filter(|node_id| {
+                node_map.get(node_id)
+                    .map(|n| n.is_healthy())
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+
+        let selected = if !healthy_replicas.is_empty() {
+            // Use healthy intra-group replica
+            if let Some(selector) = replica_selector {
+                match selector.select(&healthy_replicas, chosen_group).await {
+                    Some(node) => node,
+                    None => healthy_replicas[(query_seq as usize) % healthy_replicas.len()].clone(),
+                }
+            } else {
+                healthy_replicas[(query_seq as usize) % healthy_replicas.len()].clone()
             }
         } else {
-            replicas[(query_seq as usize) % replicas.len()].clone()
+            // Cross-group fallback: try other groups for this shard
+            let mut fallback_node = None;
+            'fallback: for group_id in 0..topology.replica_group_count() {
+                if group_id == chosen_group {
+                    continue;
+                }
+                if let Some(other_group) = topology.group(group_id) {
+                    let other_replicas = crate::router::assign_shard_in_group(shard_id, other_group.nodes(), rf);
+                    for other_node in other_replicas {
+                        if let Some(node) = node_map.get(&other_node) {
+                            if node.is_healthy() {
+                                fallback_node = Some(other_node);
+                                break 'fallback;
+                            }
+                        }
+                    }
+                }
+            }
+
+            fallback_node.unwrap_or_else(|| {
+                // No healthy node found anywhere - use original replica and let it fail
+                replicas[(query_seq as usize) % replicas.len()].clone()
+            })
         };
 
         shard_to_node.insert(shard_id, selected);
