@@ -9,7 +9,10 @@ use miroir_core::{
     config::UnavailableShardPolicy,
     merger::{MergeStrategy, ScoreMergeStrategy},
     multi_search::{MultiSearchExecutor, MultiSearchResponse, SearchResultData},
-    scatter::{dfs_query_then_fetch_search, plan_search_scatter, NodeClient, SearchRequest},
+    query_planner::QueryPlanner,
+    scatter::{
+        dfs_query_then_fetch_search, plan_search_scatter_with_narrowing, NodeClient, SearchRequest,
+    },
     topology::Topology,
 };
 use serde::{Deserialize, Serialize};
@@ -30,6 +33,7 @@ pub struct MultiSearchState {
     pub metrics: crate::middleware::Metrics,
     pub alias_registry: Arc<miroir_core::alias::AliasRegistry>,
     pub replica_selector: Arc<miroir_core::replica_selection::ReplicaSelector>,
+    pub query_planner: Arc<miroir_core::query_planner::QueryPlanner>,
 }
 
 /// Multi-search request (plan §13.11).
@@ -282,13 +286,48 @@ where
                     None
                 };
 
-                // Plan scatter for this query
-                let plan = plan_search_scatter(
+                // Use query planner to narrow target shards (plan §13.4)
+                let filter_str = query.filter.as_ref().and_then(|v| {
+                    if v.is_null()
+                        || v.is_string() && v.as_str().map(|s| s.is_empty()).unwrap_or(false)
+                    {
+                        None
+                    } else {
+                        serde_json::to_string(v).ok()
+                    }
+                });
+                let query_plan = state
+                    .query_planner
+                    .plan(&query.index_uid, &filter_str, config.shards)
+                    .await;
+
+                // Record query planner metrics
+                state.metrics.inc_query_plan_narrowable(query_plan.narrowed);
+                if query_plan.narrowed {
+                    state
+                        .metrics
+                        .observe_query_plan_fanout(query_plan.target_shards.len() as u32);
+                    let ratio = query_plan.target_shards.len() as f64 / config.shards as f64;
+                    state.metrics.set_query_plan_narrowing_ratio(ratio);
+                } else {
+                    state.metrics.observe_query_plan_fanout(config.shards);
+                    state.metrics.set_query_plan_narrowing_ratio(1.0);
+                }
+
+                // Plan scatter with narrowed target shards
+                let target_shards = if query_plan.narrowed {
+                    Some(query_plan.target_shards)
+                } else {
+                    None
+                };
+
+                let plan = plan_search_scatter_with_narrowing(
                     &topology,
                     0,
                     config.replication_factor as usize,
                     config.shards,
                     replica_selector_ref,
+                    target_shards,
                 )
                 .await;
 

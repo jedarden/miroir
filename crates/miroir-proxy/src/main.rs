@@ -253,6 +253,7 @@ impl FromRef<UnifiedState> for routes::multi_search::MultiSearchState {
             metrics: state.metrics.clone(),
             alias_registry: state.admin.alias_registry.clone(),
             replica_selector: state.admin.replica_selector.clone(),
+            query_planner: state.admin.query_planner.clone(),
         }
     }
 }
