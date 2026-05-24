@@ -639,48 +639,6 @@ impl AppState {
             None
         };
 
-        Self {
-            config: Arc::new(config.clone()),
-            topology: topology_arc,
-            ready: Arc::new(RwLock::new(false)),
-            metrics: metrics.clone(),
-            version_state,
-            task_registry: Arc::new(task_registry),
-            redis_store,
-            task_store,
-            pod_id,
-            seal_key,
-            local_rate_limiter: LocalAdminRateLimiter::new(),
-            local_search_ui_rate_limiter: LocalSearchUiRateLimiter::new(),
-            rebalancer: Some(rebalancer),
-            migration_coordinator: Some(migration_coordinator),
-            rebalancer_worker,
-            rebalancer_metrics,
-            previous_docs_migrated: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            settings_broadcast,
-            drift_reconciler,
-            anti_entropy_worker,
-            session_manager,
-            alias_registry,
-            leader_election,
-            mode_c_worker,
-            replica_selector: {
-                let advanced_config = config.replica_selection.clone();
-                let selector_config = miroir_core::replica_selection::ReplicaSelectionConfig::from(advanced_config);
-                let observer = Arc::new(ReplicaSelectionMetricsObserver {
-                    metrics: metrics.clone(),
-                });
-                Arc::new(ReplicaSelector::new_with_observer(selector_config, observer))
-            },
-            idempotency_cache: Arc::new(miroir_core::idempotency::IdempotencyCache::new(
-                config.idempotency.max_cached_keys as usize,
-                config.idempotency.ttl_seconds,
-            )),
-            query_coalescer: Arc::new(miroir_core::idempotency::QueryCoalescer::new(
-                config.query_coalescing.window_ms,
-                config.query_coalescing.max_pending_queries as usize,
-                config.query_coalescing.max_subscribers as usize,
-            )),
         // Create group addition coordinator (needed for both API and sync worker)
         let group_addition_coordinator = if has_task_store {
             Some(Arc::new(RwLock::new(

@@ -744,10 +744,18 @@ async fn main() -> anyhow::Result<()> {
 ///
 /// On each tick it also updates the Prometheus metrics for node health,
 /// shard coverage, shard distribution, and degraded shard count.
+///
+/// Implements unplanned node failure detection (plan §2):
+/// - unhealthy_threshold consecutive failures → mark node as Failed
+/// - recovery_threshold consecutive successes → recover from Failed/Degraded
 async fn run_health_checker(state: admin_endpoints::AppState) {
     let mut interval = tokio::time::interval(Duration::from_millis(
         state.config.health.interval_ms,
     ));
+
+    // Track consecutive failures per node (in-memory only)
+    let mut consecutive_failures: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut consecutive_successes: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
 
     loop {
         interval.tick().await;
@@ -761,11 +769,6 @@ async fn run_health_checker(state: admin_endpoints::AppState) {
         for node_id in &node_ids {
             // Get current node status
             let current_status = topo.node(node_id).map(|n| n.status);
-
-            // Skip nodes that are already Active/Healthy
-            if let Some(NodeStatus::Active) | Some(NodeStatus::Healthy) = current_status {
-                continue;
-            }
 
             // Get node address
             let node_address = match topo.node(node_id) {
@@ -784,6 +787,9 @@ async fn run_health_checker(state: admin_endpoints::AppState) {
                 Ok(c) => c,
                 Err(_) => {
                     all_healthy = false;
+                    // Increment failure counter
+                    *consecutive_failures.entry(node_id.clone()).or_insert(0) += 1;
+                    consecutive_successes.remove(node_id);
                     continue;
                 }
             };
@@ -792,13 +798,89 @@ async fn run_health_checker(state: admin_endpoints::AppState) {
             let result = client.get(&url).send().await;
 
             if result.is_ok() && result.unwrap().status().is_success() {
-                // Node is reachable - promote to Active
+                // Node is reachable
+                consecutive_successes.entry(node_id.clone()).and_modify(|c| *c += 1).or_insert(1);
+                consecutive_failures.remove(node_id);
+
+                let successes = *consecutive_successes.get(node_id.as_str()).unwrap_or(&1);
+
+                // Check if we should promote from Joining/Degraded/Failed to Active
                 if let Some(node) = topo.node_mut(node_id) {
-                    let _ = node.transition_to(NodeStatus::Active);
-                    info!(node_id = %node_id, "node promoted to Active");
+                    match node.status {
+                        NodeStatus::Joining => {
+                            // Promote joining nodes immediately on first success
+                            let _ = node.transition_to(NodeStatus::Active);
+                            info!(node_id = %node_id, "node promoted to Active (was Joining)");
+                        }
+                        NodeStatus::Degraded => {
+                            // Need recovery_threshold consecutive successes to recover
+                            if successes >= state.config.health.recovery_threshold {
+                                let _ = node.transition_to(NodeStatus::Active);
+                                info!(node_id = %node_id, "node recovered to Active (was Degraded)");
+                            }
+                        }
+                        NodeStatus::Failed => {
+                            // Need recovery_threshold consecutive successes to recover
+                            if successes >= state.config.health.recovery_threshold {
+                                let _ = node.transition_to(NodeStatus::Active);
+                                info!(node_id = %node_id, "node recovered to Active (was Failed)");
+
+                                // Trigger RF-restore if configured
+                                if let Some(ref rebalancer) = state.rebalancer {
+                                    if let Some(ref worker) = state.rebalancer_worker {
+                                        let event = TopologyChangeEvent::NodeRecovered {
+                                            node_id: node_id.as_str().to_string(),
+                                            replica_group: node.replica_group,
+                                            index_uid: "default".to_string(),
+                                        };
+                                        let _ = worker.event_sender().try_send(event);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             } else {
+                // Node is unreachable
                 all_healthy = false;
+                *consecutive_failures.entry(node_id.clone()).or_insert(0) += 1;
+                consecutive_successes.remove(node_id);
+
+                let failures = *consecutive_failures.get(node_id.as_str()).unwrap_or(&1);
+
+                // Check if we should mark as Degraded or Failed
+                if let Some(node) = topo.node_mut(node_id) {
+                    match node.status {
+                        NodeStatus::Active | NodeStatus::Healthy => {
+                            // First failure → mark Degraded (not full failure yet)
+                            if failures >= 1 {
+                                let _ = node.transition_to(NodeStatus::Degraded);
+                                warn!(node_id = %node_id, consecutive_failures = failures, "node marked Degraded");
+                            }
+                        }
+                        NodeStatus::Degraded => {
+                            // unhealthy_threshold consecutive failures → mark Failed
+                            if failures >= state.config.health.unhealthy_threshold {
+                                let _ = node.transition_to(NodeStatus::Failed);
+                                warn!(node_id = %node_id, consecutive_failures = failures, "node marked Failed");
+
+                                // Trigger failure handling
+                                if let Some(ref rebalancer) = state.rebalancer {
+                                    if let Some(ref worker) = state.rebalancer_worker {
+                                        let event = TopologyChangeEvent::NodeFailed {
+                                            node_id: node_id.as_str().to_string(),
+                                            replica_group: node.replica_group,
+                                            index_uid: "default".to_string(),
+                                        };
+                                        let _ = worker.event_sender().try_send(event);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
 

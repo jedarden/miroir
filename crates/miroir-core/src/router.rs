@@ -106,8 +106,8 @@ pub fn query_group(query_seq: u64, replica_groups: u32) -> u32 {
 
 /// Select an ACTIVE replica group for a query (round-robin by query counter).
 ///
-/// This function implements the group addition flow from plan §2: queries are
-/// NOT routed to initializing groups, only active groups. When no groups are
+/// This function implements the group addition/removal flow from plan §2: queries are
+/// NOT routed to initializing or draining groups, only active groups. When no groups are
 /// active, returns 0 as a fallback (caller handles the empty case).
 ///
 /// # Arguments
@@ -117,20 +117,20 @@ pub fn query_group(query_seq: u64, replica_groups: u32) -> u32 {
 /// # Returns
 /// The ID of the selected active replica group
 pub fn query_group_active(query_seq: u64, topology: &Topology) -> u32 {
-    // Collect all active group IDs
-    let active_groups: Vec<u32> = topology
+    // Collect all routing groups (active, not initializing or draining)
+    let routing_groups: Vec<u32> = topology
         .groups()
-        .filter(|g| g.is_active())
+        .filter(|g| g.is_routing())
         .map(|g| g.id)
         .collect();
 
-    if active_groups.is_empty() {
-        // Fallback: no active groups, return 0 (caller handles empty case)
+    if routing_groups.is_empty() {
+        // Fallback: no routing groups, return 0 (caller handles empty case)
         return 0;
     }
 
-    // Round-robin among active groups only
-    active_groups[query_seq as usize % active_groups.len()]
+    // Round-robin among routing groups only
+    routing_groups[query_seq as usize % routing_groups.len()]
 }
 
 /// The covering set for a search: one node per shard within the chosen group.

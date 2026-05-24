@@ -37,7 +37,7 @@ impl std::fmt::Display for NodeId {
     }
 }
 
-/// State of a replica group during group addition (plan §2).
+/// State of a replica group during group addition/removal (plan §2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GroupState {
@@ -46,6 +46,8 @@ pub enum GroupState {
     Initializing,
     /// Group is fully synced and serving queries.
     Active,
+    /// Group is being removed; queries NOT routed here.
+    Draining,
 }
 
 /// Health status of a node, with state-machine transitions.
@@ -254,6 +256,21 @@ impl Group {
     /// Check if this group is active (can serve queries).
     pub fn is_active(&self) -> bool {
         matches!(self.state, GroupState::Active)
+    }
+
+    /// Check if this group is draining (being removed).
+    pub fn is_draining(&self) -> bool {
+        matches!(self.state, GroupState::Draining)
+    }
+
+    /// Check if this group is routing queries (not initializing or draining).
+    pub fn is_routing(&self) -> bool {
+        matches!(self.state, GroupState::Active)
+    }
+
+    /// Mark the group as draining (being removed).
+    pub fn mark_draining(&mut self) {
+        self.state = GroupState::Draining;
     }
 
     /// Add a node to this group.
