@@ -6,11 +6,9 @@ use axum::{
     routing::{delete, get, post, put},
     Json, Router,
 };
-use chrono::Utc;
 use miroir_core::{
-    canary::{Canary, CanaryAssertion, CanaryRunner, CapturedQuery, QueryCapture, SearchQuery},
-    error::MiroirError,
-    task_store::{CanaryRow, CanaryRunRow, NewCanary, TaskStore},
+    canary::{CanaryAssertion, QueryCapture, SearchQuery},
+    task_store::{NewCanary, TaskStore},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
