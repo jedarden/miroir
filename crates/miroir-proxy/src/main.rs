@@ -13,7 +13,7 @@ use miroir_core::{
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::signal;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, registry, util::SubscriberInitExt, EnvFilter};
 
 mod admin_session;
@@ -173,6 +173,11 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             idempotency_cache: state.admin.idempotency_cache.clone(),
             query_coalescer: state.admin.query_coalescer.clone(),
             query_planner: state.admin.query_planner.clone(),
+            group_addition_coordinator: state.admin.group_addition_coordinator.clone(),
+            group_sync_worker: state.admin.group_sync_worker.clone(),
+            mode_a_coordinator: state.admin.mode_a_coordinator.clone(),
+            resharding_registry: state.admin.resharding_registry.clone(),
+            shadow_manager: state.admin.shadow_manager.clone(),
         }
     }
 }
@@ -215,6 +220,22 @@ impl FromRef<UnifiedState> for routes::explain::ExplainState {
             config: state.admin.config.clone(),
             topology: state.admin.topology.clone(),
             query_planner: state.admin.query_planner.clone(),
+        }
+    }
+}
+
+// Implement FromRef so that miroir_core::cdc::CdcManager can be extracted from UnifiedState
+impl FromRef<UnifiedState> for miroir_core::cdc::CdcManager {
+    fn from_ref(state: &UnifiedState) -> Self {
+        // Return the CDC manager if it exists, otherwise return a disabled one
+        if let Some(ref cdc) = state.admin.cdc_manager {
+            cdc.clone()
+        } else {
+            // Create a disabled CDC manager
+            miroir_core::cdc::CdcManager::new(miroir_core::cdc::CdcConfig {
+                enabled: false,
+                ..Default::default()
+            })
         }
     }
 }
@@ -503,7 +524,7 @@ async fn main() -> anyhow::Result<()> {
         let pruner_config = config.task_registry.clone();
         tokio::spawn(async move {
             // The pruner runs in its own thread via spawn_pruner
-            let _pruner_handle = task_pruner::spawn_pruner(store, pruner_config);
+            let _pruner_handle = task_pruner::spawn_pruner::<fn(&str) -> bool>(store, pruner_config, None);
             // The handle is dropped here only on process exit
             info!("task registry TTL pruner started");
             // Keep this task alive forever
@@ -776,9 +797,9 @@ async fn run_health_checker(state: admin_endpoints::AppState) {
         tokio::time::interval(Duration::from_millis(state.config.health.interval_ms));
 
     // Track consecutive failures per node (in-memory only)
-    let mut consecutive_failures: std::collections::HashMap<String, u32> =
+    let mut consecutive_failures: std::collections::HashMap<miroir_core::topology::NodeId, u32> =
         std::collections::HashMap::new();
-    let mut consecutive_successes: std::collections::HashMap<String, u32> =
+    let mut consecutive_successes: std::collections::HashMap<miroir_core::topology::NodeId, u32> =
         std::collections::HashMap::new();
 
     loop {
@@ -829,7 +850,7 @@ async fn run_health_checker(state: admin_endpoints::AppState) {
                     .or_insert(1);
                 consecutive_failures.remove(node_id);
 
-                let successes = *consecutive_successes.get(node_id.as_str()).unwrap_or(&1);
+                let successes = *consecutive_successes.get(node_id).unwrap_or(&1);
 
                 // Check if we should promote from Joining/Degraded/Failed to Active
                 if let Some(node) = topo.node_mut(node_id) {
@@ -874,7 +895,7 @@ async fn run_health_checker(state: admin_endpoints::AppState) {
                 *consecutive_failures.entry(node_id.clone()).or_insert(0) += 1;
                 consecutive_successes.remove(node_id);
 
-                let failures = *consecutive_failures.get(node_id.as_str()).unwrap_or(&1);
+                let failures = *consecutive_failures.get(node_id).unwrap_or(&1);
 
                 // Check if we should mark as Degraded or Failed
                 if let Some(node) = topo.node_mut(node_id) {
