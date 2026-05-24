@@ -40,7 +40,10 @@ impl std::fmt::Display for ErrorType {
 /// Miroir-specific error codes with associated metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MiroirCode {
+    InvalidRequest,
     PrimaryKeyRequired,
+    NotFound,
+    InternalError,
     NoQuorum,
     ShardUnavailable,
     ReservedField,
@@ -58,8 +61,11 @@ pub enum MiroirCode {
 
 impl MiroirCode {
     /// All variants, used for iteration in tests.
-    pub const ALL: [MiroirCode; 14] = [
+    pub const ALL: [MiroirCode; 17] = [
+        MiroirCode::InvalidRequest,
         MiroirCode::PrimaryKeyRequired,
+        MiroirCode::NotFound,
+        MiroirCode::InternalError,
         MiroirCode::NoQuorum,
         MiroirCode::ShardUnavailable,
         MiroirCode::ReservedField,
@@ -78,7 +84,10 @@ impl MiroirCode {
     /// Returns the error code string (e.g., `"miroir_no_quorum"`).
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::InvalidRequest => "miroir_invalid_request",
             Self::PrimaryKeyRequired => "miroir_primary_key_required",
+            Self::NotFound => "miroir_not_found",
+            Self::InternalError => "miroir_internal_error",
             Self::NoQuorum => "miroir_no_quorum",
             Self::ShardUnavailable => "miroir_shard_unavailable",
             Self::ReservedField => "miroir_reserved_field",
@@ -98,7 +107,9 @@ impl MiroirCode {
     /// Returns the Meilisearch-compatible error type category.
     pub fn error_type(&self) -> ErrorType {
         match self {
-            Self::PrimaryKeyRequired
+            Self::InvalidRequest
+            | Self::PrimaryKeyRequired
+            | Self::NotFound
             | Self::ReservedField
             | Self::IdempotencyKeyReused
             | Self::MultiAliasNotWritable
@@ -110,7 +121,8 @@ impl MiroirCode {
             | Self::MissingCsrf
             | Self::CsrfMismatch => ErrorType::Auth,
 
-            Self::NoQuorum
+            Self::InternalError
+            | Self::NoQuorum
             | Self::ShardUnavailable
             | Self::SettingsVersionStale
             | Self::Timeout => ErrorType::System,
@@ -120,11 +132,13 @@ impl MiroirCode {
     /// Returns the HTTP status code for this error.
     pub fn http_status(&self) -> u16 {
         match self {
-            Self::PrimaryKeyRequired | Self::ReservedField => 400,
+            Self::InvalidRequest | Self::PrimaryKeyRequired | Self::ReservedField => 400,
+            Self::NotFound => 404,
             Self::JwtInvalid | Self::InvalidAuth | Self::MissingCsrf => 401,
             Self::JwtScopeDenied | Self::CsrfMismatch => 403,
             Self::IdempotencyKeyReused | Self::MultiAliasNotWritable => 409,
             Self::IndexAlreadyExists => 409,
+            Self::InternalError => 500,
             Self::Timeout => 504,
             Self::NoQuorum | Self::ShardUnavailable | Self::SettingsVersionStale => 503,
         }
@@ -141,7 +155,10 @@ impl MiroirCode {
     /// Parse a code string back to a [`MiroirCode`].
     pub fn from_code_str(s: &str) -> Option<Self> {
         match s {
+            "miroir_invalid_request" => Some(Self::InvalidRequest),
             "miroir_primary_key_required" => Some(Self::PrimaryKeyRequired),
+            "miroir_not_found" => Some(Self::NotFound),
+            "miroir_internal_error" => Some(Self::InternalError),
             "miroir_no_quorum" => Some(Self::NoQuorum),
             "miroir_shard_unavailable" => Some(Self::ShardUnavailable),
             "miroir_reserved_field" => Some(Self::ReservedField),

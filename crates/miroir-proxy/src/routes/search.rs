@@ -323,7 +323,8 @@ async fn search_handler(
         // Convert HeaderMap to HashMap for tenant resolution
         let mut headers_map = std::collections::HashMap::new();
         for (name, value) in headers.iter() {
-            if let (Some(name_str), Ok(value_str)) = (name.as_str(), value.to_str()) {
+            let name_str: &str = name.as_ref();
+            if let Ok(value_str) = value.to_str() {
                 headers_map.insert(name_str.to_string(), value_str.to_string());
             }
         }

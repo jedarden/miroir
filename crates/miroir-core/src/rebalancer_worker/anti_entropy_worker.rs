@@ -54,8 +54,8 @@ impl Default for AntiEntropyWorkerConfig {
     fn default() -> Self {
         Self {
             interval_s: 6 * 3600,            // 6 hours
-            lease_renewal_interval_ms: 5000, // 5 seconds
-            lease_ttl_secs: 30,              // 30 seconds
+            lease_renewal_interval_ms: 3000, // 3 seconds (plan §14.8)
+            lease_ttl_secs: 10,              // 10 seconds (plan §14.8)
         }
     }
 }
@@ -774,6 +774,6 @@ mod tests {
         let config = AntiEntropyWorkerConfig::default();
         assert_eq!(config.interval_s, 6 * 3600);
         assert_eq!(config.lease_ttl_secs, 10);
-        assert_eq!(config.lease_renewal_interval_ms, 2000);
+        assert_eq!(config.lease_renewal_interval_ms, 3000); // 3 seconds per plan §14.8
     }
 }

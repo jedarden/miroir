@@ -1803,7 +1803,7 @@ where
     // Check if there's already a rebalance job for this index
     let job_id = miroir_core::rebalancer_worker::RebalanceJobId::new(&index_uid);
     let has_existing_job = {
-        let jobs = worker.jobs.read().await;
+        let jobs = worker.jobs().await;
         jobs.contains_key(&job_id)
     };
 
@@ -2758,7 +2758,7 @@ where
 
     // Get current shard count from topology
     let topology = app_state.topology.read().await;
-    let old_shards = topology.shard_count();
+    let old_shards = topology.shards;
     drop(topology);
 
     // Validate new_shards > old_shards (only scaling up is supported)
@@ -2769,9 +2769,8 @@ where
     // Get node addresses for shadow creation
     let topology = app_state.topology.read().await;
     let node_addresses: Vec<String> = topology
-        .all_nodes()
-        .iter()
-        .map(|n| n.address().to_string())
+        .nodes()
+        .map(|n| n.address.clone())
         .collect();
     drop(topology);
 

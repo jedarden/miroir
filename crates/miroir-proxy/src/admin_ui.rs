@@ -28,7 +28,7 @@ pub use crate::routes::admin_endpoints;
 #[exclude = "*.swp"]
 #[exclude = "*.DS_Store"]
 #[exclude = ".git"]
-struct AdminUiAssets;
+pub struct AdminUiAssets;
 
 /// Serve the Admin Web UI.
 ///
