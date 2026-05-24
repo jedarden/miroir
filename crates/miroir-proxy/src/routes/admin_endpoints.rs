@@ -20,6 +20,7 @@ use miroir_core::{
         RebalancerMetricsCallback, RebalancerWorker, RebalancerWorkerConfig, TopologyChangeEvent,
     },
     replica_selection::{ReplicaSelector, SelectionObserver},
+    reshard::ReshardingRegistry,
     router,
     scatter::{DeleteByFilterRequest, FetchDocumentsRequest, FetchDocumentsResponse, WriteRequest},
     task_registry::TaskRegistryImpl,
@@ -381,6 +382,9 @@ pub struct AppState {
     pub group_sync_worker: Option<Arc<GroupSyncWorker<HttpClient>>>,
     /// Mode A coordinator for shard-partitioned ownership (plan §14.5 Mode A).
     pub mode_a_coordinator: Option<Arc<ModeACoordinator>>,
+    /// Resharding registry for tracking active resharding operations (plan §13.1).
+    /// Used by the write path to detect dual-write phase and route to both live and shadow indexes.
+    pub resharding_registry: Arc<tokio::sync::RwLock<ReshardingRegistry>>,
 }
 
 impl AppState {
@@ -665,10 +669,15 @@ impl AppState {
         // Create Mode A coordinator for shard-partitioned ownership (plan §14.5 Mode A)
         let mode_a_coordinator = if cfg!(feature = "peer-discovery") {
             let pod_name = std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string());
-            let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+            let namespace =
+                std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string());
             let service_name = std::env::var("MIROR_SERVICE_NAME")
                 .unwrap_or_else(|_| "miroir-headless".to_string());
-            let peer_discovery = Arc::new(PeerDiscovery::new(pod_name.clone(), namespace, service_name));
+            let peer_discovery = Arc::new(PeerDiscovery::new(
+                pod_name.clone(),
+                namespace,
+                service_name,
+            ));
             Some(Arc::new(ModeACoordinator::new(pod_name, peer_discovery)))
         } else {
             None
@@ -756,6 +765,9 @@ impl AppState {
             group_addition_coordinator,
             group_sync_worker,
             mode_a_coordinator,
+            resharding_registry: Arc::new(tokio::sync::RwLock::new(
+                miroir_core::reshard::ReshardingRegistry::new(),
+            )),
         }
     }
 

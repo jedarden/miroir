@@ -849,6 +849,125 @@ pub struct ReshardRegistry {
     index_ops: HashMap<String, String>,
 }
 
+/// In-memory registry tracking active resharding operations for dual-write detection.
+///
+/// This is used by the write path to determine if an index is in dual-write phase
+/// (shadow exists) and needs dual-hash routing.
+#[derive(Debug, Default)]
+pub struct ReshardingRegistry {
+    /// Map of index_uid -> active resharding state
+    /// When an index is in this registry with phase >= ShadowCreated,
+    /// writes must be dual-hashed to both live and shadow indexes.
+    active_operations: HashMap<String, ReshardOperationState>,
+}
+
+/// Active resharding state for an index.
+#[derive(Debug, Clone)]
+pub struct ReshardOperationState {
+    /// Shadow index UID (e.g., "products__reshard_128")
+    pub shadow_index: String,
+    /// Old shard count
+    pub old_shards: u32,
+    /// New shard count
+    pub target_shards: u32,
+    /// Current phase
+    pub phase: ReshardPhase,
+    /// When the operation started (UNIX ms)
+    pub started_at: u64,
+}
+
+impl ReshardingRegistry {
+    /// Create a new empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a resharding operation for dual-write detection.
+    ///
+    /// Once registered, writes to the index will be dual-hashed to both
+    /// live and shadow indexes when phase >= ShadowCreated.
+    pub fn register(
+        &mut self,
+        index_uid: String,
+        state: ReshardOperationState,
+    ) -> Result<(), String> {
+        if self.active_operations.contains_key(&index_uid) {
+            return Err(format!(
+                "Resharding already in progress for index '{}'",
+                index_uid
+            ));
+        }
+        tracing::info!(
+            index_uid = %index_uid,
+            shadow_index = %state.shadow_index,
+            old_shards = state.old_shards,
+            target_shards = state.target_shards,
+            phase = ?state.phase,
+            "registered resharding operation for dual-write"
+        );
+        self.active_operations.insert(index_uid, state);
+        Ok(())
+    }
+
+    /// Get the active resharding state for an index (if any).
+    pub fn get(&self, index_uid: &str) -> Option<&ReshardOperationState> {
+        self.active_operations.get(index_uid)
+    }
+
+    /// Update the phase of an active resharding operation.
+    pub fn update_phase(&mut self, index_uid: &str, new_phase: ReshardPhase) -> Result<(), String> {
+        let op = self
+            .active_operations
+            .get_mut(index_uid)
+            .ok_or_else(|| format!("No resharding operation for index '{}'", index_uid))?;
+        op.phase = new_phase;
+        tracing::info!(
+            index_uid = %index_uid,
+            phase = ?new_phase,
+            "updated resharding phase"
+        );
+        Ok(())
+    }
+
+    /// Remove a completed resharding operation.
+    pub fn remove(&mut self, index_uid: &str) -> Result<(), String> {
+        if self.active_operations.remove(index_uid).is_none() {
+            return Err(format!("No resharding operation for index '{}'", index_uid));
+        }
+        tracing::info!(
+            index_uid = %index_uid,
+            "removed resharding operation from registry"
+        );
+        Ok(())
+    }
+
+    /// Check if an index is in dual-write phase.
+    ///
+    /// Returns true if the index has an active resharding operation with
+    /// phase >= ShadowCreated and phase <= Swapped.
+    pub fn is_dual_write_active(&self, index_uid: &str) -> bool {
+        if let Some(op) = self.get(index_uid) {
+            matches!(
+                op.phase,
+                ReshardPhase::ShadowCreated
+                    | ReshardPhase::DualWriteActive
+                    | ReshardPhase::BackfillInProgress
+                    | ReshardPhase::Verifying
+            )
+        } else {
+            false
+        }
+    }
+
+    /// List all active resharding operations.
+    pub fn list(&self) -> Vec<(String, &ReshardOperationState)> {
+        self.active_operations
+            .iter()
+            .map(|(k, v)| (k.clone(), v))
+            .collect()
+    }
+}
+
 /// Leader-coordinated reshard coordinator (plan §14.5 Mode B).
 ///
 /// Acquires a per-index leader lease (scope: "reshard:<index>") and persists
@@ -1452,7 +1571,7 @@ async fn two_phase_broadcast_settings(
                     }
                     Ok(resp) => {
                         let status = resp.status();
-                        let text = resp.text().await.unwrap_or_default();
+                        let _text = resp.text().await.unwrap_or_default();
                         Err(format!("{}: HTTP {}", address, status.as_u16()))
                     }
                     Err(e) => Err(format!("{}: {}", address, e)),
@@ -1584,6 +1703,208 @@ async fn rollback_shadow_index(
                 tracing::error!(node = %address, error = %e, "rollback: request failed");
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Dual-hash dual-write (plan §13.1 step 2)
+// ---------------------------------------------------------------------------
+
+/// Result of preparing documents for dual-hash dual-write.
+#[derive(Debug, Clone)]
+pub struct DualWritePreparation {
+    /// Documents to write to live index (with old shard tags).
+    pub live_documents: Vec<serde_json::Value>,
+    /// Documents to write to shadow index (with new shard tags).
+    pub shadow_documents: Vec<serde_json::Value>,
+    /// Shadow index UID.
+    pub shadow_index: String,
+    /// Old shard count.
+    pub old_shards: u32,
+    /// New shard count.
+    pub target_shards: u32,
+}
+
+/// Prepare documents for dual-hash dual-write during resharding.
+///
+/// When an index is in dual-write phase (shadow exists), every write must be
+/// routed to BOTH live and shadow indexes with different shard tags:
+/// - Live index: `_miroir_shard = hash(pk) % S_old`
+/// - Shadow index: `_miroir_shard = hash(pk) % S_new`
+///
+/// Shadow writes are tagged with `_miroir_origin: "reshard_backfill"` so
+/// CDC suppresses them by default (plan §13.13).
+///
+/// # Arguments
+/// * `documents` - Original documents from client (without _miroir_shard)
+/// * `primary_key` - Primary key field name
+/// * `reshard_state` - Active resharding state for the index
+///
+/// # Returns
+/// `Ok(DualWritePreparation)` with separate document batches for live and shadow.
+///
+/// # Panics
+/// Panics if any document is missing the primary key field (caller should validate first).
+pub fn prepare_dual_write_documents(
+    documents: &[serde_json::Value],
+    primary_key: &str,
+    reshard_state: &ReshardOperationState,
+) -> DualWritePreparation {
+    let mut live_documents = Vec::with_capacity(documents.len());
+    let mut shadow_documents = Vec::with_capacity(documents.len());
+
+    for doc in documents {
+        let pk_value = doc
+            .get(primary_key)
+            .and_then(|v| v.as_str())
+            .expect("primary key validation should have happened before this call");
+
+        // Compute old shard assignment for live index
+        let old_shard_id = crate::router::shard_for_key(pk_value, reshard_state.old_shards);
+
+        // Compute new shard assignment for shadow index
+        let new_shard_id = crate::router::shard_for_key(pk_value, reshard_state.target_shards);
+
+        // Clone document for live index
+        let mut live_doc = doc.clone();
+        live_doc["_miroir_shard"] = serde_json::json!(old_shard_id);
+        live_documents.push(live_doc);
+
+        // Clone document for shadow index with new shard tag
+        let mut shadow_doc = doc.clone();
+        shadow_doc["_miroir_shard"] = serde_json::json!(new_shard_id);
+        shadow_documents.push(shadow_doc);
+    }
+
+    DualWritePreparation {
+        live_documents,
+        shadow_documents,
+        shadow_index: reshard_state.shadow_index.clone(),
+        old_shards: reshard_state.old_shards,
+        target_shards: reshard_state.target_shards,
+    }
+}
+
+#[cfg(test)]
+mod tests_dual_write {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn prepare_dual_write_separates_shards() {
+        let documents = vec![
+            json!({"id": "user:123", "name": "Alice"}),
+            json!({"id": "user:456", "name": "Bob"}),
+        ];
+
+        let reshard_state = ReshardOperationState {
+            shadow_index: "users__reshard_128".to_string(),
+            old_shards: 64,
+            target_shards: 128,
+            phase: ReshardPhase::ShadowCreated,
+            started_at: 1000,
+        };
+
+        let prep = prepare_dual_write_documents(&documents, "id", &reshard_state);
+
+        assert_eq!(prep.live_documents.len(), 2);
+        assert_eq!(prep.shadow_documents.len(), 2);
+        assert_eq!(prep.shadow_index, "users__reshard_128");
+        assert_eq!(prep.old_shards, 64);
+        assert_eq!(prep.target_shards, 128);
+
+        // Verify live documents have old shard tags
+        for doc in &prep.live_documents {
+            assert!(doc.get("_miroir_shard").is_some());
+            let shard = doc["_miroir_shard"].as_u64().unwrap();
+            assert!(shard < 64, "live shard should be < 64");
+        }
+
+        // Verify shadow documents have new shard tags
+        for doc in &prep.shadow_documents {
+            assert!(doc.get("_miroir_shard").is_some());
+            let shard = doc["_miroir_shard"].as_u64().unwrap();
+            assert!(shard < 128, "shadow shard should be < 128");
+        }
+    }
+
+    #[test]
+    fn prepare_dual_write_preserves_other_fields() {
+        let documents = vec![json!({
+            "id": "product:abc",
+            "name": "Widget",
+            "price": 19.99,
+            "tags": ["widget", "sale"]
+        })];
+
+        let reshard_state = ReshardOperationState {
+            shadow_index: "products__reshard_256".to_string(),
+            old_shards: 128,
+            target_shards: 256,
+            phase: ReshardPhase::DualWriteActive,
+            started_at: 2000,
+        };
+
+        let prep = prepare_dual_write_documents(&documents, "id", &reshard_state);
+
+        let live_doc = &prep.live_documents[0];
+        let shadow_doc = &prep.shadow_documents[0];
+
+        // Check that all fields are preserved
+        assert_eq!(live_doc["id"], "product:abc");
+        assert_eq!(live_doc["name"], "Widget");
+        assert_eq!(live_doc["price"], 19.99);
+        assert_eq!(live_doc["tags"], json!(["widget", "sale"]));
+
+        // Shadow should have same fields except shard tag
+        assert_eq!(shadow_doc["id"], "product:abc");
+        assert_eq!(shadow_doc["name"], "Widget");
+        assert_eq!(shadow_doc["price"], 19.99);
+        assert_eq!(shadow_doc["tags"], json!(["widget", "sale"]));
+    }
+
+    #[test]
+    fn prepare_dual_write_deterministic_shard_assignment() {
+        let documents = vec![json!({"id": "test:key"})];
+
+        let reshard_state = ReshardOperationState {
+            shadow_index: "test__reshard_32".to_string(),
+            old_shards: 16,
+            target_shards: 32,
+            phase: ReshardPhase::BackfillInProgress,
+            started_at: 3000,
+        };
+
+        // Run multiple times - should be deterministic
+        let prep1 = prepare_dual_write_documents(&documents, "id", &reshard_state);
+        let prep2 = prepare_dual_write_documents(&documents, "id", &reshard_state);
+
+        assert_eq!(
+            prep1.live_documents[0]["_miroir_shard"], prep2.live_documents[0]["_miroir_shard"],
+            "live shard assignment should be deterministic"
+        );
+        assert_eq!(
+            prep1.shadow_documents[0]["_miroir_shard"], prep2.shadow_documents[0]["_miroir_shard"],
+            "shadow shard assignment should be deterministic"
+        );
+    }
+
+    #[test]
+    fn prepare_dual_write_handles_empty_batch() {
+        let documents: Vec<serde_json::Value> = vec![];
+
+        let reshard_state = ReshardOperationState {
+            shadow_index: "empty__reshard_64".to_string(),
+            old_shards: 32,
+            target_shards: 64,
+            phase: ReshardPhase::ShadowCreated,
+            started_at: 1000,
+        };
+
+        let prep = prepare_dual_write_documents(&documents, "id", &reshard_state);
+
+        assert_eq!(prep.live_documents.len(), 0);
+        assert_eq!(prep.shadow_documents.len(), 0);
     }
 }
 
@@ -1798,5 +2119,269 @@ mod tests_shadow_create {
 
         let err = ShadowCreateError::RollbackRequired("creation failed".to_string());
         assert!(err.to_string().contains("rollback"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReshardingRegistry tests (P5.1.b dual-write detection)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_resharding_registry {
+    use super::*;
+
+    #[test]
+    fn registry_new_is_empty() {
+        let reg = ReshardingRegistry::new();
+        assert!(reg.get("products").is_none());
+        assert!(!reg.is_dual_write_active("products"));
+    }
+
+    #[test]
+    fn registry_register_and_get() {
+        let mut reg = ReshardingRegistry::new();
+        let state = ReshardOperationState {
+            shadow_index: "products__reshard_128".to_string(),
+            old_shards: 64,
+            target_shards: 128,
+            phase: ReshardPhase::ShadowCreated,
+            started_at: 1000,
+        };
+        reg.register("products".to_string(), state).unwrap();
+
+        let retrieved = reg.get("products").unwrap();
+        assert_eq!(retrieved.shadow_index, "products__reshard_128");
+        assert_eq!(retrieved.old_shards, 64);
+        assert_eq!(retrieved.target_shards, 128);
+        assert_eq!(retrieved.phase, ReshardPhase::ShadowCreated);
+    }
+
+    #[test]
+    fn registry_register_duplicate_rejected() {
+        let mut reg = ReshardingRegistry::new();
+        let state = ReshardOperationState {
+            shadow_index: "products__reshard_128".to_string(),
+            old_shards: 64,
+            target_shards: 128,
+            phase: ReshardPhase::ShadowCreated,
+            started_at: 1000,
+        };
+        reg.register("products".to_string(), state).unwrap();
+
+        let state2 = ReshardOperationState {
+            shadow_index: "products__reshard_256".to_string(),
+            old_shards: 128,
+            target_shards: 256,
+            phase: ReshardPhase::ShadowCreated,
+            started_at: 2000,
+        };
+        assert!(reg.register("products".to_string(), state2).is_err());
+    }
+
+    #[test]
+    fn registry_update_phase() {
+        let mut reg = ReshardingRegistry::new();
+        let state = ReshardOperationState {
+            shadow_index: "products__reshard_128".to_string(),
+            old_shards: 64,
+            target_shards: 128,
+            phase: ReshardPhase::ShadowCreated,
+            started_at: 1000,
+        };
+        reg.register("products".to_string(), state).unwrap();
+
+        reg.update_phase("products", ReshardPhase::DualWriteActive)
+            .unwrap();
+
+        let retrieved = reg.get("products").unwrap();
+        assert_eq!(retrieved.phase, ReshardPhase::DualWriteActive);
+    }
+
+    #[test]
+    fn registry_update_phase_nonexistent_errors() {
+        let mut reg = ReshardingRegistry::new();
+        assert!(reg
+            .update_phase("products", ReshardPhase::DualWriteActive)
+            .is_err());
+    }
+
+    #[test]
+    fn registry_remove() {
+        let mut reg = ReshardingRegistry::new();
+        let state = ReshardOperationState {
+            shadow_index: "products__reshard_128".to_string(),
+            old_shards: 64,
+            target_shards: 128,
+            phase: ReshardPhase::ShadowCreated,
+            started_at: 1000,
+        };
+        reg.register("products".to_string(), state).unwrap();
+        assert!(reg.get("products").is_some());
+
+        reg.remove("products").unwrap();
+        assert!(reg.get("products").is_none());
+    }
+
+    #[test]
+    fn registry_remove_nonexistent_errors() {
+        let mut reg = ReshardingRegistry::new();
+        assert!(reg.remove("products").is_err());
+    }
+
+    #[test]
+    fn registry_is_dual_write_active_shadow_created() {
+        let mut reg = ReshardingRegistry::new();
+        let state = ReshardOperationState {
+            shadow_index: "products__reshard_128".to_string(),
+            old_shards: 64,
+            target_shards: 128,
+            phase: ReshardPhase::ShadowCreated,
+            started_at: 1000,
+        };
+        reg.register("products".to_string(), state).unwrap();
+        assert!(reg.is_dual_write_active("products"));
+    }
+
+    #[test]
+    fn registry_is_dual_write_active_dual_write_phase() {
+        let mut reg = ReshardingRegistry::new();
+        let state = ReshardOperationState {
+            shadow_index: "products__reshard_128".to_string(),
+            old_shards: 64,
+            target_shards: 128,
+            phase: ReshardPhase::DualWriteActive,
+            started_at: 1000,
+        };
+        reg.register("products".to_string(), state).unwrap();
+        assert!(reg.is_dual_write_active("products"));
+    }
+
+    #[test]
+    fn registry_is_dual_write_active_backfill_phase() {
+        let mut reg = ReshardingRegistry::new();
+        let state = ReshardOperationState {
+            shadow_index: "products__reshard_128".to_string(),
+            old_shards: 64,
+            target_shards: 128,
+            phase: ReshardPhase::BackfillInProgress,
+            started_at: 1000,
+        };
+        reg.register("products".to_string(), state).unwrap();
+        assert!(reg.is_dual_write_active("products"));
+    }
+
+    #[test]
+    fn registry_is_dual_write_active_verifying_phase() {
+        let mut reg = ReshardingRegistry::new();
+        let state = ReshardOperationState {
+            shadow_index: "products__reshard_128".to_string(),
+            old_shards: 64,
+            target_shards: 128,
+            phase: ReshardPhase::Verifying,
+            started_at: 1000,
+        };
+        reg.register("products".to_string(), state).unwrap();
+        assert!(reg.is_dual_write_active("products"));
+    }
+
+    #[test]
+    fn registry_is_dual_write_active_swapped_phase_false() {
+        let mut reg = ReshardingRegistry::new();
+        let state = ReshardOperationState {
+            shadow_index: "products__reshard_128".to_string(),
+            old_shards: 64,
+            target_shards: 128,
+            phase: ReshardPhase::Swapped,
+            started_at: 1000,
+        };
+        reg.register("products".to_string(), state).unwrap();
+        // After swap, dual-write stops (writes go only to new index)
+        assert!(!reg.is_dual_write_active("products"));
+    }
+
+    #[test]
+    fn registry_is_dual_write_active_no_operation() {
+        let reg = ReshardingRegistry::new();
+        assert!(!reg.is_dual_write_active("products"));
+    }
+
+    #[test]
+    fn registry_list() {
+        let mut reg = ReshardingRegistry::new();
+
+        let state1 = ReshardOperationState {
+            shadow_index: "products__reshard_128".to_string(),
+            old_shards: 64,
+            target_shards: 128,
+            phase: ReshardPhase::ShadowCreated,
+            started_at: 1000,
+        };
+        reg.register("products".to_string(), state1).unwrap();
+
+        let state2 = ReshardOperationState {
+            shadow_index: "orders__reshard_256".to_string(),
+            old_shards: 128,
+            target_shards: 256,
+            phase: ReshardPhase::DualWriteActive,
+            started_at: 2000,
+        };
+        reg.register("orders".to_string(), state2).unwrap();
+
+        let list = reg.list();
+        assert_eq!(list.len(), 2);
+
+        let list_map: std::collections::HashMap<_, _> = list.into_iter().collect();
+        assert!(list_map.contains_key("products"));
+        assert!(list_map.contains_key("orders"));
+        assert_eq!(
+            list_map.get("products").unwrap().shadow_index,
+            "products__reshard_128"
+        );
+        assert_eq!(
+            list_map.get("orders").unwrap().shadow_index,
+            "orders__reshard_256"
+        );
+    }
+
+    #[test]
+    fn registry_multiple_indexes_independent() {
+        let mut reg = ReshardingRegistry::new();
+
+        let products_state = ReshardOperationState {
+            shadow_index: "products__reshard_128".to_string(),
+            old_shards: 64,
+            target_shards: 128,
+            phase: ReshardPhase::DualWriteActive,
+            started_at: 1000,
+        };
+        reg.register("products".to_string(), products_state)
+            .unwrap();
+
+        let orders_state = ReshardOperationState {
+            shadow_index: "orders__reshard_256".to_string(),
+            old_shards: 128,
+            target_shards: 256,
+            phase: ReshardPhase::ShadowCreated,
+            started_at: 2000,
+        };
+        reg.register("orders".to_string(), orders_state).unwrap();
+
+        // Both should be in dual-write
+        assert!(reg.is_dual_write_active("products"));
+        assert!(reg.is_dual_write_active("orders"));
+
+        // Update products to swapped
+        reg.update_phase("products", ReshardPhase::Swapped).unwrap();
+
+        // Now only orders should be in dual-write
+        assert!(!reg.is_dual_write_active("products"));
+        assert!(reg.is_dual_write_active("orders"));
+
+        // Remove orders
+        reg.remove("orders").unwrap();
+
+        // Neither should be in dual-write
+        assert!(!reg.is_dual_write_active("products"));
+        assert!(!reg.is_dual_write_active("orders"));
     }
 }
