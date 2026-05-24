@@ -147,18 +147,231 @@
                     </div>
                 </section>
 
-                <!-- Other sections (placeholders) -->
+                <!-- Indexes Section -->
                 <section id="indexes" class="section">
                     <div class="card">
-                        <h3>Index Management</h3>
-                        <p class="placeholder">Coming soon — List, create, delete indexes with 2PC settings preview</p>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h3>Index Management</h3>
+                            <button class="btn btn-primary" id="createIndexBtn">Create Index</button>
+                        </div>
+                        <p class="card-subtitle">Manage indexes and their settings with two-phase commit (2PC) preview</p>
+
+                        <div class="table-container">
+                            <table class="data-table" id="indexesTable">
+                                <thead>
+                                    <tr>
+                                        <th>UID</th>
+                                        <th>Primary Key</th>
+                                        <th>Documents</th>
+                                        <th>Settings Version</th>
+                                        <th>Fingerprint</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="indexesTableBody">
+                                    <tr><td colspan="6" class="loading">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Settings Editor Modal -->
+                    <div id="settingsModal" class="modal">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h3 id="settingsModalTitle">Index Settings</h3>
+                                <button class="modal-close" id="settingsModalClose">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="settings-preview" id="settingsPreview">
+                                    <h4>Current Settings</h4>
+                                    <pre id="currentSettingsJson" class="settings-json"></pre>
+                                </div>
+
+                                <div class="settings-editor">
+                                    <h4>Edit Settings (JSON)</h4>
+                                    <textarea id="settingsEditor" class="settings-textarea" rows="15"></textarea>
+                                </div>
+
+                                <div class="settings-diff" id="settingsDiff" style="display: none;">
+                                    <h4>2PC Preview — What Will Change</h4>
+                                    <div class="diff-summary" id="diffSummary"></div>
+                                    <div class="diff-fingerprint">
+                                        <strong>New Fingerprint:</strong> <code id="newFingerprint"></code>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button class="btn btn-secondary" id="settingsPreviewBtn">Preview Changes</button>
+                                <button class="btn btn-primary" id="settingsApplyBtn" style="display: none;">Apply Changes</button>
+                                <button class="btn btn-secondary" id="settingsCancelBtn">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Create Index Modal -->
+                    <div id="createIndexModal" class="modal">
+                        <div class="modal-content" style="max-width: 500px;">
+                            <div class="modal-header">
+                                <h3>Create Index</h3>
+                                <button class="modal-close" id="createIndexModalClose">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="form-group">
+                                    <label for="indexUid">Index UID *</label>
+                                    <input type="text" id="indexUid" class="form-input" placeholder="my-index" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="indexPrimaryKey">Primary Key</label>
+                                    <input type="text" id="indexPrimaryKey" class="form-input" placeholder="id">
+                                    <small class="form-hint">Required for sharding. If omitted, Meilisearch will infer it from the first document.</small>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button class="btn btn-secondary" id="createIndexCancelBtn">Cancel</button>
+                                <button class="btn btn-primary" id="createIndexConfirmBtn">Create</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Delete Index Confirmation Modal -->
+                    <div id="deleteIndexModal" class="modal">
+                        <div class="modal-content" style="max-width: 500px;">
+                            <div class="modal-header">
+                                <h3>Delete Index</h3>
+                                <button class="modal-close" id="deleteIndexModalClose">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <p>Are you sure you want to delete index <strong id="deleteIndexName"></strong>?</p>
+                                <p class="warning">This action cannot be undone. All documents in this index will be permanently deleted.</p>
+                                <div class="form-group">
+                                    <label for="deleteIndexConfirm">Type the index name to confirm</label>
+                                    <input type="text" id="deleteIndexConfirm" class="form-input">
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button class="btn btn-secondary" id="deleteIndexCancelBtn">Cancel</button>
+                                <button class="btn btn-danger" id="deleteIndexConfirmBtn" disabled>Delete</button>
+                            </div>
+                        </div>
                     </div>
                 </section>
 
+                <!-- Aliases Section -->
                 <section id="aliases" class="section">
                     <div class="card">
-                        <h3>Alias Management</h3>
-                        <p class="placeholder">Coming soon — List, create, flip, delete aliases with history timeline</p>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h3>Alias Management</h3>
+                            <button class="btn btn-primary" id="createAliasBtn">Create Alias</button>
+                        </div>
+                        <p class="card-subtitle">Atomic index aliases for blue-green reindexing and zero-downtime migrations</p>
+
+                        <div class="table-container">
+                            <table class="data-table" id="aliasesTable">
+                                <thead>
+                                    <tr>
+                                        <th>Name</th>
+                                        <th>Type</th>
+                                        <th>Current Target</th>
+                                        <th>Version</th>
+                                        <th>Created</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="aliasesTableBody">
+                                    <tr><td colspan="6" class="loading">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Alias History Timeline -->
+                    <div id="aliasHistoryCard" class="card" style="display: none;">
+                        <h3>Alias History: <span id="aliasHistoryName"></span></h3>
+                        <div id="aliasHistoryTimeline" class="timeline"></div>
+                    </div>
+
+                    <!-- Create Alias Modal -->
+                    <div id="createAliasModal" class="modal">
+                        <div class="modal-content" style="max-width: 500px;">
+                            <div class="modal-header">
+                                <h3>Create Alias</h3>
+                                <button class="modal-close" id="createAliasModalClose">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="form-group">
+                                    <label for="aliasName">Alias Name *</label>
+                                    <input type="text" id="aliasName" class="form-input" placeholder="products" required>
+                                </div>
+                                <div class="form-group">
+                                    <label>Alias Type *</label>
+                                    <select id="aliasType" class="form-input">
+                                        <option value="single">Single Target (for blue-green deployments)</option>
+                                        <option value="multi">Multi Target (for ILM rollups)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" id="singleTargetGroup">
+                                    <label for="aliasTarget">Target Index *</label>
+                                    <input type="text" id="aliasTarget" class="form-input" placeholder="products_v3">
+                                </div>
+                                <div class="form-group" id="multiTargetGroup" style="display: none;">
+                                    <label for="aliasTargets">Target Indexes (comma-separated) *</label>
+                                    <input type="text" id="aliasTargets" class="form-input" placeholder="logs-2026-01-01, logs-2026-01-02">
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button class="btn btn-secondary" id="createAliasCancelBtn">Cancel</button>
+                                <button class="btn btn-primary" id="createAliasConfirmBtn">Create</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Flip Alias Modal -->
+                    <div id="flipAliasModal" class="modal">
+                        <div class="modal-content" style="max-width: 500px;">
+                            <div class="modal-header">
+                                <h3>Flip Alias</h3>
+                                <button class="modal-close" id="flipAliasModalClose">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <p>Flip alias <strong id="flipAliasName"></strong> to a new target:</p>
+                                <div class="form-group">
+                                    <label>Current Target</label>
+                                    <input type="text" id="flipAliasCurrent" class="form-input" disabled>
+                                </div>
+                                <div class="form-group">
+                                    <label for="flipAliasNew">New Target *</label>
+                                    <input type="text" id="flipAliasNew" class="form-input" placeholder="products_v4">
+                                </div>
+                                <p class="info">This atomically updates the alias. All queries will immediately resolve to the new target.</p>
+                            </div>
+                            <div class="modal-footer">
+                                <button class="btn btn-secondary" id="flipAliasCancelBtn">Cancel</button>
+                                <button class="btn btn-primary" id="flipAliasConfirmBtn">Flip</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Delete Alias Confirmation Modal -->
+                    <div id="deleteAliasModal" class="modal">
+                        <div class="modal-content" style="max-width: 500px;">
+                            <div class="modal-header">
+                                <h3>Delete Alias</h3>
+                                <button class="modal-close" id="deleteAliasModalClose">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <p>Are you sure you want to delete alias <strong id="deleteAliasName"></strong>?</p>
+                                <p class="warning">This action cannot be undone. Queries using this alias will fail after deletion.</p>
+                                <div class="form-group">
+                                    <label for="deleteAliasConfirm">Type the alias name to confirm</label>
+                                    <input type="text" id="deleteAliasConfirm" class="form-input">
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button class="btn btn-secondary" id="deleteAliasCancelBtn">Cancel</button>
+                                <button class="btn btn-danger" id="deleteAliasConfirmBtn" disabled>Delete</button>
+                            </div>
+                        </div>
                     </div>
                 </section>
 

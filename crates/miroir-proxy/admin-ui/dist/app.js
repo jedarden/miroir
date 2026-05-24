@@ -1,6 +1,6 @@
 /**
  * Miroir Admin UI - Plan §13.19
- * Overview and Topology sections implementation
+ * Overview, Topology, Indexes, and Aliases sections implementation
  */
 
 (function() {
@@ -16,7 +16,11 @@
         shards: null,
         rebalanceStatus: null,
         refreshInterval: null,
-        isConnected: true
+        isConnected: true,
+        indexes: null,
+        aliases: null,
+        currentSettingsIndex: null,
+        currentAliasForHistory: null
     };
 
     // ============================================================================
@@ -124,6 +128,55 @@
         }
     }
 
+    async function fetchIndexes() {
+        try {
+            const data = await fetchAPI('/indexes');
+            state.indexes = data.results || [];
+            return state.indexes;
+        } catch (error) {
+            console.error('Failed to fetch indexes:', error);
+            throw error;
+        }
+    }
+
+    async function fetchIndexStats(indexUid) {
+        try {
+            return await fetchAPI(`/indexes/${indexUid}/stats`);
+        } catch (error) {
+            console.error(`Failed to fetch stats for ${indexUid}:`, error);
+            return null;
+        }
+    }
+
+    async function fetchIndexSettings(indexUid) {
+        try {
+            return await fetchAPI(`/indexes/${indexUid}/settings`);
+        } catch (error) {
+            console.error(`Failed to fetch settings for ${indexUid}:`, error);
+            return null;
+        }
+    }
+
+    async function fetchAliases() {
+        try {
+            const data = await fetchAPI('/aliases');
+            state.aliases = data.results || [];
+            return state.aliases;
+        } catch (error) {
+            console.error('Failed to fetch aliases:', error);
+            throw error;
+        }
+    }
+
+    async function fetchAliasDetails(aliasName) {
+        try {
+            return await fetchAPI(`/aliases/${aliasName}`);
+        } catch (error) {
+            console.error(`Failed to fetch alias ${aliasName}:`, error);
+            return null;
+        }
+    }
+
     async function refreshData() {
         // Always fetch topology (used by overview and topology sections)
         await fetchTopology();
@@ -138,6 +191,12 @@
         } else if (state.currentSection === 'overview') {
             await fetchRebalanceStatus();
             renderOverview();
+        } else if (state.currentSection === 'indexes') {
+            await fetchIndexes();
+            renderIndexes();
+        } else if (state.currentSection === 'aliases') {
+            await fetchAliases();
+            renderAliases();
         }
     }
 
@@ -353,6 +412,125 @@
     }
 
     // ============================================================================
+    // Rendering - Indexes Section
+    // ============================================================================
+
+    async function renderIndexes() {
+        const tbody = document.getElementById('indexesTableBody');
+        if (!state.indexes) {
+            tbody.innerHTML = '<tr><td colspan="6" class="loading">Loading...</td></tr>';
+            return;
+        }
+
+        if (state.indexes.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="loading">No indexes found. Create your first index to get started.</td></tr>';
+            return;
+        }
+
+        // Fetch stats for all indexes in parallel
+        const statsPromises = state.indexes.map(idx => fetchIndexStats(idx.uid));
+        const statsResults = await Promise.allSettled(statsPromises);
+
+        // Fetch settings version for all indexes
+        const settingsPromises = state.indexes.map(idx => fetchIndexSettings(idx.uid));
+        const settingsResults = await Promise.allSettled(settingsPromises);
+
+        tbody.innerHTML = state.indexes.map((idx, i) => {
+            const stats = statsResults[i].status === 'fulfilled' ? statsResults[i].value : null;
+            const settings = settingsResults[i].status === 'fulfilled' ? settingsResults[i].value : null;
+
+            const docCount = stats?.numberOfDocuments || 0;
+            const primaryKey = idx.primaryKey || '-';
+            const settingsVersion = settings?._miroirSettingsVersion || '-';
+            const fingerprint = settings?._miroirFingerprint || '-';
+
+            return `
+                <tr>
+                    <td data-label="UID">${escapeHtml(idx.uid)}</td>
+                    <td data-label="Primary Key">${escapeHtml(primaryKey)}</td>
+                    <td data-label="Documents">${docCount.toLocaleString()}</td>
+                    <td data-label="Settings Version">${settingsVersion}</td>
+                    <td data-label="Fingerprint"><code class="code">${escapeHtml(fingerprint.substring(0, 12))}${fingerprint.length > 12 ? '...' : ''}</code></td>
+                    <td data-label="Actions">
+                        <div class="action-buttons">
+                            <button class="btn btn-sm btn-secondary" onclick="openSettingsModal('${escapeHtml(idx.uid)}')">Settings</button>
+                            <button class="btn btn-sm btn-danger" onclick="confirmDeleteIndex('${escapeHtml(idx.uid)}')">Delete</button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    // ============================================================================
+    // Rendering - Aliases Section
+    // ============================================================================
+
+    async function renderAliases() {
+        const tbody = document.getElementById('aliasesTableBody');
+        if (!state.aliases) {
+            tbody.innerHTML = '<tr><td colspan="6" class="loading">Loading...</td></tr>';
+            return;
+        }
+
+        if (state.aliases.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="loading">No aliases found. Create an alias to get started.</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = state.aliases.map(alias => {
+            const kindLabel = alias.kind === 'single' ? 'Single Target' : 'Multi Target';
+            const target = alias.kind === 'single'
+                ? (alias.currentUid || '-')
+                : (alias.targetUids?.join(', ') || '-');
+
+            return `
+                <tr>
+                    <td data-label="Name">${escapeHtml(alias.name)}</td>
+                    <td data-label="Type"><span class="badge info">${escapeHtml(kindLabel)}</span></td>
+                    <td data-label="Current Target">${escapeHtml(String(target))}</td>
+                    <td data-label="Version">${alias.version || 0}</td>
+                    <td data-label="Created">${alias.createdAt ? new Date(alias.createdAt * 1000).toLocaleString() : '-'}</td>
+                    <td data-label="Actions">
+                        <div class="action-buttons">
+                            ${alias.kind === 'single' ? `<button class="btn btn-sm btn-primary" onclick="openFlipAliasModal('${escapeHtml(alias.name)}', '${escapeHtml(String(target))}')">Flip</button>` : ''}
+                            <button class="btn btn-sm btn-secondary" onclick="showAliasHistory('${escapeHtml(alias.name)}')">History</button>
+                            <button class="btn btn-sm btn-danger" onclick="confirmDeleteAlias('${escapeHtml(alias.name)}')">Delete</button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    async function showAliasHistory(aliasName) {
+        state.currentAliasForHistory = aliasName;
+        const details = await fetchAliasDetails(aliasName);
+        if (!details) return;
+
+        document.getElementById('aliasHistoryName').textContent = aliasName;
+        document.getElementById('aliasHistoryCard').style.display = 'block';
+
+        const timeline = document.getElementById('aliasHistoryTimeline');
+        const history = details.history || [];
+
+        if (history.length === 0) {
+            timeline.innerHTML = '<p class="placeholder">No history available</p>';
+            return;
+        }
+
+        timeline.innerHTML = history.map((entry, i) => `
+            <div class="timeline-entry ${i === 0 ? 'current' : ''}">
+                <div class="timeline-time">${new Date(entry.flippedAt * 1000).toLocaleString()}</div>
+                <div class="timeline-content">
+                    <strong>${escapeHtml(entry.uid)}</strong>
+                    <span>${i === 0 ? 'Current target' : 'Previous target'}</span>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    // ============================================================================
     // Utilities
     // ============================================================================
 
@@ -440,10 +618,328 @@
     // Initialization
     // ============================================================================
 
+    // ============================================================================
+    // Modal Handlers - Indexes
+    // ============================================================================
+
+    function openSettingsModal(indexUid) {
+        state.currentSettingsIndex = indexUid;
+
+        // Fetch current settings
+        fetchIndexSettings(indexUid).then(settings => {
+            const currentJson = JSON.stringify(settings || {}, null, 2);
+            document.getElementById('currentSettingsJson').textContent = currentJson;
+            document.getElementById('settingsEditor').value = currentJson;
+            document.getElementById('settingsModalTitle').textContent = `Settings: ${indexUid}`;
+            document.getElementById('settingsDiff').style.display = 'none';
+            document.getElementById('settingsApplyBtn').style.display = 'none';
+            document.getElementById('settingsPreviewBtn').style.display = 'inline-flex';
+            showModal('settingsModal');
+        }).catch(err => {
+            console.error('Failed to fetch settings:', err);
+            alert('Failed to load settings. Please try again.');
+        });
+    }
+
+    function previewSettingsChanges() {
+        const editor = document.getElementById('settingsEditor');
+        const newSettings = JSON.parse(editor.value);
+        const currentJson = document.getElementById('currentSettingsJson').textContent;
+        const currentSettings = JSON.parse(currentJson || '{}');
+
+        // Compute fingerprint of new settings
+        const newFingerprint = computeFingerprint(newSettings);
+        document.getElementById('newFingerprint').textContent = newFingerprint;
+
+        // Compute diff
+        const diffSummary = document.getElementById('diffSummary');
+        const diff = computeDiff(currentSettings, newSettings);
+
+        if (diff.length === 0) {
+            diffSummary.innerHTML = '<p class="info">No changes detected.</p>';
+        } else {
+            diffSummary.innerHTML = diff.map(line =>
+                `<div class="diff-line ${line.type}">${escapeHtml(line.text)}</div>`
+            ).join('');
+        }
+
+        document.getElementById('settingsDiff').style.display = 'block';
+        document.getElementById('settingsPreviewBtn').style.display = 'none';
+        document.getElementById('settingsApplyBtn').style.display = 'inline-flex';
+    }
+
+    async function applySettingsChanges() {
+        const indexUid = state.currentSettingsIndex;
+        const editor = document.getElementById('settingsEditor');
+        const newSettings = JSON.parse(editor.value);
+
+        try {
+            await fetchAPI(`/indexes/${indexUid}/settings`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newSettings)
+            });
+
+            hideModal('settingsModal');
+            refreshData();
+        } catch (error) {
+            console.error('Failed to apply settings:', error);
+            alert('Failed to apply settings. Please try again.');
+        }
+    }
+
+    function confirmDeleteIndex(indexUid) {
+        document.getElementById('deleteIndexName').textContent = indexUid;
+        document.getElementById('deleteIndexConfirm').value = '';
+        document.getElementById('deleteIndexConfirmBtn').disabled = true;
+        showModal('deleteIndexModal');
+    }
+
+    async function deleteIndex() {
+        const indexUid = document.getElementById('deleteIndexName').textContent;
+        const confirmInput = document.getElementById('deleteIndexConfirm').value;
+
+        if (confirmInput !== indexUid) {
+            alert('Index name does not match.');
+            return;
+        }
+
+        try {
+            await fetchAPI(`/indexes/${indexUid}`, { method: 'DELETE' });
+            hideModal('deleteIndexModal');
+            refreshData();
+        } catch (error) {
+            console.error('Failed to delete index:', error);
+            alert('Failed to delete index. Please try again.');
+        }
+    }
+
+    // ============================================================================
+    // Modal Handlers - Aliases
+    // ============================================================================
+
+    function openFlipAliasModal(aliasName, currentTarget) {
+        document.getElementById('flipAliasName').textContent = aliasName;
+        document.getElementById('flipAliasCurrent').value = currentTarget;
+        document.getElementById('flipAliasNew').value = '';
+        showModal('flipAliasModal');
+    }
+
+    async function flipAlias() {
+        const aliasName = document.getElementById('flipAliasName').textContent;
+        const newTarget = document.getElementById('flipAliasNew').value.trim();
+
+        if (!newTarget) {
+            alert('Please enter a new target.');
+            return;
+        }
+
+        try {
+            await fetchAPI(`/_miroir/aliases/${aliasName}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target: newTarget })
+            });
+
+            hideModal('flipAliasModal');
+            refreshData();
+        } catch (error) {
+            console.error('Failed to flip alias:', error);
+            alert('Failed to flip alias. Please try again.');
+        }
+    }
+
+    function confirmDeleteAlias(aliasName) {
+        document.getElementById('deleteAliasName').textContent = aliasName;
+        document.getElementById('deleteAliasConfirm').value = '';
+        document.getElementById('deleteAliasConfirmBtn').disabled = true;
+        showModal('deleteAliasModal');
+    }
+
+    async function deleteAlias() {
+        const aliasName = document.getElementById('deleteAliasName').textContent;
+        const confirmInput = document.getElementById('deleteAliasConfirm').value;
+
+        if (confirmInput !== aliasName) {
+            alert('Alias name does not match.');
+            return;
+        }
+
+        try {
+            await fetchAPI(`/_miroir/aliases/${aliasName}`, { method: 'DELETE' });
+            hideModal('deleteAliasModal');
+            refreshData();
+        } catch (error) {
+            console.error('Failed to delete alias:', error);
+            alert('Failed to delete alias. Please try again.');
+        }
+    }
+
+    async function createAlias() {
+        const name = document.getElementById('aliasName').value.trim();
+        const type = document.getElementById('aliasType').value;
+        const target = document.getElementById('aliasTarget').value.trim();
+        const targets = document.getElementById('aliasTargets').value.trim().split(',').map(s => s.trim()).filter(s => s);
+
+        if (!name) {
+            alert('Please enter an alias name.');
+            return;
+        }
+
+        const body = type === 'single'
+            ? { target }
+            : { targets };
+
+        try {
+            await fetchAPI(`/_miroir/aliases/${name}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            hideModal('createAliasModal');
+            refreshData();
+        } catch (error) {
+            console.error('Failed to create alias:', error);
+            alert('Failed to create alias. Please try again.');
+        }
+    }
+
+    // ============================================================================
+    // Modal Helpers
+    // ============================================================================
+
+    function showModal(modalId) {
+        document.getElementById(modalId).classList.add('active');
+    }
+
+    function hideModal(modalId) {
+        document.getElementById(modalId).classList.remove('active');
+    }
+
+    function computeFingerprint(settings) {
+        const canonical = JSON.stringify(settings, Object.keys(settings).sort());
+        let hash = 0;
+        for (let i = 0; i < canonical.length; i++) {
+            const char = canonical.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash;
+        }
+        return Math.abs(hash).toString(16).padStart(8, '0');
+    }
+
+    function computeDiff(current, newSettings) {
+        const diff = [];
+
+        // Find removed keys
+        for (const key in current) {
+            if (!(key in newSettings)) {
+                diff.push({ type: 'removed', text: `- ${key}: ${JSON.stringify(current[key])}` });
+            }
+        }
+
+        // Find added and changed keys
+        for (const key in newSettings) {
+            const currentVal = current[key];
+            const newVal = newSettings[key];
+
+            if (!(key in current)) {
+                diff.push({ type: 'added', text: `+ ${key}: ${JSON.stringify(newVal)}` });
+            } else if (JSON.stringify(currentVal) !== JSON.stringify(newVal)) {
+                diff.push({ type: 'removed', text: `- ${key}: ${JSON.stringify(currentVal)}` });
+                diff.push({ type: 'added', text: `+ ${key}: ${JSON.stringify(newVal)}` });
+            }
+        }
+
+        return diff;
+    }
+
+    // ============================================================================
+    // Initialization
+    // ============================================================================
+
+    function initModals() {
+        // Settings modal
+        document.getElementById('settingsModalClose').addEventListener('click', () => hideModal('settingsModal'));
+        document.getElementById('settingsCancelBtn').addEventListener('click', () => hideModal('settingsModal'));
+        document.getElementById('settingsPreviewBtn').addEventListener('click', previewSettingsChanges);
+        document.getElementById('settingsApplyBtn').addEventListener('click', applySettingsChanges);
+
+        // Create index modal
+        document.getElementById('createIndexBtn').addEventListener('click', () => showModal('createIndexModal'));
+        document.getElementById('createIndexModalClose').addEventListener('click', () => hideModal('createIndexModal'));
+        document.getElementById('createIndexCancelBtn').addEventListener('click', () => hideModal('createIndexModal'));
+        document.getElementById('createIndexConfirmBtn').addEventListener('click', async () => {
+            const uid = document.getElementById('indexUid').value.trim();
+            const primaryKey = document.getElementById('indexPrimaryKey').value.trim() || null;
+
+            if (!uid) {
+                alert('Please enter an index UID.');
+                return;
+            }
+
+            try {
+                const body = primaryKey ? { uid, primaryKey } : { uid };
+                await fetchAPI('/indexes', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                hideModal('createIndexModal');
+                refreshData();
+            } catch (error) {
+                console.error('Failed to create index:', error);
+                alert('Failed to create index. Please try again.');
+            }
+        });
+
+        // Delete index modal
+        document.getElementById('deleteIndexModalClose').addEventListener('click', () => hideModal('deleteIndexModal'));
+        document.getElementById('deleteIndexCancelBtn').addEventListener('click', () => hideModal('deleteIndexModal'));
+        document.getElementById('deleteIndexConfirmBtn').addEventListener('click', deleteIndex);
+        document.getElementById('deleteIndexConfirm').addEventListener('input', (e) => {
+            document.getElementById('deleteIndexConfirmBtn').disabled = e.target.value !== document.getElementById('deleteIndexName').textContent;
+        });
+
+        // Create alias modal
+        document.getElementById('createAliasBtn').addEventListener('click', () => showModal('createAliasModal'));
+        document.getElementById('createAliasModalClose').addEventListener('click', () => hideModal('createAliasModal'));
+        document.getElementById('createAliasCancelBtn').addEventListener('click', () => hideModal('createAliasModal'));
+        document.getElementById('createAliasConfirmBtn').addEventListener('click', createAlias);
+        document.getElementById('aliasType').addEventListener('change', (e) => {
+            const isSingle = e.target.value === 'single';
+            document.getElementById('singleTargetGroup').style.display = isSingle ? 'block' : 'none';
+            document.getElementById('multiTargetGroup').style.display = isSingle ? 'none' : 'block';
+        });
+
+        // Flip alias modal
+        document.getElementById('flipAliasModalClose').addEventListener('click', () => hideModal('flipAliasModal'));
+        document.getElementById('flipAliasCancelBtn').addEventListener('click', () => hideModal('flipAliasModal'));
+        document.getElementById('flipAliasConfirmBtn').addEventListener('click', flipAlias);
+
+        // Delete alias modal
+        document.getElementById('deleteAliasModalClose').addEventListener('click', () => hideModal('deleteAliasModal'));
+        document.getElementById('deleteAliasCancelBtn').addEventListener('click', () => hideModal('deleteAliasModal'));
+        document.getElementById('deleteAliasConfirmBtn').addEventListener('click', deleteAlias);
+        document.getElementById('deleteAliasConfirm').addEventListener('input', (e) => {
+            document.getElementById('deleteAliasConfirmBtn').disabled = e.target.value !== document.getElementById('deleteAliasName').textContent;
+        });
+
+        // Close modals on backdrop click
+        document.querySelectorAll('.modal').forEach(modal => {
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    modal.classList.remove('active');
+                }
+            });
+        });
+    }
+
     function init() {
         initNavigation();
         initMobileMenu();
         initRefreshButton();
+        initModals();
 
         // Initial data fetch
         refreshData().then(() => {
@@ -472,5 +968,12 @@
     } else {
         init();
     }
+
+    // Export functions to global scope for onclick handlers
+    window.openSettingsModal = openSettingsModal;
+    window.confirmDeleteIndex = confirmDeleteIndex;
+    window.openFlipAliasModal = openFlipAliasModal;
+    window.showAliasHistory = showAliasHistory;
+    window.confirmDeleteAlias = confirmDeleteAlias;
 
 })();
