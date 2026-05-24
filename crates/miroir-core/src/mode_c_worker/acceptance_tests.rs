@@ -91,7 +91,10 @@ impl TaskStore for MockTaskStore {
 
     fn renew_job_claim(&self, id: &str, claim_expires_at: i64) -> Result<bool> {
         let mut jobs = self.jobs.lock().unwrap();
-        if let Some(job) = jobs.iter_mut().find(|j| j.id == id && j.state == "in_progress") {
+        if let Some(job) = jobs
+            .iter_mut()
+            .find(|j| j.id == id && j.state == "in_progress")
+        {
             job.claim_expires_at = Some(claim_expires_at);
             Ok(true)
         } else {
@@ -114,10 +117,7 @@ impl TaskStore for MockTaskStore {
         Ok(jobs
             .iter()
             .filter(|j| {
-                j.state == "in_progress"
-                    && j
-                        .claim_expires_at
-                        .map_or(false, |exp| exp < now_ms)
+                j.state == "in_progress" && j.claim_expires_at.map_or(false, |exp| exp < now_ms)
             })
             .cloned()
             .collect())
@@ -161,7 +161,10 @@ impl TaskStore for MockTaskStore {
     fn set_task_error(&self, _miroir_id: &str, _error: &str) -> Result<bool> {
         Ok(false)
     }
-    fn list_tasks(&self, _filter: &crate::task_store::TaskFilter) -> Result<Vec<crate::task_store::TaskRow>> {
+    fn list_tasks(
+        &self,
+        _filter: &crate::task_store::TaskFilter,
+    ) -> Result<Vec<crate::task_store::TaskRow>> {
         Ok(Vec::new())
     }
     fn prune_tasks(&self, _cutoff_ms: i64, _batch_size: u32) -> Result<usize> {
@@ -213,7 +216,10 @@ impl TaskStore for MockTaskStore {
     fn insert_idempotency_entry(&self, _entry: &crate::task_store::IdempotencyEntry) -> Result<()> {
         Ok(())
     }
-    fn get_idempotency_entry(&self, _key: &str) -> Result<Option<crate::task_store::IdempotencyEntry>> {
+    fn get_idempotency_entry(
+        &self,
+        _key: &str,
+    ) -> Result<Option<crate::task_store::IdempotencyEntry>> {
         Ok(None)
     }
     fn delete_expired_idempotency_entries(&self, _now_ms: i64) -> Result<usize> {
@@ -246,16 +252,28 @@ impl TaskStore for MockTaskStore {
     fn delete_canary(&self, _id: &str) -> Result<bool> {
         Ok(false)
     }
-    fn insert_canary_run(&self, _run: &crate::task_store::NewCanaryRun, _run_history_limit: usize) -> Result<()> {
+    fn insert_canary_run(
+        &self,
+        _run: &crate::task_store::NewCanaryRun,
+        _run_history_limit: usize,
+    ) -> Result<()> {
         Ok(())
     }
-    fn get_canary_runs(&self, _canary_id: &str, _limit: usize) -> Result<Vec<crate::task_store::CanaryRunRow>> {
+    fn get_canary_runs(
+        &self,
+        _canary_id: &str,
+        _limit: usize,
+    ) -> Result<Vec<crate::task_store::CanaryRunRow>> {
         Ok(Vec::new())
     }
     fn upsert_cdc_cursor(&self, _cursor: &crate::task_store::NewCdcCursor) -> Result<()> {
         Ok(())
     }
-    fn get_cdc_cursor(&self, _sink_name: &str, _index_uid: &str) -> Result<Option<crate::task_store::CdcCursorRow>> {
+    fn get_cdc_cursor(
+        &self,
+        _sink_name: &str,
+        _index_uid: &str,
+    ) -> Result<Option<crate::task_store::CdcCursorRow>> {
         Ok(None)
     }
     fn list_cdc_cursors(&self, _sink_name: &str) -> Result<Vec<crate::task_store::CdcCursorRow>> {
@@ -264,7 +282,10 @@ impl TaskStore for MockTaskStore {
     fn insert_tenant_mapping(&self, _mapping: &crate::task_store::NewTenantMapping) -> Result<()> {
         Ok(())
     }
-    fn get_tenant_mapping(&self, _api_key_hash: &[u8]) -> Result<Option<crate::task_store::TenantMapRow>> {
+    fn get_tenant_mapping(
+        &self,
+        _api_key_hash: &[u8],
+    ) -> Result<Option<crate::task_store::TenantMapRow>> {
         Ok(None)
     }
     fn delete_tenant_mapping(&self, _api_key_hash: &[u8]) -> Result<bool> {
@@ -273,7 +294,10 @@ impl TaskStore for MockTaskStore {
     fn upsert_rollover_policy(&self, _policy: &crate::task_store::NewRolloverPolicy) -> Result<()> {
         Ok(())
     }
-    fn get_rollover_policy(&self, _name: &str) -> Result<Option<crate::task_store::RolloverPolicyRow>> {
+    fn get_rollover_policy(
+        &self,
+        _name: &str,
+    ) -> Result<Option<crate::task_store::RolloverPolicyRow>> {
         Ok(None)
     }
     fn list_rollover_policies(&self) -> Result<Vec<crate::task_store::RolloverPolicyRow>> {
@@ -282,10 +306,16 @@ impl TaskStore for MockTaskStore {
     fn delete_rollover_policy(&self, _name: &str) -> Result<bool> {
         Ok(false)
     }
-    fn upsert_search_ui_config(&self, _config: &crate::task_store::NewSearchUiConfig) -> Result<()> {
+    fn upsert_search_ui_config(
+        &self,
+        _config: &crate::task_store::NewSearchUiConfig,
+    ) -> Result<()> {
         Ok(())
     }
-    fn get_search_ui_config(&self, _index_uid: &str) -> Result<Option<crate::task_store::SearchUiConfigRow>> {
+    fn get_search_ui_config(
+        &self,
+        _index_uid: &str,
+    ) -> Result<Option<crate::task_store::SearchUiConfigRow>> {
         Ok(None)
     }
     fn delete_search_ui_config(&self, _index_uid: &str) -> Result<bool> {
@@ -294,7 +324,10 @@ impl TaskStore for MockTaskStore {
     fn insert_admin_session(&self, _session: &crate::task_store::NewAdminSession) -> Result<()> {
         Ok(())
     }
-    fn get_admin_session(&self, _session_id: &str) -> Result<Option<crate::task_store::AdminSessionRow>> {
+    fn get_admin_session(
+        &self,
+        _session_id: &str,
+    ) -> Result<Option<crate::task_store::AdminSessionRow>> {
         Ok(None)
     }
     fn revoke_admin_session(&self, _session_id: &str) -> Result<bool> {
@@ -303,16 +336,28 @@ impl TaskStore for MockTaskStore {
     fn delete_expired_admin_sessions(&self, _now_ms: i64) -> Result<usize> {
         Ok(0)
     }
-    fn upsert_mode_b_operation(&self, _operation: &crate::task_store::ModeBOperation) -> Result<()> {
+    fn upsert_mode_b_operation(
+        &self,
+        _operation: &crate::task_store::ModeBOperation,
+    ) -> Result<()> {
         Ok(())
     }
-    fn get_mode_b_operation(&self, _operation_id: &str) -> Result<Option<crate::task_store::ModeBOperation>> {
+    fn get_mode_b_operation(
+        &self,
+        _operation_id: &str,
+    ) -> Result<Option<crate::task_store::ModeBOperation>> {
         Ok(None)
     }
-    fn get_mode_b_operation_by_scope(&self, _scope: &str) -> Result<Option<crate::task_store::ModeBOperation>> {
+    fn get_mode_b_operation_by_scope(
+        &self,
+        _scope: &str,
+    ) -> Result<Option<crate::task_store::ModeBOperation>> {
         Ok(None)
     }
-    fn list_mode_b_operations(&self, _filter: &crate::task_store::ModeBOperationFilter) -> Result<Vec<crate::task_store::ModeBOperation>> {
+    fn list_mode_b_operations(
+        &self,
+        _filter: &crate::task_store::ModeBOperationFilter,
+    ) -> Result<Vec<crate::task_store::ModeBOperation>> {
         Ok(Vec::new())
     }
     fn delete_mode_b_operation(&self, _operation_id: &str) -> Result<bool> {
@@ -453,7 +498,11 @@ async fn p6_5_a2_claim_expiration_allows_resume_at_last_cursor() {
     };
 
     pod1_coordinator
-        .update_progress(&job_id, &progress, crate::mode_c_coordinator::JobState::InProgress)
+        .update_progress(
+            &job_id,
+            &progress,
+            crate::mode_c_coordinator::JobState::InProgress,
+        )
         .unwrap();
 
     // Simulate claim expiration by setting claim_expires_at to the past
@@ -534,9 +583,7 @@ async fn p6_5_a3_queue_depth_metric_drives_hpa_scaling() {
                 error: None,
             };
 
-            coordinator
-                .complete_job(&claimed.id, &progress)
-                .unwrap();
+            coordinator.complete_job(&claimed.id, &progress).unwrap();
         }
     }
 
@@ -721,9 +768,7 @@ async fn p6_5_a5_reshard_backfill_splits_by_shard_id_range() {
         })
         .collect();
 
-    coordinator
-        .split_job_into_chunks(&claimed, chunks)
-        .unwrap();
+    coordinator.split_job_into_chunks(&claimed, chunks).unwrap();
 
     // Verify 2 chunks were created
     let child_jobs = coordinator.list_chunks(&job_id).unwrap();

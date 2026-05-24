@@ -8,13 +8,15 @@
 mod acceptance_tests;
 
 use crate::error::{MiroirError, Result};
-use crate::mode_c_coordinator::{ClaimedJob, JobChunk, JobParams, JobProgress, JobType, ModeCCoordinator};
+use crate::mode_c_coordinator::{
+    ClaimedJob, JobChunk, JobParams, JobProgress, JobType, ModeCCoordinator,
+};
 use crate::reshard_chunking;
 use crate::task_store::TaskStore;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, warn};
 
 /// Mode C worker configuration.
 #[derive(Debug, Clone)]
@@ -30,7 +32,7 @@ pub struct ModeCWorkerConfig {
 impl Default for ModeCWorkerConfig {
     fn default() -> Self {
         Self {
-            poll_interval_ms: 1000,      // 1 second
+            poll_interval_ms: 1000,       // 1 second
             heartbeat_interval_ms: 10000, // 10 seconds
             max_concurrent_jobs: 3,
         }
@@ -61,11 +63,7 @@ struct RunningJob {
 
 impl ModeCWorker {
     /// Create a new Mode C worker.
-    pub fn new(
-        task_store: Arc<dyn TaskStore>,
-        pod_id: String,
-        config: ModeCWorkerConfig,
-    ) -> Self {
+    pub fn new(task_store: Arc<dyn TaskStore>, pod_id: String, config: ModeCWorkerConfig) -> Self {
         let coordinator = ModeCCoordinator::new(task_store, pod_id)
             .with_claim_ttl_ms(30_000) // 30 seconds
             .with_heartbeat_interval_ms(config.heartbeat_interval_ms as i64);
@@ -84,7 +82,8 @@ impl ModeCWorker {
         info!("Starting Mode C worker loop");
 
         let mut poll_interval = interval(Duration::from_millis(self.config.poll_interval_ms));
-        let mut heartbeat_interval = interval(Duration::from_millis(self.config.heartbeat_interval_ms));
+        let mut heartbeat_interval =
+            interval(Duration::from_millis(self.config.heartbeat_interval_ms));
 
         loop {
             tokio::select! {
@@ -130,8 +129,9 @@ impl ModeCWorker {
         info!("Claimed job {} (type: {})", job_id, job_type_str);
 
         // Parse job type and parameters
-        let job_type = JobType::from_str(&claimed.type_)
-            .ok_or_else(|| MiroirError::InvalidRequest(format!("unknown job type: {}", claimed.type_)))?;
+        let job_type = JobType::from_str(&claimed.type_).ok_or_else(|| {
+            MiroirError::InvalidRequest(format!("unknown job type: {}", claimed.type_))
+        })?;
         let params = claimed.parse_params()?;
 
         // Check if this is a large job that needs chunking
@@ -160,8 +160,12 @@ impl ModeCWorker {
 
         tokio::spawn(async move {
             let result = match job_type {
-                JobType::DumpImport => Self::process_dump_import(&coordinator, &job_id_clone, &params).await,
-                JobType::ReshardBackfill => Self::process_reshard_backfill(&coordinator, &job_id_clone, &params).await,
+                JobType::DumpImport => {
+                    Self::process_dump_import(&coordinator, &job_id_clone, &params).await
+                }
+                JobType::ReshardBackfill => {
+                    Self::process_reshard_backfill(&coordinator, &job_id_clone, &params).await
+                }
             };
 
             // Remove from running jobs
@@ -191,7 +195,10 @@ impl ModeCWorker {
                     debug!("Renewed claim for job {}", job.id);
                 }
                 Ok(false) => {
-                    warn!("Failed to renew claim for job {} - may have lost ownership", job.id);
+                    warn!(
+                        "Failed to renew claim for job {} - may have lost ownership",
+                        job.id
+                    );
                 }
                 Err(e) => {
                     error!("Error renewing claim for job {}: {}", job.id, e);
@@ -245,7 +252,9 @@ impl ModeCWorker {
                 // during actual processing by the worker that processes each chunk
                 let source_size = params.source_size_bytes.unwrap_or(0);
                 if source_size == 0 {
-                    return Err(MiroirError::InvalidRequest("source_size_bytes is required for dump import chunking".into()));
+                    return Err(MiroirError::InvalidRequest(
+                        "source_size_bytes is required for dump import chunking".into(),
+                    ));
                 }
 
                 // Calculate number of chunks (ceiling division)
@@ -299,26 +308,23 @@ impl ModeCWorker {
         if let Some(chunk) = &params.chunk {
             info!(
                 "Processing dump chunk {}/{} (offsets {}-{})",
-                chunk.index,
-                chunk.total,
-                chunk.start,
-                chunk.end
+                chunk.index, chunk.total, chunk.start, chunk.end
             );
 
             // Parse chunk boundaries
-            let start_offset: u64 = chunk.start.parse()
+            let start_offset: u64 = chunk
+                .start
+                .parse()
                 .map_err(|_| MiroirError::InvalidRequest("invalid chunk start offset".into()))?;
-            let end_offset: u64 = chunk.end.parse()
+            let end_offset: u64 = chunk
+                .end
+                .parse()
                 .map_err(|_| MiroirError::InvalidRequest("invalid chunk end offset".into()))?;
 
             // Process the dump import chunk
-            let result = Self::process_dump_chunk(
-                coordinator,
-                job_id,
-                params,
-                start_offset,
-                end_offset,
-            ).await;
+            let result =
+                Self::process_dump_chunk(coordinator, job_id, params, start_offset, end_offset)
+                    .await;
 
             match result {
                 Ok((bytes_processed, docs_routed, last_cursor)) => {
@@ -427,7 +433,11 @@ impl ModeCWorker {
                     last_cursor: last_cursor.clone(),
                     error: None,
                 };
-                coordinator.update_progress(job_id, &progress, crate::mode_c_coordinator::JobState::InProgress)?;
+                coordinator.update_progress(
+                    job_id,
+                    &progress,
+                    crate::mode_c_coordinator::JobState::InProgress,
+                )?;
 
                 // Renew the claim
                 let _ = coordinator.renew_claim(job_id);
@@ -455,20 +465,13 @@ impl ModeCWorker {
 
             info!(
                 "Processing reshard chunk {}/{} (shards {}-{})",
-                chunk.index,
-                chunk.total,
-                start_shard,
-                end_shard
+                chunk.index, chunk.total, start_shard, end_shard
             );
 
             // Process the reshard backfill chunk
-            let result = Self::process_reshard_chunk(
-                coordinator,
-                job_id,
-                params,
-                start_shard,
-                end_shard,
-            ).await;
+            let result =
+                Self::process_reshard_chunk(coordinator, job_id, params, start_shard, end_shard)
+                    .await;
 
             match result {
                 Ok((docs_backfilled, last_cursor)) => {
@@ -527,8 +530,8 @@ impl ModeCWorker {
         start_shard: u32,
         end_shard: u32,
     ) -> Result<(u64, String)> {
-        use crate::router::{shard_for_key, assign_shard_in_group};
-        use crate::topology::{Topology, Group, NodeId};
+        use crate::router::{assign_shard_in_group, shard_for_key};
+        use crate::topology::{Group, NodeId, Topology};
         use std::time::{Duration, Instant};
 
         let old_shards = params.old_shards.unwrap_or(64);
@@ -573,7 +576,8 @@ impl ModeCWorker {
 
                     // Simulate routing to replica groups
                     for group in topology.groups() {
-                        let _targets = assign_shard_in_group(new_shard, group.nodes(), topology.rf());
+                        let _targets =
+                            assign_shard_in_group(new_shard, group.nodes(), topology.rf());
                         // In production, we would write to these target nodes
                     }
                 }
@@ -594,7 +598,11 @@ impl ModeCWorker {
                     last_cursor: last_cursor.clone(),
                     error: None,
                 };
-                coordinator.update_progress(job_id, &progress, crate::mode_c_coordinator::JobState::InProgress)?;
+                coordinator.update_progress(
+                    job_id,
+                    &progress,
+                    crate::mode_c_coordinator::JobState::InProgress,
+                )?;
 
                 // Renew the claim
                 let _ = coordinator.renew_claim(job_id);

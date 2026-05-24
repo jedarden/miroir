@@ -6,9 +6,7 @@
 //! - Streaming xxh3 digest folding
 //! - Self-throttling behavior
 
-use miroir_core::anti_entropy::{
-    AntiEntropyConfig, AntiEntropyReconciler, ShardFingerprint,
-};
+use miroir_core::anti_entropy::{AntiEntropyConfig, AntiEntropyReconciler, ShardFingerprint};
 use miroir_core::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, MockNodeClient};
 use miroir_core::topology::{Node, NodeId, Topology};
 use serde_json::json;
@@ -504,5 +502,8 @@ async fn test_compute_content_hash_unit() {
     let hash1 = AntiEntropyReconciler::<MockNodeClient>::compute_content_hash(&doc1);
     let hash2 = AntiEntropyReconciler::<MockNodeClient>::compute_content_hash(&doc2);
 
-    assert_eq!(hash1, hash2, "internal fields should not affect content hash");
+    assert_eq!(
+        hash1, hash2,
+        "internal fields should not affect content hash"
+    );
 }

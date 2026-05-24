@@ -6,13 +6,8 @@
 //! - No PII (API keys, document content, query strings) in logs
 //! - Log volume: 2 INFO entries per search request (middleware + search handler)
 
+use axum::{body::Body, extract::Request, http::StatusCode, Router};
 use std::sync::{Arc, Mutex};
-use axum::{
-    extract::Request,
-    body::Body,
-    http::StatusCode,
-    Router,
-};
 use tower::ServiceExt;
 
 /// Helper: parse a JSON log line and extract fields
@@ -129,7 +124,11 @@ fn test_request_id_extraction_from_logs() {
         .filter(|line| line.contains(&format!("\"request_id\":\"{}\"", target_id)))
         .collect();
 
-    assert_eq!(matching_logs.len(), 3, "Should find all 3 log lines for the request");
+    assert_eq!(
+        matching_logs.len(),
+        3,
+        "Should find all 3 log lines for the request"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -175,20 +174,38 @@ fn test_no_query_strings_in_logs() {
     // The contains_pii function checks for long q= patterns (user queries)
     // Line must be >200 chars total and contain "q=" to trigger PII detection
     let padding = "x".repeat(200);
-    let bad_log = format!(r#"{{"message": "processing search", "q": "SELECT * FROM users WHERE email = 'test@example.com'", "padding": "{}"}}"#, padding);
-    assert!(contains_pii(&bad_log), "Long query string should be flagged as PII");
+    let bad_log = format!(
+        r#"{{"message": "processing search", "q": "SELECT * FROM users WHERE email = 'test@example.com'", "padding": "{}"}}"#,
+        padding
+    );
+    assert!(
+        contains_pii(&bad_log),
+        "Long query string should be flagged as PII"
+    );
 
     // Redacted queries are OK
     let good_log = r#"{"message": "processing search", "query": "[redacted]", "q": "[redacted]"}"#;
-    assert!(!contains_pii(good_log), "Redacted query should NOT be flagged as PII");
+    assert!(
+        !contains_pii(good_log),
+        "Redacted query should NOT be flagged as PII"
+    );
 
     // Short queries are OK (e.g., just a word or two)
     let short_query = r#"{"message": "processing search", "q": "test"}"#;
-    assert!(!contains_pii(short_query), "Short query should NOT be flagged as PII");
+    assert!(
+        !contains_pii(short_query),
+        "Short query should NOT be flagged as PII"
+    );
 
     // Long line without q= is OK
-    let long_safe = format!(r#"{{"message": "processing", "data": "{}"}}"#, "x".repeat(200));
-    assert!(!contains_pii(&long_safe), "Long line without q= should NOT be flagged as PII");
+    let long_safe = format!(
+        r#"{{"message": "processing", "data": "{}"}}"#,
+        "x".repeat(200)
+    );
+    assert!(
+        !contains_pii(&long_safe),
+        "Long line without q= should NOT be flagged as PII"
+    );
 }
 
 #[test]
@@ -196,11 +213,17 @@ fn test_no_document_content_in_logs() {
     // Large JSON blocks likely contain document content
     let large_log = r#"{"message": "indexing document", "doc": {"#;
     let large_log_padded = format!("{}{}", large_log, "x".repeat(5000));
-    assert!(contains_pii(&large_log_padded), "Very long log line should be flagged as potential PII");
+    assert!(
+        contains_pii(&large_log_padded),
+        "Very long log line should be flagged as potential PII"
+    );
 
     // Normal log lines are OK
     let normal_log = r#"{"message": "indexed 100 documents", "count": 100}"#;
-    assert!(!contains_pii(normal_log), "Normal log line should NOT be flagged");
+    assert!(
+        !contains_pii(normal_log),
+        "Normal log line should NOT be flagged"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +266,10 @@ fn test_debug_level_has_more_logs() {
         .filter(|line| line.contains(r#""level":"debug""#))
         .count();
 
-    assert!(debug_count > 1, "DEBUG level should have multiple log lines");
+    assert!(
+        debug_count > 1,
+        "DEBUG level should have multiple log lines"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -252,18 +278,24 @@ fn test_debug_level_has_more_logs() {
 
 #[test]
 fn test_middleware_log_format() {
-    use miroir_proxy::middleware::{generate_request_id, RequestIdExt};
     use axum::http::HeaderMap;
+    use miroir_proxy::middleware::{generate_request_id, RequestIdExt};
 
     // Test request_id generation format
     let id = generate_request_id();
     assert_eq!(id.len(), 16, "Request ID should be 16 hex chars");
-    assert!(id.chars().all(|c| c.is_ascii_hexdigit()), "Request ID should be hexadecimal");
+    assert!(
+        id.chars().all(|c| c.is_ascii_hexdigit()),
+        "Request ID should be hexadecimal"
+    );
 
     // Test header extraction
     let mut headers = HeaderMap::new();
     headers.set_request_id("test123456789abcd");
-    assert_eq!(headers.get_request_id(), Some("test123456789abcd".to_string()));
+    assert_eq!(
+        headers.get_request_id(),
+        Some("test123456789abcd".to_string())
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -273,11 +305,26 @@ fn test_middleware_log_format() {
 #[test]
 fn test_log_levels_correct() {
     let logs_by_level = vec![
-        (r#"{"level":"error","target":"miroir.request","message":"internal failure"}"#, "error"),
-        (r#"{"level":"warn","target":"miroir.request","message":"degraded response"}"#, "warn"),
-        (r#"{"level":"info","target":"miroir.request","message":"GET / 200"}"#, "info"),
-        (r#"{"level":"debug","target":"miroir.node","message":"node call"}"#, "debug"),
-        (r#"{"level":"trace","target":"miroir.scatter","message":"fan-out buffer"}"#, "trace"),
+        (
+            r#"{"level":"error","target":"miroir.request","message":"internal failure"}"#,
+            "error",
+        ),
+        (
+            r#"{"level":"warn","target":"miroir.request","message":"degraded response"}"#,
+            "warn",
+        ),
+        (
+            r#"{"level":"info","target":"miroir.request","message":"GET / 200"}"#,
+            "info",
+        ),
+        (
+            r#"{"level":"debug","target":"miroir.node","message":"node call"}"#,
+            "debug",
+        ),
+        (
+            r#"{"level":"trace","target":"miroir.scatter","message":"fan-out buffer"}"#,
+            "trace",
+        ),
     ];
 
     for (log, expected_level) in logs_by_level {
@@ -304,8 +351,8 @@ fn test_search_request_debug_redaction() {
 #[tokio::test]
 async fn test_request_id_response_header() {
     // Acceptance criterion: Every response includes X-Request-Id: <8-char hex>
-    use axum::routing::get;
     use axum::middleware;
+    use axum::routing::get;
     use miroir_proxy::middleware::request_id_middleware;
 
     async fn handler() -> &'static str {
@@ -317,12 +364,7 @@ async fn test_request_id_response_header() {
         .layer(middleware::from_fn(request_id_middleware));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/test")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -330,7 +372,10 @@ async fn test_request_id_response_header() {
 
     let headers = response.headers();
     let request_id = headers.get("x-request-id");
-    assert!(request_id.is_some(), "X-Request-Id header should be present");
+    assert!(
+        request_id.is_some(),
+        "X-Request-Id header should be present"
+    );
 
     let id_str = request_id.unwrap().to_str().unwrap();
     assert!(
@@ -343,27 +388,25 @@ async fn test_request_id_response_header() {
 #[tokio::test]
 async fn test_request_id_extension_accessible() {
     // Acceptance criterion: Request.extensions().get::<RequestId>() works from any handler
-    use axum::{routing::get, Extension};
     use axum::middleware;
+    use axum::{routing::get, Extension};
     use miroir_proxy::middleware::{request_id_middleware, RequestId};
 
     let app = Router::new()
-        .route("/test", get(|Extension(id): Extension<RequestId>| async move {
-            assert!(
-                is_valid_request_id(id.as_str()),
-                "RequestId in extensions should be 8 hex chars"
-            );
-            "ok"
-        }))
+        .route(
+            "/test",
+            get(|Extension(id): Extension<RequestId>| async move {
+                assert!(
+                    is_valid_request_id(id.as_str()),
+                    "RequestId in extensions should be 8 hex chars"
+                );
+                "ok"
+            }),
+        )
         .layer(middleware::from_fn(request_id_middleware));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/test")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -373,9 +416,9 @@ async fn test_request_id_extension_accessible() {
 #[tokio::test]
 async fn test_consecutive_requests_different_ids() {
     // Acceptance criterion: Two consecutive requests produce different IDs
-    use axum::{routing::get, Extension};
     use axum::extract::State as AxumState;
     use axum::middleware;
+    use axum::{routing::get, Extension};
     use miroir_proxy::middleware::{request_id_middleware, RequestId};
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -385,10 +428,13 @@ async fn test_consecutive_requests_different_ids() {
     let app = Router::new()
         .route(
             "/test",
-            get(|Extension(id): Extension<RequestId>, AxumState(ids): AxumState<Arc<Mutex<Vec<String>>>>| async move {
-                ids.lock().unwrap().push(id.as_str().to_string());
-                "ok"
-            }),
+            get(
+                |Extension(id): Extension<RequestId>,
+                 AxumState(ids): AxumState<Arc<Mutex<Vec<String>>>>| async move {
+                    ids.lock().unwrap().push(id.as_str().to_string());
+                    "ok"
+                },
+            ),
         )
         .layer(middleware::from_fn(request_id_middleware))
         .with_state(captured_ids.clone());
@@ -397,19 +443,17 @@ async fn test_consecutive_requests_different_ids() {
     for _ in 0..2 {
         let _ = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/test")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
             .await
             .unwrap();
     }
 
     let ids = captured_ids.lock().unwrap();
     assert_eq!(ids.len(), 2, "Should have captured 2 request IDs");
-    assert_ne!(ids[0], ids[1], "Two consecutive requests should have different IDs");
+    assert_ne!(
+        ids[0], ids[1],
+        "Two consecutive requests should have different IDs"
+    );
     assert!(
         is_valid_request_id(&ids[0]),
         "First ID should be 8 hex chars"
@@ -423,16 +467,14 @@ async fn test_consecutive_requests_different_ids() {
 #[tokio::test]
 async fn test_request_id_preserves_existing_header() {
     // If a request already has X-Request-Id, it should be preserved
-    use axum::{routing::get, Extension};
     use axum::middleware;
+    use axum::{routing::get, Extension};
     use miroir_proxy::middleware::{request_id_middleware, RequestId};
 
     let app = Router::new()
         .route(
             "/test",
-            get(|Extension(id): Extension<RequestId>| async move {
-                id.as_str().to_string()
-            }),
+            get(|Extension(id): Extension<RequestId>| async move { id.as_str().to_string() }),
         )
         .layer(middleware::from_fn(request_id_middleware));
 
@@ -452,24 +494,30 @@ async fn test_request_id_preserves_existing_header() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // The response should have the same X-Request-Id
-    let response_id = response.headers().get("x-request-id").unwrap().to_str().unwrap();
-    assert_eq!(response_id, existing_id, "Should preserve existing X-Request-Id");
+    let response_id = response
+        .headers()
+        .get("x-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(
+        response_id, existing_id,
+        "Should preserve existing X-Request-Id"
+    );
 }
 
 #[tokio::test]
 async fn test_request_id_invalid_header_is_replaced() {
     // If a request has an invalid X-Request-Id (not 8 hex chars),
     // the middleware should generate a new one
-    use axum::{routing::get, Extension};
     use axum::middleware;
+    use axum::{routing::get, Extension};
     use miroir_proxy::middleware::{request_id_middleware, RequestId};
 
     let app = Router::new()
         .route(
             "/test",
-            get(|Extension(id): Extension<RequestId>| async move {
-                id.as_str().to_string()
-            }),
+            get(|Extension(id): Extension<RequestId>| async move { id.as_str().to_string() }),
         )
         .layer(middleware::from_fn(request_id_middleware));
 
@@ -489,8 +537,16 @@ async fn test_request_id_invalid_header_is_replaced() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // The response should have a VALID 8-char hex ID (replaced)
-    let response_id = response.headers().get("x-request-id").unwrap().to_str().unwrap();
-    assert_ne!(response_id, invalid_id, "Should replace invalid X-Request-Id");
+    let response_id = response
+        .headers()
+        .get("x-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_ne!(
+        response_id, invalid_id,
+        "Should replace invalid X-Request-Id"
+    );
     assert!(
         is_valid_request_id(response_id),
         "Replaced ID should be 8 hex chars"
@@ -524,13 +580,15 @@ async fn test_request_id_appears_in_all_log_lines_within_request() {
     // Acceptance criterion: Every log line inside a request must carry request_id=<id>
     // This is achieved via tracing::Span with request_id recorded on span enter
     // and tracing_subscriber::fmt().with_current_span(true)
-    use axum::{routing::get, Extension};
     use axum::middleware;
-    use miroir_proxy::middleware::{request_id_middleware, telemetry_middleware, TelemetryState, RequestId, Metrics};
+    use axum::{routing::get, Extension};
     use miroir_core::config::MiroirConfig;
-    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-    use tracing::info;
+    use miroir_proxy::middleware::{
+        request_id_middleware, telemetry_middleware, Metrics, RequestId, TelemetryState,
+    };
     use std::sync::{Arc, Mutex};
+    use tracing::info;
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
     // Capture logs into a vector
     let captured_logs = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -539,7 +597,7 @@ async fn test_request_id_appears_in_all_log_lines_within_request() {
     let capture_layer = tracing_subscriber::fmt::layer()
         .json()
         .with_target(true)
-        .with_current_span(true)  // This is the key: includes span fields on all events
+        .with_current_span(true) // This is the key: includes span fields on all events
         .with_span_list(false)
         .flatten_event(true)
         .with_writer(std::sync::Mutex::new(CaptureWriter {
@@ -547,9 +605,7 @@ async fn test_request_id_appears_in_all_log_lines_within_request() {
         }));
 
     // Initialize the subscriber with our capture layer
-    tracing_subscriber::registry()
-        .with(capture_layer)
-        .init();
+    tracing_subscriber::registry().with(capture_layer).init();
 
     // Build telemetry state
     let config = MiroirConfig::default();
@@ -564,13 +620,16 @@ async fn test_request_id_appears_in_all_log_lines_within_request() {
     // request_id_middleware must run BEFORE telemetry_middleware.
     // To achieve this, request_id_middleware layer() call comes LAST (so it's outermost).
     let app = axum::Router::new()
-        .route("/test", get(|Extension(_id): Extension<RequestId>| async move {
-            // These log events should all inherit the request_id from the parent span
-            info!(message = "handler started", step = "1");
-            info!(message = "processing request", step = "2");
-            info!(message = "handler completed", step = "3");
-            "ok"
-        }))
+        .route(
+            "/test",
+            get(|Extension(_id): Extension<RequestId>| async move {
+                // These log events should all inherit the request_id from the parent span
+                info!(message = "handler started", step = "1");
+                info!(message = "processing request", step = "2");
+                info!(message = "handler completed", step = "3");
+                "ok"
+            }),
+        )
         .layer(axum::middleware::from_fn_with_state(
             telemetry.clone(),
             telemetry_middleware,
@@ -579,19 +638,15 @@ async fn test_request_id_appears_in_all_log_lines_within_request() {
 
     // Make a request
     let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/test")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
 
     // Extract the request_id from the response header
-    let request_id = response.headers()
+    let request_id = response
+        .headers()
         .get("x-request-id")
         .unwrap()
         .to_str()
@@ -599,9 +654,10 @@ async fn test_request_id_appears_in_all_log_lines_within_request() {
 
     // Verify all captured log lines contain the request_id
     let logs = captured_logs.lock().unwrap();
-    let log_lines: Vec<&str> = logs.iter()
+    let log_lines: Vec<&str> = logs
+        .iter()
         .flat_map(|s| s.lines())
-        .filter(|line| line.contains("message"))  // Only look at actual log lines
+        .filter(|line| line.contains("message")) // Only look at actual log lines
         .collect();
 
     // We should have at least 3 log lines from the handler
@@ -617,7 +673,8 @@ async fn test_request_id_appears_in_all_log_lines_within_request() {
 
         // Verify request_id field exists and matches the response header
         // It can be at the top level OR nested in the span object
-        let log_request_id = json.get("request_id")
+        let log_request_id = json
+            .get("request_id")
             .or_else(|| json.get("span").and_then(|s| s.get("request_id")))
             .and_then(|v| v.as_str());
 
@@ -628,7 +685,8 @@ async fn test_request_id_appears_in_all_log_lines_within_request() {
         );
 
         assert_eq!(
-            log_request_id.unwrap(), request_id,
+            log_request_id.unwrap(),
+            request_id,
             "Log line request_id should match response header: {}",
             line
         );

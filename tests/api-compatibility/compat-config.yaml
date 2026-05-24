@@ -1,0 +1,27 @@
+# Miroir configuration for API compatibility tests
+# This config connects to the three Meilisearch nodes in the compat test stack
+
+server:
+  listen_addr: "0.0.0.0:7700"
+  master_key: "dev-key"
+
+backend:
+  nodes:
+    - url: "http://meili-0:7700"
+      master_key: "dev-node-key"
+    - url: "http://meili-1:7700"
+      master_key: "dev-node-key"
+    - url: "http://meili-2:7700"
+      master_key: "dev-node-key"
+
+# Use local task store for simplicity in tests
+task_store:
+  backend: "sqlite"
+  path: "/data/tasks.db"
+
+# Node health check configuration
+health_check:
+  interval: "5s"
+  timeout: "2s"
+  unhealthy_threshold: 3
+  healthy_threshold: 1

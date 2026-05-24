@@ -36,9 +36,7 @@ pub async fn run(
     admin_key: &str,
     api_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()?;
+    let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
 
     if cmd.watch {
         watch_status(client, admin_key, api_url).await

@@ -3,8 +3,8 @@
 use axum::{
     extract::{FromRef, Path, State},
     http::{HeaderMap, StatusCode},
-    Json,
     response::{IntoResponse, Response},
+    Json,
 };
 use miroir_core::{
     config::MiroirConfig,
@@ -12,31 +12,35 @@ use miroir_core::{
     group_sync_worker::GroupSyncWorker,
     leader_election::{LeaderElection, LeaderElectionMetricsCallback},
     migration::{MigrationConfig, MigrationCoordinator},
+    mode_a_coordinator::ModeACoordinator,
+    mode_c_worker::{ModeCWorker, ModeCWorkerConfig},
+    peer_discovery::PeerDiscovery,
     rebalancer::{MigrationExecutor, Rebalancer, RebalancerConfig, RebalancerMetrics},
-    rebalancer_worker::{RebalancerMetricsCallback, RebalancerWorker, RebalancerWorkerConfig, TopologyChangeEvent},
+    rebalancer_worker::{
+        RebalancerMetricsCallback, RebalancerWorker, RebalancerWorkerConfig, TopologyChangeEvent,
+    },
     replica_selection::{ReplicaSelector, SelectionObserver},
     router,
     scatter::{DeleteByFilterRequest, FetchDocumentsRequest, FetchDocumentsResponse, WriteRequest},
     task_registry::TaskRegistryImpl,
     task_store::{RedisTaskStore, TaskStore},
     topology::{Node, NodeId, Topology},
-    mode_c_worker::{ModeCWorker, ModeCWorkerConfig},
-    mode_a_coordinator::ModeACoordinator,
-    peer_discovery::PeerDiscovery,
 };
 use rand::RngCore;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{info, error, warn};
-use reqwest::Client;
+use tracing::{error, info, warn};
 
 use crate::{
-    admin_session::{seal_session, COOKIE_NAME, SealKey},
+    admin_session::{seal_session, SealKey, COOKIE_NAME},
     client::HttpClient,
-    scoped_key_rotation::{self, ScopedKeyRotationState, RotateScopedKeyRequest, RotateScopedKeyResponse},
+    scoped_key_rotation::{
+        self, RotateScopedKeyRequest, RotateScopedKeyResponse, ScopedKeyRotationState,
+    },
 };
 
 /// Hash a PII value (IP address) for safe log correlation.
@@ -192,7 +196,9 @@ impl LocalAdminRateLimiter {
         }
 
         // Clean old timestamps outside the window
-        state.request_timestamps_ms.retain(|&ts| now - ts < window_ms as i64);
+        state
+            .request_timestamps_ms
+            .retain(|&ts| now - ts < window_ms as i64);
 
         // Check if limit exceeded
         if state.request_timestamps_ms.len() >= limit as usize {
@@ -201,7 +207,8 @@ impl LocalAdminRateLimiter {
             state.failed_count = failed;
 
             if failed >= failed_threshold {
-                let backoff_minutes = backoff_start_minutes * (1u64 << ((failed - failed_threshold) as u64).min(7)); // Cap at 2^7 = 128x
+                let backoff_minutes =
+                    backoff_start_minutes * (1u64 << ((failed - failed_threshold) as u64).min(7)); // Cap at 2^7 = 128x
                 let backoff_seconds = (backoff_minutes * 60).min(backoff_max_hours * 3600);
                 state.backoff_until_ms = Some(now + (backoff_seconds as i64 * 1000));
                 return (false, Some(backoff_seconds));
@@ -222,7 +229,13 @@ impl LocalAdminRateLimiter {
     }
 
     /// Record a failed login attempt (for backoff calculation).
-    pub fn record_failure(&self, ip: &str, failed_threshold: u32, backoff_start_minutes: u64, backoff_max_hours: u64) -> Option<u64> {
+    pub fn record_failure(
+        &self,
+        ip: &str,
+        failed_threshold: u32,
+        backoff_start_minutes: u64,
+        backoff_max_hours: u64,
+    ) -> Option<u64> {
         let mut inner = self.inner.lock().unwrap();
         let now = now_ms();
         let state = inner.state.entry(ip.to_string()).or_default();
@@ -230,7 +243,8 @@ impl LocalAdminRateLimiter {
         state.failed_count += 1;
 
         if state.failed_count >= failed_threshold {
-            let backoff_minutes = backoff_start_minutes * (1u64 << ((state.failed_count - failed_threshold) as u64).min(7));
+            let backoff_minutes = backoff_start_minutes
+                * (1u64 << ((state.failed_count - failed_threshold) as u64).min(7));
             let backoff_seconds = (backoff_minutes * 60).min(backoff_max_hours * 3600);
             state.backoff_until_ms = Some(now + (backoff_seconds as i64 * 1000));
             return Some(backoff_seconds);
@@ -262,18 +276,15 @@ struct LocalSearchUiRateLimiterInner {
 impl LocalSearchUiRateLimiter {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(std::sync::Mutex::new(LocalSearchUiRateLimiterInner::default())),
+            inner: Arc::new(std::sync::Mutex::new(
+                LocalSearchUiRateLimiterInner::default(),
+            )),
         }
     }
 
     /// Check rate limit for search UI.
     /// Returns (allowed, wait_seconds).
-    pub fn check(
-        &self,
-        ip: &str,
-        limit: u64,
-        window_ms: u64,
-    ) -> (bool, Option<u64>) {
+    pub fn check(&self, ip: &str, limit: u64, window_ms: u64) -> (bool, Option<u64>) {
         let mut inner = self.inner.lock().unwrap();
         let now = now_ms();
         let timestamps = inner.state.entry(ip.to_string()).or_default();
@@ -441,9 +452,9 @@ impl AppState {
             anti_entropy_enabled: config.anti_entropy.enabled,
         };
 
-        let migration_coordinator = Arc::new(RwLock::new(
-            MigrationCoordinator::new(migration_config.clone())
-        ));
+        let migration_coordinator = Arc::new(RwLock::new(MigrationCoordinator::new(
+            migration_config.clone(),
+        )));
 
         // Create migration executor for actual HTTP document migration
         use miroir_core::rebalancer::HttpMigrationExecutor;
@@ -452,25 +463,30 @@ impl AppState {
             config.scatter.node_timeout_ms,
         ));
 
-        let rebalancer = Arc::new(Rebalancer::new(
-            rebalancer_config.clone(),
-            topology_arc.clone(),
-            migration_config.clone(),
-        ).with_migration_executor(migration_executor));
+        let rebalancer = Arc::new(
+            Rebalancer::new(
+                rebalancer_config.clone(),
+                topology_arc.clone(),
+                migration_config.clone(),
+            )
+            .with_migration_executor(migration_executor),
+        );
 
         // Create rebalancer metrics
         let rebalancer_metrics = Arc::new(RwLock::new(RebalancerMetrics::default()));
 
         // Get or create task store for rebalancer worker
         let task_store: Option<Arc<dyn TaskStore>> = match config.task_store.backend.as_str() {
-            "redis" => {
-                redis_store.as_ref().map(|s| Arc::new(s.clone()) as Arc<dyn TaskStore>)
-            }
-            "sqlite" if !config.task_store.path.is_empty() => {
-                Some(Arc::new(miroir_core::task_store::SqliteTaskStore::open(
-                    std::path::Path::new(&config.task_store.path)
-                ).expect("Failed to open SQLite task store")) as Arc<dyn TaskStore>)
-            }
+            "redis" => redis_store
+                .as_ref()
+                .map(|s| Arc::new(s.clone()) as Arc<dyn TaskStore>),
+            "sqlite" if !config.task_store.path.is_empty() => Some(Arc::new(
+                miroir_core::task_store::SqliteTaskStore::open(std::path::Path::new(
+                    &config.task_store.path,
+                ))
+                .expect("Failed to open SQLite task store"),
+            )
+                as Arc<dyn TaskStore>),
             _ => None,
         };
 
@@ -500,7 +516,7 @@ impl AppState {
                     if let Some(duration) = duration_secs {
                         metrics_for_worker.observe_rebalance_duration(duration);
                     }
-                }
+                },
             );
 
             Some(Arc::new(RebalancerWorker::with_metrics(
@@ -519,7 +535,9 @@ impl AppState {
 
         // Create settings broadcast coordinator (§13.5)
         let settings_broadcast = if let Some(ref store) = task_store {
-            Arc::new(miroir_core::settings::SettingsBroadcast::with_task_store(store.clone()))
+            Arc::new(miroir_core::settings::SettingsBroadcast::with_task_store(
+                store.clone(),
+            ))
         } else {
             Arc::new(miroir_core::settings::SettingsBroadcast::new())
         };
@@ -536,14 +554,16 @@ impl AppState {
                 lease_ttl_secs: 10,
                 lease_renewal_interval_ms: 2000,
             };
-            Some(Arc::new(miroir_core::rebalancer_worker::DriftReconciler::new(
-                drift_config,
-                settings_broadcast.clone(),
-                store.clone(),
-                node_addresses,
-                config.node_master_key.clone(),
-                pod_id.clone(),
-            )))
+            Some(Arc::new(
+                miroir_core::rebalancer_worker::DriftReconciler::new(
+                    drift_config,
+                    settings_broadcast.clone(),
+                    store.clone(),
+                    node_addresses,
+                    config.node_master_key.clone(),
+                    pod_id.clone(),
+                ),
+            ))
         } else {
             None
         };
@@ -551,9 +571,10 @@ impl AppState {
         // Create anti-entropy worker (plan §13.8) if task store is available
         let anti_entropy_worker = if config.anti_entropy.enabled {
             if let Some(ref store) = task_store {
-                let ae_worker_config = miroir_core::rebalancer_worker::AntiEntropyWorkerConfig::from_schedule(
-                    &config.anti_entropy.schedule
-                );
+                let ae_worker_config =
+                    miroir_core::rebalancer_worker::AntiEntropyWorkerConfig::from_schedule(
+                        &config.anti_entropy.schedule,
+                    );
                 let metrics_for_ae_1 = metrics.clone();
                 let metrics_for_ae_2 = metrics.clone();
                 let metrics_for_ae_3 = metrics.clone();
@@ -593,7 +614,7 @@ impl AppState {
         // Create session pinning manager (§13.6)
         let session_manager = Arc::new(miroir_core::session_pinning::SessionManager::new(
             miroir_core::session_pinning::SessionPinningConfig::from(
-                config.session_pinning.clone()
+                config.session_pinning.clone(),
             ),
         ));
 
@@ -606,21 +627,19 @@ impl AppState {
             // Create metrics callback for leader election
             let metrics_for_leader = metrics.clone();
             let metrics_callback: LeaderElectionMetricsCallback = Arc::new(
-                move |metric_name: &str, labels: &std::collections::HashMap<String, String>, value: f64| {
+                move |metric_name: &str,
+                      labels: &std::collections::HashMap<String, String>,
+                      value: f64| {
                     if metric_name == "miroir_leader" {
                         if let Some(scope) = labels.get("scope") {
                             metrics_for_leader.set_leader(scope, value > 0.0);
                         }
                     }
-                }
+                },
             );
 
             let leader_config = config.leader_election.clone();
-            let mut leader = LeaderElection::new(
-                store.clone(),
-                pod_id.clone(),
-                leader_config,
-            );
+            let mut leader = LeaderElection::new(store.clone(), pod_id.clone(), leader_config);
             leader = leader.with_metrics_callback(metrics_callback);
             Some(Arc::new(leader))
         } else {
@@ -630,7 +649,7 @@ impl AppState {
         // Create Mode C worker for chunked background jobs (plan §14.5 Mode C)
         let mode_c_worker = if let Some(ref store) = task_store {
             let worker_config = ModeCWorkerConfig {
-                poll_interval_ms: 1000,      // 1 second
+                poll_interval_ms: 1000,       // 1 second
                 heartbeat_interval_ms: 10000, // 10 seconds
                 max_concurrent_jobs: 3,
             };
@@ -647,8 +666,8 @@ impl AppState {
         let group_addition_coordinator = if has_task_store {
             Some(Arc::new(RwLock::new(
                 miroir_core::group_addition::GroupAdditionCoordinator::new(
-                    miroir_core::group_addition::GroupAdditionConfig::default()
-                )
+                    miroir_core::group_addition::GroupAdditionConfig::default(),
+                ),
             )))
         } else {
             None
@@ -664,12 +683,14 @@ impl AppState {
             let worker_config = miroir_core::group_sync_worker::GroupSyncWorkerConfig::default();
             // Use the same coordinator
             let coordinator = group_addition_coordinator.as_ref().unwrap().clone();
-            Some(Arc::new(miroir_core::group_sync_worker::GroupSyncWorker::new(
-                worker_config,
-                coordinator,
-                http_client,
-                topology_arc.clone(),
-            )))
+            Some(Arc::new(
+                miroir_core::group_sync_worker::GroupSyncWorker::new(
+                    worker_config,
+                    coordinator,
+                    http_client,
+                    topology_arc.clone(),
+                ),
+            ))
         } else {
             None
         };
@@ -701,11 +722,15 @@ impl AppState {
             mode_c_worker,
             replica_selector: {
                 let advanced_config = config.replica_selection.clone();
-                let selector_config = miroir_core::replica_selection::ReplicaSelectionConfig::from(advanced_config);
+                let selector_config =
+                    miroir_core::replica_selection::ReplicaSelectionConfig::from(advanced_config);
                 let observer = Arc::new(ReplicaSelectionMetricsObserver {
                     metrics: metrics.clone(),
                 });
-                Arc::new(ReplicaSelector::new_with_observer(selector_config, observer))
+                Arc::new(ReplicaSelector::new_with_observer(
+                    selector_config,
+                    observer,
+                ))
             },
             idempotency_cache: Arc::new(miroir_core::idempotency::IdempotencyCache::new(
                 config.idempotency.max_cached_keys as usize,
@@ -753,11 +778,14 @@ impl AppState {
 
             // Calculate delta for documents migrated counter
             let current_total = rebalancer_metrics.documents_migrated_total;
-            let previous = self.previous_docs_migrated.load(std::sync::atomic::Ordering::Relaxed);
+            let previous = self
+                .previous_docs_migrated
+                .load(std::sync::atomic::Ordering::Relaxed);
             if current_total > previous {
                 let delta = current_total - previous;
                 self.metrics.inc_rebalance_documents_migrated(delta);
-                self.previous_docs_migrated.store(current_total, std::sync::atomic::Ordering::Relaxed);
+                self.previous_docs_migrated
+                    .store(current_total, std::sync::atomic::Ordering::Relaxed);
             }
 
             let duration = rebalancer_metrics.current_duration_secs();
@@ -824,7 +852,7 @@ where
             id: n.id.as_str().to_string(),
             address: n.address.clone(),
             status: format!("{:?}", n.status).to_lowercase(),
-            shard_count: 0, // TODO: compute from routing table
+            shard_count: 0,  // TODO: compute from routing table
             last_seen_ms: 0, // TODO: track last health check time
             error: None,     // TODO: populate from last health check error
         })
@@ -968,16 +996,25 @@ where
 pub fn parse_rate_limit(s: &str) -> Result<(u64, u64), String> {
     let parts: Vec<&str> = s.split('/').collect();
     if parts.len() != 2 {
-        return Err(format!("invalid rate limit format: '{}', expected 'N/UNIT'", s));
+        return Err(format!(
+            "invalid rate limit format: '{}', expected 'N/UNIT'",
+            s
+        ));
     }
-    let limit: u64 = parts[0].parse()
+    let limit: u64 = parts[0]
+        .parse()
         .map_err(|_| format!("invalid limit number: '{}'", parts[0]))?;
     let window_seconds = match parts[1] {
         "second" | "s" => 1,
         "minute" | "m" => 60,
         "hour" | "h" => 3600,
         "day" | "d" => 86400,
-        unit => return Err(format!("invalid time unit: '{}', expected second/minute/hour/day", unit)),
+        unit => {
+            return Err(format!(
+                "invalid time unit: '{}', expected second/minute/hour/day",
+                unit
+            ))
+        }
     };
     Ok((limit, window_seconds))
 }
@@ -1039,7 +1076,8 @@ where
                     success: false,
                     message: Some("Rate limit configuration error".into()),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -1065,15 +1103,19 @@ where
                                         ws
                                     )),
                                 }),
-                            ).into_response();
+                            )
+                                .into_response();
                         } else {
                             return (
                                 StatusCode::TOO_MANY_REQUESTS,
                                 Json(AdminLoginResponse {
                                     success: false,
-                                    message: Some("Too many login attempts. Please try again later.".into()),
+                                    message: Some(
+                                        "Too many login attempts. Please try again later.".into(),
+                                    ),
                                 }),
-                            ).into_response();
+                            )
+                                .into_response();
                         }
                     }
                     // Allowed, proceed
@@ -1113,13 +1155,19 @@ where
                         Some("Too many login attempts. Please try again later.".into())
                     },
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     }
 
     // Verify admin_key (constant-time comparison to prevent timing side-channels)
     use subtle::ConstantTimeEq as _;
-    if body.admin_key.as_bytes().ct_eq(state.config.admin.api_key.as_bytes()).into() {
+    if body
+        .admin_key
+        .as_bytes()
+        .ct_eq(state.config.admin.api_key.as_bytes())
+        .into()
+    {
         // Successful login - reset rate limit counters
         if backend == "redis" {
             if let Some(ref redis) = state.redis_store {
@@ -1143,7 +1191,8 @@ where
                         success: false,
                         message: Some("Failed to create session".into()),
                     }),
-                ).into_response();
+                )
+                    .into_response();
             }
         };
 
@@ -1156,15 +1205,19 @@ where
         // Set cookie and return success
         (
             StatusCode::OK,
-            [
-                ("Set-Cookie", format!("{}={}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}",
-                    COOKIE_NAME, sealed, state.config.admin_ui.session_ttl_s)),
-            ],
+            [(
+                "Set-Cookie",
+                format!(
+                    "{}={}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}",
+                    COOKIE_NAME, sealed, state.config.admin_ui.session_ttl_s
+                ),
+            )],
             Json(AdminLoginResponse {
                 success: true,
                 message: None,
             }),
-        ).into_response()
+        )
+            .into_response()
     } else {
         // Wrong admin_key - record failure for backoff tracking
         warn!(
@@ -1206,7 +1259,8 @@ where
                 success: false,
                 message: Some("Invalid admin key".into()),
             }),
-        ).into_response()
+        )
+            .into_response()
     }
 }
 
@@ -1239,20 +1293,27 @@ where
 {
     let app_state = AppState::from_ref(&state);
 
-    let id = body.get("id")
+    let id = body
+        .get("id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'id' field".into()))?
         .to_string();
 
-    let address = body.get("address")
+    let address = body
+        .get("address")
         .and_then(|v| v.as_str())
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'address' field".into()))?
         .to_string();
 
-    let replica_group = body.get("replica_group")
+    let replica_group = body
+        .get("replica_group")
         .and_then(|v| v.as_u64())
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'replica_group' field".into()))?
-        as u32;
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Missing 'replica_group' field".into(),
+            )
+        })? as u32;
 
     // Add node to topology
     {
@@ -1260,14 +1321,18 @@ where
         // Check if node already exists
         let node_id = NodeId::new(id.clone());
         if topo.node(&node_id).is_some() {
-            return Err((StatusCode::BAD_REQUEST,
-                format!("Node {} already exists", id)));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("Node {} already exists", id),
+            ));
         }
         // Check if replica group exists
         let group_count = topo.groups().count() as u32;
         if replica_group >= group_count {
-            return Err((StatusCode::BAD_REQUEST,
-                format!("Replica group {} does not exist", replica_group)));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("Replica group {} does not exist", replica_group),
+            ));
         }
         let node = Node::new(node_id, address, replica_group);
         topo.add_node(node);
@@ -1282,8 +1347,10 @@ where
         };
         if let Err(e) = worker.event_sender().try_send(event) {
             error!(error = %e, node_id = %id, "failed to send NodeAdded event to rebalancer worker");
-            return Err((StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to queue rebalancing: {}", e)));
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to queue rebalancing: {}", e),
+            ));
         }
     }
 
@@ -1317,35 +1384,47 @@ where
 {
     let app_state = AppState::from_ref(&state);
 
-    let force = body.get("force")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let force = body.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let node_id_obj = NodeId::new(node_id.clone());
 
     // Check node state
     let node_status = {
         let topo = app_state.topology.read().await;
-        let node = topo.node(&node_id_obj)
+        let node = topo
+            .node(&node_id_obj)
             .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Node {} not found", node_id)))?;
 
         // Check if this is the last node in the group
-        let group = topo.groups()
+        let group = topo
+            .groups()
             .find(|g| g.id == node.replica_group)
-            .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, format!("Replica group {} not found", node.replica_group)))?;
+            .ok_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Replica group {} not found", node.replica_group),
+                )
+            })?;
 
         if group.nodes().len() <= 1 {
-            return Err((StatusCode::BAD_REQUEST, "Cannot remove the last node in a replica group".into()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Cannot remove the last node in a replica group".into(),
+            ));
         }
 
         node.status
     };
 
     if !force && node_status != miroir_core::topology::NodeStatus::Draining {
-        return Err((StatusCode::BAD_REQUEST, format!(
-            "Node {} is not in draining state (current: {:?}), use force=true to bypass",
-            node_id, node_status
-        ).into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Node {} is not in draining state (current: {:?}), use force=true to bypass",
+                node_id, node_status
+            )
+            .into(),
+        ));
     }
 
     // Remove node from topology
@@ -1378,23 +1457,37 @@ where
     let app_state = AppState::from_ref(&state);
 
     // Check if worker is available
-    let worker = app_state.rebalancer_worker.as_ref()
-        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Rebalancer worker not initialized".into()))?;
+    let worker = app_state.rebalancer_worker.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Rebalancer worker not initialized".into(),
+        )
+    })?;
 
     // Get node info and mark as draining
     let replica_group = {
         let mut topo = app_state.topology.write().await;
         let node_id_obj = NodeId::new(node_id.clone());
-        let node = topo.node(&node_id_obj)
+        let node = topo
+            .node(&node_id_obj)
             .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Node {} not found", node_id)))?;
 
         // Check if this is the last node in the group
-        let group = topo.groups()
+        let group = topo
+            .groups()
             .find(|g| g.id == node.replica_group)
-            .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, format!("Replica group {} not found", node.replica_group)))?;
+            .ok_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Replica group {} not found", node.replica_group),
+                )
+            })?;
 
         if group.nodes().len() <= 1 {
-            return Err((StatusCode::BAD_REQUEST, "Cannot remove the last node in a replica group".into()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Cannot remove the last node in a replica group".into(),
+            ));
         }
 
         let replica_group = node.replica_group;
@@ -1416,7 +1509,10 @@ where
 
     if let Err(e) = worker.event_sender().try_send(event) {
         error!(error = %e, node_id = %node_id, "failed to send NodeDraining event to rebalancer worker");
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to queue drain: {}", e)));
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to queue drain: {}", e),
+        ));
     }
 
     info!(node_id = %node_id, replica_group, "Node drain queued for rebalancing");
@@ -1441,14 +1537,19 @@ where
     let app_state = AppState::from_ref(&state);
 
     // Check if worker is available
-    let worker = app_state.rebalancer_worker.as_ref()
-        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Rebalancer worker not initialized".into()))?;
+    let worker = app_state.rebalancer_worker.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Rebalancer worker not initialized".into(),
+        )
+    })?;
 
     // Get node info and mark as failed
     let replica_group = {
         let mut topo = app_state.topology.write().await;
         let node_id_obj = NodeId::new(node_id.clone());
-        let node = topo.node(&node_id_obj)
+        let node = topo
+            .node(&node_id_obj)
             .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Node {} not found", node_id)))?;
 
         let replica_group = node.replica_group;
@@ -1470,7 +1571,10 @@ where
 
     if let Err(e) = worker.event_sender().try_send(event) {
         error!(error = %e, node_id = %node_id, "failed to send NodeFailed event to rebalancer worker");
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to queue node failure: {}", e)));
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to queue node failure: {}", e),
+        ));
     }
 
     info!(node_id = %node_id, replica_group, "Node failure queued for handling");
@@ -1495,14 +1599,19 @@ where
     let app_state = AppState::from_ref(&state);
 
     // Check if worker is available
-    let worker = app_state.rebalancer_worker.as_ref()
-        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Rebalancer worker not initialized".into()))?;
+    let worker = app_state.rebalancer_worker.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Rebalancer worker not initialized".into(),
+        )
+    })?;
 
     // Get node info and mark as recovered
     let replica_group = {
         let mut topo = app_state.topology.write().await;
         let node_id_obj = NodeId::new(node_id.clone());
-        let node = topo.node(&node_id_obj)
+        let node = topo
+            .node(&node_id_obj)
             .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Node {} not found", node_id)))?;
 
         let replica_group = node.replica_group;
@@ -1524,7 +1633,10 @@ where
 
     if let Err(e) = worker.event_sender().try_send(event) {
         error!(error = %e, node_id = %node_id, "failed to send NodeRecovered event to rebalancer worker");
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to queue node recovery: {}", e)));
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to queue node recovery: {}", e),
+        ));
     }
 
     info!(node_id = %node_id, replica_group, "Node recovery queued for handling");
@@ -1604,18 +1716,27 @@ where
 {
     let app_state = AppState::from_ref(&state);
 
-    let group_id = body.get("group_id")
+    let group_id = body
+        .get("group_id")
         .and_then(|v| v.as_u64())
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'group_id' field".into()))?
         as u32;
 
-    let nodes_array = body.get("nodes")
+    let nodes_array = body
+        .get("nodes")
         .and_then(|v| v.as_array())
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'nodes' field".into()))?;
 
     // Check if group addition coordinator is available
-    let coordinator = app_state.group_addition_coordinator.as_ref()
-        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Group addition coordinator not initialized".into()))?;
+    let coordinator = app_state
+        .group_addition_coordinator
+        .as_ref()
+        .ok_or_else(|| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Group addition coordinator not initialized".into(),
+            )
+        })?;
 
     // Get current topology to find healthy source groups
     let source_groups: Vec<u32> = {
@@ -1627,17 +1748,22 @@ where
     };
 
     if source_groups.is_empty() {
-        return Err((StatusCode::PRECONDITION_FAILED, "No active source groups available for sync".into()));
+        return Err((
+            StatusCode::PRECONDITION_FAILED,
+            "No active source groups available for sync".into(),
+        ));
     }
 
     // Add nodes to topology in initializing state
     for node_obj in nodes_array {
-        let id = node_obj.get("id")
+        let id = node_obj
+            .get("id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing node 'id'".into()))?
             .to_string();
 
-        let address = node_obj.get("address")
+        let address = node_obj
+            .get("address")
             .and_then(|v| v.as_str())
             .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing node 'address'".into()))?
             .to_string();
@@ -1660,12 +1786,22 @@ where
     };
 
     let mut coord = coordinator.write().await;
-    let addition_id = coord.begin_addition(group_id, shard_count, &source_groups)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to start group addition: {}", e)))?;
+    let addition_id = coord
+        .begin_addition(group_id, shard_count, &source_groups)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to start group addition: {}", e),
+            )
+        })?;
 
     // Start background sync
-    coord.begin_sync(addition_id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to start sync: {}", e)))?;
+    coord.begin_sync(addition_id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to start sync: {}", e),
+        )
+    })?;
 
     info!(group_id, addition_id = %addition_id, "Replica group addition started");
 
@@ -1689,15 +1825,29 @@ where
 {
     let app_state = AppState::from_ref(&state);
 
-    let coordinator = app_state.group_addition_coordinator.as_ref()
-        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Group addition coordinator not initialized".into()))?;
+    let coordinator = app_state
+        .group_addition_coordinator
+        .as_ref()
+        .ok_or_else(|| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Group addition coordinator not initialized".into(),
+            )
+        })?;
 
     let coord = coordinator.read().await;
 
     // Find the addition for this group
-    let addition = coord.get_all_additions().values()
+    let addition = coord
+        .get_all_additions()
+        .values()
         .find(|a| a.group_id == group_id)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("No active addition for group {}", group_id)))?;
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("No active addition for group {}", group_id),
+            )
+        })?;
 
     let progress = coord.sync_progress(addition.id).unwrap_or(0.0);
 
@@ -1746,23 +1896,50 @@ where
 {
     let app_state = AppState::from_ref(&state);
 
-    let coordinator = app_state.group_addition_coordinator.as_ref()
-        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Group addition coordinator not initialized".into()))?;
+    let coordinator = app_state
+        .group_addition_coordinator
+        .as_ref()
+        .ok_or_else(|| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Group addition coordinator not initialized".into(),
+            )
+        })?;
 
     // Find the addition for this group
     let addition_id = {
         let coord = coordinator.read().await;
-        coord.get_all_additions().values()
-            .find(|a| a.group_id == group_id && matches!(a.phase, miroir_core::group_addition::GroupAdditionPhase::SyncComplete))
+        coord
+            .get_all_additions()
+            .values()
+            .find(|a| {
+                a.group_id == group_id
+                    && matches!(
+                        a.phase,
+                        miroir_core::group_addition::GroupAdditionPhase::SyncComplete
+                    )
+            })
             .map(|a| a.id)
-            .ok_or_else(|| (StatusCode::PRECONDITION_FAILED, format!("Group {} is not ready for activation (sync not complete)", group_id)))?
+            .ok_or_else(|| {
+                (
+                    StatusCode::PRECONDITION_FAILED,
+                    format!(
+                        "Group {} is not ready for activation (sync not complete)",
+                        group_id
+                    ),
+                )
+            })?
     };
 
     // Mark group as active
     {
         let mut coord = coordinator.write().await;
-        coord.mark_group_active(addition_id)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to activate group: {}", e)))?;
+        coord.mark_group_active(addition_id).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to activate group: {}", e),
+            )
+        })?;
     }
 
     // Update topology to mark group as active
@@ -1794,12 +1971,14 @@ where
 {
     let app_state = AppState::from_ref(&state);
 
-    let rebalancer = app_state.rebalancer.as_ref()
-        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Rebalancer not initialized".into()))?;
+    let rebalancer = app_state.rebalancer.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Rebalancer not initialized".into(),
+        )
+    })?;
 
-    let force = body.get("force")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let force = body.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
 
     use miroir_core::rebalancer::RemoveReplicaGroupRequest;
     let request = RemoveReplicaGroupRequest { group_id, force };
@@ -1863,8 +2042,14 @@ mod tests {
     #[test]
     fn test_shards_response_serialization() {
         let mut shards = HashMap::new();
-        shards.insert("0".to_string(), vec!["node-0".to_string(), "node-1".to_string()]);
-        shards.insert("1".to_string(), vec!["node-1".to_string(), "node-0".to_string()]);
+        shards.insert(
+            "0".to_string(),
+            vec!["node-0".to_string(), "node-1".to_string()],
+        );
+        shards.insert(
+            "1".to_string(),
+            vec!["node-1".to_string(), "node-0".to_string()],
+        );
 
         let response = ShardsResponse { shards };
         let json = serde_json::to_string(&response).unwrap();

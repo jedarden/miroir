@@ -42,7 +42,12 @@ pub trait TaskStore: Send + Sync {
     fn prune_tasks(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize>;
 
     /// List terminal tasks older than `cutoff_ms` with pagination (Mode A support).
-    fn list_terminal_tasks_batch(&self, cutoff_ms: i64, offset: i64, limit: i64) -> Result<Vec<TaskRow>>;
+    fn list_terminal_tasks_batch(
+        &self,
+        cutoff_ms: i64,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Vec<TaskRow>>;
 
     /// Delete tasks by miroir_id in a batch (Mode A support).
     fn delete_tasks_batch(&self, miroir_ids: &[&str]) -> Result<usize>;

@@ -11,7 +11,7 @@
 //! }
 //! ```
 
-use miroir_core::api_error::{MiroirCode, MeilisearchError};
+use miroir_core::api_error::{MeilisearchError, MiroirCode};
 
 #[test]
 fn test_miroir_error_shape_matches_meilisearch() {
@@ -40,21 +40,39 @@ fn test_miroir_error_shape_matches_meilisearch() {
         let json = serde_json::to_value(&error).expect("Failed to serialize error");
 
         // Verify required fields exist
-        assert!(json.get("message").is_some(), "Error must have 'message' field");
+        assert!(
+            json.get("message").is_some(),
+            "Error must have 'message' field"
+        );
         assert!(json.get("code").is_some(), "Error must have 'code' field");
         assert!(json.get("type").is_some(), "Error must have 'type' field");
         assert!(json.get("link").is_some(), "Error must have 'link' field");
 
         // Verify field types
-        assert!(json.get("message").unwrap().is_string(), "'message' must be a string");
-        assert!(json.get("code").unwrap().is_string(), "'code' must be a string");
-        assert!(json.get("type").unwrap().is_string(), "'type' must be a string");
-        assert!(json.get("link").unwrap().is_string(), "'link' must be a string");
+        assert!(
+            json.get("message").unwrap().is_string(),
+            "'message' must be a string"
+        );
+        assert!(
+            json.get("code").unwrap().is_string(),
+            "'code' must be a string"
+        );
+        assert!(
+            json.get("type").unwrap().is_string(),
+            "'type' must be a string"
+        );
+        assert!(
+            json.get("link").unwrap().is_string(),
+            "'link' must be a string"
+        );
 
         // Verify type is one of the allowed values
         let error_type = json.get("type").unwrap().as_str().unwrap();
         assert!(
-            matches!(error_type, "invalid_request" | "auth" | "internal" | "system"),
+            matches!(
+                error_type,
+                "invalid_request" | "auth" | "internal" | "system"
+            ),
             "Error type must be one of: invalid_request, auth, internal, system"
         );
 
@@ -97,13 +115,23 @@ fn test_error_http_status_codes() {
     for (code, expected_status, expected_type) in test_cases {
         let _error = MeilisearchError::new(code, "test message");
 
-        assert_eq!(code.http_status(), expected_status,
+        assert_eq!(
+            code.http_status(),
+            expected_status,
             "HTTP status for {:?} should be {}, got {}",
-            code, expected_status, code.http_status());
+            code,
+            expected_status,
+            code.http_status()
+        );
 
-        assert_eq!(code.error_type().to_string(), expected_type,
+        assert_eq!(
+            code.error_type().to_string(),
+            expected_type,
             "Error type for {:?} should be {}, got {:?}",
-            code, expected_type, code.error_type());
+            code,
+            expected_type,
+            code.error_type()
+        );
     }
 }
 
@@ -138,7 +166,10 @@ fn test_forwarded_meilisearch_error_parsing() {
 
     let parsed = MeilisearchError::forwarded(meilisearch_error_json);
 
-    assert!(parsed.is_some(), "Should successfully parse Meilisearch error");
+    assert!(
+        parsed.is_some(),
+        "Should successfully parse Meilisearch error"
+    );
     let error = parsed.unwrap();
 
     assert_eq!(error.message, "Index not found");
@@ -152,7 +183,10 @@ fn test_invalid_json_is_not_parsed_as_meilisearch_error() {
 
     let parsed = MeilisearchError::forwarded(invalid_json);
 
-    assert!(parsed.is_none(), "Should not parse invalid JSON as Meilisearch error");
+    assert!(
+        parsed.is_none(),
+        "Should not parse invalid JSON as Meilisearch error"
+    );
 }
 
 #[test]
@@ -179,7 +213,13 @@ fn test_error_code_roundtrip() {
         let code_str = code.as_str();
         let parsed = MiroirCode::from_code_str(code_str);
 
-        assert_eq!(parsed, Some(code), "Code '{}' should roundtrip to {:?}", code_str, code);
+        assert_eq!(
+            parsed,
+            Some(code),
+            "Code '{}' should roundtrip to {:?}",
+            code_str,
+            code
+        );
     }
 }
 
@@ -226,7 +266,7 @@ fn test_miroir_shard_unavailable_error() {
 fn test_miroir_reserved_field_error() {
     let error = MeilisearchError::new(
         MiroirCode::ReservedField,
-        "field '_miroir_internal' is reserved"
+        "field '_miroir_internal' is reserved",
     );
 
     let json = serde_json::to_value(&error).unwrap();
@@ -295,7 +335,8 @@ fn test_all_miroir_codes_are_documented() {
         assert!(
             link.contains(&format!("#{}", code.as_str())),
             "Documentation link for {:?} should reference the error code: {}",
-            code, link
+            code,
+            link
         );
 
         // Verify link is a valid URL
@@ -340,7 +381,10 @@ fn test_error_type_classification() {
     ];
 
     for code in invalid_request_codes {
-        assert_eq!(code.error_type(), miroir_core::api_error::ErrorType::InvalidRequest);
+        assert_eq!(
+            code.error_type(),
+            miroir_core::api_error::ErrorType::InvalidRequest
+        );
         assert_eq!(code.error_type().to_string(), "invalid_request");
     }
 
@@ -391,9 +435,12 @@ fn test_http_status_matches_error_type() {
 
     for (code, expected_status) in client_error_codes {
         let status = code.http_status();
-        assert!(status >= 400 && status < 500,
+        assert!(
+            status >= 400 && status < 500,
             "Client error {:?} should have 4xx status, got {}",
-            code, status);
+            code,
+            status
+        );
         assert_eq!(status, expected_status);
     }
 
@@ -407,9 +454,12 @@ fn test_http_status_matches_error_type() {
 
     for (code, expected_status) in server_error_codes {
         let status = code.http_status();
-        assert!(status >= 500 && status < 600,
+        assert!(
+            status >= 500 && status < 600,
             "Server error {:?} should have 5xx status, got {}",
-            code, status);
+            code,
+            status
+        );
         assert_eq!(status, expected_status);
     }
 }

@@ -50,10 +50,7 @@ pub struct DriftReconciler {
 
 impl DriftReconciler {
     /// Create a new drift reconciler.
-    pub fn new(
-        config: DriftReconcilerConfig,
-        task_store: Arc<dyn TaskStore>,
-    ) -> Self {
+    pub fn new(config: DriftReconcilerConfig, task_store: Arc<dyn TaskStore>) -> Self {
         Self::with_metrics(config, task_store, None)
     }
 
@@ -130,8 +127,11 @@ impl DriftReconciler {
         let now = now_ms();
         let lease_ttl = now + (self.config.interval_s as i64 * 1000 * 2);
 
-        let _ = self.task_store
-            .renew_leader_lease(&self.config.leader_scope, &self.config.pod_id, lease_ttl);
+        let _ = self.task_store.renew_leader_lease(
+            &self.config.leader_scope,
+            &self.config.pod_id,
+            lease_ttl,
+        );
     }
 
     /// Check all nodes for drift and repair if configured.
@@ -184,11 +184,7 @@ impl DriftReconciler {
         }
 
         if total_mismatches > 0 {
-            info!(
-                total_mismatches,
-                total_repairs,
-                "drift check complete"
-            );
+            info!(total_mismatches, total_repairs, "drift check complete");
         }
 
         Ok(())
@@ -196,13 +192,20 @@ impl DriftReconciler {
 
     /// List all indexes from the first node.
     async fn list_indexes(&self) -> Result<Vec<String>> {
-        let first_address = self.config.node_addresses.first()
+        let first_address = self
+            .config
+            .node_addresses
+            .first()
             .ok_or_else(|| MiroirError::Topology("no nodes configured".into()))?;
 
         let url = format!("{}/indexes", first_address.trim_end_matches('/'));
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.config.node_master_key))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.node_master_key),
+            )
             .send()
             .await
             .map_err(|e| MiroirError::Task(format!("failed to list indexes: {}", e)))?;
@@ -214,16 +217,23 @@ impl DriftReconciler {
             )));
         }
 
-        let json: Value = response.json().await
+        let json: Value = response
+            .json()
+            .await
             .map_err(|e| MiroirError::Task(format!("failed to parse indexes: {}", e)))?;
 
-        let results = json.get("results")
+        let results = json
+            .get("results")
             .and_then(|v| v.as_array())
             .ok_or_else(|| MiroirError::Task("invalid indexes response".into()))?;
 
         Ok(results
             .iter()
-            .filter_map(|v| v.get("uid").and_then(|uid| uid.as_str()).map(|s| s.to_string()))
+            .filter_map(|v| {
+                v.get("uid")
+                    .and_then(|uid| uid.as_str())
+                    .map(|s| s.to_string())
+            })
             .collect())
     }
 
@@ -233,10 +243,18 @@ impl DriftReconciler {
 
         // Fetch settings from all nodes
         for (node_id, address) in self.node_addresses_with_ids() {
-            let url = format!("{}/indexes/{}/settings", address.trim_end_matches('/'), index);
-            match self.client
+            let url = format!(
+                "{}/indexes/{}/settings",
+                address.trim_end_matches('/'),
+                index
+            );
+            match self
+                .client
                 .get(&url)
-                .header("Authorization", format!("Bearer {}", self.config.node_master_key))
+                .header(
+                    "Authorization",
+                    format!("Bearer {}", self.config.node_master_key),
+                )
                 .send()
                 .await
             {
@@ -246,14 +264,17 @@ impl DriftReconciler {
                     }
                 }
                 Ok(resp) => {
-                    return Ok(DriftCheckResult::Error(
-                        MiroirError::Task(format!("node {} returned HTTP {}", node_id, resp.status()))
-                    ));
+                    return Ok(DriftCheckResult::Error(MiroirError::Task(format!(
+                        "node {} returned HTTP {}",
+                        node_id,
+                        resp.status()
+                    ))));
                 }
                 Err(e) => {
-                    return Ok(DriftCheckResult::Error(
-                        MiroirError::Task(format!("node {} request failed: {}", node_id, e))
-                    ));
+                    return Ok(DriftCheckResult::Error(MiroirError::Task(format!(
+                        "node {} request failed: {}",
+                        node_id, e
+                    ))));
                 }
             }
         }
@@ -270,7 +291,10 @@ impl DriftReconciler {
         }
 
         // Check for mismatches (compare all to first node's fingerprint)
-        let first_fp = &fingerprints.first().ok_or_else(|| MiroirError::Task("no fingerprints".into()))?.2;
+        let first_fp = &fingerprints
+            .first()
+            .ok_or_else(|| MiroirError::Task("no fingerprints".into()))?
+            .2;
         let mismatches: Vec<(String, String)> = fingerprints
             .iter()
             .filter(|(_, _, fp)| fp != first_fp)
@@ -285,18 +309,36 @@ impl DriftReconciler {
     }
 
     /// Repair settings on a drifted node by copying from the first node.
-    async fn repair_node_settings(&self, index: &str, drifted_address: &str, drifted_node_id: &str) -> Result<()> {
+    async fn repair_node_settings(
+        &self,
+        index: &str,
+        drifted_address: &str,
+        drifted_node_id: &str,
+    ) -> Result<()> {
         // Get correct settings from the first healthy node
-        let first_address = self.config.node_addresses.first()
+        let first_address = self
+            .config
+            .node_addresses
+            .first()
             .ok_or_else(|| MiroirError::Topology("no nodes configured".into()))?;
 
-        let url = format!("{}/indexes/{}/settings", first_address.trim_end_matches('/'), index);
-        let response = self.client
+        let url = format!(
+            "{}/indexes/{}/settings",
+            first_address.trim_end_matches('/'),
+            index
+        );
+        let response = self
+            .client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.config.node_master_key))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.node_master_key),
+            )
             .send()
             .await
-            .map_err(|e| MiroirError::Task(format!("failed to fetch settings for repair: {}", e)))?;
+            .map_err(|e| {
+                MiroirError::Task(format!("failed to fetch settings for repair: {}", e))
+            })?;
 
         if !response.status().is_success() {
             return Err(MiroirError::Task(format!(
@@ -305,14 +347,23 @@ impl DriftReconciler {
             )));
         }
 
-        let correct_settings: Value = response.json().await
-            .map_err(|e| MiroirError::Task(format!("failed to parse settings for repair: {}", e)))?;
+        let correct_settings: Value = response.json().await.map_err(|e| {
+            MiroirError::Task(format!("failed to parse settings for repair: {}", e))
+        })?;
 
         // PATCH the drifted node with correct settings
-        let patch_url = format!("{}/indexes/{}/settings", drifted_address.trim_end_matches('/'), index);
-        let patch_response = self.client
+        let patch_url = format!(
+            "{}/indexes/{}/settings",
+            drifted_address.trim_end_matches('/'),
+            index
+        );
+        let patch_response = self
+            .client
             .patch(&patch_url)
-            .header("Authorization", format!("Bearer {}", self.config.node_master_key))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.node_master_key),
+            )
             .json(&correct_settings)
             .send()
             .await
@@ -335,7 +386,8 @@ impl DriftReconciler {
 
     /// Get node addresses with their IDs.
     fn node_addresses_with_ids(&self) -> Vec<(String, String)> {
-        self.config.node_addresses
+        self.config
+            .node_addresses
             .iter()
             .enumerate()
             .map(|(i, addr)| (format!("node-{}", i), addr.clone()))

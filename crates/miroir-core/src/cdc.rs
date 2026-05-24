@@ -205,7 +205,10 @@ impl CdcManager {
     }
 
     /// Create a new CDC manager with an optional suppression metric callback.
-    pub fn with_metrics(config: CdcConfig, suppressed_metric_callback: Option<CdcSuppressedMetricCallback>) -> Self {
+    pub fn with_metrics(
+        config: CdcConfig,
+        suppressed_metric_callback: Option<CdcSuppressedMetricCallback>,
+    ) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let state = Arc::new(RwLock::new(CdcPublisherState {
             cursors: HashMap::new(),
@@ -261,7 +264,9 @@ impl CdcManager {
             }
         }
 
-        self.event_tx.send(event).map_err(|_| CdcError::ChannelClosed)?;
+        self.event_tx
+            .send(event)
+            .map_err(|_| CdcError::ChannelClosed)?;
         Ok(())
     }
 
@@ -284,7 +289,9 @@ impl CdcManager {
         while let Some(event) = event_rx.recv().await {
             // Buffer event for each sink
             for sink in &config.sinks {
-                let buffer = sink_buffers.entry(sink.url.clone()).or_insert_with(Vec::new);
+                let buffer = sink_buffers
+                    .entry(sink.url.clone())
+                    .or_insert_with(Vec::new);
                 buffer.push(event.clone());
 
                 // Flush if buffer size reached
@@ -331,10 +338,7 @@ impl CdcManager {
     }
 
     /// Flush events to a webhook sink.
-    async fn flush_webhook(
-        sink: &CdcSinkConfig,
-        events: &[CdcEvent],
-    ) -> Result<(), CdcError> {
+    async fn flush_webhook(sink: &CdcSinkConfig, events: &[CdcEvent]) -> Result<(), CdcError> {
         let client = reqwest::Client::new();
         let response = client
             .post(&sink.url)
@@ -352,20 +356,14 @@ impl CdcManager {
     }
 
     /// Flush events to a NATS sink.
-    async fn flush_nats(
-        _sink: &CdcSinkConfig,
-        _events: &[CdcEvent],
-    ) -> Result<(), CdcError> {
+    async fn flush_nats(_sink: &CdcSinkConfig, _events: &[CdcEvent]) -> Result<(), CdcError> {
         // NATS publishing implementation
         // (requires async-nats crate)
         Ok(())
     }
 
     /// Flush events to a Kafka sink.
-    async fn flush_kafka(
-        _sink: &CdcSinkConfig,
-        _events: &[CdcEvent],
-    ) -> Result<(), CdcError> {
+    async fn flush_kafka(_sink: &CdcSinkConfig, _events: &[CdcEvent]) -> Result<(), CdcError> {
         // Kafka publishing implementation
         // (requires rustafka or rdkafka crate)
         Ok(())
@@ -509,8 +507,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_cdc_suppression_metric_all_origins() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::collections::HashSet;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let suppressed_origins = Arc::new(std::sync::Mutex::new(HashSet::new()));
         let origins_clone = suppressed_origins.clone();

@@ -13,8 +13,7 @@ use miroir_core::api_error::{ErrorType, MeilisearchError, MiroirCode};
 use miroir_core::merger::ScoreMergeStrategy;
 use miroir_core::router::{shard_for_key, write_targets};
 use miroir_core::scatter::{
-    MockNodeClient, SearchRequest,
-    dfs_query_then_fetch_search, plan_search_scatter,
+    dfs_query_then_fetch_search, plan_search_scatter, MockNodeClient, SearchRequest,
 };
 use miroir_core::topology::{Node, NodeId, NodeStatus, Topology};
 use serde_json::{json, Value};
@@ -105,14 +104,22 @@ fn test_1000_docs_shard_assignment_coverage() {
     }
 
     // Every shard should have at least one document
-    assert_eq!(shard_counts.len(), shards as usize, "all shards should receive documents");
+    assert_eq!(
+        shard_counts.len(),
+        shards as usize,
+        "all shards should receive documents"
+    );
 
     // All write targets should be reachable
     for shard_id in 0..shards {
         let targets = write_targets(shard_id, &topo);
         assert_eq!(targets.len(), 3, "RF=3 means 3 write targets per shard");
         for node_id in &targets {
-            assert!(topo.node(node_id).is_some(), "target node {} should exist", node_id);
+            assert!(
+                topo.node(node_id).is_some(),
+                "target node {} should exist",
+                node_id
+            );
         }
     }
 
@@ -160,21 +167,27 @@ async fn test_unique_keyword_search_deduplication() {
         hits.push(doc2);
         *node_totals.entry(node_id.clone()).or_insert(0) += 2;
 
-        mock.preflight_responses.insert(node_id.clone(), miroir_core::scatter::PreflightResponse {
-            total_docs: 100,
-            avg_doc_length: 500.0,
-            term_stats: HashMap::new(),
-        });
+        mock.preflight_responses.insert(
+            node_id.clone(),
+            miroir_core::scatter::PreflightResponse {
+                total_docs: 100,
+                avg_doc_length: 500.0,
+                term_stats: HashMap::new(),
+            },
+        );
     }
 
     // Now build one response per node with all its accumulated docs
     for (node_id, hits) in node_hits {
         let total = node_totals.remove(&node_id).unwrap();
-        mock.responses.insert(node_id, json!({
-            "hits": hits,
-            "estimatedTotalHits": total,
-            "processingTimeMs": 5,
-        }));
+        mock.responses.insert(
+            node_id,
+            json!({
+                "hits": hits,
+                "estimatedTotalHits": total,
+                "processingTimeMs": 5,
+            }),
+        );
     }
 
     let strategy = ScoreMergeStrategy::new();
@@ -213,7 +226,11 @@ async fn test_unique_keyword_search_deduplication() {
     }
 
     // Should find all 8 docs (2 per shard × 4 shards)
-    assert_eq!(result.hits.len(), 8, "expected 8 unique hits across 4 shards");
+    assert_eq!(
+        result.hits.len(),
+        8,
+        "expected 8 unique hits across 4 shards"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -290,11 +307,14 @@ async fn test_paging_preserves_global_ordering() {
             "processingTimeMs": 2,
         });
         mock.responses.insert(node_id.clone(), response);
-        mock.preflight_responses.insert(node_id.clone(), miroir_core::scatter::PreflightResponse {
-            total_docs: 50,
-            avg_doc_length: 500.0,
-            term_stats: HashMap::new(),
-        });
+        mock.preflight_responses.insert(
+            node_id.clone(),
+            miroir_core::scatter::PreflightResponse {
+                total_docs: 50,
+                avg_doc_length: 500.0,
+                term_stats: HashMap::new(),
+            },
+        );
     }
 
     let strategy = ScoreMergeStrategy::new();
@@ -312,9 +332,15 @@ async fn test_paging_preserves_global_ordering() {
         global_idf: None,
     };
     let result1 = dfs_query_then_fetch_search(
-        plan1, &mock, req1, &topo,
-        miroir_core::config::UnavailableShardPolicy::Partial, &strategy,
-    ).await.unwrap();
+        plan1,
+        &mock,
+        req1,
+        &topo,
+        miroir_core::config::UnavailableShardPolicy::Partial,
+        &strategy,
+    )
+    .await
+    .unwrap();
 
     // Page 2: offset=5, limit=5 (different query_seq to get different covering set)
     let plan2 = plan_search_scatter(&topo, 1, 3, shards, None).await;
@@ -331,36 +357,55 @@ async fn test_paging_preserves_global_ordering() {
         global_idf: None,
     };
     let result2 = dfs_query_then_fetch_search(
-        plan2, &mock, req2, &topo,
-        miroir_core::config::UnavailableShardPolicy::Partial, &strategy,
-    ).await.unwrap();
+        plan2,
+        &mock,
+        req2,
+        &topo,
+        miroir_core::config::UnavailableShardPolicy::Partial,
+        &strategy,
+    )
+    .await
+    .unwrap();
 
     // Pages should not overlap
-    let page1_ids: std::collections::HashSet<String> = result1.hits.iter()
+    let page1_ids: std::collections::HashSet<String> = result1
+        .hits
+        .iter()
         .filter_map(|h| h["id"].as_str().map(|s| s.to_string()))
         .collect();
-    let page2_ids: std::collections::HashSet<String> = result2.hits.iter()
+    let page2_ids: std::collections::HashSet<String> = result2
+        .hits
+        .iter()
         .filter_map(|h| h["id"].as_str().map(|s| s.to_string()))
         .collect();
 
     let overlap: std::collections::HashSet<_> = page1_ids.intersection(&page2_ids).collect();
-    assert!(overlap.is_empty(), "pages should not overlap, but found: {:?}", overlap);
+    assert!(
+        overlap.is_empty(),
+        "pages should not overlap, but found: {:?}",
+        overlap
+    );
 
     // Combined should have 10 hits total (5 per page)
     assert_eq!(result1.hits.len(), 5, "page 1 should have 5 hits");
     assert_eq!(result2.hits.len(), 5, "page 2 should have 5 hits");
 
     // Verify global ordering: page 1 scores >= page 2 scores
-    let page1_max_score = result1.hits.last()
+    let page1_max_score = result1
+        .hits
+        .last()
         .and_then(|h| h["_rankingScore"].as_f64())
         .unwrap_or(0.0);
-    let page2_min_score = result2.hits.first()
+    let page2_min_score = result2
+        .hits
+        .first()
         .and_then(|h| h["_rankingScore"].as_f64())
         .unwrap_or(1.0);
     assert!(
         page1_max_score >= page2_min_score,
         "page 1 min score ({}) should be >= page 2 max score ({})",
-        page1_max_score, page2_min_score
+        page1_max_score,
+        page2_min_score
     );
 }
 
@@ -393,12 +438,19 @@ fn test_degraded_write_one_group_down() {
     // For each shard, verify at least one group can still accept writes
     for shard_id in 0..shards {
         let targets = write_targets(shard_id, &topo);
-        let group0_targets: Vec<_> = targets.iter()
+        let group0_targets: Vec<_> = targets
+            .iter()
             .filter(|node_id| {
-                topo.node(node_id).map(|n| n.replica_group == 0).unwrap_or(false)
+                topo.node(node_id)
+                    .map(|n| n.replica_group == 0)
+                    .unwrap_or(false)
             })
             .collect();
-        assert!(!group0_targets.is_empty(), "shard {} should have group 0 targets", shard_id);
+        assert!(
+            !group0_targets.is_empty(),
+            "shard {} should have group 0 targets",
+            shard_id
+        );
     }
 }
 
@@ -423,8 +475,8 @@ fn test_quorum_logic_group_down() {
     assert!(group1_acks < quorum_per_group, "group 1 missed quorum");
 
     // At least one group met quorum → write should succeed
-    let quorum_groups = (group0_acks >= quorum_per_group) as usize
-        + (group1_acks >= quorum_per_group) as usize;
+    let quorum_groups =
+        (group0_acks >= quorum_per_group) as usize + (group1_acks >= quorum_per_group) as usize;
     assert!(quorum_groups >= 1, "at least one group met quorum");
 
     // Degraded header should be set because group 1 missed quorum
@@ -446,7 +498,11 @@ fn test_error_shape_byte_for_byte_parity() {
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         // Must have all four fields
-        assert!(parsed.get("message").is_some(), "{:?}: missing message", code);
+        assert!(
+            parsed.get("message").is_some(),
+            "{:?}: missing message",
+            code
+        );
         assert!(parsed.get("code").is_some(), "{:?}: missing code", code);
         assert!(parsed.get("type").is_some(), "{:?}: missing type", code);
         assert!(parsed.get("link").is_some(), "{:?}: missing link", code);
@@ -456,7 +512,8 @@ fn test_error_shape_byte_for_byte_parity() {
         assert!(
             code_str.starts_with("miroir_"),
             "{:?}: code '{}' should start with miroir_",
-            code, code_str
+            code,
+            code_str
         );
 
         // Type must be a valid Meilisearch error type
@@ -464,7 +521,8 @@ fn test_error_shape_byte_for_byte_parity() {
         assert!(
             ["invalid_request", "auth", "internal", "system"].contains(&type_str),
             "{:?}: type '{}' is not a valid Meilisearch error type",
-            code, type_str
+            code,
+            type_str
         );
 
         // Link must be a string pointing to docs
@@ -472,7 +530,8 @@ fn test_error_shape_byte_for_byte_parity() {
         assert!(
             link_str.contains("docs/errors.md"),
             "{:?}: link '{}' should point to error docs",
-            code, link_str
+            code,
+            link_str
         );
     }
 }
@@ -564,11 +623,23 @@ fn test_topology_response_shape() {
 
     // Plan §10 required fields
     assert!(parsed.get("shards").is_some(), "missing shards");
-    assert!(parsed.get("replication_factor").is_some(), "missing replication_factor");
+    assert!(
+        parsed.get("replication_factor").is_some(),
+        "missing replication_factor"
+    );
     assert!(parsed.get("nodes").is_some(), "missing nodes");
-    assert!(parsed.get("degraded_node_count").is_some(), "missing degraded_node_count");
-    assert!(parsed.get("rebalance_in_progress").is_some(), "missing rebalance_in_progress");
-    assert!(parsed.get("fully_covered").is_some(), "missing fully_covered");
+    assert!(
+        parsed.get("degraded_node_count").is_some(),
+        "missing degraded_node_count"
+    );
+    assert!(
+        parsed.get("rebalance_in_progress").is_some(),
+        "missing rebalance_in_progress"
+    );
+    assert!(
+        parsed.get("fully_covered").is_some(),
+        "missing fully_covered"
+    );
 
     // Validate types
     assert!(parsed["shards"].is_number());
@@ -584,8 +655,14 @@ fn test_topology_response_shape() {
     for node in nodes {
         assert!(node.get("id").is_some(), "node missing id");
         assert!(node.get("status").is_some(), "node missing status");
-        assert!(node.get("shard_count").is_some(), "node missing shard_count");
-        assert!(node.get("last_seen_ms").is_some(), "node missing last_seen_ms");
+        assert!(
+            node.get("shard_count").is_some(),
+            "node missing shard_count"
+        );
+        assert!(
+            node.get("last_seen_ms").is_some(),
+            "node missing last_seen_ms"
+        );
     }
 
     // Second node should have error field
@@ -610,8 +687,14 @@ fn test_search_response_strips_internal_fields() {
         "_rankingScore": 0.95,
     });
     strip_internal_fields(&mut hit, false);
-    assert!(hit.get("_miroir_shard").is_none(), "_miroir_shard should be stripped");
-    assert!(hit.get("_rankingScore").is_none(), "_rankingScore should be stripped when not requested");
+    assert!(
+        hit.get("_miroir_shard").is_none(),
+        "_miroir_shard should be stripped"
+    );
+    assert!(
+        hit.get("_rankingScore").is_none(),
+        "_rankingScore should be stripped when not requested"
+    );
 
     // Case 2: client requested ranking score
     let mut hit2 = json!({
@@ -621,8 +704,14 @@ fn test_search_response_strips_internal_fields() {
         "_rankingScore": 0.88,
     });
     strip_internal_fields(&mut hit2, true);
-    assert!(hit2.get("_miroir_shard").is_none(), "_miroir_shard should always be stripped");
-    assert!(hit2.get("_rankingScore").is_some(), "_rankingScore should be kept when requested");
+    assert!(
+        hit2.get("_miroir_shard").is_none(),
+        "_miroir_shard should always be stripped"
+    );
+    assert!(
+        hit2.get("_rankingScore").is_some(),
+        "_rankingScore should be kept when requested"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -648,7 +737,10 @@ fn test_reserved_field_rejection() {
 
 #[test]
 fn test_auth_error_shapes_match_meilisearch() {
-    let err = MeilisearchError::new(MiroirCode::InvalidAuth, "The provided authorization is invalid.");
+    let err = MeilisearchError::new(
+        MiroirCode::InvalidAuth,
+        "The provided authorization is invalid.",
+    );
     assert_eq!(err.http_status(), 401);
     let json: serde_json::Value = serde_json::to_value(&err).unwrap();
     assert_eq!(json["type"], "auth");

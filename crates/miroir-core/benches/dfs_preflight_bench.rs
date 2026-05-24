@@ -10,13 +10,13 @@
 //! - Varying shard counts: measure how preflight scales with cluster size
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use miroir_core::config::UnavailableShardPolicy;
 use miroir_core::merger::ScoreMergeStrategy;
 use miroir_core::scatter::{
-    execute_preflight, dfs_query_then_fetch_search, plan_search_scatter,
-    PreflightRequest, PreflightResponse, SearchRequest, TermStats, GlobalIdf, MockNodeClient,
+    dfs_query_then_fetch_search, execute_preflight, plan_search_scatter, GlobalIdf, MockNodeClient,
+    PreflightRequest, PreflightResponse, SearchRequest, TermStats,
 };
 use miroir_core::topology::{Node, NodeId, Topology};
-use miroir_core::config::UnavailableShardPolicy;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -41,7 +41,11 @@ fn make_test_topology(shards: u32, replica_groups: u32, replication_factor: usiz
 }
 
 /// Create a preflight response simulating term statistics.
-fn make_preflight_response(total_docs: u64, avg_doc_length: f64, term_df: u64) -> PreflightResponse {
+fn make_preflight_response(
+    total_docs: u64,
+    avg_doc_length: f64,
+    term_df: u64,
+) -> PreflightResponse {
     let mut term_stats = HashMap::new();
     term_stats.insert("rust".to_string(), TermStats { df: term_df });
     term_stats.insert("programming".to_string(), TermStats { df: term_df / 2 });
@@ -71,11 +75,15 @@ fn bench_global_idf_aggregation(c: &mut Criterion) {
             })
             .collect();
 
-        group.bench_with_input(BenchmarkId::from_parameter(shard_count), shard_count, |b, _| {
-            b.iter(|| {
-                black_box(GlobalIdf::from_preflight_responses(black_box(&responses)));
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(shard_count),
+            shard_count,
+            |b, _| {
+                b.iter(|| {
+                    black_box(GlobalIdf::from_preflight_responses(black_box(&responses)));
+                });
+            },
+        );
     }
     group.finish();
 }
@@ -110,15 +118,19 @@ fn bench_preflight_phase(c: &mut Criterion) {
         };
 
         // Measure the aggregation cost (actual network is mocked)
-        group.bench_with_input(BenchmarkId::from_parameter(shard_count), shard_count, |b, _| {
-            b.iter(|| {
-                // Simulate receiving responses
-                let responses: Vec<PreflightResponse> = (0..*shard_count)
-                    .map(|_| make_preflight_response(1000, 500.0, 100))
-                    .collect();
-                black_box(GlobalIdf::from_preflight_responses(&responses));
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(shard_count),
+            shard_count,
+            |b, _| {
+                b.iter(|| {
+                    // Simulate receiving responses
+                    let responses: Vec<PreflightResponse> = (0..*shard_count)
+                        .map(|_| make_preflight_response(1000, 500.0, 100))
+                        .collect();
+                    black_box(GlobalIdf::from_preflight_responses(&responses));
+                });
+            },
+        );
     }
     group.finish();
 }
@@ -191,9 +203,7 @@ fn bench_varying_term_counts(c: &mut Criterion) {
     let mut group = c.benchmark_group("varying_term_counts");
 
     for term_count in [1, 3, 5, 10, 20].iter() {
-        let terms: Vec<String> = (0..*term_count)
-            .map(|i| format!("term{}", i))
-            .collect();
+        let terms: Vec<String> = (0..*term_count).map(|i| format!("term{}", i)).collect();
 
         // Simulate responses with term_count terms each
         let responses: Vec<PreflightResponse> = (0..3)
@@ -210,11 +220,15 @@ fn bench_varying_term_counts(c: &mut Criterion) {
             })
             .collect();
 
-        group.bench_with_input(BenchmarkId::from_parameter(term_count), term_count, |b, _| {
-            b.iter(|| {
-                black_box(GlobalIdf::from_preflight_responses(black_box(&responses)));
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(term_count),
+            term_count,
+            |b, _| {
+                b.iter(|| {
+                    black_box(GlobalIdf::from_preflight_responses(black_box(&responses)));
+                });
+            },
+        );
     }
     group.finish();
 }
@@ -235,11 +249,17 @@ fn bench_query_term_extraction(c: &mut Criterion) {
 
     for query in queries {
         let word_count = query.split_whitespace().count();
-        group.bench_with_input(BenchmarkId::from_parameter(word_count), &word_count, |b, _| {
-            b.iter(|| {
-                black_box(miroir_core::scatter::extract_query_terms(&Some(query.to_string())));
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(word_count),
+            &word_count,
+            |b, _| {
+                b.iter(|| {
+                    black_box(miroir_core::scatter::extract_query_terms(&Some(
+                        query.to_string(),
+                    )));
+                });
+            },
+        );
     }
     group.finish();
 }

@@ -65,7 +65,11 @@ pub struct RotateJwtSecretArgs {
     yes: bool,
 }
 
-pub async fn run(cmd: UiSubcommand, _admin_key: &str, _api_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(
+    cmd: UiSubcommand,
+    _admin_key: &str,
+    _api_url: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let _ = (_admin_key, _api_url);
     match cmd {
         UiSubcommand::Launch { .. } => {
@@ -84,8 +88,7 @@ async fn rotate_jwt_secret(args: RotateJwtSecretArgs) -> Result<(), Box<dyn std:
     );
 
     // Step 2: Read current primary from K8s Secret
-    let current_secret =
-        read_secret_key(&args.namespace, &args.secret_name, &args.primary_key)?;
+    let current_secret = read_secret_key(&args.namespace, &args.secret_name, &args.primary_key)?;
 
     if current_secret.is_empty() {
         return Err(format!(
@@ -117,8 +120,18 @@ async fn rotate_jwt_secret(args: RotateJwtSecretArgs) -> Result<(), Box<dyn std:
 
     // Step 2: Set PREVIOUS = current primary, PRIMARY = new
     eprintln!("\nStep 2/5: Updating K8s Secret...");
-    patch_secret_key(&args.namespace, &args.secret_name, &args.previous_key, &current_secret)?;
-    patch_secret_key(&args.namespace, &args.secret_name, &args.primary_key, &new_secret)?;
+    patch_secret_key(
+        &args.namespace,
+        &args.secret_name,
+        &args.previous_key,
+        &current_secret,
+    )?;
+    patch_secret_key(
+        &args.namespace,
+        &args.secret_name,
+        &args.primary_key,
+        &new_secret,
+    )?;
     eprintln!("  Set {} = current primary (overlap)", args.previous_key);
     eprintln!("  Set {} = new secret", args.primary_key);
 
@@ -137,7 +150,10 @@ async fn rotate_jwt_secret(args: RotateJwtSecretArgs) -> Result<(), Box<dyn std:
     tokio::time::sleep(std::time::Duration::from_secs(wait_s)).await;
 
     // Step 5: Remove PREVIOUS and rolling restart
-    eprintln!("\nStep 5/5: Clearing {} and restarting...", args.previous_key);
+    eprintln!(
+        "\nStep 5/5: Clearing {} and restarting...",
+        args.previous_key
+    );
     remove_secret_key(&args.namespace, &args.secret_name, &args.previous_key)?;
     rollout_restart(&args.namespace, &args.deployment_name)?;
     eprintln!("  Waiting for rollout to complete...");
@@ -200,10 +216,7 @@ fn patch_secret_key(
     key: &str,
     value: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let patch = format!(
-        "{{\"stringData\":{{\"{}\":\"{}\"}}}}",
-        key, value
-    );
+    let patch = format!("{{\"stringData\":{{\"{}\":\"{}\"}}}}", key, value);
     let output = Command::new("kubectl")
         .args([
             "patch",
@@ -256,7 +269,14 @@ fn remove_secret_key(
 
 fn rollout_restart(namespace: &str, deployment: &str) -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new("kubectl")
-        .args(["rollout", "restart", "deployment", deployment, "-n", namespace])
+        .args([
+            "rollout",
+            "restart",
+            "deployment",
+            deployment,
+            "-n",
+            namespace,
+        ])
         .output()?;
     if !output.status.success() {
         return Err(format!(

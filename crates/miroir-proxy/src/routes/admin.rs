@@ -2,12 +2,12 @@
 //!
 //! This router requires `admin_endpoints::AppState` to be provided via `.with_state()`.
 
+use super::{admin_endpoints, aliases, canary, explain, session};
 use axum::{
     extract::FromRef,
     routing::{delete, get, post, put},
     Router,
 };
-use super::{admin_endpoints, aliases, canary, explain, session};
 
 /// Create the admin router with all /_miroir/* endpoints.
 ///
@@ -55,18 +55,36 @@ where
         .route("/canaries/{id}", delete(canary::delete_canary::<S>))
         .route("/canaries/capture", post(canary::start_capture::<S>))
         .route("/canaries/captured", get(canary::get_captured::<S>))
-        .route("/canaries/from-capture/{index}", post(canary::create_from_capture::<S>))
+        .route(
+            "/canaries/from-capture/{index}",
+            post(canary::create_from_capture::<S>),
+        )
         // Explain endpoint (plan §13.20)
-        .route("/indexes/{index}/explain", post(explain::explain_search::<S>))
+        .route(
+            "/indexes/{index}/explain",
+            post(explain::explain_search::<S>),
+        )
         // Node management (plan §2 node addition flow)
         .route("/nodes", post(admin_endpoints::add_node::<S>))
         .route("/nodes/{id}", delete(admin_endpoints::remove_node::<S>))
         .route("/nodes/{id}/drain", post(admin_endpoints::drain_node::<S>))
         .route("/nodes/{id}/fail", post(admin_endpoints::fail_node::<S>))
-        .route("/nodes/{id}/recover", post(admin_endpoints::recover_node::<S>))
+        .route(
+            "/nodes/{id}/recover",
+            post(admin_endpoints::recover_node::<S>),
+        )
         // Rebalancer status
-        .route("/rebalance/status", get(admin_endpoints::get_rebalance_status::<S>))
+        .route(
+            "/rebalance/status",
+            get(admin_endpoints::get_rebalance_status::<S>),
+        )
         // Replica group management
-        .route("/replica_groups", post(admin_endpoints::add_replica_group::<S>))
-        .route("/replica_groups/{id}", delete(admin_endpoints::remove_replica_group::<S>))
+        .route(
+            "/replica_groups",
+            post(admin_endpoints::add_replica_group::<S>),
+        )
+        .route(
+            "/replica_groups/{id}",
+            delete(admin_endpoints::remove_replica_group::<S>),
+        )
 }

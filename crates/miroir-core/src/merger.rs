@@ -5,8 +5,8 @@
 
 use crate::Result;
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 /// Input to the merge operation.
 #[derive(Debug, Clone)]
@@ -212,7 +212,8 @@ fn rrf_merge(k: &u32, input: MergeInput) -> Result<MergedSearchResult> {
 
     // Collect all hits with their ranks from all shards.
     // Use a map to aggregate RRF scores for documents appearing in multiple shards.
-    let mut rrf_map: std::collections::HashMap<String, RRFDocument> = std::collections::HashMap::new();
+    let mut rrf_map: std::collections::HashMap<String, RRFDocument> =
+        std::collections::HashMap::new();
 
     for shard_page in &input.shard_hits {
         let body = &shard_page.body;
@@ -282,11 +283,7 @@ fn rrf_merge(k: &u32, input: MergeInput) -> Result<MergedSearchResult> {
     // Apply offset + limit.
     let skip = input.offset;
     let take = input.limit;
-    let paginated_hits: Vec<_> = merged_docs
-        .into_iter()
-        .skip(skip)
-        .take(take)
-        .collect();
+    let paginated_hits: Vec<_> = merged_docs.into_iter().skip(skip).take(take).collect();
 
     // Strip reserved fields and rebuild hits.
     let mut hits = Vec::with_capacity(paginated_hits.len());
@@ -416,19 +413,23 @@ fn score_merge(input: MergeInput) -> Result<MergedSearchResult> {
 
     // Sort by score descending, then by primary key ascending for tie-breaking.
     all_hits.sort_by(|a, b| {
-        let score_a = a.get("_rankingScore")
+        let score_a = a
+            .get("_rankingScore")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
-        let score_b = b.get("_rankingScore")
+        let score_b = b
+            .get("_rankingScore")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
 
         // Extract primary keys for tie-breaking.
-        let pk_a = a.get("id")
+        let pk_a = a
+            .get("id")
             .or_else(|| a.get("pk"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let pk_b = b.get("id")
+        let pk_b = b
+            .get("id")
             .or_else(|| b.get("pk"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
@@ -551,7 +552,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let strategy = RrfStrategy::default_strategy();
@@ -559,7 +560,10 @@ mod tests {
         let via_free = merge(input).unwrap();
 
         assert_eq!(via_trait.hits, via_free.hits);
-        assert_eq!(via_trait.estimated_total_hits, via_free.estimated_total_hits);
+        assert_eq!(
+            via_trait.estimated_total_hits,
+            via_free.estimated_total_hits
+        );
     }
 
     #[test]
@@ -577,7 +581,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let strategy_k1 = RrfStrategy::new(1);
@@ -589,16 +593,12 @@ mod tests {
     #[test]
     fn test_merge_with_strategy_dispatches() {
         let input = MergeInput {
-            shard_hits: vec![make_shard_response(
-                vec![make_hit("doc1", 0.9, 0)],
-                50,
-                10,
-            )],
+            shard_hits: vec![make_shard_response(vec![make_hit("doc1", 0.9, 0)], 50, 10)],
             offset: 0,
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let strategy = RrfStrategy::default_strategy();
@@ -655,10 +655,7 @@ mod tests {
     fn test_merge_basic() {
         let input = MergeInput {
             shard_hits: vec![make_shard_response(
-                vec![
-                    make_hit("doc1", 0.9, 0),
-                    make_hit("doc2", 0.7, 0),
-                ],
+                vec![make_hit("doc1", 0.9, 0), make_hit("doc2", 0.7, 0)],
                 100,
                 15,
             )],
@@ -666,7 +663,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -694,7 +691,7 @@ mod tests {
             limit: 10,
             client_requested_score: true,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -748,7 +745,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -796,7 +793,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -825,7 +822,7 @@ mod tests {
             limit: 2,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -839,16 +836,12 @@ mod tests {
         // RRF doesn't use scores for ranking, but we still preserve
         // the original score field when requested.
         let input = MergeInput {
-            shard_hits: vec![make_shard_response(
-                vec![make_hit("doc1", 0.9, 0)],
-                50,
-                10,
-            )],
+            shard_hits: vec![make_shard_response(vec![make_hit("doc1", 0.9, 0)], 50, 10)],
             offset: 0,
             limit: 10,
             client_requested_score: true,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -880,7 +873,7 @@ mod tests {
         let shard2_hits = vec![
             make_hit("filler", 0.5, 2),
             make_hit("filler2", 0.5, 2),
-            make_hit("doc3", 1.0, 2),  // Highest score, but rank 2
+            make_hit("doc3", 1.0, 2), // Highest score, but rank 2
         ];
 
         let input = MergeInput {
@@ -893,7 +886,7 @@ mod tests {
             limit: 10,
             client_requested_score: true,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -927,7 +920,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -985,7 +978,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -1045,7 +1038,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -1064,7 +1057,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -1082,7 +1075,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -1110,7 +1103,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = merge(input).unwrap();
@@ -1147,7 +1140,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result1 = merge(input.clone()).unwrap();
@@ -1169,7 +1162,11 @@ mod tests {
         // Test that pages of 10 reconstruct a single limit=50 result.
         let mut all_hits = Vec::new();
         for i in 0..50 {
-            all_hits.push(make_hit(&format!("doc{:02}", i), (50 - i) as f64 / 100.0, 0));
+            all_hits.push(make_hit(
+                &format!("doc{:02}", i),
+                (50 - i) as f64 / 100.0,
+                0,
+            ));
         }
 
         let input = MergeInput {
@@ -1178,7 +1175,7 @@ mod tests {
             limit: 50,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let full_result = merge(input.clone()).unwrap();
@@ -1192,7 +1189,7 @@ mod tests {
                 limit: 10,
                 client_requested_score: false,
                 facets: None,
-        failed_shards: Vec::new(),
+                failed_shards: Vec::new(),
             };
             let page_result = merge(page_input).unwrap();
 
@@ -1247,11 +1244,15 @@ mod tests {
                 limit: 20,
                 client_requested_score: false,
                 facets: None,
-        failed_shards: Vec::new(),
+                failed_shards: Vec::new(),
             })
             .unwrap();
 
-        let ids: Vec<_> = result.hits.iter().filter_map(|h| h.get("id").and_then(|v| v.as_str())).collect();
+        let ids: Vec<_> = result
+            .hits
+            .iter()
+            .filter_map(|h| h.get("id").and_then(|v| v.as_str()))
+            .collect();
         let rep_pos = ids.iter().position(|&id| id == "doc-replicated").unwrap();
         let single_pos = ids.iter().position(|&id| id == "doc-single").unwrap();
         assert!(
@@ -1296,14 +1297,18 @@ mod tests {
                 limit: 10,
                 client_requested_score: false,
                 facets: None,
-        failed_shards: Vec::new(),
+                failed_shards: Vec::new(),
             })
             .unwrap();
 
         // All at rank 0 or 1 — tie-break alphabetically within each rank tier.
         // rank 0: a1, b1 → sort by id → a1, b1
         // rank 1: a2, b2 → sort by id → a2, b2
-        let ids: Vec<_> = result.hits.iter().filter_map(|h| h.get("id").and_then(|v| v.as_str())).collect();
+        let ids: Vec<_> = result
+            .hits
+            .iter()
+            .filter_map(|h| h.get("id").and_then(|v| v.as_str()))
+            .collect();
         assert_eq!(ids, vec!["a1", "b1", "a2", "b2"]);
     }
 
@@ -1311,7 +1316,9 @@ mod tests {
     fn test_rrf_deterministic_with_same_input() {
         // RRF merge is a pure function: same input always produces same output.
         let shard = make_shard_response(
-            (0..100).map(|i| make_hit(&format!("doc{}", i), (100 - i) as f64 / 100.0, 0)).collect(),
+            (0..100)
+                .map(|i| make_hit(&format!("doc{}", i), (100 - i) as f64 / 100.0, 0))
+                .collect(),
             1000,
             10,
         );
@@ -1321,7 +1328,7 @@ mod tests {
             limit: 50,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let strategy = RrfStrategy::default_strategy();
@@ -1356,7 +1363,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
         let result = merge(input).unwrap();
         assert_eq!(result.hits.len(), 1);
@@ -1423,10 +1430,7 @@ mod tests {
         let strategy = ScoreMergeStrategy::new();
         let input = MergeInput {
             shard_hits: vec![make_shard_response(
-                vec![
-                    make_hit("doc1", 0.9, 0),
-                    make_hit("doc2", 0.7, 0),
-                ],
+                vec![make_hit("doc1", 0.9, 0), make_hit("doc2", 0.7, 0)],
                 100,
                 15,
             )],
@@ -1434,7 +1438,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1454,10 +1458,7 @@ mod tests {
             shard_hits: vec![
                 // Shard 0: low scores
                 make_shard_response(
-                    vec![
-                        make_hit("doc-low-1", 0.3, 0),
-                        make_hit("doc-low-2", 0.2, 0),
-                    ],
+                    vec![make_hit("doc-low-1", 0.3, 0), make_hit("doc-low-2", 0.2, 0)],
                     50,
                     10,
                 ),
@@ -1475,7 +1476,7 @@ mod tests {
             limit: 10,
             client_requested_score: true,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1493,21 +1494,16 @@ mod tests {
         // Test deterministic tie-breaking on primary key when scores are equal.
         let strategy = ScoreMergeStrategy::new();
         let input = MergeInput {
-            shard_hits: vec![
-                make_shard_response(
-                    vec![
-                        make_hit("zebra", 0.5, 0),
-                        make_hit("apple", 0.5, 0),
-                    ],
-                    50,
-                    10,
-                ),
-            ],
+            shard_hits: vec![make_shard_response(
+                vec![make_hit("zebra", 0.5, 0), make_hit("apple", 0.5, 0)],
+                50,
+                10,
+            )],
             offset: 0,
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1535,7 +1531,7 @@ mod tests {
             limit: 2,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1548,16 +1544,12 @@ mod tests {
     fn test_score_merge_preserves_score_when_requested() {
         let strategy = ScoreMergeStrategy::new();
         let input = MergeInput {
-            shard_hits: vec![make_shard_response(
-                vec![make_hit("doc1", 0.9, 0)],
-                50,
-                10,
-            )],
+            shard_hits: vec![make_shard_response(vec![make_hit("doc1", 0.9, 0)], 50, 10)],
             offset: 0,
             limit: 10,
             client_requested_score: true,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1571,16 +1563,12 @@ mod tests {
     fn test_score_merge_strips_score_when_not_requested() {
         let strategy = ScoreMergeStrategy::new();
         let input = MergeInput {
-            shard_hits: vec![make_shard_response(
-                vec![make_hit("doc1", 0.9, 0)],
-                50,
-                10,
-            )],
+            shard_hits: vec![make_shard_response(vec![make_hit("doc1", 0.9, 0)], 50, 10)],
             offset: 0,
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1652,7 +1640,7 @@ mod tests {
             limit: 10,
             client_requested_score: true,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1718,7 +1706,7 @@ mod tests {
             limit: 10,
             client_requested_score: true,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1749,7 +1737,7 @@ mod tests {
             limit: 10,
             client_requested_score: false,
             facets: None,
-        failed_shards: Vec::new(),
+            failed_shards: Vec::new(),
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1783,11 +1771,11 @@ mod tests {
         // It has the highest score and appears in the shard with 93% of docs.
         let shard_dominant = make_shard_response(
             vec![
-                make_hit("doc-best", 0.95, 0),      // True global #1
-                make_hit("doc-good", 0.90, 0),       // True global #2
-                make_hit("doc-ok", 0.85, 0),         // True global #3
-                make_hit("doc-mediocre", 0.70, 0),   // True global #4
-                make_hit("doc-weak", 0.60, 0),       // True global #5
+                make_hit("doc-best", 0.95, 0),     // True global #1
+                make_hit("doc-good", 0.90, 0),     // True global #2
+                make_hit("doc-ok", 0.85, 0),       // True global #3
+                make_hit("doc-mediocre", 0.70, 0), // True global #4
+                make_hit("doc-weak", 0.60, 0),     // True global #5
             ],
             93_000,
             10,
@@ -1812,7 +1800,7 @@ mod tests {
                 limit: 10,
                 client_requested_score: true,
                 facets: None,
-        failed_shards: Vec::new(),
+                failed_shards: Vec::new(),
             })
             .unwrap();
 
@@ -1832,7 +1820,7 @@ mod tests {
         //
         // But doc-irrelevant still ranks above doc-good, doc-ok, doc-mediocre,
         // and doc-weak — all of which are more relevant globally.
-        assert_eq!(ids[0], "doc-best");      // Tie-break win (alphabetical)
+        assert_eq!(ids[0], "doc-best"); // Tie-break win (alphabetical)
         assert_eq!(ids[1], "doc-irrelevant"); // Tie-break loss, but still rank 2!
 
         // doc-irrelevant (globally irrelevant) ranks ABOVE doc-good (global #2)
@@ -1932,7 +1920,11 @@ mod tests {
 
         // Ground truth: global sort by score descending
         all_docs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let ground_truth: Vec<String> = all_docs.iter().take(100).map(|(id, _)| id.clone()).collect();
+        let ground_truth: Vec<String> = all_docs
+            .iter()
+            .take(100)
+            .map(|(id, _)| id.clone())
+            .collect();
 
         // Per-shard: sort locally (simulates local BM25 with local IDF)
         for docs in &mut shard_docs {
@@ -1971,7 +1963,7 @@ mod tests {
                 limit: 100,
                 client_requested_score: true,
                 facets: None,
-        failed_shards: Vec::new(),
+                failed_shards: Vec::new(),
             })
             .unwrap();
 
@@ -1995,7 +1987,9 @@ mod tests {
     fn simple_rng(seed: u64) -> impl FnMut() -> f64 {
         let mut state = seed;
         move || {
-            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
             (state >> 33) as f64 / (1u64 << 31) as f64
         }
     }

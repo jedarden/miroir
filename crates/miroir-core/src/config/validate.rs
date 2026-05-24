@@ -194,7 +194,8 @@ pub fn validate(cfg: &MiroirConfig) -> Result<(), ConfigError> {
         if value == "*" {
             return Err(ConfigError::Validation(
                 "admin_ui.cors_allowed_origins cannot contain wildcard '*' \
-                 (use specific origins or leave empty for same-origin)".into(),
+                 (use specific origins or leave empty for same-origin)"
+                    .into(),
             ));
         }
     }
@@ -218,9 +219,7 @@ pub fn validate(cfg: &MiroirConfig) -> Result<(), ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        advanced, MiroirConfig, TaskStoreConfig,
-    };
+    use crate::config::{advanced, MiroirConfig, TaskStoreConfig};
 
     fn dev_config() -> MiroirConfig {
         MiroirConfig {

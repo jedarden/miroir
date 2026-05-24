@@ -40,7 +40,9 @@ where
         .route("/", post(create_key_handler).get(list_keys_handler))
         .route(
             "/:key",
-            get(get_key_handler).patch(update_key_handler).delete(delete_key_handler),
+            get(get_key_handler)
+                .patch(update_key_handler)
+                .delete(delete_key_handler),
         )
 }
 
@@ -84,15 +86,13 @@ async fn create_key_handler(
         }
     }
 
-    Ok(Json(first_response.unwrap_or(serde_json::json!({"status": "created"}))))
+    Ok(Json(
+        first_response.unwrap_or(serde_json::json!({"status": "created"})),
+    ))
 }
 
 /// Rollback by deleting the key from nodes where it was successfully created.
-async fn rollback_delete_key(
-    client: &MeilisearchClient,
-    body: &Value,
-    nodes: &[String],
-) {
+async fn rollback_delete_key(client: &MeilisearchClient, body: &Value, nodes: &[String]) {
     // Try to get the key UID from the creation body or extract it
     let key_or_name = body
         .get("uid")
@@ -110,7 +110,9 @@ async fn rollback_delete_key(
         let path = format!("/keys/{}", key_or_name);
         match client.delete_raw(address, &path).await {
             Ok(_) => tracing::info!(node = %address, "key rollback: deleted key"),
-            Err(e) => tracing::error!(node = %address, error = %e, "key rollback: failed to delete key"),
+            Err(e) => {
+                tracing::error!(node = %address, error = %e, "key rollback: failed to delete key")
+            }
         }
     }
 }
@@ -182,7 +184,9 @@ async fn update_key_handler(
         }
     }
 
-    Ok(Json(first_response.unwrap_or(serde_json::json!({"status": "updated"}))))
+    Ok(Json(
+        first_response.unwrap_or(serde_json::json!({"status": "updated"})),
+    ))
 }
 
 /// Rollback key updates by restoring pre-change snapshots.
@@ -257,7 +261,9 @@ async fn delete_key_handler(
         tracing::warn!(key_hash = %key_hash, errors = errors.len(), "key deletion partially failed");
     }
 
-    Ok(Json(first_response.unwrap_or(serde_json::json!({"status": "deleted"}))))
+    Ok(Json(
+        first_response.unwrap_or(serde_json::json!({"status": "deleted"})),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -268,11 +274,17 @@ async fn list_keys_handler(
     Extension(config): Extension<Arc<Config>>,
 ) -> Result<Json<Value>, StatusCode> {
     let client = MeilisearchClient::new(config.node_master_key.clone());
-    let address = config.nodes.first().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let (status, text) = client.get_raw(&address.address, "/keys").await.map_err(|e| {
-        tracing::error!(error = %e, "list keys failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let address = config
+        .nodes
+        .first()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let (status, text) = client
+        .get_raw(&address.address, "/keys")
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "list keys failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     if status >= 200 && status < 300 {
         Ok(Json(serde_json::from_str(&text).unwrap_or(Value::Null)))
     } else {
@@ -289,7 +301,10 @@ async fn get_key_handler(
     Extension(config): Extension<Arc<Config>>,
 ) -> Result<Json<Value>, StatusCode> {
     let client = MeilisearchClient::new(config.node_master_key.clone());
-    let address = config.nodes.first().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let address = config
+        .nodes
+        .first()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let path = format!("/keys/{}", key);
     let (status, text) = client.get_raw(&address.address, &path).await.map_err(|e| {
         tracing::error!(error = %e, "get key failed");

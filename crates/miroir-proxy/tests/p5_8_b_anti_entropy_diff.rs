@@ -22,7 +22,10 @@ async fn test_bucket_for_primary_key_deterministic() {
     let bucket1 = AntiEntropyReconciler::<MockNodeClient>::bucket_for_primary_key(pk);
     let bucket2 = AntiEntropyReconciler::<MockNodeClient>::bucket_for_primary_key(pk);
 
-    assert_eq!(bucket1, bucket2, "bucket assignment should be deterministic");
+    assert_eq!(
+        bucket1, bucket2,
+        "bucket assignment should be deterministic"
+    );
     assert!(bucket1 < BUCKET_COUNT, "bucket ID should be in range");
 }
 
@@ -39,7 +42,10 @@ async fn test_bucket_for_primary_key_distributes() {
 
     // With 1000 keys and 256 buckets, we should hit many buckets
     // (statistically, almost all of them)
-    assert!(buckets.len() > 200, "keys should distribute across many buckets");
+    assert!(
+        buckets.len() > 200,
+        "keys should distribute across many buckets"
+    );
 }
 
 #[tokio::test]
@@ -108,7 +114,10 @@ async fn test_diff_fingerprints_identical() {
     };
 
     let divergent = reconciler.diff_fingerprints(&fp, &fp);
-    assert!(divergent.is_empty(), "identical fingerprints should have no divergence");
+    assert!(
+        divergent.is_empty(),
+        "identical fingerprints should have no divergence"
+    );
 }
 
 #[tokio::test]
@@ -480,11 +489,11 @@ async fn test_compare_index_buckets_across_different_shard_counts() {
         .compare_index_buckets(
             &node_a,
             "http://localhost",
-            "live_index",   // S=16
+            "live_index", // S=16
             16,
             &node_b,
             "http://localhost",
-            "shadow_index",  // S=32
+            "shadow_index", // S=32
             32,
         )
         .await
@@ -492,7 +501,16 @@ async fn test_compare_index_buckets_across_different_shard_counts() {
 
     // Even though the documents are in different shards, they should match
     // because PK-keyed bucketing is independent of shard count
-    assert!(diff.a_only_pks.is_empty(), "PK should exist in both indexes");
-    assert!(diff.b_only_pks.is_empty(), "PK should exist in both indexes");
-    assert!(diff.mismatched_pks.is_empty(), "Content should be identical");
+    assert!(
+        diff.a_only_pks.is_empty(),
+        "PK should exist in both indexes"
+    );
+    assert!(
+        diff.b_only_pks.is_empty(),
+        "PK should exist in both indexes"
+    );
+    assert!(
+        diff.mismatched_pks.is_empty(),
+        "Content should be identical"
+    );
 }

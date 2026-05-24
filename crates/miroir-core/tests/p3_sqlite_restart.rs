@@ -334,10 +334,7 @@ fn test_multiple_tables_survive_restart() {
         assert_eq!(config.config_json, r#"{"title": "Test"}"#);
 
         // Verify admin_sessions
-        let admin_session = store
-            .get_admin_session("admin-session-1")
-            .unwrap()
-            .unwrap();
+        let admin_session = store.get_admin_session("admin-session-1").unwrap().unwrap();
         assert_eq!(admin_session.csrf_token, "csrf-token-123");
     }
 }

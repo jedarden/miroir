@@ -139,7 +139,11 @@ mod tests {
     fn create_test_data(lines: usize, line_size: usize) -> Vec<u8> {
         let mut data = Vec::new();
         for i in 0..lines {
-            let line = format!("{{\"id\": {}, \"data\": \"{}\"}}\n", i, "x".repeat(line_size));
+            let line = format!(
+                "{{\"id\": {}, \"data\": \"{}\"}}\n",
+                i,
+                "x".repeat(line_size)
+            );
             data.extend_from_slice(line.as_bytes());
         }
         data

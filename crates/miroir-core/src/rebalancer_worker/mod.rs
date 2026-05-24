@@ -209,7 +209,7 @@ pub struct RebalancerWorker {
     config: RebalancerWorkerConfig,
     topology: Arc<RwLock<Topology>>,
     task_store: Arc<dyn TaskStore>,
-    _rebalancer: Arc<Rebalancer>,  // Reserved for future use
+    _rebalancer: Arc<Rebalancer>, // Reserved for future use
     migration_coordinator: Arc<RwLock<MigrationCoordinator>>,
     migration_executor: Option<Arc<dyn MigrationExecutor>>,
     metrics: Arc<RwLock<RebalancerMetrics>>,
@@ -230,12 +230,21 @@ impl RebalancerWorker {
         config: RebalancerWorkerConfig,
         topology: Arc<RwLock<Topology>>,
         task_store: Arc<dyn TaskStore>,
-        rebalancer: Arc<Rebalancer>,  // Reserved for future use
+        rebalancer: Arc<Rebalancer>, // Reserved for future use
         migration_coordinator: Arc<RwLock<MigrationCoordinator>>,
         metrics: Arc<RwLock<RebalancerMetrics>>,
         pod_id: String,
     ) -> Self {
-        Self::with_metrics(config, topology, task_store, rebalancer, migration_coordinator, metrics, pod_id, None)
+        Self::with_metrics(
+            config,
+            topology,
+            task_store,
+            rebalancer,
+            migration_coordinator,
+            metrics,
+            pod_id,
+            None,
+        )
     }
 
     /// Create a new rebalancer worker with metrics callback.
@@ -243,7 +252,7 @@ impl RebalancerWorker {
         config: RebalancerWorkerConfig,
         topology: Arc<RwLock<Topology>>,
         task_store: Arc<dyn TaskStore>,
-        rebalancer: Arc<Rebalancer>,  // Reserved for future use
+        rebalancer: Arc<Rebalancer>, // Reserved for future use
         migration_coordinator: Arc<RwLock<MigrationCoordinator>>,
         metrics: Arc<RwLock<RebalancerMetrics>>,
         pod_id: String,
@@ -255,9 +264,9 @@ impl RebalancerWorker {
             config,
             topology,
             task_store,
-            _rebalancer: rebalancer,  // Stored but not currently used
+            _rebalancer: rebalancer, // Stored but not currently used
             migration_coordinator,
-            migration_executor: None,  // Set via with_migration_executor
+            migration_executor: None, // Set via with_migration_executor
             metrics,
             pod_id,
             event_tx,
@@ -297,9 +306,7 @@ impl RebalancerWorker {
 
             // Get all active indexes from current jobs and use default scope
             let jobs = self.jobs.read().await;
-            let mut index_uids: Vec<String> = jobs.values()
-                .map(|j| j.index_uid.clone())
-                .collect();
+            let mut index_uids: Vec<String> = jobs.values().map(|j| j.index_uid.clone()).collect();
 
             // Always include "default" scope for rebalancer operations
             index_uids.push("default".to_string());
@@ -320,9 +327,7 @@ impl RebalancerWorker {
                     let task_store = self.task_store.clone();
                     let scope = scope.clone();
                     let pod_id = self.pod_id.clone();
-                    move || {
-                        task_store.try_acquire_leader_lease(&scope, &pod_id, expires_at, now_ms)
-                    }
+                    move || task_store.try_acquire_leader_lease(&scope, &pod_id, expires_at, now_ms)
                 })
                 .await
                 {
@@ -372,24 +377,23 @@ impl RebalancerWorker {
                 }
             } else {
                 // Not the leader - wait before retrying
-                tokio::time::sleep(Duration::from_millis(
-                    self.config.lease_renewal_interval_ms,
-                ))
-                .await;
+                tokio::time::sleep(Duration::from_millis(self.config.lease_renewal_interval_ms))
+                    .await;
             }
         }
     }
 
     /// Run the leader loop: process events, renew lease, drive migrations.
     async fn run_leader_loop(&self, scopes: &[String]) -> Result<(), String> {
-        let mut lease_renewal = tokio::time::interval(Duration::from_millis(
-            self.config.lease_renewal_interval_ms,
-        ));
+        let mut lease_renewal =
+            tokio::time::interval(Duration::from_millis(self.config.lease_renewal_interval_ms));
 
         // Take the receiver out of the Option
         let mut event_rx = {
             let mut rx_guard = self.event_rx.write().await;
-            rx_guard.take().ok_or_else(|| "event receiver already taken".to_string())?
+            rx_guard
+                .take()
+                .ok_or_else(|| "event receiver already taken".to_string())?
         };
 
         let result = async {
@@ -469,9 +473,13 @@ impl RebalancerWorker {
         // Derive the scope from the event to check leadership
         let scope = match &event {
             TopologyChangeEvent::NodeAdded { index_uid, .. } => format!("rebalance:{}", index_uid),
-            TopologyChangeEvent::NodeDraining { index_uid, .. } => format!("rebalance:{}", index_uid),
+            TopologyChangeEvent::NodeDraining { index_uid, .. } => {
+                format!("rebalance:{}", index_uid)
+            }
             TopologyChangeEvent::NodeFailed { index_uid, .. } => format!("rebalance:{}", index_uid),
-            TopologyChangeEvent::NodeRecovered { index_uid, .. } => format!("rebalance:{}", index_uid),
+            TopologyChangeEvent::NodeRecovered { index_uid, .. } => {
+                format!("rebalance:{}", index_uid)
+            }
         };
 
         // Compute lease expiration before spawning
@@ -563,9 +571,7 @@ impl RebalancerWorker {
         // Also check the task store for existing jobs (from other workers)
         let existing_jobs = tokio::task::spawn_blocking({
             let task_store = self.task_store.clone();
-            move || {
-                task_store.list_jobs_by_state("running")
-            }
+            move || task_store.list_jobs_by_state("running")
         })
         .await
         .map_err(|e| format!("failed to list jobs: {}", e))?
@@ -582,7 +588,9 @@ impl RebalancerWorker {
         }
 
         // Compute affected shards using the Phase 1 router
-        let affected_shards = self.compute_affected_shards_for_add(node_id, replica_group).await?;
+        let affected_shards = self
+            .compute_affected_shards_for_add(node_id, replica_group)
+            .await?;
 
         if affected_shards.is_empty() {
             info!(
@@ -622,14 +630,16 @@ impl RebalancerWorker {
         let migration_id = {
             let mut coordinator = self.migration_coordinator.write().await;
             let new_node = topo_to_migration_node_id(&TopologyNodeId::new(node_id.to_string()));
-            coordinator.begin_migration(new_node, replica_group, old_owners)
+            coordinator
+                .begin_migration(new_node, replica_group, old_owners)
                 .map_err(|e| format!("failed to create migration: {}", e))?
         };
 
         // Start dual-write immediately so the router starts writing to both nodes
         {
             let mut coordinator = self.migration_coordinator.write().await;
-            coordinator.begin_dual_write(migration_id)
+            coordinator
+                .begin_dual_write(migration_id)
                 .map_err(|e| format!("failed to start dual-write: {}", e))?;
         }
 
@@ -694,7 +704,10 @@ impl RebalancerWorker {
         let mut old_owners = HashMap::new();
         let mut shard_states = HashMap::new();
         for (shard_id, dest_node) in &shard_destinations {
-            old_owners.insert(ShardId(*shard_id), topo_to_migration_node_id(&TopologyNodeId::new(node_id.to_string())));
+            old_owners.insert(
+                ShardId(*shard_id),
+                topo_to_migration_node_id(&TopologyNodeId::new(node_id.to_string())),
+            );
             shard_states.insert(
                 *shard_id,
                 ShardState {
@@ -714,7 +727,8 @@ impl RebalancerWorker {
             // For drain, the destination node becomes the "new" node in the migration
             if let Some((_, first_dest)) = shard_destinations.first() {
                 let new_node = topo_to_migration_node_id(first_dest);
-                coordinator.begin_migration(new_node, replica_group, old_owners)
+                coordinator
+                    .begin_migration(new_node, replica_group, old_owners)
                     .map_err(|e| format!("failed to create migration: {}", e))?
             } else {
                 return Err("no shards to migrate".to_string());
@@ -724,7 +738,8 @@ impl RebalancerWorker {
         // Start dual-write immediately
         {
             let mut coordinator = self.migration_coordinator.write().await;
-            coordinator.begin_dual_write(migration_id)
+            coordinator
+                .begin_dual_write(migration_id)
                 .map_err(|e| format!("failed to start dual-write: {}", e))?;
         }
 
@@ -833,8 +848,7 @@ impl RebalancerWorker {
 
         // For each shard, check if adding the new node would change the assignment
         for shard_id in 0..topo.shards {
-            let old_assignment: Vec<_> =
-                assign_shard_in_group(shard_id, &existing_nodes, rf);
+            let old_assignment: Vec<_> = assign_shard_in_group(shard_id, &existing_nodes, rf);
 
             // New assignment with the new node included
             let all_nodes: Vec<_> = existing_nodes
@@ -961,9 +975,7 @@ impl RebalancerWorker {
         let jobs = self.jobs.read().await;
 
         // Calculate total documents migrated across all jobs
-        let total_docs: u64 = jobs.values()
-            .map(|j| j.total_docs_migrated)
-            .sum();
+        let total_docs: u64 = jobs.values().map(|j| j.total_docs_migrated).sum();
 
         // Check if any rebalance is in progress
         let in_progress = jobs.values().any(|j| j.completed_at.is_none() && !j.paused);
@@ -993,24 +1005,25 @@ impl RebalancerWorker {
     pub async fn get_status(&self) -> RebalancerWorkerStatus {
         let jobs = self.jobs.read().await;
 
-        let active_jobs = jobs.values()
+        let active_jobs = jobs
+            .values()
             .filter(|j| j.completed_at.is_none() && !j.paused)
             .count();
 
-        let completed_jobs = jobs.values()
-            .filter(|j| j.completed_at.is_some())
-            .count();
+        let completed_jobs = jobs.values().filter(|j| j.completed_at.is_some()).count();
 
-        let paused_jobs = jobs.values()
-            .filter(|j| j.paused)
-            .count();
+        let paused_jobs = jobs.values().filter(|j| j.paused).count();
 
-        let total_shards: usize = jobs.values()
-            .map(|j| j.shards.len())
-            .sum();
+        let total_shards: usize = jobs.values().map(|j| j.shards.len()).sum();
 
-        let completed_shards: usize = jobs.values()
-            .map(|j| j.shards.values().filter(|s| s.phase == ShardMigrationPhase::OldReplicaDeleted).count())
+        let completed_shards: usize = jobs
+            .values()
+            .map(|j| {
+                j.shards
+                    .values()
+                    .filter(|s| s.phase == ShardMigrationPhase::OldReplicaDeleted)
+                    .count()
+            })
             .sum();
 
         RebalancerWorkerStatus {
@@ -1064,7 +1077,8 @@ impl RebalancerWorker {
         // Get migration state to access node addresses
         let (new_node, old_owners) = {
             let coordinator = self.migration_coordinator.read().await;
-            let state = coordinator.get_state(migration_id)
+            let state = coordinator
+                .get_state(migration_id)
                 .ok_or_else(|| "migration state not found".to_string())?;
             (state.new_node.clone(), state.old_owners.clone())
         };
@@ -1072,9 +1086,11 @@ impl RebalancerWorker {
         // Get node addresses from topology
         let (new_node_address, old_owner_addresses) = {
             let topo = self.topology.read().await;
-            let new_addr = topo.node(&migration_to_topo_node_id(&new_node))
+            let new_addr = topo
+                .node(&migration_to_topo_node_id(&new_node))
                 .ok_or_else(|| format!("new node not found: {}", new_node.0))?
-                .address.clone();
+                .address
+                .clone();
 
             let mut old_addrs = HashMap::new();
             for (shard, old_node) in &old_owners {
@@ -1112,19 +1128,23 @@ impl RebalancerWorker {
                     // Start background migration
                     if let Some(ref executor) = self.migration_executor {
                         if let Some(old_address) = old_owner_addresses.get(&ShardId(shard_id)) {
-                            let old_node = old_owners.get(&ShardId(shard_id))
+                            let old_node = old_owners
+                                .get(&ShardId(shard_id))
                                 .cloned()
                                 .unwrap_or_else(|| crate::migration::NodeId("unknown".to_string()));
-                            if let Err(e) = self.execute_background_migration(
-                                executor,
-                                migration_id,
-                                shard_id,
-                                &old_node,
-                                old_address,
-                                &new_node.0,
-                                &new_node_address,
-                                &index_uid,
-                            ).await {
+                            if let Err(e) = self
+                                .execute_background_migration(
+                                    executor,
+                                    migration_id,
+                                    shard_id,
+                                    &old_node,
+                                    old_address,
+                                    &new_node.0,
+                                    &new_node_address,
+                                    &index_uid,
+                                )
+                                .await
+                            {
                                 error!(shard_id, error = %e, "failed to execute background migration");
                                 shard_state.phase = ShardMigrationPhase::Failed;
                             } else {
@@ -1194,7 +1214,10 @@ impl RebalancerWorker {
 
         // Check if job is complete (all shards in final state)
         let all_complete = job.shards.values().all(|s| {
-            matches!(s.phase, ShardMigrationPhase::OldReplicaDeleted | ShardMigrationPhase::Failed)
+            matches!(
+                s.phase,
+                ShardMigrationPhase::OldReplicaDeleted | ShardMigrationPhase::Failed
+            )
         });
 
         if all_complete && job.completed_at.is_none() {
@@ -1235,8 +1258,8 @@ impl RebalancerWorker {
 
     /// Persist a job to the task store.
     async fn persist_job(&self, job: &RebalanceJob) -> Result<(), String> {
-        let progress = serde_json::to_string(job)
-            .map_err(|e| format!("failed to serialize job: {}", e))?;
+        let progress =
+            serde_json::to_string(job).map_err(|e| format!("failed to serialize job: {}", e))?;
 
         let new_job = NewJob {
             id: job.id.0.clone(),
@@ -1267,9 +1290,7 @@ impl RebalancerWorker {
         tokio::task::spawn_blocking({
             let task_store = self.task_store.clone();
             let new_job = new_job.clone();
-            move || {
-                task_store.insert_job(&new_job)
-            }
+            move || task_store.insert_job(&new_job)
         })
         .await
         .map_err(|e| format!("failed to persist job: {}", e))?
@@ -1279,11 +1300,7 @@ impl RebalancerWorker {
     }
 
     /// Persist progress for a single shard.
-    async fn persist_job_progress(
-        &self,
-        job: &RebalanceJob,
-        shard_id: u32,
-    ) -> Result<(), String> {
+    async fn persist_job_progress(&self, job: &RebalanceJob, shard_id: u32) -> Result<(), String> {
         if let Some(shard_state) = job.shards.get(&shard_id) {
             let progress = ShardMigrationProgress {
                 shard_id,
@@ -1294,9 +1311,8 @@ impl RebalancerWorker {
                 target_node: shard_state.target_node.clone(),
             };
 
-            let progress_json =
-                serde_json::to_string(&progress)
-                    .map_err(|e| format!("failed to serialize progress: {}", e))?;
+            let progress_json = serde_json::to_string(&progress)
+                .map_err(|e| format!("failed to serialize progress: {}", e))?;
 
             // Update job progress in task store
             tokio::task::spawn_blocking({
@@ -1304,9 +1320,7 @@ impl RebalancerWorker {
                 let job_id = job.id.0.clone();
                 let completed_at = format!("{:?}", job.completed_at.is_some());
                 let progress_json = progress_json.clone();
-                move || {
-                    task_store.update_job_progress(&job_id, &completed_at, &progress_json)
-                }
+                move || task_store.update_job_progress(&job_id, &completed_at, &progress_json)
             })
             .await
             .map_err(|e| format!("failed to update job progress: {}", e))?
@@ -1335,13 +1349,18 @@ impl RebalancerWorker {
                     use crate::migration::ShardMigrationState as CoordinatorState;
                     shard_state.phase = match migration_shard_state {
                         CoordinatorState::Pending => ShardMigrationPhase::Idle,
-                        CoordinatorState::Migrating { .. } => ShardMigrationPhase::MigrationInProgress,
+                        CoordinatorState::Migrating { .. } => {
+                            ShardMigrationPhase::MigrationInProgress
+                        }
                         CoordinatorState::MigrationComplete { docs_copied } => {
                             shard_state.docs_migrated = *docs_copied;
                             ShardMigrationPhase::MigrationComplete
                         }
                         CoordinatorState::Draining { .. } => ShardMigrationPhase::DualWriteStopped,
-                        CoordinatorState::DeltaPass { docs_copied, delta_docs_copied } => {
+                        CoordinatorState::DeltaPass {
+                            docs_copied,
+                            delta_docs_copied,
+                        } => {
                             shard_state.docs_migrated = docs_copied + delta_docs_copied;
                             ShardMigrationPhase::DualWriteStopped
                         }
@@ -1356,7 +1375,11 @@ impl RebalancerWorker {
     }
 
     /// Start dual-write phase for a shard.
-    async fn start_dual_write_for_shard(&self, _replica_group: u32, shard_id: u32) -> Result<(), String> {
+    async fn start_dual_write_for_shard(
+        &self,
+        _replica_group: u32,
+        shard_id: u32,
+    ) -> Result<(), String> {
         let shard = ShardId(shard_id);
         let mut coordinator = self.migration_coordinator.write().await;
 
@@ -1364,10 +1387,7 @@ impl RebalancerWorker {
         // For now, we'll create a new migration if one doesn't exist
         // In production, this would be created when the job is created
 
-        info!(
-            shard_id,
-            "starting dual-write phase"
-        );
+        info!(shard_id, "starting dual-write phase");
 
         // The dual-write is handled by the router checking is_dual_write_active
         // We just need to ensure the migration coordinator knows about this shard
@@ -1376,16 +1396,14 @@ impl RebalancerWorker {
 
     /// Begin cutover sequence for a shard.
     async fn begin_cutover_for_shard(&self, shard_id: u32) -> Result<(), String> {
-        info!(
-            shard_id,
-            "beginning cutover sequence"
-        );
+        info!(shard_id, "beginning cutover sequence");
 
         let shard = ShardId(shard_id);
         let mut coordinator = self.migration_coordinator.write().await;
 
         // Collect the migrations that affect this shard first
-        let migrations_to_cutover: Vec<_> = coordinator.get_all_migrations()
+        let migrations_to_cutover: Vec<_> = coordinator
+            .get_all_migrations()
             .iter()
             .filter(|(_, migration_state)| migration_state.affected_shards.contains_key(&shard))
             .map(|(mid, _)| *mid)
@@ -1402,16 +1420,14 @@ impl RebalancerWorker {
 
     /// Complete cutover and delete old replica for a shard.
     async fn complete_cutover_for_shard(&self, shard_id: u32) -> Result<(), String> {
-        info!(
-            shard_id,
-            "completing cutover and deleting old replica"
-        );
+        info!(shard_id, "completing cutover and deleting old replica");
 
         let shard = ShardId(shard_id);
         let mut coordinator = self.migration_coordinator.write().await;
 
         // Collect the migrations that affect this shard first
-        let migrations_to_complete: Vec<_> = coordinator.get_all_migrations()
+        let migrations_to_complete: Vec<_> = coordinator
+            .get_all_migrations()
             .iter()
             .filter(|(_, migration_state)| migration_state.affected_shards.contains_key(&shard))
             .map(|(mid, _)| *mid)
@@ -1420,7 +1436,9 @@ impl RebalancerWorker {
         // Now complete the cleanup
         for mid in migrations_to_complete {
             coordinator.complete_drain(mid).map_err(|e| e.to_string())?;
-            coordinator.complete_cleanup(mid).map_err(|e| e.to_string())?;
+            coordinator
+                .complete_cleanup(mid)
+                .map_err(|e| e.to_string())?;
             break; // Only need to complete one migration per shard
         }
 
@@ -1429,10 +1447,7 @@ impl RebalancerWorker {
 
     /// Start background migration for a shard.
     async fn start_background_migration_for_shard(&self, shard_id: u32) -> Result<(), String> {
-        info!(
-            shard_id,
-            "starting background migration"
-        );
+        info!(shard_id, "starting background migration");
 
         // The actual migration is handled by the Rebalancer component's migration executor
         // This method just signals that we're ready for background migration to proceed
@@ -1487,43 +1502,43 @@ impl RebalancerWorker {
 
         loop {
             // Fetch documents from source
-            let (docs, _total) = executor.fetch_documents(
-                &old_node_id.0,
-                old_address,
-                index_uid,
-                shard_id,
-                limit,
-                offset,
-            ).await.map_err(|e| format!("fetch failed: {}", e))?;
+            let (docs, _total) = executor
+                .fetch_documents(
+                    &old_node_id.0,
+                    old_address,
+                    index_uid,
+                    shard_id,
+                    limit,
+                    offset,
+                )
+                .await
+                .map_err(|e| format!("fetch failed: {}", e))?;
 
             if docs.is_empty() {
                 break; // No more documents
             }
 
             // Write documents to target
-            executor.write_documents(
-                new_node_id,
-                new_address,
-                index_uid,
-                docs.clone(),
-            ).await.map_err(|e| format!("write failed: {}", e))?;
+            executor
+                .write_documents(new_node_id, new_address, index_uid, docs.clone())
+                .await
+                .map_err(|e| format!("write failed: {}", e))?;
 
             total_docs_copied += docs.len() as u64;
             offset += limit;
 
             // Throttle if configured
             if self.config.migration_batch_delay_ms > 0 {
-                tokio::time::sleep(Duration::from_millis(
-                    self.config.migration_batch_delay_ms,
-                ))
-                .await;
+                tokio::time::sleep(Duration::from_millis(self.config.migration_batch_delay_ms))
+                    .await;
             }
         }
 
         // Mark shard migration complete in coordinator
         {
             let mut coordinator = self.migration_coordinator.write().await;
-            coordinator.shard_migration_complete(migration_id, ShardId(shard_id), total_docs_copied)
+            coordinator
+                .shard_migration_complete(migration_id, ShardId(shard_id), total_docs_copied)
                 .map_err(|e| format!("failed to mark shard complete: {}", e))?;
         }
 
@@ -1582,9 +1597,7 @@ impl RebalancerWorker {
     pub async fn load_persisted_jobs(&self) -> Result<(), String> {
         let jobs = tokio::task::spawn_blocking({
             let task_store = self.task_store.clone();
-            move || {
-                task_store.list_jobs_by_state("running")
-            }
+            move || task_store.list_jobs_by_state("running")
         })
         .await
         .map_err(|e| format!("failed to list jobs: {}", e))?
@@ -1641,8 +1654,12 @@ fn migration_to_topo_node_id(id: &MigrationNodeId) -> TopologyNodeId {
 }
 
 /// Get the old node owner for a specific shard.
-fn old_node_owners_for_shard(old_owners: &HashMap<ShardId, MigrationNodeId>, shard_id: u32) -> MigrationNodeId {
-    old_owners.get(&ShardId(shard_id))
+fn old_node_owners_for_shard(
+    old_owners: &HashMap<ShardId, MigrationNodeId>,
+    shard_id: u32,
+) -> MigrationNodeId {
+    old_owners
+        .get(&ShardId(shard_id))
         .cloned()
         .unwrap_or_else(|| crate::migration::NodeId("unknown".to_string()))
 }

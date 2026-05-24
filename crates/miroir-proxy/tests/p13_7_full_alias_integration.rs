@@ -12,8 +12,7 @@
 
 use miroir_core::alias::{Alias, AliasKind, AliasRegistry};
 use miroir_proxy::routes::aliases::{
-    CreateAliasRequest, UpdateAliasRequest, GetAliasResponse, ListAliasesResponse,
-    ErrorResponse,
+    CreateAliasRequest, ErrorResponse, GetAliasResponse, ListAliasesResponse, UpdateAliasRequest,
 };
 
 #[tokio::test]
@@ -51,7 +50,10 @@ async fn acceptance_2_flip_is_atomic() {
     assert_eq!(pre_flip_target, vec!["products_v1"]);
 
     // Perform atomic flip to v2
-    registry.flip("current", "products_v2".into()).await.unwrap();
+    registry
+        .flip("current", "products_v2".into())
+        .await
+        .unwrap();
 
     // New requests resolve to v2
     let post_flip_target = registry.resolve("current").await;
@@ -71,17 +73,23 @@ async fn acceptance_3_multi_target_alias_read_fanout() {
     let registry = AliasRegistry::new();
 
     // Create a multi-target alias
-    let alias = Alias::new_multi("logs".into(), vec![
-        "logs-2026-01-01".into(),
-        "logs-2026-01-02".into(),
-        "logs-2026-01-03".into(),
-    ]);
+    let alias = Alias::new_multi(
+        "logs".into(),
+        vec![
+            "logs-2026-01-01".into(),
+            "logs-2026-01-02".into(),
+            "logs-2026-01-03".into(),
+        ],
+    );
     registry.upsert(alias).await.unwrap();
 
     // Verify read fans out to all targets
     let resolved = registry.resolve("logs").await;
     assert_eq!(resolved.len(), 3);
-    assert_eq!(resolved, vec!["logs-2026-01-01", "logs-2026-01-02", "logs-2026-01-03"]);
+    assert_eq!(
+        resolved,
+        vec!["logs-2026-01-01", "logs-2026-01-02", "logs-2026-01-03"]
+    );
 
     // Verify it's identified as multi-target
     assert!(registry.is_multi_target_alias("logs").await);
@@ -96,10 +104,10 @@ async fn acceptance_4_multi_target_alias_write_rejected() {
     let registry = AliasRegistry::new();
 
     // Create a multi-target alias (ILM read_alias)
-    let alias = Alias::new_multi("all-logs".into(), vec![
-        "logs-2026-01-01".into(),
-        "logs-2026-01-02".into(),
-    ]);
+    let alias = Alias::new_multi(
+        "all-logs".into(),
+        vec!["logs-2026-01-01".into(), "logs-2026-01-02".into()],
+    );
     registry.upsert(alias).await.unwrap();
 
     // Verify it's detected as multi-target (for write rejection)
@@ -148,10 +156,13 @@ async fn api_create_alias_request_multi_serialization() {
     // Verify multi-target alias request serialization
     let json = r#"{"targets": ["logs-2026-01-01", "logs-2026-01-02"]}"#;
     let req: CreateAliasRequest = serde_json::from_str(json).unwrap();
-    assert_eq!(req.targets, Some(vec![
-        "logs-2026-01-01".to_string(),
-        "logs-2026-01-02".to_string()
-    ]));
+    assert_eq!(
+        req.targets,
+        Some(vec![
+            "logs-2026-01-01".to_string(),
+            "logs-2026-01-02".to_string()
+        ])
+    );
     assert!(req.target.is_none());
 }
 
@@ -209,7 +220,10 @@ async fn api_list_aliases_response_serialization() {
                 name: "logs".to_string(),
                 kind: "multi".to_string(),
                 current_uid: None,
-                target_uids: Some(vec!["logs-2026-01-01".to_string(), "logs-2026-01-02".to_string()]),
+                target_uids: Some(vec![
+                    "logs-2026-01-01".to_string(),
+                    "logs-2026-01-02".to_string(),
+                ]),
                 version: 1,
             },
         ],
@@ -227,7 +241,9 @@ async fn api_error_response_multi_alias_not_writable() {
     // Verify error response for multi-target alias write attempt
     let error = ErrorResponse {
         code: "miroir_multi_alias_not_writable".to_string(),
-        message: "multi-target aliases are managed exclusively by ILM; use the ILM policy API to modify".to_string(),
+        message:
+            "multi-target aliases are managed exclusively by ILM; use the ILM policy API to modify"
+                .to_string(),
     };
 
     let json = serde_json::to_string(&error).unwrap();

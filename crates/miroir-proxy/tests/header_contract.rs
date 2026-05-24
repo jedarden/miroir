@@ -568,7 +568,11 @@ fn validate_all_miroir_header_names() {
 
     for header in expected_headers {
         // All Miroir headers except Idempotency-Key use X-Miroir- prefix
-        if header != "Idempotency-Key" && header != "X-Admin-Key" && header != "X-CSRF-Token" && header != "X-Search-UI-Key" {
+        if header != "Idempotency-Key"
+            && header != "X-Admin-Key"
+            && header != "X-CSRF-Token"
+            && header != "X-Search-UI-Key"
+        {
             assert!(
                 header.starts_with("X-Miroir-"),
                 "Miroir-specific header should use X-Miroir- prefix: {}",
@@ -583,7 +587,10 @@ fn idempotency_key_follows_cross_vendor_convention() {
     // Idempotency-Key follows the widely recognized cross-vendor convention
     // Used by Stripe, AWS, etc. — does NOT use X-Miroir- prefix
     let header = "Idempotency-Key";
-    assert!(!header.starts_with("X-"), "Idempotency-Key should not use X- prefix");
+    assert!(
+        !header.starts_with("X-"),
+        "Idempotency-Key should not use X- prefix"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -617,7 +624,11 @@ fn validate_header_directions() {
     let response_set: std::collections::HashSet<_> = response_headers.iter().collect();
 
     let overlap: Vec<_> = request_set.intersection(&response_set).collect();
-    assert_eq!(overlap.len(), 1, "Only X-Miroir-Session should be in both request and response");
+    assert_eq!(
+        overlap.len(),
+        1,
+        "Only X-Miroir-Session should be in both request and response"
+    );
     assert!(overlap.iter().any(|&&h| *h == "X-Miroir-Session"));
 }
 
@@ -643,15 +654,35 @@ fn header_contract_complete() {
     ];
 
     // This test serves as documentation that all headers are accounted for
-    assert_eq!(all_expected_headers.len(), 11, "Plan §5 defines 11 custom headers");
+    assert_eq!(
+        all_expected_headers.len(),
+        11,
+        "Plan §5 defines 11 custom headers"
+    );
 
     // Categorize by direction
-    let response_only = vec!["X-Miroir-Degraded", "X-Miroir-Settings-Version", "X-Miroir-Settings-Inconsistent"];
-    let request_only = vec!["Idempotency-Key", "X-Miroir-Min-Settings-Version", "X-Miroir-Over-Fetch", "X-Miroir-Tenant", "X-Admin-Key", "X-CSRF-Token", "X-Search-UI-Key"];
+    let response_only = vec![
+        "X-Miroir-Degraded",
+        "X-Miroir-Settings-Version",
+        "X-Miroir-Settings-Inconsistent",
+    ];
+    let request_only = vec![
+        "Idempotency-Key",
+        "X-Miroir-Min-Settings-Version",
+        "X-Miroir-Over-Fetch",
+        "X-Miroir-Tenant",
+        "X-Admin-Key",
+        "X-CSRF-Token",
+        "X-Search-UI-Key",
+    ];
     let bidirectional = vec!["X-Miroir-Session"];
 
     assert_eq!(response_only.len(), 3, "3 response-only headers");
     assert_eq!(request_only.len(), 7, "7 request-only headers");
     assert_eq!(bidirectional.len(), 1, "1 bidirectional header");
-    assert_eq!(response_only.len() + request_only.len() + bidirectional.len(), 11, "Total header count");
+    assert_eq!(
+        response_only.len() + request_only.len() + bidirectional.len(),
+        11,
+        "Total header count"
+    );
 }

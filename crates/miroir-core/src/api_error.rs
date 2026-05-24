@@ -11,7 +11,10 @@
 use serde::Serialize;
 
 #[cfg(feature = "axum")]
-use axum::{http::{StatusCode, header}, response::{IntoResponse, Response}};
+use axum::{
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
+};
 
 /// Error type categories matching Meilisearch's classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
@@ -101,11 +104,16 @@ impl MiroirCode {
             | Self::MultiAliasNotWritable
             | Self::IndexAlreadyExists => ErrorType::InvalidRequest,
 
-            Self::JwtInvalid | Self::JwtScopeDenied | Self::InvalidAuth | Self::MissingCsrf | Self::CsrfMismatch => ErrorType::Auth,
+            Self::JwtInvalid
+            | Self::JwtScopeDenied
+            | Self::InvalidAuth
+            | Self::MissingCsrf
+            | Self::CsrfMismatch => ErrorType::Auth,
 
-            Self::NoQuorum | Self::ShardUnavailable | Self::SettingsVersionStale | Self::Timeout => {
-                ErrorType::System
-            }
+            Self::NoQuorum
+            | Self::ShardUnavailable
+            | Self::SettingsVersionStale
+            | Self::Timeout => ErrorType::System,
         }
     }
 
@@ -253,7 +261,10 @@ mod tests {
         assert_eq!(json["code"], "miroir_primary_key_required");
         assert_eq!(json["message"], "primary key required for index `movies`");
         assert_eq!(json["type"], "invalid_request");
-        assert!(json["link"].as_str().unwrap().contains("miroir_primary_key_required"));
+        assert!(json["link"]
+            .as_str()
+            .unwrap()
+            .contains("miroir_primary_key_required"));
         assert_eq!(err.http_status(), 400);
     }
 
@@ -273,15 +284,16 @@ mod tests {
 
     #[test]
     fn miroir_shard_unavailable_shape() {
-        let err = MeilisearchError::new(
-            MiroirCode::ShardUnavailable,
-            "shard 7 is fully unavailable",
-        );
+        let err =
+            MeilisearchError::new(MiroirCode::ShardUnavailable, "shard 7 is fully unavailable");
         let json: serde_json::Value = serde_json::to_value(&err).unwrap();
 
         assert_eq!(json["code"], "miroir_shard_unavailable");
         assert_eq!(json["type"], "system");
-        assert!(json["link"].as_str().unwrap().contains("miroir_shard_unavailable"));
+        assert!(json["link"]
+            .as_str()
+            .unwrap()
+            .contains("miroir_shard_unavailable"));
         assert_eq!(err.http_status(), 503);
     }
 
@@ -295,7 +307,10 @@ mod tests {
 
         assert_eq!(json["code"], "miroir_reserved_field");
         assert_eq!(json["type"], "invalid_request");
-        assert!(json["link"].as_str().unwrap().contains("miroir_reserved_field"));
+        assert!(json["link"]
+            .as_str()
+            .unwrap()
+            .contains("miroir_reserved_field"));
         assert_eq!(err.http_status(), 400);
     }
 
@@ -309,7 +324,10 @@ mod tests {
 
         assert_eq!(json["code"], "miroir_idempotency_key_reused");
         assert_eq!(json["type"], "invalid_request");
-        assert!(json["link"].as_str().unwrap().contains("miroir_idempotency_key_reused"));
+        assert!(json["link"]
+            .as_str()
+            .unwrap()
+            .contains("miroir_idempotency_key_reused"));
         assert_eq!(err.http_status(), 409);
     }
 
@@ -323,7 +341,10 @@ mod tests {
 
         assert_eq!(json["code"], "miroir_settings_version_stale");
         assert_eq!(json["type"], "system");
-        assert!(json["link"].as_str().unwrap().contains("miroir_settings_version_stale"));
+        assert!(json["link"]
+            .as_str()
+            .unwrap()
+            .contains("miroir_settings_version_stale"));
         assert_eq!(err.http_status(), 503);
     }
 
@@ -337,21 +358,25 @@ mod tests {
 
         assert_eq!(json["code"], "miroir_multi_alias_not_writable");
         assert_eq!(json["type"], "invalid_request");
-        assert!(json["link"].as_str().unwrap().contains("miroir_multi_alias_not_writable"));
+        assert!(json["link"]
+            .as_str()
+            .unwrap()
+            .contains("miroir_multi_alias_not_writable"));
         assert_eq!(err.http_status(), 409);
     }
 
     #[test]
     fn miroir_jwt_invalid_shape() {
-        let err = MeilisearchError::new(
-            MiroirCode::JwtInvalid,
-            "JWT signature verification failed",
-        );
+        let err =
+            MeilisearchError::new(MiroirCode::JwtInvalid, "JWT signature verification failed");
         let json: serde_json::Value = serde_json::to_value(&err).unwrap();
 
         assert_eq!(json["code"], "miroir_jwt_invalid");
         assert_eq!(json["type"], "auth");
-        assert!(json["link"].as_str().unwrap().contains("miroir_jwt_invalid"));
+        assert!(json["link"]
+            .as_str()
+            .unwrap()
+            .contains("miroir_jwt_invalid"));
         assert_eq!(err.http_status(), 401);
     }
 
@@ -365,7 +390,10 @@ mod tests {
 
         assert_eq!(json["code"], "miroir_jwt_scope_denied");
         assert_eq!(json["type"], "auth");
-        assert!(json["link"].as_str().unwrap().contains("miroir_jwt_scope_denied"));
+        assert!(json["link"]
+            .as_str()
+            .unwrap()
+            .contains("miroir_jwt_scope_denied"));
         assert_eq!(err.http_status(), 403);
     }
 
@@ -379,7 +407,10 @@ mod tests {
 
         assert_eq!(json["code"], "miroir_invalid_auth");
         assert_eq!(json["type"], "auth");
-        assert!(json["link"].as_str().unwrap().contains("miroir_invalid_auth"));
+        assert!(json["link"]
+            .as_str()
+            .unwrap()
+            .contains("miroir_invalid_auth"));
         assert_eq!(err.http_status(), 401);
     }
 
@@ -393,7 +424,10 @@ mod tests {
 
         assert_eq!(json["code"], "miroir_missing_csrf");
         assert_eq!(json["type"], "auth");
-        assert!(json["link"].as_str().unwrap().contains("miroir_missing_csrf"));
+        assert!(json["link"]
+            .as_str()
+            .unwrap()
+            .contains("miroir_missing_csrf"));
         assert_eq!(err.http_status(), 401);
     }
 
@@ -407,7 +441,10 @@ mod tests {
 
         assert_eq!(json["code"], "miroir_csrf_mismatch");
         assert_eq!(json["type"], "auth");
-        assert!(json["link"].as_str().unwrap().contains("miroir_csrf_mismatch"));
+        assert!(json["link"]
+            .as_str()
+            .unwrap()
+            .contains("miroir_csrf_mismatch"));
         assert_eq!(err.http_status(), 403);
     }
 
@@ -530,7 +567,10 @@ mod tests {
         assert_eq!(parsed["message"], "shard 5 down");
         assert_eq!(parsed["code"], "miroir_shard_unavailable");
         assert_eq!(parsed["type"], "system");
-        assert!(parsed["link"].as_str().unwrap().contains("miroir_shard_unavailable"));
+        assert!(parsed["link"]
+            .as_str()
+            .unwrap()
+            .contains("miroir_shard_unavailable"));
     }
 
     // -- Code string round-trip ---------------------------------------------------

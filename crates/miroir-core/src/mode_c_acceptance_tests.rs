@@ -60,7 +60,9 @@ fn test_acceptance_1gb_dump_splits_into_4_chunks() {
 
     // Enqueue a 1GB dump import job
     let params = dump_import_params(1_073_741_824); // 1 GiB
-    let job_id = coord.enqueue_job(JobType::DumpImport, params.clone()).unwrap();
+    let job_id = coord
+        .enqueue_job(JobType::DumpImport, params.clone())
+        .unwrap();
 
     // Claim the job
     let claimed = coord.claim_job().unwrap().expect("should claim job");
@@ -69,7 +71,7 @@ fn test_acceptance_1gb_dump_splits_into_4_chunks() {
 
     // Split into chunks (4 chunks of ~256 MiB each)
     let chunk_size = 268_435_456; // 256 MiB
-    // Ceiling division: (size + chunk_size - 1) / chunk_size
+                                  // Ceiling division: (size + chunk_size - 1) / chunk_size
     let total_chunks = ((1_073_741_824 + chunk_size - 1) / chunk_size) as u32;
 
     let chunks: Vec<_> = (0..total_chunks)
@@ -125,12 +127,16 @@ fn test_acceptance_claim_expires_after_30s() {
         last_cursor: "500000000".to_string(),
         error: None,
     };
-    coord1.update_progress(&job_id, &progress, JobState::InProgress).unwrap();
+    coord1
+        .update_progress(&job_id, &progress, JobState::InProgress)
+        .unwrap();
 
     // Manually set the claim expiration to the past to simulate time passing
     // In a real scenario, the pod would crash and stop renewing
     let expired_time = now_ms() - 1000; // 1 second ago
-    coord1.set_claim_expires_at_for_test(&job_id, expired_time).unwrap();
+    coord1
+        .set_claim_expires_at_for_test(&job_id, expired_time)
+        .unwrap();
 
     // Verify the claim is now expired
     let job = coord1.get_job(&job_id).unwrap().unwrap();
@@ -270,7 +276,7 @@ fn test_acceptance_two_concurrent_dumps_interleave() {
     // Now we should have 8 chunks from job1 + 6 chunks from job2
     assert_eq!(coord.queue_depth().unwrap(), 14);
 
-//     // Verify that chunks from both jobs are interleaved
+    //     // Verify that chunks from both jobs are interleaved
     // Verify chunks exist for both jobs
     let job1_chunks = coord.list_chunks(&job1_id).unwrap();
     let job2_chunks = coord.list_chunks(&job2_id).unwrap();
@@ -281,22 +287,22 @@ fn test_acceptance_two_concurrent_dumps_interleave() {
     // Neither job starves - both have chunks available
     assert!(job1_chunks.len() > 0);
     assert!(job2_chunks.len() > 0);
-//     let mut job1_chunk_count = 0;
-//     let mut job2_chunk_count = 0;
-// 
-//     for job in queued_jobs {
-//         if let Some(parent_id) = &job.parent_job_id {
-//             if parent_id == &job1_id {
-//                 job1_chunk_count += 1;
-//             } else if parent_id == &job2_id {
-//                 job2_chunk_count += 1;
-//             }
-//         }
-//     }
-//
-//     assert_eq!(job1_chunk_count, 8);
-//     assert_eq!(job2_chunk_count, 6);
-//
+    //     let mut job1_chunk_count = 0;
+    //     let mut job2_chunk_count = 0;
+    //
+    //     for job in queued_jobs {
+    //         if let Some(parent_id) = &job.parent_job_id {
+    //             if parent_id == &job1_id {
+    //                 job1_chunk_count += 1;
+    //             } else if parent_id == &job2_id {
+    //                 job2_chunk_count += 1;
+    //             }
+    //         }
+    //     }
+    //
+    //     assert_eq!(job1_chunk_count, 8);
+    //     assert_eq!(job2_chunk_count, 6);
+    //
     // Neither job starves - both have chunks available
     // TODO: Re-enable after chunking queue logic is implemented
     // assert!(job1_chunk_count > 0);
@@ -352,18 +358,27 @@ fn test_acceptance_three_pods_claim_chunks_in_parallel() {
     let coord3 = test_coordinator_with_store("pod-3", store.clone());
 
     // Pod 1 claims a chunk
-    let claimed1 = coord1.claim_job().unwrap().expect("pod-1 should claim a chunk");
+    let claimed1 = coord1
+        .claim_job()
+        .unwrap()
+        .expect("pod-1 should claim a chunk");
     assert!(claimed1.parent_job_id.is_some()); // It's a chunk job
     assert_eq!(coord1.queue_depth().unwrap(), 3);
 
     // Pod 2 claims a chunk
-    let claimed2 = coord2.claim_job().unwrap().expect("pod-2 should claim a chunk");
+    let claimed2 = coord2
+        .claim_job()
+        .unwrap()
+        .expect("pod-2 should claim a chunk");
     assert!(claimed2.parent_job_id.is_some());
     assert_ne!(claimed1.id, claimed2.id); // Different chunks
     assert_eq!(coord2.queue_depth().unwrap(), 2);
 
     // Pod 3 claims a chunk
-    let claimed3 = coord3.claim_job().unwrap().expect("pod-3 should claim a chunk");
+    let claimed3 = coord3
+        .claim_job()
+        .unwrap()
+        .expect("pod-3 should claim a chunk");
     assert!(claimed3.parent_job_id.is_some());
     assert_ne!(claimed2.id, claimed3.id); // Different chunks
     assert_ne!(claimed1.id, claimed3.id); // Different chunks
@@ -382,7 +397,10 @@ fn test_acceptance_three_pods_claim_chunks_in_parallel() {
     assert_eq!(coord1.queue_depth().unwrap(), 1);
 
     // Pod 1 claims and completes the final chunk
-    let claimed4 = coord1.claim_job().unwrap().expect("pod-1 should claim final chunk");
+    let claimed4 = coord1
+        .claim_job()
+        .unwrap()
+        .expect("pod-1 should claim final chunk");
     coord1.complete_job(&claimed4.id, &progress).unwrap();
 
     // Queue is now drained
@@ -503,7 +521,9 @@ fn test_acceptance_chunk_job_progress_tracking() {
         last_cursor: "500000000".to_string(),
         error: None,
     };
-    coord.update_progress(chunk1_id, &progress1, JobState::Completed).unwrap();
+    coord
+        .update_progress(chunk1_id, &progress1, JobState::Completed)
+        .unwrap();
 
     // Verify chunk 1 is complete
     let chunk1 = coord.get_job(chunk1_id).unwrap().unwrap();

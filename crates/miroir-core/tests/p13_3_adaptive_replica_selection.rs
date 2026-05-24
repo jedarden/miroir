@@ -187,17 +187,23 @@ async fn p5_3_a2_degraded_node_recovers() {
     assert!(
         (recovered_count1 as isize - expected as isize).abs() <= tolerance as isize,
         "node-1 recovered count {} not close to expected {} (tolerance {})",
-        recovered_count1, expected, tolerance
+        recovered_count1,
+        expected,
+        tolerance
     );
     assert!(
         (recovered_count0 as isize - expected as isize).abs() <= tolerance as isize,
         "node-0 count {} not close to expected {} (tolerance {})",
-        recovered_count0, expected, tolerance
+        recovered_count0,
+        expected,
+        tolerance
     );
     assert!(
         (recovered_count2 as isize - expected as isize).abs() <= tolerance as isize,
         "node-2 count {} not close to expected {} (tolerance {})",
-        recovered_count2, expected, tolerance
+        recovered_count2,
+        expected,
+        tolerance
     );
 }
 
@@ -239,7 +245,10 @@ async fn p5_3_a3_exploration_samples_degraded_node() {
     let count1 = *dist.get("node-1").unwrap_or(&0);
     let count2 = *dist.get("node-2").unwrap_or(&0);
 
-    println!("Distribution: node-0={}, node-1={}, node-2={}", count0, count1, count2);
+    println!(
+        "Distribution: node-0={}, node-1={}, node-2={}",
+        count0, count1, count2
+    );
 
     // Node-2 is severely degraded but should still get some traffic via exploration
     // With 5% epsilon and random exploration across 3 nodes:
@@ -266,12 +275,14 @@ async fn p5_3_a3_exploration_samples_degraded_node() {
     assert!(
         (count0 as isize - expected_healthy).abs() <= tolerance,
         "node-0 count {} not close to expected {}",
-        count0, expected_healthy
+        count0,
+        expected_healthy
     );
     assert!(
         (count1 as isize - expected_healthy).abs() <= tolerance,
         "node-1 count {} not close to expected {}",
-        count1, expected_healthy
+        count1,
+        expected_healthy
     );
 }
 
@@ -469,7 +480,9 @@ async fn test_random_strategy() {
         assert!(
             diff <= 100, // Allow 10% variance
             "{}: got {} selections, expected ~{}",
-            node, count, expected
+            node,
+            count,
+            expected
         );
     }
 }

@@ -62,7 +62,10 @@ async fn atomic_flip_redirects_writes_without_tearing() {
     assert_eq!(in_flight_target, vec!["products_v3".to_string()]);
 
     // Perform atomic flip
-    registry.flip("products", "products_v4".to_string()).await.unwrap();
+    registry
+        .flip("products", "products_v4".to_string())
+        .await
+        .unwrap();
 
     // Verify new requests get the new target
     let resolved = registry.resolve("products").await;
@@ -133,10 +136,14 @@ async fn multi_target_alias_rejects_flip_operation() {
     registry.upsert(single_alias).await.unwrap();
 
     // Attempting to update_targets on a single-target alias should fail
-    let result = registry.update_multi("products", vec!["products_v4".to_string()]).await;
+    let result = registry
+        .update_multi("products", vec!["products_v4".to_string()])
+        .await;
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.to_string().contains("cannot update_targets on single-target alias"));
+    assert!(err
+        .to_string()
+        .contains("cannot update_targets on single-target alias"));
 }
 
 /// Test 5: History retention - 11th flip evicts the oldest.
@@ -147,7 +154,7 @@ async fn multi_target_alias_rejects_flip_operation() {
 /// - 11th flip evicts the oldest entry
 #[tokio::test]
 async fn history_retention_evicts_oldest_on_11th_flip() {
-    use crate::task_store::{SqliteTaskStore, AliasHistoryEntry};
+    use crate::task_store::{AliasHistoryEntry, SqliteTaskStore};
     use std::time::SystemTime;
 
     // Create in-memory store with migration
@@ -155,7 +162,10 @@ async fn history_retention_evicts_oldest_on_11th_flip() {
     store.migrate().unwrap();
 
     let registry = AliasRegistry::new();
-    registry.sync_from_store(&store as &dyn TaskStore).await.unwrap();
+    registry
+        .sync_from_store(&store as &dyn TaskStore)
+        .await
+        .unwrap();
 
     // Create initial alias
     let now = SystemTime::now()
@@ -172,13 +182,21 @@ async fn history_retention_evicts_oldest_on_11th_flip() {
         history: vec![],
     };
     store.create_alias(&new_alias).unwrap();
-    registry.sync_from_store(&store as &dyn TaskStore).await.unwrap();
+    registry
+        .sync_from_store(&store as &dyn TaskStore)
+        .await
+        .unwrap();
 
     // Perform 11 flips
     for i in 2..=12 {
-        store.flip_alias("products", &format!("products_v{}", i), 10).unwrap();
+        store
+            .flip_alias("products", &format!("products_v{}", i), 10)
+            .unwrap();
     }
-    registry.sync_from_store(&store as &dyn TaskStore).await.unwrap();
+    registry
+        .sync_from_store(&store as &dyn TaskStore)
+        .await
+        .unwrap();
 
     // Get the alias and verify history
     let alias = registry.get("products").await.unwrap();
@@ -191,8 +209,8 @@ async fn history_retention_evicts_oldest_on_11th_flip() {
     // Verify oldest was evicted (v1 should be gone, v2-v11 present)
     let history_uids: Vec<&str> = alias_row.history.iter().map(|h| h.uid.as_str()).collect();
     assert!(!history_uids.contains(&"products_v1")); // Oldest evicted
-    assert!(history_uids.contains(&"products_v2"));   // Second oldest retained
-    assert!(history_uids.contains(&"products_v11"));  // Most recent retained
+    assert!(history_uids.contains(&"products_v2")); // Second oldest retained
+    assert!(history_uids.contains(&"products_v11")); // Most recent retained
 }
 
 /// Test: List all aliases.
@@ -201,9 +219,27 @@ async fn list_aliases_returns_all_registered() {
     let registry = AliasRegistry::new();
 
     // Create multiple aliases
-    registry.upsert(Alias::new_single("products".to_string(), "products_v3".to_string())).await.unwrap();
-    registry.upsert(Alias::new_multi("logs".to_string(), vec!["logs-2026-01-01".to_string()])).await.unwrap();
-    registry.upsert(Alias::new_single("users".to_string(), "users_v2".to_string())).await.unwrap();
+    registry
+        .upsert(Alias::new_single(
+            "products".to_string(),
+            "products_v3".to_string(),
+        ))
+        .await
+        .unwrap();
+    registry
+        .upsert(Alias::new_multi(
+            "logs".to_string(),
+            vec!["logs-2026-01-01".to_string()],
+        ))
+        .await
+        .unwrap();
+    registry
+        .upsert(Alias::new_single(
+            "users".to_string(),
+            "users_v2".to_string(),
+        ))
+        .await
+        .unwrap();
 
     // List all
     let aliases = registry.list().await;
@@ -221,7 +257,13 @@ async fn delete_alias_removes_from_registry() {
     let registry = AliasRegistry::new();
 
     // Create an alias
-    registry.upsert(Alias::new_single("products".to_string(), "products_v3".to_string())).await.unwrap();
+    registry
+        .upsert(Alias::new_single(
+            "products".to_string(),
+            "products_v3".to_string(),
+        ))
+        .await
+        .unwrap();
 
     // Verify it exists
     assert!(registry.is_alias("products").await);
@@ -245,14 +287,17 @@ async fn multi_target_alias_update_targets_for_ilm() {
 
     // Create a multi-target alias
     let targets = vec!["logs-2026-01-01".to_string(), "logs-2026-01-02".to_string()];
-    registry.upsert(Alias::new_multi("logs".to_string(), targets)).await.unwrap();
+    registry
+        .upsert(Alias::new_multi("logs".to_string(), targets))
+        .await
+        .unwrap();
 
     // ILM updates targets (adds new index, removes old one)
-    let new_targets = vec![
-        "logs-2026-01-02".to_string(),
-        "logs-2026-01-03".to_string(),
-    ];
-    registry.update_multi("logs", new_targets.clone()).await.unwrap();
+    let new_targets = vec!["logs-2026-01-02".to_string(), "logs-2026-01-03".to_string()];
+    registry
+        .update_multi("logs", new_targets.clone())
+        .await
+        .unwrap();
 
     // Verify resolution updated
     let resolved = registry.resolve("logs").await;
@@ -279,29 +324,36 @@ async fn sync_from_store_loads_aliases_into_memory() {
         .unwrap()
         .as_secs() as i64;
 
-    store.create_alias(&NewAlias {
-        name: "products".to_string(),
-        kind: "single".to_string(),
-        current_uid: Some("products_v3".to_string()),
-        target_uids: None,
-        version: 1,
-        created_at: now,
-        history: vec![],
-    }).unwrap();
+    store
+        .create_alias(&NewAlias {
+            name: "products".to_string(),
+            kind: "single".to_string(),
+            current_uid: Some("products_v3".to_string()),
+            target_uids: None,
+            version: 1,
+            created_at: now,
+            history: vec![],
+        })
+        .unwrap();
 
-    store.create_alias(&NewAlias {
-        name: "logs".to_string(),
-        kind: "multi".to_string(),
-        current_uid: None,
-        target_uids: Some(vec!["logs-2026-01-01".to_string()]),
-        version: 1,
-        created_at: now,
-        history: vec![],
-    }).unwrap();
+    store
+        .create_alias(&NewAlias {
+            name: "logs".to_string(),
+            kind: "multi".to_string(),
+            current_uid: None,
+            target_uids: Some(vec!["logs-2026-01-01".to_string()]),
+            version: 1,
+            created_at: now,
+            history: vec![],
+        })
+        .unwrap();
 
     // Create registry and sync
     let registry = AliasRegistry::new();
-    registry.sync_from_store(&store as &dyn TaskStore).await.unwrap();
+    registry
+        .sync_from_store(&store as &dyn TaskStore)
+        .await
+        .unwrap();
 
     // Verify aliases loaded
     assert_eq!(registry.list().await.len(), 2);

@@ -6,7 +6,9 @@
 //! - Mid-sync write test: 100 writes landing during the backfill window are all present on both groups when sync completes
 //! - Failed sync (source group becomes unavailable mid-copy) pauses without corrupting new group; resumes when source returns
 
-use miroir_core::group_addition::{GroupAdditionCoordinator, GroupAdditionConfig, GroupAdditionPhase, ShardSyncState};
+use miroir_core::group_addition::{
+    GroupAdditionConfig, GroupAdditionCoordinator, GroupAdditionPhase, ShardSyncState,
+};
 use miroir_core::group_sync_worker::{GroupSyncWorker, GroupSyncWorkerConfig, SyncNodeClient};
 use miroir_core::migration::ShardId;
 use miroir_core::router;
@@ -44,7 +46,7 @@ fn test_topology_1_group() -> Topology {
 /// Helper: create a test topology with 2 replica groups, 3 nodes each.
 fn test_topology_2_groups() -> Topology {
     let mut topo = Topology::new(16, 2, 2); // 16 shards, 2 replica groups, RF=2
-    // Group 0 (existing, active)
+                                            // Group 0 (existing, active)
     for i in 0..3 {
         topo.add_node(Node::new(
             NodeId::new(format!("node-g0-{}", i)),
@@ -94,15 +96,24 @@ impl MockSyncNodeClient {
     }
 
     /// Set up a fetch response for a specific node and query.
-    async fn set_fetch_response(&self, node: NodeId, index_uid: &str, offset: u32, docs: Vec<serde_json::Value>) {
+    async fn set_fetch_response(
+        &self,
+        node: NodeId,
+        index_uid: &str,
+        offset: u32,
+        docs: Vec<serde_json::Value>,
+    ) {
         let mut responses = self.fetch_responses.write().await;
         let key = (node, format!("{}-{}", index_uid, offset));
-        responses.insert(key, json!({
-            "results": docs,
-            "limit": 1000,
-            "offset": offset,
-            "total": 5000, // Simulate 5000 total docs
-        }));
+        responses.insert(
+            key,
+            json!({
+                "results": docs,
+                "limit": 1000,
+                "offset": offset,
+                "total": 5000, // Simulate 5000 total docs
+            }),
+        );
     }
 
     /// Get the write calls made so far.
@@ -127,7 +138,10 @@ impl SyncNodeClient for MockSyncNodeClient {
             return Err("Source unavailable".to_string());
         }
 
-        let key = (node.clone(), format!("{}-{}", request.index_uid, request.offset));
+        let key = (
+            node.clone(),
+            format!("{}-{}", request.index_uid, request.offset),
+        );
         let responses = self.fetch_responses.read().await;
         Ok(responses.get(&key).cloned().unwrap_or_else(|| {
             json!({
@@ -168,7 +182,9 @@ async fn acceptance_1_during_sync_query_throughput_unchanged_on_original_group()
 
     let addition_id = {
         let mut coord = coordinator.write().await;
-        coord.begin_addition(1, shard_count, &source_groups).unwrap()
+        coord
+            .begin_addition(1, shard_count, &source_groups)
+            .unwrap()
     };
 
     // Verify group 1 is in initializing state
@@ -326,11 +342,19 @@ async fn acceptance_3_mid_sync_writes_present_on_both_groups_after_sync() {
         let node_map = t.node_map();
         let group_0_count = targets
             .iter()
-            .filter(|n| node_map.get(n).map_or(false, |node| node.replica_group == 0))
+            .filter(|n| {
+                node_map
+                    .get(n)
+                    .map_or(false, |node| node.replica_group == 0)
+            })
             .count();
         let group_1_count = targets
             .iter()
-            .filter(|n| node_map.get(n).map_or(false, |node| node.replica_group == 1))
+            .filter(|n| {
+                node_map
+                    .get(n)
+                    .map_or(false, |node| node.replica_group == 1)
+            })
             .count();
 
         assert_eq!(group_0_count, 2, "Should have 2 nodes from group 0");
@@ -348,7 +372,10 @@ async fn acceptance_3_mid_sync_writes_present_on_both_groups_after_sync() {
     // Sync all shards using sync_iteration
     for _ in 0..20 {
         // Run multiple iterations to complete all shards
-        let completed = worker.sync_iteration().await.expect("Sync iteration should succeed");
+        let completed = worker
+            .sync_iteration()
+            .await
+            .expect("Sync iteration should succeed");
         if completed == 0 {
             // No more shards to sync
             break;
@@ -376,7 +403,10 @@ async fn acceptance_3_mid_sync_writes_present_on_both_groups_after_sync() {
         .filter(|(node, _, _)| node.as_str().starts_with("node-g1-"))
         .collect();
 
-    assert!(!group_1_nodes.is_empty(), "Should have written to group 1 nodes");
+    assert!(
+        !group_1_nodes.is_empty(),
+        "Should have written to group 1 nodes"
+    );
 }
 
 /// Acceptance test 4: Failed sync pauses without corrupting new group; resumes when source returns.
@@ -450,13 +480,18 @@ async fn acceptance_4_failed_sync_pauses_and_resumes() {
     // Then: Sync should succeed on retry
     let result = worker.sync_iteration().await;
 
-    assert!(result.is_ok(), "Sync iteration should succeed when source returns");
+    assert!(
+        result.is_ok(),
+        "Sync iteration should succeed when source returns"
+    );
 
     // And: At least one shard should be marked as complete
     {
         let coord = coordinator.read().await;
         let state = coord.get_state(addition_id).unwrap();
-        let complete_count = state.shard_states.values()
+        let complete_count = state
+            .shard_states
+            .values()
             .filter(|s| matches!(s, ShardSyncState::Complete { .. }))
             .count();
         assert!(
@@ -482,12 +517,30 @@ async fn test_round_robin_source_group_assignment() {
     let state = coordinator.get_state(addition_id).unwrap();
 
     // Verify round-robin assignment: shard 0 → group 0, shard 1 → group 1, shard 2 → group 2, shard 3 → group 0, ...
-    assert_eq!(coordinator.get_shard_source(addition_id, ShardId(0)), Some(0));
-    assert_eq!(coordinator.get_shard_source(addition_id, ShardId(1)), Some(1));
-    assert_eq!(coordinator.get_shard_source(addition_id, ShardId(2)), Some(2));
-    assert_eq!(coordinator.get_shard_source(addition_id, ShardId(3)), Some(0));
-    assert_eq!(coordinator.get_shard_source(addition_id, ShardId(4)), Some(1));
-    assert_eq!(coordinator.get_shard_source(addition_id, ShardId(5)), Some(2));
+    assert_eq!(
+        coordinator.get_shard_source(addition_id, ShardId(0)),
+        Some(0)
+    );
+    assert_eq!(
+        coordinator.get_shard_source(addition_id, ShardId(1)),
+        Some(1)
+    );
+    assert_eq!(
+        coordinator.get_shard_source(addition_id, ShardId(2)),
+        Some(2)
+    );
+    assert_eq!(
+        coordinator.get_shard_source(addition_id, ShardId(3)),
+        Some(0)
+    );
+    assert_eq!(
+        coordinator.get_shard_source(addition_id, ShardId(4)),
+        Some(1)
+    );
+    assert_eq!(
+        coordinator.get_shard_source(addition_id, ShardId(5)),
+        Some(2)
+    );
 }
 
 /// Test: Sync progress calculation.
@@ -531,7 +584,10 @@ async fn test_cannot_mark_active_before_sync_complete() {
     // Try to mark active before sync completes
     let result = coordinator.mark_group_active(addition_id);
 
-    assert!(result.is_err(), "Should not be able to mark active before sync completes");
+    assert!(
+        result.is_err(),
+        "Should not be able to mark active before sync completes"
+    );
 }
 
 /// Test: query_group_active only returns active groups.

@@ -14,10 +14,12 @@
 
 use crate::error::{MiroirError, Result};
 use crate::leader_election::LeaderElection;
-use crate::task_store::{ModeBOperation, ModeBOperationFilter, TaskStore, mode_b_status, mode_b_type};
+use crate::task_store::{
+    mode_b_status, mode_b_type, ModeBOperation, ModeBOperationFilter, TaskStore,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, warn};
 
 /// Phase state for a Mode B operation.
 ///
@@ -209,8 +211,9 @@ impl<E: Serialize + for<'de> Deserialize<'de>> ModeBOpLeader<E> {
             phase_started_at: self.phase_state.phase_started_at,
             created_at: millis_now(),
             updated_at: millis_now(),
-            state_json: serde_json::to_string(&self.extra_state)
-                .map_err(|e| MiroirError::TaskStore(format!("failed to serialize extra state: {}", e)))?,
+            state_json: serde_json::to_string(&self.extra_state).map_err(|e| {
+                MiroirError::TaskStore(format!("failed to serialize extra state: {}", e))
+            })?,
             error: self.phase_state.error.clone(),
             status: mode_b_status::RUNNING.to_string(),
             // Default values (reshard-specific)
@@ -246,8 +249,9 @@ impl<E: Serialize + for<'de> Deserialize<'de>> ModeBOpLeader<E> {
             phase_started_at: self.phase_state.phase_started_at,
             created_at: millis_now(),
             updated_at: millis_now(),
-            state_json: serde_json::to_string(&self.extra_state)
-                .map_err(|e| MiroirError::TaskStore(format!("failed to serialize extra state: {}", e)))?,
+            state_json: serde_json::to_string(&self.extra_state).map_err(|e| {
+                MiroirError::TaskStore(format!("failed to serialize extra state: {}", e))
+            })?,
             error: Some(error),
             status: mode_b_status::FAILED.to_string(),
             index_uid: None,
@@ -276,8 +280,9 @@ impl<E: Serialize + for<'de> Deserialize<'de>> ModeBOpLeader<E> {
             phase_started_at: self.phase_state.phase_started_at,
             created_at: millis_now(),
             updated_at: millis_now(),
-            state_json: serde_json::to_string(&self.extra_state)
-                .map_err(|e| MiroirError::TaskStore(format!("failed to serialize extra state: {}", e)))?,
+            state_json: serde_json::to_string(&self.extra_state).map_err(|e| {
+                MiroirError::TaskStore(format!("failed to serialize extra state: {}", e))
+            })?,
             error: None,
             status: mode_b_status::COMPLETED.to_string(),
             index_uid: None,
@@ -325,8 +330,9 @@ impl<E: Serialize + for<'de> Deserialize<'de>> ModeBOpLeader<E> {
 
             // Resume extra state if present
             if !op.state_json.is_empty() {
-                self.extra_state = serde_json::from_str(&op.state_json)
-                    .map_err(|e| MiroirError::TaskStore(format!("failed to deserialize extra state: {}", e)))?;
+                self.extra_state = serde_json::from_str(&op.state_json).map_err(|e| {
+                    MiroirError::TaskStore(format!("failed to deserialize extra state: {}", e))
+                })?;
             }
 
             info!(
@@ -400,11 +406,17 @@ mod tests {
         let mut leader = test_mode_b_leader();
         leader.try_acquire_leadership().await.unwrap();
 
-        leader.persist_phase("shadow_created".to_string()).await.unwrap();
+        leader
+            .persist_phase("shadow_created".to_string())
+            .await
+            .unwrap();
         assert_eq!(leader.phase(), "shadow_created");
 
         // Verify persistence
-        let recovered = leader.task_store.get_mode_b_operation_by_scope("reshard:test-index").unwrap();
+        let recovered = leader
+            .task_store
+            .get_mode_b_operation_by_scope("reshard:test-index")
+            .unwrap();
         assert!(recovered.is_some());
         let recovered = recovered.unwrap();
         assert_eq!(recovered.phase, "shadow_created");
@@ -443,7 +455,10 @@ mod tests {
         leader.extra_state().name = "test".to_string();
 
         // Persist a phase
-        leader.persist_phase("backfill_in_progress".to_string()).await.unwrap();
+        leader
+            .persist_phase("backfill_in_progress".to_string())
+            .await
+            .unwrap();
 
         // Create a new leader instance (simulating pod restart)
         let leader_election2 = Arc::new(LeaderElection::new(
@@ -481,7 +496,10 @@ mod tests {
         leader.fail("test error".to_string()).await.unwrap();
 
         // Verify status is failed
-        let recovered = leader.task_store.get_mode_b_operation_by_scope("reshard:test-index").unwrap();
+        let recovered = leader
+            .task_store
+            .get_mode_b_operation_by_scope("reshard:test-index")
+            .unwrap();
         assert!(recovered.is_some());
         let recovered = recovered.unwrap();
         assert_eq!(recovered.status, mode_b_status::FAILED);
@@ -499,7 +517,10 @@ mod tests {
         leader.complete().await.unwrap();
 
         // Verify status is completed
-        let recovered = leader.task_store.get_mode_b_operation_by_scope("reshard:test-index").unwrap();
+        let recovered = leader
+            .task_store
+            .get_mode_b_operation_by_scope("reshard:test-index")
+            .unwrap();
         assert!(recovered.is_some());
         let recovered = recovered.unwrap();
         assert_eq!(recovered.status, mode_b_status::COMPLETED);

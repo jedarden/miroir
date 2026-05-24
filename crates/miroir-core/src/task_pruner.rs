@@ -43,7 +43,11 @@ fn holder_id() -> String {
 /// * `cfg` - Task registry configuration
 /// * `mode_a_owner_fn` - Optional Mode A ownership function: `fn(miroir_id: &str) -> bool`
 ///                      If provided, only prunes tasks where this returns true.
-pub fn prune_once<F>(store: &dyn TaskStore, cfg: &TaskRegistryConfig, mode_a_owner_fn: Option<F>) -> usize
+pub fn prune_once<F>(
+    store: &dyn TaskStore,
+    cfg: &TaskRegistryConfig,
+    mode_a_owner_fn: Option<F>,
+) -> usize
 where
     F: Fn(&str) -> bool,
 {
@@ -91,7 +95,10 @@ where
     let now = now_ms();
     let cutoff = now - (cfg.ttl_seconds * 1000) as i64;
 
-    debug!("pruner: running Mode A with cutoff={cutoff}, batch_size={}", cfg.prune_batch_size);
+    debug!(
+        "pruner: running Mode A with cutoff={cutoff}, batch_size={}",
+        cfg.prune_batch_size
+    );
 
     let mut total_deleted = 0usize;
     let mut offset = 0i64;
@@ -154,7 +161,10 @@ fn prune_inner(store: &dyn TaskStore, cfg: &TaskRegistryConfig) -> usize {
     let now = now_ms();
     let cutoff = now - (cfg.ttl_seconds * 1000) as i64;
 
-    debug!("pruner: running with cutoff={cutoff}, batch_size={}", cfg.prune_batch_size);
+    debug!(
+        "pruner: running with cutoff={cutoff}, batch_size={}",
+        cfg.prune_batch_size
+    );
 
     let mut total_deleted = 0usize;
     loop {
@@ -212,7 +222,10 @@ where
     let handle = thread::Builder::new()
         .name("miroir-task-pruner".into())
         .spawn(move || {
-            info!("pruner: starting with interval={}s ttl={}s", cfg.prune_interval_s, cfg.ttl_seconds);
+            info!(
+                "pruner: starting with interval={}s ttl={}s",
+                cfg.prune_interval_s, cfg.ttl_seconds
+            );
             loop {
                 if flag_ref.load(Ordering::Relaxed) {
                     info!("pruner: stopping");

@@ -10,21 +10,11 @@
 use crate::error::{MiroirError, Result};
 use crate::settings::{fingerprint_settings, BroadcastPhase, SettingsBroadcast};
 use crate::task_store::{
-    NodeSettingsVersionRow, TaskStore,
-    NewTask, TaskRow, TaskFilter,
-    NewAlias, AliasRow,
-    SessionRow,
-    IdempotencyEntry,
-    NewJob, JobRow,
-    NewCanary, CanaryRow,
-    NewCanaryRun, CanaryRunRow,
-    NewCdcCursor, CdcCursorRow,
-    NewTenantMapping, TenantMapRow,
-    NewRolloverPolicy, RolloverPolicyRow,
-    NewSearchUiConfig, SearchUiConfigRow,
-    NewAdminSession, AdminSessionRow,
-    LeaderLeaseRow,
-    ModeBOperation, ModeBOperationFilter,
+    AdminSessionRow, AliasRow, CanaryRow, CanaryRunRow, CdcCursorRow, IdempotencyEntry, JobRow,
+    LeaderLeaseRow, ModeBOperation, ModeBOperationFilter, NewAdminSession, NewAlias, NewCanary,
+    NewCanaryRun, NewCdcCursor, NewJob, NewRolloverPolicy, NewSearchUiConfig, NewTask,
+    NewTenantMapping, NodeSettingsVersionRow, RolloverPolicyRow, SearchUiConfigRow, SessionRow,
+    TaskFilter, TaskRow, TaskStore, TenantMapRow,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -75,7 +65,9 @@ impl TaskStore for MockTaskStore {
         node_id: &str,
     ) -> Result<Option<NodeSettingsVersionRow>> {
         let versions = self.node_versions.lock().unwrap();
-        Ok(versions.get(&(index_uid.to_string(), node_id.to_string())).cloned())
+        Ok(versions
+            .get(&(index_uid.to_string(), node_id.to_string()))
+            .cloned())
     }
 
     // Stub implementations for other required traits
@@ -318,7 +310,10 @@ impl TaskStore for MockTaskStore {
         Ok(None)
     }
 
-    fn list_mode_b_operations(&self, _filter: &ModeBOperationFilter) -> Result<Vec<ModeBOperation>> {
+    fn list_mode_b_operations(
+        &self,
+        _filter: &ModeBOperationFilter,
+    ) -> Result<Vec<ModeBOperation>> {
         Ok(Vec::new())
     }
 
@@ -360,7 +355,10 @@ async fn acceptance_1_normal_flow_settings_broadcast() {
     assert!(status.is_some());
     let status = status.unwrap();
     assert_eq!(status.phase, BroadcastPhase::Propose);
-    assert_eq!(status.proposed_fingerprint, Some(expected_fingerprint.clone()));
+    assert_eq!(
+        status.proposed_fingerprint,
+        Some(expected_fingerprint.clone())
+    );
 
     // Phase 2: Verify - simulate successful PATCH on all nodes
     let mut node_task_uids = HashMap::new();
@@ -406,9 +404,7 @@ async fn acceptance_1_normal_flow_settings_broadcast() {
     let stored = tokio::task::spawn_blocking({
         let task_store = task_store.clone();
         let index = index.to_string();
-        move || {
-            task_store.get_node_settings_version(&index, "node-0")
-        }
+        move || task_store.get_node_settings_version(&index, "node-0")
     })
     .await
     .unwrap()
@@ -484,7 +480,10 @@ async fn acceptance_2_mid_broadcast_node_failure_recovery() {
     node_hashes_second_attempt.insert("node-2".to_string(), expected_fingerprint.clone());
 
     // Reset verify status for retry (in production this would be a new verify call)
-    broadcast.abort(index, "retrying after backoff".to_string()).await.ok();
+    broadcast
+        .abort(index, "retrying after backoff".to_string())
+        .await
+        .ok();
     broadcast
         .start_propose(index.to_string(), &settings)
         .await
@@ -621,7 +620,7 @@ async fn acceptance_4_version_floor_excludes_stale_nodes() {
 
     let mut node_task_uids_v2 = HashMap::new();
     node_task_uids_v2.insert("node-0".to_string(), 200u64);
-    node_task_uids_v2.insert("node-2".to_string(), 202u64);  // node-1 not included
+    node_task_uids_v2.insert("node-2".to_string(), 202u64); // node-1 not included
 
     broadcast
         .enter_verify(index, node_task_uids_v2.clone())
@@ -641,19 +640,13 @@ async fn acceptance_4_version_floor_excludes_stale_nodes() {
 
     // node-0 and node-2 should be at version 2, node-1 still at version 1
     assert_eq!(broadcast.node_version(index, "node-0").await, 2);
-    assert_eq!(broadcast.node_version(index, "node-1").await, 1);  // stale
+    assert_eq!(broadcast.node_version(index, "node-1").await, 1); // stale
     assert_eq!(broadcast.node_version(index, "node-2").await, 2);
 
     // Test version floor: floor=2 should exclude node-1
-    assert!(broadcast
-        .node_version_meets_floor(index, "node-0", 2)
-        .await);
-    assert!(!broadcast
-        .node_version_meets_floor(index, "node-1", 2)
-        .await);  // stale
-    assert!(broadcast
-        .node_version_meets_floor(index, "node-2", 2)
-        .await);
+    assert!(broadcast.node_version_meets_floor(index, "node-0", 2).await);
+    assert!(!broadcast.node_version_meets_floor(index, "node-1", 2).await); // stale
+    assert!(broadcast.node_version_meets_floor(index, "node-2", 2).await);
 
     // Test min_version across nodes
     let node_ids = vec![
@@ -662,7 +655,7 @@ async fn acceptance_4_version_floor_excludes_stale_nodes() {
         "node-2".to_string(),
     ];
     let min_version = broadcast.min_node_version(index, &node_ids).await;
-    assert_eq!(min_version, Some(1));  // minimum is 1 (node-1 is stale)
+    assert_eq!(min_version, Some(1)); // minimum is 1 (node-1 is stale)
 
     // Test that stale node is filtered out when using version floor
     // First, collect versions for all nodes
@@ -678,8 +671,8 @@ async fn acceptance_4_version_floor_excludes_stale_nodes() {
         .map(|(node_id, _)| node_id)
         .collect();
 
-    assert_eq!(eligible_nodes.len(), 2);  // Only node-0 and node-2
-    assert!(!eligible_nodes.contains(&&"node-1".to_string()));  // node-1 excluded
+    assert_eq!(eligible_nodes.len(), 2); // Only node-0 and node-2
+    assert!(!eligible_nodes.contains(&&"node-1".to_string())); // node-1 excluded
 }
 
 // ---------------------------------------------------------------------------
@@ -760,5 +753,8 @@ fn test_fingerprint_uniqueness() {
     let fp2 = fingerprint_settings(&settings2);
 
     // Different array order should produce different fingerprints
-    assert_ne!(fp1, fp2, "different settings should produce different fingerprints");
+    assert_ne!(
+        fp1, fp2,
+        "different settings should produce different fingerprints"
+    );
 }

@@ -13,19 +13,26 @@ use opentelemetry::trace::TracerProvider;
 /// Returns `Some(layer)` when tracing is enabled, `None` otherwise.
 /// The caller is responsible for adding the layer to the subscriber.
 #[cfg(feature = "tracing")]
-pub fn init_otel_layer(config: &MiroirConfig) -> Option<tracing_opentelemetry::OpenTelemetryLayer<tracing_subscriber::Registry, opentelemetry_sdk::trace::Tracer>> {
+pub fn init_otel_layer(
+    config: &MiroirConfig,
+) -> Option<
+    tracing_opentelemetry::OpenTelemetryLayer<
+        tracing_subscriber::Registry,
+        opentelemetry_sdk::trace::Tracer,
+    >,
+> {
     if !config.tracing.enabled {
         return None;
     }
 
+    use opentelemetry::KeyValue;
+    use opentelemetry_otlp::WithExportConfig;
+    use opentelemetry_sdk::propagation::TraceContextPropagator;
     use opentelemetry_sdk::{
-        trace::{TracerProvider as SdkTracerProvider, Sampler, Tracer},
+        trace::{Sampler, Tracer, TracerProvider as SdkTracerProvider},
         Resource,
     };
-    use opentelemetry_sdk::propagation::TraceContextPropagator;
     use tracing_opentelemetry::OpenTelemetryLayer;
-    use opentelemetry_otlp::WithExportConfig;
-    use opentelemetry::KeyValue;
 
     // Set global propagator for distributed tracing
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());

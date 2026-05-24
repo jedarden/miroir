@@ -24,8 +24,8 @@ use crate::peer_discovery::{PeerDiscovery, PeerId, PeerSet};
 use std::hash::Hasher;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use twox_hash::XxHash64;
 use tracing::{debug, info, warn};
+use twox_hash::XxHash64;
 
 /// Error type for Mode A coordination.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -76,7 +76,10 @@ impl ModeACoordinator {
     ///
     /// Should be called periodically (e.g., every 15s per plan §14.5).
     pub async fn refresh_peers(&self) -> Result<usize> {
-        let new_peer_set = self.peer_discovery.refresh().await?;
+        let new_peer_set = self.peer_discovery.refresh().await.map_err(|e| {
+            warn!("peer discovery failed: {}", e);
+            ModeAError::NoPeers
+        })?;
 
         let peer_count = new_peer_set.peers.len();
         if peer_count == 0 {

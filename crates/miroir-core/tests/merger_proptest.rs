@@ -6,7 +6,7 @@
 //! - Monotonicity: larger limits return >= results
 //! - Result size respects limit
 
-use miroir_core::merger::{merge, MergeInput, ShardHitPage, RrfStrategy, MergeStrategy};
+use miroir_core::merger::{merge, MergeInput, MergeStrategy, RrfStrategy, ShardHitPage};
 use proptest::prelude::*;
 use serde_json::json;
 

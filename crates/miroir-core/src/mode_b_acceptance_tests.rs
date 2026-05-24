@@ -10,7 +10,7 @@
 use crate::config::LeaderElectionConfig;
 use crate::leader_election::LeaderElection;
 use crate::mode_b_coordinator::{ModeBOpLeader, PhaseState};
-use crate::task_store::{SqliteTaskStore, TaskStore, mode_b_type};
+use crate::task_store::{mode_b_type, SqliteTaskStore, TaskStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -60,10 +60,7 @@ fn shared_test_store() -> Arc<dyn TaskStore> {
 }
 
 /// Create a leader election instance.
-fn leader_election(
-    store: Arc<dyn TaskStore>,
-    pod_id: String,
-) -> Arc<LeaderElection> {
+fn leader_election(store: Arc<dyn TaskStore>, pod_id: String) -> Arc<LeaderElection> {
     let config = LeaderElectionConfig {
         enabled: true,
         lease_ttl_s: 10,
@@ -204,11 +201,17 @@ async fn p6_4_a3_reshard_leader_loss_resumes_at_verify_phase() {
 
     // Simulate progressing through phases
     // Phase 1: shadow_created
-    leader1.persist_phase("shadow_created".to_string()).await.unwrap();
+    leader1
+        .persist_phase("shadow_created".to_string())
+        .await
+        .unwrap();
     assert_eq!(leader1.phase(), "shadow_created");
 
     // Phase 2: backfill_in_progress
-    leader1.persist_phase("backfill_in_progress".to_string()).await.unwrap();
+    leader1
+        .persist_phase("backfill_in_progress".to_string())
+        .await
+        .unwrap();
     assert_eq!(leader1.phase(), "backfill_in_progress");
 
     // Update extra state to simulate backfill progress
@@ -219,10 +222,16 @@ async fn p6_4_a3_reshard_leader_loss_resumes_at_verify_phase() {
     leader1.extra_state().documents_backfilled = 5000;
     leader1.extra_state().total_documents = 10000;
     leader1.extra_state().shard_cursor = Some(5000);
-    leader1.persist_phase("backfill_in_progress".to_string()).await.unwrap();
+    leader1
+        .persist_phase("backfill_in_progress".to_string())
+        .await
+        .unwrap();
 
     // Phase 3: verification (this is where pod-1 crashes)
-    leader1.persist_phase("verification".to_string()).await.unwrap();
+    leader1
+        .persist_phase("verification".to_string())
+        .await
+        .unwrap();
     assert_eq!(leader1.phase(), "verification");
 
     // Simulate pod-1 crash by stepping down
@@ -237,7 +246,11 @@ async fn p6_4_a3_reshard_leader_loss_resumes_at_verify_phase() {
     assert!(recovered.is_some());
 
     // Verify we resumed at verification, not shadow_created
-    assert_eq!(leader2.phase(), "verification", "should resume at verification phase");
+    assert_eq!(
+        leader2.phase(),
+        "verification",
+        "should resume at verification phase"
+    );
 
     // Verify extra state was preserved
     let extra = leader2.extra_state_ref();
@@ -264,7 +277,8 @@ async fn p6_4_a4_2pc_leader_loss_resumes_at_verify_phase() {
     let index_uid = "test-index";
 
     // Pod-1 starts a 2PC settings broadcast
-    let mut leader1 = settings_broadcast_leader(store.clone(), "pod-1".to_string(), index_uid.to_string());
+    let mut leader1 =
+        settings_broadcast_leader(store.clone(), "pod-1".to_string(), index_uid.to_string());
     leader1.try_acquire_leadership().await.unwrap();
 
     // Set up initial state
@@ -275,7 +289,11 @@ async fn p6_4_a4_2pc_leader_loss_resumes_at_verify_phase() {
     // Phase 1: propose - all nodes ACK
     leader1.persist_phase("propose".to_string()).await.unwrap();
     leader1.extra_state().phase = "propose".to_string();
-    leader1.extra_state().propose_acks = vec!["node-0".to_string(), "node-1".to_string(), "node-2".to_string()];
+    leader1.extra_state().propose_acks = vec![
+        "node-0".to_string(),
+        "node-1".to_string(),
+        "node-2".to_string(),
+    ];
     leader1.persist_phase("propose".to_string()).await.unwrap();
 
     // Phase 2: verify (this is where pod-1 crashes)
@@ -291,7 +309,8 @@ async fn p6_4_a4_2pc_leader_loss_resumes_at_verify_phase() {
     leader1.step_down().await.unwrap();
 
     // Pod-2 takes over and should resume at verify
-    let mut leader2 = settings_broadcast_leader(store.clone(), "pod-2".to_string(), index_uid.to_string());
+    let mut leader2 =
+        settings_broadcast_leader(store.clone(), "pod-2".to_string(), index_uid.to_string());
     leader2.try_acquire_leadership().await.unwrap();
 
     // Recover state
@@ -306,7 +325,11 @@ async fn p6_4_a4_2pc_leader_loss_resumes_at_verify_phase() {
     assert_eq!(extra.index_uid, index_uid);
     assert_eq!(extra.settings_version, 42);
     assert_eq!(extra.total_nodes, 3);
-    assert_eq!(extra.propose_acks.len(), 3, "all nodes should have ACKed propose");
+    assert_eq!(
+        extra.propose_acks.len(),
+        3,
+        "all nodes should have ACKed propose"
+    );
     assert_eq!(extra.commit_acks.len(), 2, "2 nodes have ACKed commit");
 
     // Pod-2 can continue from verify, collecting the final ACK
@@ -317,7 +340,6 @@ async fn p6_4_a4_2pc_leader_loss_resumes_at_verify_phase() {
     leader2.persist_phase("commit".to_string()).await.unwrap();
     assert_eq!(leader2.phase(), "commit");
 }
-
 
 /// P6.4-A5: miroir_leader metric sum is always 1 (or 0 transiently).
 ///
@@ -360,7 +382,11 @@ async fn p6_4_a5_miroir_leader_metric_sum_is_one() {
     assert_eq!(leader_count, 0, "initially no leader");
 
     // Pod-1 acquires leadership
-    let mut leader1 = reshard_leader(store.clone(), "pod-1".to_string(), "metric-test".to_string());
+    let mut leader1 = reshard_leader(
+        store.clone(),
+        "pod-1".to_string(),
+        "metric-test".to_string(),
+    );
     leader1.try_acquire_leadership().await.unwrap();
 
     // Now sum should be 1
@@ -385,7 +411,11 @@ async fn p6_4_a5_miroir_leader_metric_sum_is_one() {
     assert_eq!(leader_count, 0, "transiently 0 after stepdown");
 
     // Pod-2 acquires leadership
-    let mut leader2 = reshard_leader(store.clone(), "pod-2".to_string(), "metric-test".to_string());
+    let mut leader2 = reshard_leader(
+        store.clone(),
+        "pod-2".to_string(),
+        "metric-test".to_string(),
+    );
     leader2.try_acquire_leadership().await.unwrap();
 
     // Sum is back to 1
@@ -407,7 +437,11 @@ async fn p6_4_a6_lease_renewal_extends_expiration() {
     let scope = "reshard:renewal-test";
 
     // Pod-1 acquires leadership
-    let mut leader1 = reshard_leader(store.clone(), "pod-1".to_string(), "renewal-test".to_string());
+    let mut leader1 = reshard_leader(
+        store.clone(),
+        "pod-1".to_string(),
+        "renewal-test".to_string(),
+    );
     leader1.try_acquire_leadership().await.unwrap();
 
     // Get the initial lease expiration
@@ -456,7 +490,11 @@ async fn p6_4_a7_expired_lease_allows_acquisition() {
     let scope = "reshard:expire-test";
 
     // Pod-1 acquires leadership with a short TTL (simulated via direct store manipulation)
-    let mut leader1 = reshard_leader(store.clone(), "pod-1".to_string(), "expire-test".to_string());
+    let mut leader1 = reshard_leader(
+        store.clone(),
+        "pod-1".to_string(),
+        "expire-test".to_string(),
+    );
     leader1.try_acquire_leadership().await.unwrap();
 
     // Manually set the lease expiration to the past to simulate expiry
@@ -464,23 +502,31 @@ async fn p6_4_a7_expired_lease_allows_acquisition() {
     tokio::task::spawn_blocking({
         let store = store.clone();
         let scope = scope.to_string();
-        move || {
-            store.renew_leader_lease(&scope, "pod-1", expired_time)
-        }
+        move || store.renew_leader_lease(&scope, "pod-1", expired_time)
     })
     .await
     .unwrap()
     .unwrap();
 
     // Pod-2 should now be able to acquire the lease (it's expired)
-    let mut leader2 = reshard_leader(store.clone(), "pod-2".to_string(), "expire-test".to_string());
-    assert!(leader2.try_acquire_leadership().await.unwrap(), "pod-2 should acquire expired lease");
+    let mut leader2 = reshard_leader(
+        store.clone(),
+        "pod-2".to_string(),
+        "expire-test".to_string(),
+    );
+    assert!(
+        leader2.try_acquire_leadership().await.unwrap(),
+        "pod-2 should acquire expired lease"
+    );
 
     // Verify pod-2 is the leader
     assert!(leader2.is_leader());
 
     // Pod-1 should no longer be able to renew
-    assert!(!leader1.renew_leadership().await.unwrap(), "pod-1 should not renew after losing lease");
+    assert!(
+        !leader1.renew_leadership().await.unwrap(),
+        "pod-1 should not renew after losing lease"
+    );
 }
 
 /// P6.4-A8: Multiple operation scopes have independent leaders.
@@ -492,7 +538,8 @@ async fn p6_4_a8_multiple_scopes_independent_leaders() {
     let store = shared_test_store();
 
     // Pod-1 is leader for reshard:products
-    let mut leader1_reshard = reshard_leader(store.clone(), "pod-1".to_string(), "products".to_string());
+    let mut leader1_reshard =
+        reshard_leader(store.clone(), "pod-1".to_string(), "products".to_string());
     leader1_reshard.try_acquire_leadership().await.unwrap();
     assert!(leader1_reshard.is_leader());
 
@@ -520,7 +567,8 @@ async fn p6_4_a8_multiple_scopes_independent_leaders() {
     assert!(!leader1_ilm.try_acquire_leadership().await.unwrap());
 
     // Pod-2 can't lead reshard:products (pod-1 has it)
-    let mut leader2_reshard = reshard_leader(store.clone(), "pod-2".to_string(), "products".to_string());
+    let mut leader2_reshard =
+        reshard_leader(store.clone(), "pod-2".to_string(), "products".to_string());
     assert!(!leader2_reshard.try_acquire_leadership().await.unwrap());
 
     // Both scopes have different leaders simultaneously
@@ -542,13 +590,22 @@ async fn p6_4_a9_phase_state_persists_across_restarts() {
     leader1.try_acquire_leadership().await.unwrap();
 
     // Progress through phases
-    leader1.persist_phase("shadow_created".to_string()).await.unwrap();
+    leader1
+        .persist_phase("shadow_created".to_string())
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
-    leader1.persist_phase("backfill_in_progress".to_string()).await.unwrap();
+    leader1
+        .persist_phase("backfill_in_progress".to_string())
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
-    leader1.persist_phase("verification".to_string()).await.unwrap();
+    leader1
+        .persist_phase("verification".to_string())
+        .await
+        .unwrap();
 
     // Verify the operation exists in the task store
     let operation = tokio::task::spawn_blocking({
@@ -566,7 +623,8 @@ async fn p6_4_a9_phase_state_persists_across_restarts() {
     assert_eq!(op.status, "running");
 
     // Simulate pod restart: create a new leader instance for the same pod
-    let mut leader1_restart = reshard_leader(store.clone(), "pod-1".to_string(), index_uid.to_string());
+    let mut leader1_restart =
+        reshard_leader(store.clone(), "pod-1".to_string(), index_uid.to_string());
     leader1_restart.try_acquire_leadership().await.unwrap();
 
     // Should recover the persisted phase
@@ -588,9 +646,18 @@ async fn p6_4_a10_operation_completion_deletes_state() {
     let mut leader1 = reshard_leader(store.clone(), "pod-1".to_string(), index_uid.to_string());
     leader1.try_acquire_leadership().await.unwrap();
 
-    leader1.persist_phase("shadow_created".to_string()).await.unwrap();
-    leader1.persist_phase("backfill_in_progress".to_string()).await.unwrap();
-    leader1.persist_phase("verification".to_string()).await.unwrap();
+    leader1
+        .persist_phase("shadow_created".to_string())
+        .await
+        .unwrap();
+    leader1
+        .persist_phase("backfill_in_progress".to_string())
+        .await
+        .unwrap();
+    leader1
+        .persist_phase("verification".to_string())
+        .await
+        .unwrap();
     leader1.persist_phase("swap".to_string()).await.unwrap();
     leader1.persist_phase("cleanup".to_string()).await.unwrap();
 
@@ -629,11 +696,20 @@ async fn p6_4_a11_operation_failure_marks_failed() {
     let mut leader1 = reshard_leader(store.clone(), "pod-1".to_string(), index_uid.to_string());
     leader1.try_acquire_leadership().await.unwrap();
 
-    leader1.persist_phase("shadow_created".to_string()).await.unwrap();
-    leader1.persist_phase("backfill_in_progress".to_string()).await.unwrap();
+    leader1
+        .persist_phase("shadow_created".to_string())
+        .await
+        .unwrap();
+    leader1
+        .persist_phase("backfill_in_progress".to_string())
+        .await
+        .unwrap();
 
     // Fail with an error
-    leader1.fail("connection timeout to Meilisearch".to_string()).await.unwrap();
+    leader1
+        .fail("connection timeout to Meilisearch".to_string())
+        .await
+        .unwrap();
 
     // Verify status is failed
     let scope = format!("reshard:{}", index_uid);
@@ -648,7 +724,10 @@ async fn p6_4_a11_operation_failure_marks_failed() {
     assert!(operation.is_some());
     let op = operation.unwrap();
     assert_eq!(op.status, "failed");
-    assert_eq!(op.error, Some("connection timeout to Meilisearch".to_string()));
+    assert_eq!(
+        op.error,
+        Some("connection timeout to Meilisearch".to_string())
+    );
 
     // Leader stepped down
     assert!(!leader1.is_leader());

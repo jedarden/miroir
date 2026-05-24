@@ -2,7 +2,7 @@
 
 use crate::{
     error::{MiroirError, Result},
-    task_store::{NewCanary, NewCanaryRun, CanaryRow, TaskStore},
+    task_store::{CanaryRow, NewCanary, NewCanaryRun, TaskStore},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -88,7 +88,15 @@ pub struct Hit {
 }
 
 /// Search executor callback for canary queries.
-pub type SearchExecutor = Arc<dyn Fn(&str, &SearchQuery) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SearchResponse>> + Send>> + Send + Sync>;
+pub type SearchExecutor = Arc<
+    dyn Fn(
+            &str,
+            &SearchQuery,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SearchResponse>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Metrics emitter callback for canary runs.
 pub type MetricsEmitter = Arc<dyn Fn(&CanaryRunResult) + Send + Sync>;
@@ -212,7 +220,9 @@ impl CanaryRunner {
 
         // Parse assertions
         let assertions: Vec<CanaryAssertion> = serde_json::from_str(&canary.assertions_json)
-            .map_err(|e| MiroirError::InvalidRequest(format!("Invalid canary assertions: {}", e)))?;
+            .map_err(|e| {
+                MiroirError::InvalidRequest(format!("Invalid canary assertions: {}", e))
+            })?;
 
         // Execute the search query against the index
         // Note: This would need to be wired to the actual search client
@@ -224,7 +234,9 @@ impl CanaryRunner {
         // Evaluate assertions
         let mut failed_assertions = Vec::new();
         for assertion in &assertions {
-            if let Some(failure) = self.evaluate_assertion(&assertion, &search_response, latency_ms, &canary.index_uid) {
+            if let Some(failure) =
+                self.evaluate_assertion(&assertion, &search_response, latency_ms, &canary.index_uid)
+            {
                 failed_assertions.push(failure);
             }
         }
@@ -242,7 +254,12 @@ impl CanaryRunner {
             latency_ms,
             failed_assertions,
             hit_count: search_response.hits.len(),
-            top_hit_id: search_response.hits.first().and_then(|h| h.fields.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())),
+            top_hit_id: search_response.hits.first().and_then(|h| {
+                h.fields
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            }),
         };
 
         // Store the run
@@ -258,7 +275,8 @@ impl CanaryRunner {
             },
         };
 
-        self.store.insert_canary_run(&new_run, self.run_history_limit)?;
+        self.store
+            .insert_canary_run(&new_run, self.run_history_limit)?;
 
         // Emit metrics
         self.emit_metrics(&result);
@@ -282,7 +300,9 @@ impl CanaryRunner {
     ) -> Option<AssertionFailure> {
         match assertion {
             CanaryAssertion::TopHitId { value } => {
-                let top_hit_id = response.hits.first()
+                let top_hit_id = response
+                    .hits
+                    .first()
                     .and_then(|h| h.fields.get("id"))
                     .and_then(|v| v.as_str());
 
@@ -297,13 +317,16 @@ impl CanaryRunner {
                 }
             }
             CanaryAssertion::TopKContains { k, ids } => {
-                let top_k_ids: Vec<&str> = response.hits.iter()
+                let top_k_ids: Vec<&str> = response
+                    .hits
+                    .iter()
                     .take(*k)
                     .filter_map(|h| h.fields.get("id"))
                     .filter_map(|v| v.as_str())
                     .collect();
 
-                let missing: Vec<_> = ids.iter()
+                let missing: Vec<_> = ids
+                    .iter()
                     .filter(|id| !top_k_ids.contains(&id.as_str()))
                     .collect();
 
@@ -322,7 +345,11 @@ impl CanaryRunner {
                         assertion_type: "min_hits".to_string(),
                         expected: serde_json::json!(value),
                         actual: serde_json::json!(response.hits.len()),
-                        message: format!("Hit count below minimum: {} < {}", response.hits.len(), value),
+                        message: format!(
+                            "Hit count below minimum: {} < {}",
+                            response.hits.len(),
+                            value
+                        ),
                     });
                 }
             }
@@ -338,24 +365,28 @@ impl CanaryRunner {
             }
             CanaryAssertion::SettingsVersionAtLeast { value } => {
                 // Get current settings version for the index
-                let current_version = (self.settings_version_checker)(index_uid)
-                    .unwrap_or(0);
+                let current_version = (self.settings_version_checker)(index_uid).unwrap_or(0);
 
                 if current_version < *value {
                     return Some(AssertionFailure {
                         assertion_type: "settings_version_at_least".to_string(),
                         expected: serde_json::json!(value),
                         actual: serde_json::json!(current_version),
-                        message: format!("Settings version below minimum: {} < {}", current_version, value),
+                        message: format!(
+                            "Settings version below minimum: {} < {}",
+                            current_version, value
+                        ),
                     });
                 }
             }
             CanaryAssertion::MustNotContainId { id } => {
-                let contains = response.hits.iter()
-                    .any(|h| h.fields.get("id")
+                let contains = response.hits.iter().any(|h| {
+                    h.fields
+                        .get("id")
                         .and_then(|v| v.as_str())
                         .map(|v| v == id.as_str())
-                        .unwrap_or(false));
+                        .unwrap_or(false)
+                });
 
                 if contains {
                     return Some(AssertionFailure {
@@ -431,10 +462,12 @@ pub fn create_canary(
         name,
         index_uid,
         interval_s,
-        query_json: serde_json::to_string(&query)
-            .map_err(|e| MiroirError::InvalidRequest(format!("Failed to serialize query: {}", e)))?,
-        assertions_json: serde_json::to_string(&assertions)
-            .map_err(|e| MiroirError::InvalidRequest(format!("Failed to serialize assertions: {}", e)))?,
+        query_json: serde_json::to_string(&query).map_err(|e| {
+            MiroirError::InvalidRequest(format!("Failed to serialize query: {}", e))
+        })?,
+        assertions_json: serde_json::to_string(&assertions).map_err(|e| {
+            MiroirError::InvalidRequest(format!("Failed to serialize assertions: {}", e))
+        })?,
         enabled: true,
         created_at: now,
     })

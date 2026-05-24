@@ -21,9 +21,7 @@
 //!   correctly ranks higher after normalization.
 
 use miroir_core::merger::{MergeInput, MergeStrategy, ScoreMergeStrategy};
-use miroir_core::scatter::{
-    GlobalIdf, PreflightRequest, PreflightResponse, TermStats,
-};
+use miroir_core::scatter::{GlobalIdf, PreflightRequest, PreflightResponse, TermStats};
 use miroir_core::topology::{Node, NodeId, Topology};
 use serde_json::json;
 use std::collections::HashMap;
@@ -204,7 +202,10 @@ fn test_score_merge_without_global_idf_fails_skewed_corpus() {
         shard_hits: vec![
             serde_json::from_value(large_shard_search_response()).unwrap(),
             serde_json::from_value(small_shard_search_response()).unwrap(),
-        ].into_iter().map(|body| miroir_core::merger::ShardHitPage { body }).collect(),
+        ]
+        .into_iter()
+        .map(|body| miroir_core::merger::ShardHitPage { body })
+        .collect(),
         offset: 0,
         limit: 10,
         client_requested_score: true,
@@ -217,7 +218,11 @@ fn test_score_merge_without_global_idf_fails_skewed_corpus() {
     // Without global IDF, the inflated score from the large shard wins
     assert_eq!(result.hits[0].get("id").unwrap(), "doc-large");
     assert_eq!(
-        result.hits[0].get("_rankingScore").unwrap().as_f64().unwrap(),
+        result.hits[0]
+            .get("_rankingScore")
+            .unwrap()
+            .as_f64()
+            .unwrap(),
         0.92
     );
 
@@ -238,7 +243,10 @@ fn test_score_merge_with_global_idf_corrects_skew() {
         shard_hits: vec![
             serde_json::from_value(large_response).unwrap(),
             serde_json::from_value(small_response).unwrap(),
-        ].into_iter().map(|body| miroir_core::merger::ShardHitPage { body }).collect(),
+        ]
+        .into_iter()
+        .map(|body| miroir_core::merger::ShardHitPage { body })
+        .collect(),
         offset: 0,
         limit: 10,
         client_requested_score: true,
@@ -251,14 +259,22 @@ fn test_score_merge_with_global_idf_corrects_skew() {
     // With global IDF, the small shard doc (higher density) ranks first
     assert_eq!(result.hits[0].get("id").unwrap(), "doc-small");
     assert_eq!(
-        result.hits[0].get("_rankingScore").unwrap().as_f64().unwrap(),
+        result.hits[0]
+            .get("_rankingScore")
+            .unwrap()
+            .as_f64()
+            .unwrap(),
         0.88
     );
 
     // The large shard doc (lower density) ranks second
     assert_eq!(result.hits[1].get("id").unwrap(), "doc-large");
     assert_eq!(
-        result.hits[1].get("_rankingScore").unwrap().as_f64().unwrap(),
+        result.hits[1]
+            .get("_rankingScore")
+            .unwrap()
+            .as_f64()
+            .unwrap(),
         0.72
     );
 }
@@ -330,12 +346,12 @@ fn test_preflight_request_serialization() {
 
     let json = serde_json::to_value(&req).unwrap();
 
-    assert_eq!(json.get("index_uid").unwrap().as_str().unwrap(), "test-index");
-    assert!(json.get("terms").unwrap().is_array());
     assert_eq!(
-        json.get("terms").unwrap().as_array().unwrap().len(),
-        2
+        json.get("index_uid").unwrap().as_str().unwrap(),
+        "test-index"
     );
+    assert!(json.get("terms").unwrap().is_array());
+    assert_eq!(json.get("terms").unwrap().as_array().unwrap().len(), 2);
     // Filter serializes as a string "category = 'books'"
     assert!(json.get("filter").is_some());
 

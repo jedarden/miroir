@@ -7,9 +7,9 @@ use axum::{
 };
 use miroir_core::{
     config::UnavailableShardPolicy,
-    merger::{ScoreMergeStrategy, MergeStrategy},
-    multi_search::{MultiSearchExecutor, SearchResultData, MultiSearchResponse},
-    scatter::{dfs_query_then_fetch_search, plan_search_scatter, SearchRequest, NodeClient},
+    merger::{MergeStrategy, ScoreMergeStrategy},
+    multi_search::{MultiSearchExecutor, MultiSearchResponse, SearchResultData},
+    scatter::{dfs_query_then_fetch_search, plan_search_scatter, NodeClient, SearchRequest},
     topology::Topology,
 };
 use serde::{Deserialize, Serialize};
@@ -70,7 +70,8 @@ pub struct SearchResponse {
     pub processing_time_ms: u64,
     pub query: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub facet_distribution: Option<std::collections::BTreeMap<String, std::collections::BTreeMap<String, u64>>>,
+    pub facet_distribution:
+        Option<std::collections::BTreeMap<String, std::collections::BTreeMap<String, u64>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub degraded: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -85,8 +86,14 @@ pub struct ProxyNodeClient {
 }
 
 impl ProxyNodeClient {
-    pub fn new(client: Arc<crate::client::HttpClient>, metrics: crate::middleware::Metrics) -> Self {
-        Self { client, metrics: Arc::new(metrics) }
+    pub fn new(
+        client: Arc<crate::client::HttpClient>,
+        metrics: crate::middleware::Metrics,
+    ) -> Self {
+        Self {
+            client,
+            metrics: Arc::new(metrics),
+        }
     }
 }
 
@@ -101,7 +108,8 @@ impl NodeClient for ProxyNodeClient {
         let start = Instant::now();
         let result = self.client.search_node(node, address, request).await;
         let elapsed = start.elapsed().as_secs_f64();
-        self.metrics.record_node_request_duration(node.as_str(), "search", elapsed);
+        self.metrics
+            .record_node_request_duration(node.as_str(), "search", elapsed);
         if let Err(ref e) = result {
             self.metrics.inc_node_errors(node.as_str(), error_label(e));
         }
@@ -113,11 +121,13 @@ impl NodeClient for ProxyNodeClient {
         node: &miroir_core::topology::NodeId,
         address: &str,
         request: &miroir_core::scatter::PreflightRequest,
-    ) -> std::result::Result<miroir_core::scatter::PreflightResponse, miroir_core::scatter::NodeError> {
+    ) -> std::result::Result<miroir_core::scatter::PreflightResponse, miroir_core::scatter::NodeError>
+    {
         let start = Instant::now();
         let result = self.client.preflight_node(node, address, request).await;
         let elapsed = start.elapsed().as_secs_f64();
-        self.metrics.record_node_request_duration(node.as_str(), "preflight", elapsed);
+        self.metrics
+            .record_node_request_duration(node.as_str(), "preflight", elapsed);
         if let Err(ref e) = result {
             self.metrics.inc_node_errors(node.as_str(), error_label(e));
         }
@@ -200,45 +210,55 @@ where
         // (multi-target alias fanout is handled by expanding queries in future)
         q.index_uid = effective_index;
 
-        let filter_str = q.filter.as_ref()
-            .and_then(|v| if v.is_null() || v.is_string() && v.as_str().map(|s| s.is_empty()).unwrap_or(false) {
+        let filter_str = q.filter.as_ref().and_then(|v| {
+            if v.is_null() || v.is_string() && v.as_str().map(|s| s.is_empty()).unwrap_or(false) {
                 None
             } else {
                 serde_json::to_string(v).ok()
-            });
+            }
+        });
 
         queries_with_resolutions.push((q, filter_str, resolved_targets));
     }
 
     let core_request = miroir_core::multi_search::MultiSearchRequest {
-        queries: queries_with_resolutions.into_iter().map(|(q, filter_str, _resolved_targets)| {
-            miroir_core::multi_search::SearchQuery {
-                indexUid: q.index_uid,
-                q: q.q,
-                filter: filter_str,
-                limit: q.limit,
-                offset: q.offset,
-                other: {
-                    let mut map = std::collections::HashMap::new();
-                    if let Some(sort) = q.sort {
-                        map.insert("sort".to_string(), serde_json::to_value(sort).unwrap());
-                    }
-                    if let Some(facets) = q.facets {
-                        map.insert("facets".to_string(), serde_json::to_value(facets).unwrap());
-                    }
-                    if let Some(ranking_score) = q.ranking_score {
-                        map.insert("rankingScore".to_string(), serde_json::to_value(ranking_score).unwrap());
-                    }
-                    // Add any additional fields from rest
-                    if let Ok(obj) = serde_json::from_value::<std::collections::HashMap<String, Value>>(q.rest) {
-                        for (k, v) in obj {
-                            map.entry(k).or_insert(v);
+        queries: queries_with_resolutions
+            .into_iter()
+            .map(|(q, filter_str, _resolved_targets)| {
+                miroir_core::multi_search::SearchQuery {
+                    indexUid: q.index_uid,
+                    q: q.q,
+                    filter: filter_str,
+                    limit: q.limit,
+                    offset: q.offset,
+                    other: {
+                        let mut map = std::collections::HashMap::new();
+                        if let Some(sort) = q.sort {
+                            map.insert("sort".to_string(), serde_json::to_value(sort).unwrap());
                         }
-                    }
-                    map
-                },
-            }
-        }).collect()
+                        if let Some(facets) = q.facets {
+                            map.insert("facets".to_string(), serde_json::to_value(facets).unwrap());
+                        }
+                        if let Some(ranking_score) = q.ranking_score {
+                            map.insert(
+                                "rankingScore".to_string(),
+                                serde_json::to_value(ranking_score).unwrap(),
+                            );
+                        }
+                        // Add any additional fields from rest
+                        if let Ok(obj) = serde_json::from_value::<
+                            std::collections::HashMap<String, Value>,
+                        >(q.rest)
+                        {
+                            for (k, v) in obj {
+                                map.entry(k).or_insert(v);
+                            }
+                        }
+                        map
+                    },
+                }
+            })
+            .collect(),
     };
 
     // Execute multi-search with scatter-gather
@@ -269,10 +289,13 @@ where
                     config.replication_factor as usize,
                     config.shards,
                     replica_selector_ref,
-                ).await;
+                )
+                .await;
 
                 // Build search request
-                let filter_value = query.filter.as_ref()
+                let filter_value = query
+                    .filter
+                    .as_ref()
                     .and_then(|s| serde_json::from_str::<Value>(s).ok());
                 let search_req = SearchRequest {
                     index_uid: query.indexUid.clone(),
@@ -280,10 +303,13 @@ where
                     offset: query.offset.unwrap_or(0),
                     limit: query.limit.unwrap_or(20),
                     filter: filter_value,
-                    facets: query.other.get("facets").and_then(|v| {
-                        serde_json::from_value::<Vec<String>>(v.clone()).ok()
-                    }),
-                    ranking_score: query.other.get("rankingScore")
+                    facets: query
+                        .other
+                        .get("facets")
+                        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok()),
+                    ranking_score: query
+                        .other
+                        .get("rankingScore")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false),
                     body: serde_json::json!(query.other),
@@ -336,7 +362,9 @@ where
                             "multi-search query completed"
                         );
 
-                        Ok(SearchResultData { body: serde_json::to_value(search_response).unwrap() })
+                        Ok(SearchResultData {
+                            body: serde_json::to_value(search_response).unwrap(),
+                        })
                     }
                     Err(e) => {
                         debug!(

@@ -21,7 +21,12 @@ use miroir_core::router::shard_for_key;
 use serde_json::json;
 use std::collections::HashMap;
 
-fn make_config(shards: u32, rf: u32, replica_groups: u32, node_addresses: Vec<String>) -> MiroirConfig {
+fn make_config(
+    shards: u32,
+    rf: u32,
+    replica_groups: u32,
+    node_addresses: Vec<String>,
+) -> MiroirConfig {
     let nodes: Vec<NodeConfig> = node_addresses
         .into_iter()
         .enumerate()
@@ -69,7 +74,10 @@ fn acceptance_1_1000_docs_indexed_retrievable() {
     for doc in &documents {
         let id = doc.get("id").and_then(|v| v.as_str()).unwrap();
         let shard_id = shard_for_key(id, shard_count);
-        shard_documents.entry(shard_id).or_default().push(doc.clone());
+        shard_documents
+            .entry(shard_id)
+            .or_default()
+            .push(doc.clone());
     }
 
     // Distribute shards across nodes (round-robin for RF=1)
@@ -95,9 +103,15 @@ fn acceptance_1_1000_docs_indexed_retrievable() {
         let node_idx = shard_id as usize % 3;
 
         let found = match node_idx {
-            0 => node1_docs.iter().any(|d| d.get("id").and_then(|v| v.as_str()) == Some(id)),
-            1 => node2_docs.iter().any(|d| d.get("id").and_then(|v| v.as_str()) == Some(id)),
-            2 => node3_docs.iter().any(|d| d.get("id").and_then(|v| v.as_str()) == Some(id)),
+            0 => node1_docs
+                .iter()
+                .any(|d| d.get("id").and_then(|v| v.as_str()) == Some(id)),
+            1 => node2_docs
+                .iter()
+                .any(|d| d.get("id").and_then(|v| v.as_str()) == Some(id)),
+            2 => node3_docs
+                .iter()
+                .any(|d| d.get("id").and_then(|v| v.as_str()) == Some(id)),
             _ => false,
         };
         assert!(found, "document {} should be retrievable", id);
@@ -117,9 +131,7 @@ async fn acceptance_2_distribution_across_all_nodes() {
     let node_count = 3usize;
 
     // Create 1000 test documents
-    let documents: Vec<String> = (0..1000)
-        .map(|i| format!("doc-{i}"))
-        .collect();
+    let documents: Vec<String> = (0..1000).map(|i| format!("doc-{i}")).collect();
 
     // Track distribution
     let mut node_counts: HashMap<usize, usize> = HashMap::new();
@@ -175,12 +187,16 @@ fn acceptance_3_batch_missing_primary_key_rejected() {
 
     // Simulate validation logic - validation fails before any writes
     let primary_key = "id";
-    let has_missing = documents.as_array()
+    let has_missing = documents
+        .as_array()
         .unwrap()
         .iter()
         .any(|doc| doc.get(primary_key).is_none());
 
-    assert!(has_missing, "batch should have a document missing primary key");
+    assert!(
+        has_missing,
+        "batch should have a document missing primary key"
+    );
 
     // Verify error code would be miroir_primary_key_required
     use miroir_core::api_error::MiroirCode;
@@ -205,12 +221,16 @@ fn acceptance_4_reserved_field_rejection() {
     );
 
     // Simulate validation logic - reserved field check happens before writes
-    let has_reserved = documents.as_array()
+    let has_reserved = documents
+        .as_array()
         .unwrap()
         .iter()
         .any(|doc| doc.get("_miroir_shard").is_some());
 
-    assert!(has_reserved, "document should have reserved field _miroir_shard");
+    assert!(
+        has_reserved,
+        "document should have reserved field _miroir_shard"
+    );
 
     // Verify error code would be miroir_reserved_field
     use miroir_core::api_error::MiroirCode;
@@ -231,15 +251,18 @@ fn acceptance_5_degraded_write_one_group_down() {
     // Per-group quorum = floor(1/2) + 1 = 1 ACK needed per group
     let _replica_groups = 2u32;
     let rf = 1usize;
-    let quorum_per_group = (rf / 2) + 1;  // = 1
+    let quorum_per_group = (rf / 2) + 1; // = 1
 
     // Simulate group 0 ACKs, group 1 down
     let mut group_acks: HashMap<u32, usize> = HashMap::new();
-    group_acks.insert(0, 1);  // Group 0 met quorum
-    // Group 1 has no ACKs (down)
+    group_acks.insert(0, 1); // Group 0 met quorum
+                             // Group 1 has no ACKs (down)
 
     // Count groups that met quorum
-    let quorum_groups = group_acks.values().filter(|&&acks| acks >= quorum_per_group).count();
+    let quorum_groups = group_acks
+        .values()
+        .filter(|&&acks| acks >= quorum_per_group)
+        .count();
 
     // Verify: at least 1 group met quorum → write succeeds
     assert_eq!(quorum_groups, 1, "at least one group should meet quorum");
@@ -257,13 +280,16 @@ fn acceptance_6_no_quorum_both_groups_down() {
     // Simulate quorum calculation with RG=2, RF=1
     let _replica_groups = 2u32;
     let rf = 1usize;
-    let quorum_per_group = (rf / 2) + 1;  // = 1
+    let quorum_per_group = (rf / 2) + 1; // = 1
 
     // No groups ACK (both down)
     let group_acks: HashMap<u32, usize> = HashMap::new();
 
     // Count groups that met quorum
-    let quorum_groups = group_acks.values().filter(|&&acks| acks >= quorum_per_group).count();
+    let quorum_groups = group_acks
+        .values()
+        .filter(|&&acks| acks >= quorum_per_group)
+        .count();
 
     // Verify: no groups met quorum → write fails with miroir_no_quorum
     assert_eq!(quorum_groups, 0, "no groups should meet quorum");
@@ -282,15 +308,18 @@ fn acceptance_6_no_quorum_both_groups_down() {
 #[test]
 fn acceptance_7_delete_by_ids_independent_shard_routing() {
     // Two documents on different shards
-    let doc_a_id = "user:123";  // Will route to some shard
-    let doc_b_id = "product:456";  // Will route to different shard
+    let doc_a_id = "user:123"; // Will route to some shard
+    let doc_b_id = "product:456"; // Will route to different shard
 
     let shard_count = 8u32;
     let shard_a = shard_for_key(doc_a_id, shard_count);
     let shard_b = shard_for_key(doc_b_id, shard_count);
 
     // Verify they're on different shards for this test
-    assert_ne!(shard_a, shard_b, "test documents should be on different shards");
+    assert_ne!(
+        shard_a, shard_b,
+        "test documents should be on different shards"
+    );
 
     // Simulate grouping IDs by shard (as done in delete_by_ids_impl)
     let ids = vec![doc_a_id.to_string(), doc_b_id.to_string()];
@@ -302,9 +331,19 @@ fn acceptance_7_delete_by_ids_independent_shard_routing() {
     }
 
     // Verify each shard gets its own delete request
-    assert_eq!(shard_ids.len(), 2, "should have 2 independent shard delete requests");
-    assert!(shard_ids.contains_key(&shard_a), "should have delete request for shard A");
-    assert!(shard_ids.contains_key(&shard_b), "should have delete request for shard B");
+    assert_eq!(
+        shard_ids.len(),
+        2,
+        "should have 2 independent shard delete requests"
+    );
+    assert!(
+        shard_ids.contains_key(&shard_a),
+        "should have delete request for shard A"
+    );
+    assert!(
+        shard_ids.contains_key(&shard_b),
+        "should have delete request for shard B"
+    );
 
     // Verify each shard has the correct document
     let docs_for_shard_a = shard_ids.get(&shard_a).unwrap();
@@ -333,7 +372,10 @@ fn delete_by_filter_broadcasts_to_all_nodes() {
     // The key assertion here is that delete-by-filter sends to ALL nodes,
     // not just a subset based on shard routing
 
-    assert!(node_count >= 2, "broadcast should reach all nodes in the cluster");
+    assert!(
+        node_count >= 2,
+        "broadcast should reach all nodes in the cluster"
+    );
 
     // Verify the broadcast would cover all nodes
     // In delete_by_filter_impl: for node in topology.nodes() { ... }
@@ -376,11 +418,17 @@ fn test_quorum_success_at_least_one_group() {
     let quorum_per_group = (rf / 2) + 1;
 
     let mut group_acks: HashMap<u32, usize> = HashMap::new();
-    group_acks.insert(0, 1);  // Group 0 met quorum
-    group_acks.insert(1, 0);  // Group 1 didn't
+    group_acks.insert(0, 1); // Group 0 met quorum
+    group_acks.insert(1, 0); // Group 1 didn't
 
-    let quorum_groups = group_acks.values().filter(|&&acks| acks >= quorum_per_group).count();
-    assert!(quorum_groups >= 1, "write should succeed with at least 1 group at quorum");
+    let quorum_groups = group_acks
+        .values()
+        .filter(|&&acks| acks >= quorum_per_group)
+        .count();
+    assert!(
+        quorum_groups >= 1,
+        "write should succeed with at least 1 group at quorum"
+    );
 }
 
 #[test]
@@ -389,10 +437,16 @@ fn test_quorum_failure_no_groups() {
     let rf = 1usize;
     let quorum_per_group = (rf / 2) + 1;
 
-    let group_acks: HashMap<u32, usize> = HashMap::new();  // No ACKs
+    let group_acks: HashMap<u32, usize> = HashMap::new(); // No ACKs
 
-    let quorum_groups = group_acks.values().filter(|&&acks| acks >= quorum_per_group).count();
-    assert_eq!(quorum_groups, 0, "write should fail with no groups at quorum");
+    let quorum_groups = group_acks
+        .values()
+        .filter(|&&acks| acks >= quorum_per_group)
+        .count();
+    assert_eq!(
+        quorum_groups, 0,
+        "write should fail with no groups at quorum"
+    );
 }
 
 // ---------------------------------------------------------------------------

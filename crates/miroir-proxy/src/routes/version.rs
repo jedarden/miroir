@@ -1,8 +1,8 @@
+use super::admin_endpoints::AppState;
 use axum::extract::{FromRef, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::Serialize;
-use super::admin_endpoints::AppState;
 
 #[derive(Serialize)]
 pub struct VersionResponse {

@@ -8,14 +8,30 @@
 //! - Self-throttles to <2% CPU target
 
 use crate::anti_entropy::{AntiEntropyConfig, AntiEntropyReconciler};
-use crate::mode_a_coordinator::ModeACoordinator;
+#[cfg(feature = "peer-discovery")]
+use crate::mode_a_coordinator::ModeACoordinator as ActualModeACoordinator;
 use crate::scatter::{
-    FetchDocumentsRequest, FetchDocumentsResponse, NodeClient, NodeError,
-    PreflightRequest, PreflightResponse, SearchRequest,
+    FetchDocumentsRequest, FetchDocumentsResponse, NodeClient, NodeError, PreflightRequest,
+    PreflightResponse, SearchRequest,
 };
 use crate::task_store::TaskStore;
 use crate::topology::{NodeId, Topology};
 use reqwest::Client;
+
+// Type alias for ModeACoordinator that becomes a dummy type when feature is disabled
+#[cfg(feature = "peer-discovery")]
+type ModeACoordinator = ActualModeACoordinator;
+
+#[cfg(not(feature = "peer-discovery"))]
+struct ModeACoordinator;
+
+#[cfg(not(feature = "peer-discovery"))]
+impl ModeACoordinator {
+    // Dummy methods for when peer-discovery is disabled
+    pub async fn refresh_peers(&self) -> std::result::Result<usize, String> {
+        Ok(1)
+    }
+}
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -137,7 +153,8 @@ impl NodeClient for HttpNodeClient {
             format!("{}/indexes/{}/documents", address, request.index_uid)
         };
 
-        let mut builder = self.client
+        let mut builder = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.node_master_key))
             .header("Content-Type", "application/json");
@@ -155,8 +172,14 @@ impl NodeClient for HttpNodeClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_else(|_| "unable to read error".to_string());
-            return Err(NodeError::HttpError { status: status.as_u16(), body });
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unable to read error".to_string());
+            return Err(NodeError::HttpError {
+                status: status.as_u16(),
+                body,
+            });
         }
 
         let json: Value = response
@@ -169,16 +192,23 @@ impl NodeClient for HttpNodeClient {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let task_uid = json
-            .get("taskUid")
-            .and_then(|v| v.as_u64());
+        let task_uid = json.get("taskUid").and_then(|v| v.as_u64());
 
         Ok(crate::scatter::WriteResponse {
             success,
             task_uid,
-            message: json.get("message").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            code: json.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            error_type: json.get("type").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            message: json
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            code: json
+                .get("code")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            error_type: json
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
         })
     }
 
@@ -188,11 +218,11 @@ impl NodeClient for HttpNodeClient {
         address: &str,
         request: &FetchDocumentsRequest,
     ) -> Result<FetchDocumentsResponse, NodeError> {
-        let filter_str = serde_json::to_string(&request.filter)
-            .unwrap_or_else(|_| "".to_string());
+        let filter_str = serde_json::to_string(&request.filter).unwrap_or_else(|_| "".to_string());
 
         let url = if address.ends_with('/') {
-            format!("{}indexes/{}/documents?filter={}&limit={}&offset={}",
+            format!(
+                "{}indexes/{}/documents?filter={}&limit={}&offset={}",
                 address,
                 request.index_uid,
                 urlencoding::encode(&filter_str),
@@ -200,7 +230,8 @@ impl NodeClient for HttpNodeClient {
                 request.offset
             )
         } else {
-            format!("{}/indexes/{}/documents?filter={}&limit={}&offset={}",
+            format!(
+                "{}/indexes/{}/documents?filter={}&limit={}&offset={}",
                 address,
                 request.index_uid,
                 urlencoding::encode(&filter_str),
@@ -209,7 +240,8 @@ impl NodeClient for HttpNodeClient {
             )
         };
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .header("Authorization", format!("Bearer {}", self.node_master_key))
             .send()
@@ -218,8 +250,14 @@ impl NodeClient for HttpNodeClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_else(|_| "unable to read error".to_string());
-            return Err(NodeError::HttpError { status: status.as_u16(), body });
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unable to read error".to_string());
+            return Err(NodeError::HttpError {
+                status: status.as_u16(),
+                body,
+            });
         }
 
         let json: Value = response
@@ -233,10 +271,7 @@ impl NodeClient for HttpNodeClient {
             .map(|v| v.clone())
             .unwrap_or_default();
 
-        let total = json
-            .get("total")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let total = json.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
 
         Ok(FetchDocumentsResponse {
             results,
@@ -258,7 +293,8 @@ impl NodeClient for HttpNodeClient {
             format!("{}/indexes/{}/search", address, request.index_uid)
         };
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.node_master_key))
             .json(&request.body)
@@ -268,8 +304,14 @@ impl NodeClient for HttpNodeClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_else(|_| "unable to read error".to_string());
-            return Err(NodeError::HttpError { status: status.as_u16(), body });
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unable to read error".to_string());
+            return Err(NodeError::HttpError {
+                status: status.as_u16(),
+                body,
+            });
         }
 
         response
@@ -285,12 +327,19 @@ impl NodeClient for HttpNodeClient {
         request: &PreflightRequest,
     ) -> std::result::Result<PreflightResponse, NodeError> {
         let url = if address.ends_with('/') {
-            format!("{}indexes/{}/documents?limit={}", address, request.index_uid, 0)
+            format!(
+                "{}indexes/{}/documents?limit={}",
+                address, request.index_uid, 0
+            )
         } else {
-            format!("{}/indexes/{}/documents?limit={}", address, request.index_uid, 0)
+            format!(
+                "{}/indexes/{}/documents?limit={}",
+                address, request.index_uid, 0
+            )
         };
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .header("Authorization", format!("Bearer {}", self.node_master_key))
             .send()
@@ -299,8 +348,14 @@ impl NodeClient for HttpNodeClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_else(|_| "unable to read error".to_string());
-            return Err(NodeError::HttpError { status: status.as_u16(), body });
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unable to read error".to_string());
+            return Err(NodeError::HttpError {
+                status: status.as_u16(),
+                body,
+            });
         }
 
         let json: Value = response
@@ -308,10 +363,7 @@ impl NodeClient for HttpNodeClient {
             .await
             .map_err(|e| NodeError::NetworkError(format!("parse response failed: {}", e)))?;
 
-        let total_docs = json
-            .get("total")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let total_docs = json.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
 
         Ok(PreflightResponse {
             total_docs,
@@ -327,12 +379,19 @@ impl NodeClient for HttpNodeClient {
         request: &crate::scatter::DeleteByIdsRequest,
     ) -> std::result::Result<crate::scatter::DeleteResponse, NodeError> {
         let url = if address.ends_with('/') {
-            format!("{}indexes/{}/documents/delete-batch", address, request.index_uid)
+            format!(
+                "{}indexes/{}/documents/delete-batch",
+                address, request.index_uid
+            )
         } else {
-            format!("{}/indexes/{}/documents/delete-batch", address, request.index_uid)
+            format!(
+                "{}/indexes/{}/documents/delete-batch",
+                address, request.index_uid
+            )
         };
 
-        let mut builder = self.client
+        let mut builder = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.node_master_key))
             .header("Content-Type", "application/json");
@@ -351,8 +410,14 @@ impl NodeClient for HttpNodeClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_else(|_| "unable to read error".to_string());
-            return Err(NodeError::HttpError { status: status.as_u16(), body });
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unable to read error".to_string());
+            return Err(NodeError::HttpError {
+                status: status.as_u16(),
+                body,
+            });
         }
 
         let json: Value = response
@@ -361,11 +426,23 @@ impl NodeClient for HttpNodeClient {
             .map_err(|e| NodeError::NetworkError(format!("parse response failed: {}", e)))?;
 
         Ok(crate::scatter::DeleteResponse {
-            success: json.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
+            success: json
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             task_uid: json.get("taskUid").and_then(|v| v.as_u64()),
-            message: json.get("message").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            code: json.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            error_type: json.get("type").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            message: json
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            code: json
+                .get("code")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            error_type: json
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
         })
     }
 }
@@ -425,11 +502,8 @@ impl AntiEntropyWorker {
         };
 
         let node_client = HttpNodeClient::new(node_master_key);
-        let reconciler = AntiEntropyReconciler::new(
-            ae_config,
-            topology.clone(),
-            Arc::new(node_client),
-        );
+        let reconciler =
+            AntiEntropyReconciler::new(ae_config, topology.clone(), Arc::new(node_client));
 
         Self {
             config,
@@ -540,9 +614,8 @@ impl AntiEntropyWorker {
     /// for the configured interval before running again (if still leader).
     async fn run_pass_cycle(&self) -> Result<(), String> {
         let scope = "anti_entropy";
-        let mut lease_renewal = tokio::time::interval(Duration::from_millis(
-            self.config.lease_renewal_interval_ms,
-        ));
+        let mut lease_renewal =
+            tokio::time::interval(Duration::from_millis(self.config.lease_renewal_interval_ms));
 
         // Run anti-entropy pass immediately on acquiring lease
         self.run_single_pass().await?;
@@ -631,9 +704,7 @@ impl AntiEntropyWorker {
 
                 Ok(())
             }
-            Err(e) => {
-                Err(format!("anti-entropy pass failed: {}", e))
-            }
+            Err(e) => Err(format!("anti-entropy pass failed: {}", e)),
         }
     }
 }

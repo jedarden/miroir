@@ -87,8 +87,7 @@ fn jwt_encode(header: &JwtHeader, claims: &JwtClaims, secret: &[u8]) -> Result<S
 
     let signing_input = format!("{}.{}", header_b64, payload_b64);
 
-    let mut mac =
-        HmacSha256::new_from_slice(secret).map_err(|e| format!("HMAC init: {}", e))?;
+    let mut mac = HmacSha256::new_from_slice(secret).map_err(|e| format!("HMAC init: {}", e))?;
     mac.update(signing_input.as_bytes());
     let sig = mac.finalize().into_bytes();
     let sig_b64 = URL_SAFE_NO_PAD.encode(sig);
@@ -97,10 +96,7 @@ fn jwt_encode(header: &JwtHeader, claims: &JwtClaims, secret: &[u8]) -> Result<S
 }
 
 /// Decode and verify a JWT with the given secret. Returns (header, claims).
-fn jwt_decode(
-    token: &str,
-    secret: &[u8],
-) -> Result<(JwtHeader, JwtClaims), JwtValidationError> {
+fn jwt_decode(token: &str, secret: &[u8]) -> Result<(JwtHeader, JwtClaims), JwtValidationError> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
         return Err(JwtValidationError::Malformed);
@@ -324,7 +320,13 @@ pub fn validate_origin(
     let provided_origin = if let Some(ref_hdr) = headers.get("referer") {
         if let Ok(ref_val) = ref_hdr.to_str() {
             // Find the first '/' after "https://" (skip the first 8 chars: "https://")
-            if let Some(idx) = ref_val.chars().enumerate().skip(8).find(|(_, c)| *c == '/').map(|(i, _)| i) {
+            if let Some(idx) = ref_val
+                .chars()
+                .enumerate()
+                .skip(8)
+                .find(|(_, c)| *c == '/')
+                .map(|(i, _)| i)
+            {
                 &ref_val[..idx]
             } else {
                 ref_val
@@ -383,22 +385,21 @@ pub fn build_csp_header(
         .collect();
 
     // Helper to merge overrides into a directive
-    let merge_into = |directives: &mut Vec<(String, Vec<String>)>,
-                      name: &str,
-                      values: &[String]| {
-        if values.is_empty() {
-            return;
-        }
-        let name_lower = name.to_lowercase();
-        if let Some(entry) = directives.iter_mut().find(|(n, _)| n == &name_lower) {
-            // Append to existing directive
-            entry.1.extend(values.iter().cloned());
-            entry.1.dedup(); // Remove duplicates
-        } else {
-            // Add new directive
-            directives.push((name_lower, values.to_vec()));
-        }
-    };
+    let merge_into =
+        |directives: &mut Vec<(String, Vec<String>)>, name: &str, values: &[String]| {
+            if values.is_empty() {
+                return;
+            }
+            let name_lower = name.to_lowercase();
+            if let Some(entry) = directives.iter_mut().find(|(n, _)| n == &name_lower) {
+                // Append to existing directive
+                entry.1.extend(values.iter().cloned());
+                entry.1.dedup(); // Remove duplicates
+            } else {
+                // Add new directive
+                directives.push((name_lower, values.to_vec()));
+            }
+        };
 
     // Merge each override category
     merge_into(&mut directives, "script-src", &overrides.script_src);
@@ -526,7 +527,8 @@ pub fn probe_jwt_shape(token: &str) -> bool {
     // Each segment should be non-empty and look like base64url
     parts.iter().all(|s| {
         !s.is_empty()
-            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=')
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=')
     })
 }
 
@@ -640,16 +642,15 @@ pub fn extract_admin_session_cookie(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Unseal an admin session cookie, returning the session ID.
-pub fn unseal_admin_cookie(cookie_value: &str, key: &SealKey) -> Result<String, admin_session::SealError> {
+pub fn unseal_admin_cookie(
+    cookie_value: &str,
+    key: &SealKey,
+) -> Result<String, admin_session::SealError> {
     admin_session::unseal_session(cookie_value, key)
 }
 
 /// Axum middleware implementing the bearer-token dispatch chain (plan §5).
-pub async fn auth_middleware(
-    State(state): State<AuthState>,
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn auth_middleware(State(state): State<AuthState>, req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
@@ -736,11 +737,7 @@ pub async fn auth_middleware(
 ///
 /// For admin session cookie auth, requires `X-CSRF-Token` header to match
 /// the token stored in the session.
-pub async fn csrf_middleware(
-    State(state): State<CsrfState>,
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn csrf_middleware(State(state): State<CsrfState>, req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
@@ -811,29 +808,20 @@ pub async fn csrf_middleware(
     let session = match redis_store.get_admin_session(&session_id) {
         Ok(Some(s)) => s,
         Ok(None) => {
-            return MeilisearchError::new(
-                MiroirCode::InvalidAuth,
-                "Admin session not found.",
-            )
-            .into_response();
+            return MeilisearchError::new(MiroirCode::InvalidAuth, "Admin session not found.")
+                .into_response();
         }
         Err(e) => {
             tracing::warn!(error = %e, session_prefix = &session_id[..session_id.len().min(8)], "failed to get admin session for CSRF validation");
-            return MeilisearchError::new(
-                MiroirCode::InvalidAuth,
-                "Failed to validate session.",
-            )
-            .into_response();
+            return MeilisearchError::new(MiroirCode::InvalidAuth, "Failed to validate session.")
+                .into_response();
         }
     };
 
     // Check if revoked
     if session.revoked {
-        return MeilisearchError::new(
-            MiroirCode::InvalidAuth,
-            "Admin session has been revoked.",
-        )
-        .into_response();
+        return MeilisearchError::new(MiroirCode::InvalidAuth, "Admin session has been revoked.")
+            .into_response();
     }
 
     // Check expiration
@@ -842,11 +830,8 @@ pub async fn csrf_middleware(
         .unwrap_or_default()
         .as_secs() as i64;
     if session.expires_at < now {
-        return MeilisearchError::new(
-            MiroirCode::InvalidAuth,
-            "Admin session has expired.",
-        )
-        .into_response();
+        return MeilisearchError::new(MiroirCode::InvalidAuth, "Admin session has expired.")
+            .into_response();
     }
 
     // Constant-time compare CSRF tokens
@@ -919,9 +904,11 @@ mod tests {
             jwt_previous: None,
             seal_key: test_key(),
             revoked_sessions: Arc::new(DashMap::new()),
-            admin_session_revoked_total: Counter::with_opts(
-                prometheus::Opts::new("test_revoked_total", "test")
-            ).unwrap(),
+            admin_session_revoked_total: Counter::with_opts(prometheus::Opts::new(
+                "test_revoked_total",
+                "test",
+            ))
+            .unwrap(),
         }
     }
 
@@ -933,9 +920,11 @@ mod tests {
             jwt_previous: None,
             seal_key: test_key(),
             revoked_sessions: Arc::new(DashMap::new()),
-            admin_session_revoked_total: Counter::with_opts(
-                prometheus::Opts::new("test_revoked_total", "test")
-            ).unwrap(),
+            admin_session_revoked_total: Counter::with_opts(prometheus::Opts::new(
+                "test_revoked_total",
+                "test",
+            ))
+            .unwrap(),
         }
     }
 
@@ -947,9 +936,11 @@ mod tests {
             jwt_previous: Some("test-secret-previous-key-32byte".to_string()),
             seal_key: test_key(),
             revoked_sessions: Arc::new(DashMap::new()),
-            admin_session_revoked_total: Counter::with_opts(
-                prometheus::Opts::new("test_revoked_total", "test")
-            ).unwrap(),
+            admin_session_revoked_total: Counter::with_opts(prometheus::Opts::new(
+                "test_revoked_total",
+                "test",
+            ))
+            .unwrap(),
         }
     }
 
@@ -965,13 +956,22 @@ mod tests {
 
     #[test]
     fn exempt_get_locale_star() {
-        assert!(is_dispatch_exempt(&Method::GET, "/_miroir/ui/search/locale/en-US"));
-        assert!(is_dispatch_exempt(&Method::GET, "/_miroir/ui/search/locale/fr"));
+        assert!(is_dispatch_exempt(
+            &Method::GET,
+            "/_miroir/ui/search/locale/en-US"
+        ));
+        assert!(is_dispatch_exempt(
+            &Method::GET,
+            "/_miroir/ui/search/locale/fr"
+        ));
     }
 
     #[test]
     fn exempt_get_locale_no_variant_not_exempt() {
-        assert!(!is_dispatch_exempt(&Method::GET, "/_miroir/ui/search/locale/"));
+        assert!(!is_dispatch_exempt(
+            &Method::GET,
+            "/_miroir/ui/search/locale/"
+        ));
     }
 
     #[test]
@@ -986,12 +986,18 @@ mod tests {
 
     #[test]
     fn exempt_get_session() {
-        assert!(is_dispatch_exempt(&Method::GET, "/_miroir/ui/search/products/session"));
+        assert!(is_dispatch_exempt(
+            &Method::GET,
+            "/_miroir/ui/search/products/session"
+        ));
     }
 
     #[test]
     fn exempt_get_session_no_index_not_exempt() {
-        assert!(!is_dispatch_exempt(&Method::GET, "/_miroir/ui/search//session"));
+        assert!(!is_dispatch_exempt(
+            &Method::GET,
+            "/_miroir/ui/search//session"
+        ));
     }
 
     #[test]
@@ -1077,36 +1083,21 @@ mod tests {
     #[test]
     fn exempt_spa_ignores_all_tokens() {
         let state = test_state();
-        let verdict = dispatch_bearer(
-            &Method::GET,
-            "/ui/search/products",
-            None,
-            &state,
-        );
+        let verdict = dispatch_bearer(&Method::GET, "/ui/search/products", None, &state);
         assert_eq!(verdict, AuthVerdict::Exempt);
     }
 
     #[test]
     fn exempt_ready_ignores_all_tokens() {
         let state = test_state();
-        let verdict = dispatch_bearer(
-            &Method::GET,
-            "/_miroir/ready",
-            Some("bogus-token"),
-            &state,
-        );
+        let verdict = dispatch_bearer(&Method::GET, "/_miroir/ready", Some("bogus-token"), &state);
         assert_eq!(verdict, AuthVerdict::Exempt);
     }
 
     #[test]
     fn exempt_health_ignores_all_tokens() {
         let state = test_state();
-        let verdict = dispatch_bearer(
-            &Method::GET,
-            "/health",
-            Some("bogus-token"),
-            &state,
-        );
+        let verdict = dispatch_bearer(&Method::GET, "/health", Some("bogus-token"), &state);
         assert_eq!(verdict, AuthVerdict::Exempt);
     }
 
@@ -1120,12 +1111,7 @@ mod tests {
     #[test]
     fn exempt_version_ignores_all_tokens() {
         let state = test_state();
-        let verdict = dispatch_bearer(
-            &Method::GET,
-            "/version",
-            Some("bogus-token"),
-            &state,
-        );
+        let verdict = dispatch_bearer(&Method::GET, "/version", Some("bogus-token"), &state);
         assert_eq!(verdict, AuthVerdict::Exempt);
     }
 
@@ -1167,12 +1153,7 @@ mod tests {
     #[test]
     fn metrics_rejects_missing_auth() {
         let state = test_state();
-        let verdict = dispatch_bearer(
-            &Method::GET,
-            "/_miroir/metrics",
-            None,
-            &state,
-        );
+        let verdict = dispatch_bearer(&Method::GET, "/_miroir/metrics", None, &state);
         assert_eq!(verdict, AuthVerdict::InvalidAuth);
     }
 
@@ -1182,7 +1163,9 @@ mod tests {
 
     #[test]
     fn jwt_shape_probe_accepts_valid_shape() {
-        assert!(probe_jwt_shape("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123"));
+        assert!(probe_jwt_shape(
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123"
+        ));
     }
 
     #[test]
@@ -1209,12 +1192,7 @@ mod tests {
     fn jwt_on_non_admin_path_with_no_secret_returns_jwt_invalid() {
         let state = test_state(); // no JWT secrets configured
         let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123";
-        let verdict = dispatch_bearer(
-            &Method::GET,
-            "/indexes/products",
-            Some(jwt),
-            &state,
-        );
+        let verdict = dispatch_bearer(&Method::GET, "/indexes/products", Some(jwt), &state);
         assert_eq!(verdict, AuthVerdict::JwtInvalid);
     }
 
@@ -1251,12 +1229,7 @@ mod tests {
         let state = test_state_with_jwt();
         let token = state.sign_jwt("user1", "products", "search", 900).unwrap();
 
-        let verdict = dispatch_bearer(
-            &Method::GET,
-            "/indexes/products",
-            Some(&token),
-            &state,
-        );
+        let verdict = dispatch_bearer(&Method::GET, "/indexes/products", Some(&token), &state);
         assert_eq!(verdict, AuthVerdict::Authenticated(TokenKind::Jwt));
     }
 
@@ -1332,9 +1305,11 @@ mod tests {
             jwt_previous: Some(previous.to_string()),
             seal_key: test_key(),
             revoked_sessions: Arc::new(DashMap::new()),
-            admin_session_revoked_total: Counter::with_opts(
-                prometheus::Opts::new("test_revoked_total", "test")
-            ).unwrap(),
+            admin_session_revoked_total: Counter::with_opts(prometheus::Opts::new(
+                "test_revoked_total",
+                "test",
+            ))
+            .unwrap(),
         };
 
         // Old token should still validate via previous secret
@@ -1342,12 +1317,7 @@ mod tests {
         assert_eq!(validated.sub, "user1");
 
         // And dispatch should authenticate it
-        let verdict = dispatch_bearer(
-            &Method::GET,
-            "/indexes/products",
-            Some(&old_token),
-            &state,
-        );
+        let verdict = dispatch_bearer(&Method::GET, "/indexes/products", Some(&old_token), &state);
         assert_eq!(verdict, AuthVerdict::Authenticated(TokenKind::Jwt));
     }
 
@@ -1370,9 +1340,11 @@ mod tests {
             jwt_previous: Some("previous-secret-key-32bytes-long!!".to_string()),
             seal_key: test_key(),
             revoked_sessions: Arc::new(DashMap::new()),
-            admin_session_revoked_total: Counter::with_opts(
-                prometheus::Opts::new("test_revoked_total", "test")
-            ).unwrap(),
+            admin_session_revoked_total: Counter::with_opts(prometheus::Opts::new(
+                "test_revoked_total",
+                "test",
+            ))
+            .unwrap(),
         };
 
         // Token signed with a completely different secret
@@ -1409,9 +1381,11 @@ mod tests {
             jwt_previous: Some(String::new()), // empty = leak response
             seal_key: test_key(),
             revoked_sessions: Arc::new(DashMap::new()),
-            admin_session_revoked_total: Counter::with_opts(
-                prometheus::Opts::new("test_revoked_total", "test")
-            ).unwrap(),
+            admin_session_revoked_total: Counter::with_opts(prometheus::Opts::new(
+                "test_revoked_total",
+                "test",
+            ))
+            .unwrap(),
         };
 
         let result = state.validate_jwt("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.fake");
@@ -1428,9 +1402,11 @@ mod tests {
             jwt_previous: None,
             seal_key: test_key(),
             revoked_sessions: Arc::new(DashMap::new()),
-            admin_session_revoked_total: Counter::with_opts(
-                prometheus::Opts::new("test_revoked_total", "test")
-            ).unwrap(),
+            admin_session_revoked_total: Counter::with_opts(prometheus::Opts::new(
+                "test_revoked_total",
+                "test",
+            ))
+            .unwrap(),
         };
 
         // Tokens signed with current primary work
@@ -1476,9 +1452,11 @@ mod tests {
             jwt_previous: None,
             seal_key: test_key(),
             revoked_sessions: Arc::new(DashMap::new()),
-            admin_session_revoked_total: Counter::with_opts(
-                prometheus::Opts::new("test_revoked_total", "test")
-            ).unwrap(),
+            admin_session_revoked_total: Counter::with_opts(prometheus::Opts::new(
+                "test_revoked_total",
+                "test",
+            ))
+            .unwrap(),
         };
         let token_v1 = pre.sign_jwt("alice", "idx", "search", 900).unwrap();
         assert!(pre.validate_jwt(&token_v1).is_ok());
@@ -1491,9 +1469,11 @@ mod tests {
             jwt_previous: Some(secret_v1.into()),
             seal_key: test_key(),
             revoked_sessions: Arc::new(DashMap::new()),
-            admin_session_revoked_total: Counter::with_opts(
-                prometheus::Opts::new("test_revoked_total", "test")
-            ).unwrap(),
+            admin_session_revoked_total: Counter::with_opts(prometheus::Opts::new(
+                "test_revoked_total",
+                "test",
+            ))
+            .unwrap(),
         };
         // Old token still validates
         assert!(during.validate_jwt(&token_v1).is_ok());
@@ -1509,9 +1489,11 @@ mod tests {
             jwt_previous: None,
             seal_key: test_key(),
             revoked_sessions: Arc::new(DashMap::new()),
-            admin_session_revoked_total: Counter::with_opts(
-                prometheus::Opts::new("test_revoked_total", "test")
-            ).unwrap(),
+            admin_session_revoked_total: Counter::with_opts(prometheus::Opts::new(
+                "test_revoked_total",
+                "test",
+            ))
+            .unwrap(),
         };
         // New token still works
         assert!(post.validate_jwt(&token_v2).is_ok());
@@ -1562,12 +1544,7 @@ mod tests {
     #[test]
     fn admin_path_rejects_missing_auth() {
         let state = test_state();
-        let verdict = dispatch_bearer(
-            &Method::GET,
-            "/_miroir/some/endpoint",
-            None,
-            &state,
-        );
+        let verdict = dispatch_bearer(&Method::GET, "/_miroir/some/endpoint", None, &state);
         assert_eq!(verdict, AuthVerdict::InvalidAuth);
     }
 
@@ -1614,12 +1591,7 @@ mod tests {
     #[test]
     fn non_admin_path_rejects_missing_auth() {
         let state = test_state();
-        let verdict = dispatch_bearer(
-            &Method::POST,
-            "/indexes/products/documents",
-            None,
-            &state,
-        );
+        let verdict = dispatch_bearer(&Method::POST, "/indexes/products/documents", None, &state);
         assert_eq!(verdict, AuthVerdict::InvalidAuth);
     }
 
@@ -1630,12 +1602,7 @@ mod tests {
     #[test]
     fn missing_auth_on_gated_endpoint_returns_invalid_auth() {
         let state = test_state();
-        let verdict = dispatch_bearer(
-            &Method::POST,
-            "/indexes",
-            None,
-            &state,
-        );
+        let verdict = dispatch_bearer(&Method::POST, "/indexes", None, &state);
         assert_eq!(verdict, AuthVerdict::InvalidAuth);
     }
 
@@ -1770,8 +1737,12 @@ mod tests {
     #[test]
     fn rate_limiter_always_allows() {
         let limiter = RateLimiter;
-        assert!(limiter.check(&RateLimitBucket::AdminLogin("127.0.0.1".into())).is_ok());
-        assert!(limiter.check(&RateLimitBucket::SearchUi("10.0.0.1".into())).is_ok());
+        assert!(limiter
+            .check(&RateLimitBucket::AdminLogin("127.0.0.1".into()))
+            .is_ok());
+        assert!(limiter
+            .check(&RateLimitBucket::SearchUi("10.0.0.1".into()))
+            .is_ok());
     }
 
     // -----------------------------------------------------------------------

@@ -30,7 +30,8 @@ fn bench_shard_for_key_batch(c: &mut Criterion) {
 
     c.bench_function("shard_for_key_10k_docs", |b| {
         b.iter(|| {
-            let _ = keys.iter()
+            let _ = keys
+                .iter()
                 .map(|k| black_box(shard_for_key(black_box(k), black_box(TARGET_SHARDS))))
                 .collect::<Vec<_>>();
         });
@@ -95,7 +96,8 @@ fn bench_full_routing_pipeline(c: &mut Criterion) {
 
     c.bench_function("full_routing_10k_docs", |b| {
         b.iter(|| {
-            let _ = docs.iter()
+            let _ = docs
+                .iter()
                 .map(|doc_key| {
                     let shard_id = shard_for_key(black_box(doc_key), black_box(TARGET_SHARDS));
                     black_box(&shard_assignments[shard_id as usize])
@@ -113,19 +115,23 @@ fn bench_varying_shard_count(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("varying_shard_count");
     for shard_count in [8, 16, 32, 64, 128, 256].iter() {
-        group.bench_with_input(BenchmarkId::from_parameter(shard_count), shard_count, |b, &sc| {
-            b.iter(|| {
-                let _ = (0..sc)
-                    .map(|shard_id| {
-                        black_box(router::assign_shard_in_group(
-                            black_box(shard_id),
-                            black_box(&nodes),
-                            black_box(2),
-                        ))
-                    })
-                    .collect::<Vec<_>>();
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(shard_count),
+            shard_count,
+            |b, &sc| {
+                b.iter(|| {
+                    let _ = (0..sc)
+                        .map(|shard_id| {
+                            black_box(router::assign_shard_in_group(
+                                black_box(shard_id),
+                                black_box(&nodes),
+                                black_box(2),
+                            ))
+                        })
+                        .collect::<Vec<_>>();
+                });
+            },
+        );
     }
     group.finish();
 }
@@ -138,19 +144,23 @@ fn bench_varying_node_count(c: &mut Criterion) {
             .map(|i| NodeId::new(format!("node-{}", i)))
             .collect();
 
-        group.bench_with_input(BenchmarkId::from_parameter(node_count), node_count, |b, &nc| {
-            b.iter(|| {
-                let _ = (0..TARGET_SHARDS)
-                    .map(|shard_id| {
-                        black_box(router::assign_shard_in_group(
-                            black_box(shard_id),
-                            black_box(&nodes),
-                            black_box(2.min(nc)),
-                        ))
-                    })
-                    .collect::<Vec<_>>();
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(node_count),
+            node_count,
+            |b, &nc| {
+                b.iter(|| {
+                    let _ = (0..TARGET_SHARDS)
+                        .map(|shard_id| {
+                            black_box(router::assign_shard_in_group(
+                                black_box(shard_id),
+                                black_box(&nodes),
+                                black_box(2.min(nc)),
+                            ))
+                        })
+                        .collect::<Vec<_>>();
+                });
+            },
+        );
     }
     group.finish();
 }

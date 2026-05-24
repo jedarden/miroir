@@ -2,8 +2,8 @@
 //!
 //! Verifies that all plan §10 core metrics are properly registered and accessible.
 
-use miroir_proxy::middleware::Metrics;
 use miroir_core::config::MiroirConfig;
+use miroir_proxy::middleware::Metrics;
 
 #[test]
 fn test_all_core_metrics_registered() {
@@ -74,7 +74,8 @@ fn test_all_core_metrics_registered() {
 
     for name in &expected_metrics {
         // Check for HELP or TYPE line (metadata) OR data line for the metric
-        let has_metadata = output.contains(&format!("# HELP {}", name)) || output.contains(&format!("# TYPE {}", name));
+        let has_metadata = output.contains(&format!("# HELP {}", name))
+            || output.contains(&format!("# TYPE {}", name));
         let has_data = output.lines().any(|line| line.starts_with(name));
         assert!(
             has_metadata || has_data,
@@ -105,8 +106,11 @@ fn test_scatter_fan_out_metric_records_correctly() {
     // Verify the sample value is recorded (histogram should have a count > 0)
     // Check for the _count metric which shows total observations
     assert!(
-        output.contains("miroir_scatter_fan_out_size_count") &&
-        output.lines().any(|line| line.contains("miroir_scatter_fan_out_size_count") && !line.contains(" 0")),
+        output.contains("miroir_scatter_fan_out_size_count")
+            && output
+                .lines()
+                .any(|line| line.contains("miroir_scatter_fan_out_size_count")
+                    && !line.contains(" 0")),
         "Expected histogram with non-zero count not found. Output:\n{}",
         output
     );
@@ -126,16 +130,16 @@ fn test_node_health_metrics_have_correct_labels() {
 
     // Verify node_id label is present and values are correct
     assert!(
-        output.contains("miroir_node_healthy") &&
-        output.contains("node-1") &&
-        output.contains(" 1"),
+        output.contains("miroir_node_healthy")
+            && output.contains("node-1")
+            && output.contains(" 1"),
         "Expected node-1 healthy metric not found. Output:\n{}",
         output
     );
     assert!(
-        output.contains("miroir_node_healthy") &&
-        output.contains("node-2") &&
-        output.contains(" 0"),
+        output.contains("miroir_node_healthy")
+            && output.contains("node-2")
+            && output.contains(" 0"),
         "Expected node-2 unhealthy metric not found. Output:\n{}",
         output
     );
@@ -176,9 +180,9 @@ fn test_task_metrics_have_status_label() {
 
     // Verify status label is present
     assert!(
-        output.contains("miroir_tasks_total") &&
-        output.contains("completed") &&
-        output.contains("failed"),
+        output.contains("miroir_tasks_total")
+            && output.contains("completed")
+            && output.contains("failed"),
         "Expected tasks_total metric with status labels not found. Output:\n{}",
         output
     );

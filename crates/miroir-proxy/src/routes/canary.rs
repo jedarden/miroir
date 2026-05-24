@@ -3,9 +3,8 @@
 use axum::{
     extract::{FromRef, Path, State},
     http::StatusCode,
-    Json,
     routing::{delete, get, post, put},
-    Router,
+    Json, Router,
 };
 use chrono::Utc;
 use miroir_core::{
@@ -93,11 +92,10 @@ where
     let now = chrono::Utc::now().timestamp_millis();
 
     // Parse query
-    let query: SearchQuery = serde_json::from_value(serde_json::json!(req.query))
-        .map_err(|e| {
-            tracing::error!(error = %e, "Invalid canary query");
-            StatusCode::BAD_REQUEST
-        })?;
+    let query: SearchQuery = serde_json::from_value(serde_json::json!(req.query)).map_err(|e| {
+        tracing::error!(error = %e, "Invalid canary query");
+        StatusCode::BAD_REQUEST
+    })?;
 
     // Parse assertions
     let assertions: Vec<CanaryAssertion> = req
@@ -149,14 +147,23 @@ where
     let canary_infos: Vec<CanaryInfo> = canaries
         .into_iter()
         .map(|canary| {
-            let runs = state.store.get_canary_runs(&canary.id, 1).unwrap_or_default();
+            let runs = state
+                .store
+                .get_canary_runs(&canary.id, 1)
+                .unwrap_or_default();
             let last_run = runs.first().map(|r| CanaryRunInfo {
                 ran_at: r.ran_at,
                 status: r.status.clone(),
                 latency_ms: r.latency_ms,
-                failed_assertions: r.failed_assertions_json.as_ref().map(|j| {
-                    serde_json::from_str::<Vec<serde_json::Value>>(j).map(|v| v.len()).unwrap_or(0)
-                }).unwrap_or(0),
+                failed_assertions: r
+                    .failed_assertions_json
+                    .as_ref()
+                    .map(|j| {
+                        serde_json::from_str::<Vec<serde_json::Value>>(j)
+                            .map(|v| v.len())
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0),
             });
 
             CanaryInfo {
@@ -185,11 +192,14 @@ where
     S: Clone + Send + Sync + 'static,
     CanaryState: FromRef<S>,
 {
-    let canary = state.store.get_canary(&id).map_err(|e| {
-        tracing::error!(error = %e, "Failed to get canary");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?
-    .ok_or_else(|| StatusCode::NOT_FOUND)?;
+    let canary = state
+        .store
+        .get_canary(&id)
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to get canary");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or_else(|| StatusCode::NOT_FOUND)?;
 
     let runs = state.store.get_canary_runs(&id, 100).unwrap_or_default();
 
@@ -217,18 +227,20 @@ where
     CanaryState: FromRef<S>,
 {
     // Verify canary exists
-    let _existing = state.store.get_canary(&id).map_err(|e| {
-        tracing::error!(error = %e, "Failed to get canary");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?
-    .ok_or_else(|| StatusCode::NOT_FOUND)?;
+    let _existing = state
+        .store
+        .get_canary(&id)
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to get canary");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or_else(|| StatusCode::NOT_FOUND)?;
 
     // Parse query
-    let query: SearchQuery = serde_json::from_value(serde_json::json!(req.query))
-        .map_err(|e| {
-            tracing::error!(error = %e, "Invalid canary query");
-            StatusCode::BAD_REQUEST
-        })?;
+    let query: SearchQuery = serde_json::from_value(serde_json::json!(req.query)).map_err(|e| {
+        tracing::error!(error = %e, "Invalid canary query");
+        StatusCode::BAD_REQUEST
+    })?;
 
     // Parse assertions
     let assertions: Vec<CanaryAssertion> = req
@@ -356,7 +368,8 @@ where
             CanaryAssertion::MinHits { value: 1 },
             CanaryAssertion::MaxP95Ms { value: 500 },
         ],
-    ).map_err(|e| {
+    )
+    .map_err(|e| {
         tracing::error!(error = %e, "Failed to create canary");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -386,5 +399,8 @@ where
         .route("/canaries/:id", delete(delete_canary::<S>))
         .route("/canaries/capture", post(start_capture::<S>))
         .route("/canaries/captured", get(get_captured::<S>))
-        .route("/canaries/from-capture/:index", post(create_from_capture::<S>))
+        .route(
+            "/canaries/from-capture/:index",
+            post(create_from_capture::<S>),
+        )
 }

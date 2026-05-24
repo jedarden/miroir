@@ -4,8 +4,14 @@ use super::*;
 
 #[test]
 fn test_alias_kind_display() {
-    assert_eq!(serde_json::to_string(&AliasKind::Single).unwrap(), r#""single""#);
-    assert_eq!(serde_json::to_string(&AliasKind::Multi).unwrap(), r#""multi""#);
+    assert_eq!(
+        serde_json::to_string(&AliasKind::Single).unwrap(),
+        r#""single""#
+    );
+    assert_eq!(
+        serde_json::to_string(&AliasKind::Multi).unwrap(),
+        r#""multi""#
+    );
 }
 
 #[test]
@@ -20,11 +26,17 @@ fn test_alias_new_single() {
 
 #[test]
 fn test_alias_new_multi() {
-    let alias = Alias::new_multi("my-alias".to_string(), vec!["index-1".to_string(), "index-2".to_string()]);
+    let alias = Alias::new_multi(
+        "my-alias".to_string(),
+        vec!["index-1".to_string(), "index-2".to_string()],
+    );
     assert_eq!(alias.name, "my-alias");
     assert_eq!(alias.kind, AliasKind::Multi);
     assert!(alias.current_uid.is_none());
-    assert_eq!(alias.target_uids, Some(vec!["index-1".to_string(), "index-2".to_string()]));
+    assert_eq!(
+        alias.target_uids,
+        Some(vec!["index-1".to_string(), "index-2".to_string()])
+    );
     assert_eq!(alias.generation, 0);
 }
 
@@ -33,7 +45,10 @@ fn test_alias_is_multi_target() {
     let single = Alias::new_single("test".to_string(), "idx".to_string());
     assert!(!single.is_multi_target());
 
-    let multi = Alias::new_multi("test".to_string(), vec!["idx1".to_string(), "idx2".to_string()]);
+    let multi = Alias::new_multi(
+        "test".to_string(),
+        vec!["idx1".to_string(), "idx2".to_string()],
+    );
     assert!(multi.is_multi_target());
 }
 
@@ -46,7 +61,10 @@ fn test_alias_targets_single() {
 
 #[test]
 fn test_alias_targets_multi() {
-    let alias = Alias::new_multi("test".to_string(), vec!["idx1".to_string(), "idx2".to_string()]);
+    let alias = Alias::new_multi(
+        "test".to_string(),
+        vec!["idx1".to_string(), "idx2".to_string()],
+    );
     let targets = alias.targets().unwrap();
     assert_eq!(targets, vec!["idx1".to_string(), "idx2".to_string()]);
 }
@@ -71,8 +89,13 @@ fn test_alias_flip_multi_fails() {
 #[test]
 fn test_alias_update_targets() {
     let mut alias = Alias::new_multi("test".to_string(), vec!["idx1".to_string()]);
-    alias.update_targets(vec!["idx2".to_string(), "idx3".to_string()]).unwrap();
-    assert_eq!(alias.target_uids, Some(vec!["idx2".to_string(), "idx3".to_string()]));
+    alias
+        .update_targets(vec!["idx2".to_string(), "idx3".to_string()])
+        .unwrap();
+    assert_eq!(
+        alias.target_uids,
+        Some(vec!["idx2".to_string(), "idx3".to_string()])
+    );
     assert_eq!(alias.generation, 1);
 }
 

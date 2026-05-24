@@ -110,9 +110,7 @@ pub async fn run(
     api_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        KeySubcommand::RotateNodeMaster(args) => {
-            rotate_node_master(args, admin_key, api_url).await
-        }
+        KeySubcommand::RotateNodeMaster(args) => rotate_node_master(args, admin_key, api_url).await,
     }
 }
 
@@ -189,7 +187,11 @@ async fn rotate_node_master(
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             rollback_create(&client, &created_on, &new_key_uid, &current_key).await;
-            return Err(format!("Key creation failed on {}: HTTP {} — {}", addr, status, text).into());
+            return Err(format!(
+                "Key creation failed on {}: HTTP {} — {}",
+                addr, status, text
+            )
+            .into());
         }
 
         let body: MeiliKeyCreated = resp
@@ -240,9 +242,7 @@ async fn rotate_node_master(
     println!("\nBoth old and new keys are valid concurrently — no downtime.\n");
 
     if !args.yes {
-        print!(
-            "Press Enter once ALL Miroir pods are running with the new key (Ctrl+C to abort): "
-        );
+        print!("Press Enter once ALL Miroir pods are running with the new key (Ctrl+C to abort): ");
         io::stdout().flush()?;
         let mut buf = String::new();
         io::stdin().read_line(&mut buf)?;
@@ -289,7 +289,10 @@ async fn rotate_node_master(
                 } else {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
-                    eprintln!("  Warning: delete on {} returned HTTP {} — {}", addr, status, text);
+                    eprintln!(
+                        "  Warning: delete on {} returned HTTP {} — {}",
+                        addr, status, text
+                    );
                 }
             }
         }
@@ -324,12 +327,18 @@ fn print_dry_run(
     }
     println!();
 
-    println!("Current key prefix: {}...", &current_key[..8.min(current_key.len())]);
+    println!(
+        "Current key prefix: {}...",
+        &current_key[..8.min(current_key.len())]
+    );
     println!();
 
     println!("Steps:");
     println!("  1. Create new admin-scoped key on each node");
-    println!("       POST /keys  {{ name: {:?}, actions: [\"*\"], indexes: [\"*\"] }}", args.key_name);
+    println!(
+        "       POST /keys  {{ name: {:?}, actions: [\"*\"], indexes: [\"*\"] }}",
+        args.key_name
+    );
     if let Some(ref exp) = args.expires_at {
         println!("       expiresAt: {:?}", exp);
     }
@@ -345,7 +354,9 @@ fn print_dry_run(
         "  3. Rolling restart: kubectl -n {} rollout restart deployment/miroir",
         args.namespace
     );
-    println!("     During rollout old-key pods and new-key pods both authenticate (zero-downtime).");
+    println!(
+        "     During rollout old-key pods and new-key pods both authenticate (zero-downtime)."
+    );
     println!();
 
     println!("  4. Delete old key (UID from GET /keys) on every node");
@@ -399,10 +410,7 @@ async fn discover_nodes(
         return Err("Topology returned no healthy nodes".into());
     }
 
-    eprintln!(
-        "Discovered {} node(s) from topology API",
-        addresses.len()
-    );
+    eprintln!("Discovered {} node(s) from topology API", addresses.len());
     Ok(addresses)
 }
 
@@ -469,11 +477,7 @@ async fn rollback_create(
                 eprintln!("  Rollback: deleted key on {}", addr);
             }
             Ok(resp) => {
-                eprintln!(
-                    "  Rollback failed on {}: HTTP {}",
-                    addr,
-                    resp.status()
-                );
+                eprintln!("  Rollback failed on {}: HTTP {}", addr, resp.status());
             }
             Err(e) => {
                 eprintln!("  Rollback failed on {}: {}", addr, e);

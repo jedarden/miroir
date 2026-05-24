@@ -12,7 +12,7 @@ use miroir_core::config::MiroirConfig;
 use miroir_core::task_store::{RedisTaskStore, SearchUiScopedKey, TaskStore};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use crate::routes::indexes::MeilisearchClient;
 
@@ -71,7 +71,12 @@ pub async fn run_scoped_key_rotator(state: ScopedKeyRotationState) {
             let lease_ttl_ms = (state.config.leader_election.lease_ttl_s as i64) * 1000;
             let expires_at = lease_now + lease_ttl_ms;
 
-            match state.redis.try_acquire_leader_lease(&lease_scope, &state.pod_id, expires_at, lease_now) {
+            match state.redis.try_acquire_leader_lease(
+                &lease_scope,
+                &state.pod_id,
+                expires_at,
+                lease_now,
+            ) {
                 Ok(true) => {}
                 Ok(false) => continue, // Another pod holds the lease for this index
                 Err(e) => {
@@ -100,7 +105,9 @@ pub async fn check_and_rotate(
     index_uid: &str,
     force: bool,
 ) -> Result<RotateScopedKeyResponse, String> {
-    let current = state.redis.get_search_ui_scoped_key(index_uid)
+    let current = state
+        .redis
+        .get_search_ui_scoped_key(index_uid)
         .map_err(|e| format!("redis read failed: {e}"))?;
 
     // Timing gate check (skip if force)
@@ -135,7 +142,9 @@ pub async fn check_and_rotate(
         generation: new_generation,
     };
 
-    state.redis.set_search_ui_scoped_key(&scoped_key)
+    state
+        .redis
+        .set_search_ui_scoped_key(&scoped_key)
         .map_err(|e| format!("redis write failed: {e}"))?;
 
     info!(
@@ -145,11 +154,10 @@ pub async fn check_and_rotate(
     );
 
     // Step 3: Observe our own beacon immediately
-    state.redis.observe_search_ui_scoped_key(
-        &state.pod_id,
-        index_uid,
-        new_generation,
-    ).map_err(|e| format!("beacon write failed: {e}"))?;
+    state
+        .redis
+        .observe_search_ui_scoped_key(&state.pod_id, index_uid, new_generation)
+        .map_err(|e| format!("beacon write failed: {e}"))?;
 
     // Step 4: Wait for drain period and check beacons
     let drain_s = state.config.search_ui.scoped_key_rotation_drain_s;
@@ -159,15 +167,16 @@ pub async fn check_and_rotate(
 
     loop {
         // Get live pods
-        let live_pods = state.redis.get_live_pods()
+        let live_pods = state
+            .redis
+            .get_live_pods()
             .map_err(|e| format!("get_live_pods failed: {e}"))?;
 
         // Check if all live pods have observed the new generation
-        let (all_observed, unobserved) = state.redis.check_scoped_key_observation(
-            index_uid,
-            new_generation,
-            &live_pods,
-        ).map_err(|e| format!("beacon check failed: {e}"))?;
+        let (all_observed, unobserved) = state
+            .redis
+            .check_scoped_key_observation(index_uid, new_generation, &live_pods)
+            .map_err(|e| format!("beacon check failed: {e}"))?;
 
         if all_observed {
             info!(
@@ -235,7 +244,8 @@ fn should_rotate(current: &Option<SearchUiScopedKey>, config: &MiroirConfig) -> 
     };
 
     let max_age_ms = (config.search_ui.scoped_key_max_age_days as i64) * 24 * 3600 * 1000;
-    let rotate_before_ms = (config.search_ui.scoped_key_rotate_before_expiry_days as i64) * 24 * 3600 * 1000;
+    let rotate_before_ms =
+        (config.search_ui.scoped_key_rotate_before_expiry_days as i64) * 24 * 3600 * 1000;
     let age = now_ms() - key.rotated_at;
 
     // Rotate if key has been alive long enough that it will expire within rotate_before_days
@@ -279,7 +289,8 @@ pub async fn mint_scoped_key(
         }
     }
 
-    let key = created_key.ok_or_else(|| format!("failed to mint key on any node: {}", errors.join("; ")))?;
+    let key = created_key
+        .ok_or_else(|| format!("failed to mint key on any node: {}", errors.join("; ")))?;
     let uid = created_uid.ok_or_else(|| String::from("key created but no uid returned"))?;
 
     Ok((key, uid))
@@ -321,8 +332,7 @@ pub async fn revoke_previous_key(
 /// keys on their first search request.
 async fn discover_scoped_indexes(state: &ScopedKeyRotationState) -> Vec<String> {
     // Scan for existing scoped key hashes
-    state.redis.list_scoped_key_indexes()
-        .unwrap_or_default()
+    state.redis.list_scoped_key_indexes().unwrap_or_default()
 }
 
 fn now_ms() -> i64 {

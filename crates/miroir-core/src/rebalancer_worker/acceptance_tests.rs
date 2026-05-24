@@ -8,7 +8,11 @@
 use super::*;
 use crate::error::Result;
 use crate::migration::{MigrationConfig, MigrationCoordinator};
-use crate::task_store::{JobRow, LeaderLeaseRow, NewJob, TaskStore, NewCanary, CanaryRow, NewCdcCursor, CdcCursorRow, NewTenantMapping, TenantMapRow, NewRolloverPolicy, RolloverPolicyRow, NewSearchUiConfig, SearchUiConfigRow, NewAdminSession, AdminSessionRow};
+use crate::task_store::{
+    AdminSessionRow, CanaryRow, CdcCursorRow, JobRow, LeaderLeaseRow, NewAdminSession, NewCanary,
+    NewCdcCursor, NewJob, NewRolloverPolicy, NewSearchUiConfig, NewTenantMapping,
+    RolloverPolicyRow, SearchUiConfigRow, TaskStore, TenantMapRow,
+};
 use crate::topology::{Node, NodeId as TopologyNodeId, Topology};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -177,7 +181,10 @@ impl TaskStore for MockTaskStore {
     fn set_task_error(&self, _miroir_id: &str, _error: &str) -> Result<bool> {
         Ok(false)
     }
-    fn list_tasks(&self, _filter: &crate::task_store::TaskFilter) -> Result<Vec<crate::task_store::TaskRow>> {
+    fn list_tasks(
+        &self,
+        _filter: &crate::task_store::TaskFilter,
+    ) -> Result<Vec<crate::task_store::TaskRow>> {
         Ok(Vec::new())
     }
     fn prune_tasks(&self, _cutoff_ms: i64, _batch_size: u32) -> Result<usize> {
@@ -229,7 +236,10 @@ impl TaskStore for MockTaskStore {
     fn insert_idempotency_entry(&self, _entry: &crate::task_store::IdempotencyEntry) -> Result<()> {
         Ok(())
     }
-    fn get_idempotency_entry(&self, _key: &str) -> Result<Option<crate::task_store::IdempotencyEntry>> {
+    fn get_idempotency_entry(
+        &self,
+        _key: &str,
+    ) -> Result<Option<crate::task_store::IdempotencyEntry>> {
         Ok(None)
     }
     fn delete_expired_idempotency_entries(&self, _now_ms: i64) -> Result<usize> {
@@ -248,16 +258,28 @@ impl TaskStore for MockTaskStore {
     fn delete_canary(&self, _id: &str) -> Result<bool> {
         Ok(false)
     }
-    fn insert_canary_run(&self, _run: &crate::task_store::NewCanaryRun, _run_history_limit: usize) -> Result<()> {
+    fn insert_canary_run(
+        &self,
+        _run: &crate::task_store::NewCanaryRun,
+        _run_history_limit: usize,
+    ) -> Result<()> {
         Ok(())
     }
-    fn get_canary_runs(&self, _canary_id: &str, _limit: usize) -> Result<Vec<crate::task_store::CanaryRunRow>> {
+    fn get_canary_runs(
+        &self,
+        _canary_id: &str,
+        _limit: usize,
+    ) -> Result<Vec<crate::task_store::CanaryRunRow>> {
         Ok(Vec::new())
     }
     fn upsert_cdc_cursor(&self, _cursor: &crate::task_store::NewCdcCursor) -> Result<()> {
         Ok(())
     }
-    fn get_cdc_cursor(&self, _sink_name: &str, _index_uid: &str) -> Result<Option<crate::task_store::CdcCursorRow>> {
+    fn get_cdc_cursor(
+        &self,
+        _sink_name: &str,
+        _index_uid: &str,
+    ) -> Result<Option<crate::task_store::CdcCursorRow>> {
         Ok(None)
     }
     fn list_cdc_cursors(&self, _sink_name: &str) -> Result<Vec<crate::task_store::CdcCursorRow>> {
@@ -266,7 +288,10 @@ impl TaskStore for MockTaskStore {
     fn insert_tenant_mapping(&self, _mapping: &crate::task_store::NewTenantMapping) -> Result<()> {
         Ok(())
     }
-    fn get_tenant_mapping(&self, _api_key_hash: &[u8]) -> Result<Option<crate::task_store::TenantMapRow>> {
+    fn get_tenant_mapping(
+        &self,
+        _api_key_hash: &[u8],
+    ) -> Result<Option<crate::task_store::TenantMapRow>> {
         Ok(None)
     }
     fn delete_tenant_mapping(&self, _api_key_hash: &[u8]) -> Result<bool> {
@@ -275,7 +300,10 @@ impl TaskStore for MockTaskStore {
     fn upsert_rollover_policy(&self, _policy: &crate::task_store::NewRolloverPolicy) -> Result<()> {
         Ok(())
     }
-    fn get_rollover_policy(&self, _name: &str) -> Result<Option<crate::task_store::RolloverPolicyRow>> {
+    fn get_rollover_policy(
+        &self,
+        _name: &str,
+    ) -> Result<Option<crate::task_store::RolloverPolicyRow>> {
         Ok(None)
     }
     fn list_rollover_policies(&self) -> Result<Vec<crate::task_store::RolloverPolicyRow>> {
@@ -284,10 +312,16 @@ impl TaskStore for MockTaskStore {
     fn delete_rollover_policy(&self, _name: &str) -> Result<bool> {
         Ok(false)
     }
-    fn upsert_search_ui_config(&self, _config: &crate::task_store::NewSearchUiConfig) -> Result<()> {
+    fn upsert_search_ui_config(
+        &self,
+        _config: &crate::task_store::NewSearchUiConfig,
+    ) -> Result<()> {
         Ok(())
     }
-    fn get_search_ui_config(&self, _index_uid: &str) -> Result<Option<crate::task_store::SearchUiConfigRow>> {
+    fn get_search_ui_config(
+        &self,
+        _index_uid: &str,
+    ) -> Result<Option<crate::task_store::SearchUiConfigRow>> {
         Ok(None)
     }
     fn delete_search_ui_config(&self, _index_uid: &str) -> Result<bool> {
@@ -296,7 +330,10 @@ impl TaskStore for MockTaskStore {
     fn insert_admin_session(&self, _session: &crate::task_store::NewAdminSession) -> Result<()> {
         Ok(())
     }
-    fn get_admin_session(&self, _session_id: &str) -> Result<Option<crate::task_store::AdminSessionRow>> {
+    fn get_admin_session(
+        &self,
+        _session_id: &str,
+    ) -> Result<Option<crate::task_store::AdminSessionRow>> {
         Ok(None)
     }
     fn revoke_admin_session(&self, _session_id: &str) -> Result<bool> {
@@ -307,19 +344,31 @@ impl TaskStore for MockTaskStore {
     }
 
     // Mode B operations (Table 15)
-    fn upsert_mode_b_operation(&self, _operation: &crate::task_store::ModeBOperation) -> Result<()> {
+    fn upsert_mode_b_operation(
+        &self,
+        _operation: &crate::task_store::ModeBOperation,
+    ) -> Result<()> {
         Ok(())
     }
 
-    fn get_mode_b_operation(&self, _operation_id: &str) -> Result<Option<crate::task_store::ModeBOperation>> {
+    fn get_mode_b_operation(
+        &self,
+        _operation_id: &str,
+    ) -> Result<Option<crate::task_store::ModeBOperation>> {
         Ok(None)
     }
 
-    fn get_mode_b_operation_by_scope(&self, _scope: &str) -> Result<Option<crate::task_store::ModeBOperation>> {
+    fn get_mode_b_operation_by_scope(
+        &self,
+        _scope: &str,
+    ) -> Result<Option<crate::task_store::ModeBOperation>> {
         Ok(None)
     }
 
-    fn list_mode_b_operations(&self, _filter: &crate::task_store::ModeBOperationFilter) -> Result<Vec<crate::task_store::ModeBOperation>> {
+    fn list_mode_b_operations(
+        &self,
+        _filter: &crate::task_store::ModeBOperationFilter,
+    ) -> Result<Vec<crate::task_store::ModeBOperation>> {
         Ok(Vec::new())
     }
 
@@ -380,9 +429,7 @@ async fn p4_1_a1_advisory_lock_prevents_duplicate_migrations() {
         let task_store = task_store.clone();
         let scope = scope.to_string();
         let holder = "pod-1".to_string();
-        move || {
-            task_store.try_acquire_leader_lease(&scope, &holder, expires_at, now)
-        }
+        move || task_store.try_acquire_leader_lease(&scope, &holder, expires_at, now)
     })
     .await
     .unwrap()
@@ -394,23 +441,22 @@ async fn p4_1_a1_advisory_lock_prevents_duplicate_migrations() {
         let task_store = task_store.clone();
         let scope = scope.to_string();
         let holder = "pod-2".to_string();
-        move || {
-            task_store.try_acquire_leader_lease(&scope, &holder, expires_at, now)
-        }
+        move || task_store.try_acquire_leader_lease(&scope, &holder, expires_at, now)
     })
     .await
     .unwrap()
     .unwrap();
-    assert!(!acquired2, "pod-2 should not acquire the lease while pod-1 holds it");
+    assert!(
+        !acquired2,
+        "pod-2 should not acquire the lease while pod-1 holds it"
+    );
 
     // Pod 1 can renew its lease
     let renewed1 = tokio::task::spawn_blocking({
         let task_store = task_store.clone();
         let scope = scope.to_string();
         let holder = "pod-1".to_string();
-        move || {
-            task_store.renew_leader_lease(&scope, &holder, expires_at + 2000)
-        }
+        move || task_store.renew_leader_lease(&scope, &holder, expires_at + 2000)
     })
     .await
     .unwrap()
@@ -423,13 +469,21 @@ async fn p4_1_a1_advisory_lock_prevents_duplicate_migrations() {
         let scope = scope.to_string();
         let holder = "pod-2".to_string();
         move || {
-            task_store.try_acquire_leader_lease(&scope, &holder, expires_at + 3000, expires_at + 2000)
+            task_store.try_acquire_leader_lease(
+                &scope,
+                &holder,
+                expires_at + 3000,
+                expires_at + 2000,
+            )
         }
     })
     .await
     .unwrap()
     .unwrap();
-    assert!(!acquired2_after, "pod-2 should still not acquire after pod-1 renews");
+    assert!(
+        !acquired2_after,
+        "pod-2 should still not acquire after pod-1 renews"
+    );
 }
 
 /// P4.1-A2: Progress persistence allows pod restart resumption.
@@ -484,9 +538,7 @@ async fn p4_1_a2_progress_persistence_pods_resume_migration() {
     tokio::task::spawn_blocking({
         let task_store = task_store.clone();
         let new_job = new_job.clone();
-        move || {
-            task_store.insert_job(&new_job)
-        }
+        move || task_store.insert_job(&new_job)
     })
     .await
     .unwrap()
@@ -606,9 +658,7 @@ async fn p4_1_a4_two_workers_no_duplicate_migrations() {
         let task_store = task_store.clone();
         let scope = scope.to_string();
         let holder = "pod-1".to_string();
-        move || {
-            task_store.try_acquire_leader_lease(&scope, &holder, expires_at, now)
-        }
+        move || task_store.try_acquire_leader_lease(&scope, &holder, expires_at, now)
     })
     .await
     .unwrap()
@@ -620,14 +670,15 @@ async fn p4_1_a4_two_workers_no_duplicate_migrations() {
         let task_store = task_store.clone();
         let scope = scope.to_string();
         let holder = "pod-2".to_string();
-        move || {
-            task_store.try_acquire_leader_lease(&scope, &holder, expires_at, now)
-        }
+        move || task_store.try_acquire_leader_lease(&scope, &holder, expires_at, now)
     })
     .await
     .unwrap()
     .unwrap();
-    assert!(!pod2_acquired, "pod-2 should not acquire lease while pod-1 holds it");
+    assert!(
+        !pod2_acquired,
+        "pod-2 should not acquire lease while pod-1 holds it"
+    );
 
     // Now simulate a scenario where both pods try to process the same topology event
     // Only pod-1 (the lease holder) should actually process it
@@ -639,17 +690,26 @@ async fn p4_1_a4_two_workers_no_duplicate_migrations() {
 
     // Worker 1 handles the event (holds the lease)
     let result1 = worker1.handle_topology_event(event.clone()).await;
-    assert!(result1.is_ok(), "worker1 should handle the event successfully");
+    assert!(
+        result1.is_ok(),
+        "worker1 should handle the event successfully"
+    );
 
     // Worker 2 tries to handle the same event - should succeed but not create duplicate
     // because worker1 already created the job
     let result2 = worker2.handle_topology_event(event).await;
-    assert!(result2.is_ok(), "worker2 should handle the event (no-op if job exists)");
+    assert!(
+        result2.is_ok(),
+        "worker2 should handle the event (no-op if job exists)"
+    );
 
     // Verify that only one migration was created (not two duplicates)
     let coordinator_read = coordinator.read().await;
     let migration_count = coordinator_read.get_all_migrations().len();
-    assert_eq!(migration_count, 1, "only one migration should be created, not duplicates");
+    assert_eq!(
+        migration_count, 1,
+        "only one migration should be created, not duplicates"
+    );
 }
 
 /// Helper to get current time in milliseconds.

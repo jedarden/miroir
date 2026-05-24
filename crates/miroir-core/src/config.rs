@@ -5,8 +5,8 @@ mod error;
 mod load;
 mod validate;
 
+pub use advanced::{CspOverridesConfig, SearchUiConfig};
 pub use error::ConfigError;
-pub use advanced::{SearchUiConfig, CspOverridesConfig};
 
 use serde::{Deserialize, Serialize};
 
@@ -359,7 +359,7 @@ impl Default for TaskRegistryConfig {
             cache_size: 10000,
             redis_pool_max: 50,
             ttl_seconds: 7 * 24 * 3600, // 7 days
-            prune_interval_s: 300,       // 5 min
+            prune_interval_s: 300,      // 5 min
             prune_batch_size: 10000,
         }
     }
@@ -686,44 +686,107 @@ task_store:
         let cfg = MiroirConfig::default();
 
         // §14.8 server defaults
-        assert_eq!(cfg.server.max_body_bytes, 104_857_600, "server.max_body_bytes");
-        assert_eq!(cfg.server.max_concurrent_requests, 500, "server.max_concurrent_requests");
-        assert_eq!(cfg.server.request_timeout_ms, 30_000, "server.request_timeout_ms");
+        assert_eq!(
+            cfg.server.max_body_bytes, 104_857_600,
+            "server.max_body_bytes"
+        );
+        assert_eq!(
+            cfg.server.max_concurrent_requests, 500,
+            "server.max_concurrent_requests"
+        );
+        assert_eq!(
+            cfg.server.request_timeout_ms, 30_000,
+            "server.request_timeout_ms"
+        );
 
         // §14.8 connection_pool_per_node defaults
-        assert_eq!(cfg.connection_pool_per_node.max_idle, 32, "connection_pool_per_node.max_idle");
-        assert_eq!(cfg.connection_pool_per_node.max_total, 128, "connection_pool_per_node.max_total");
-        assert_eq!(cfg.connection_pool_per_node.idle_timeout_s, 60, "connection_pool_per_node.idle_timeout_s");
+        assert_eq!(
+            cfg.connection_pool_per_node.max_idle, 32,
+            "connection_pool_per_node.max_idle"
+        );
+        assert_eq!(
+            cfg.connection_pool_per_node.max_total, 128,
+            "connection_pool_per_node.max_total"
+        );
+        assert_eq!(
+            cfg.connection_pool_per_node.idle_timeout_s, 60,
+            "connection_pool_per_node.idle_timeout_s"
+        );
 
         // §14.8 task_registry defaults
-        assert_eq!(cfg.task_registry.cache_size, 10_000, "task_registry.cache_size");
-        assert_eq!(cfg.task_registry.redis_pool_max, 50, "task_registry.redis_pool_max");
+        assert_eq!(
+            cfg.task_registry.cache_size, 10_000,
+            "task_registry.cache_size"
+        );
+        assert_eq!(
+            cfg.task_registry.redis_pool_max, 50,
+            "task_registry.redis_pool_max"
+        );
 
         // §14.8 idempotency defaults
-        assert_eq!(cfg.idempotency.max_cached_keys, 1_000_000, "idempotency.max_cached_keys");
-        assert_eq!(cfg.idempotency.ttl_seconds, 86_400, "idempotency.ttl_seconds");
+        assert_eq!(
+            cfg.idempotency.max_cached_keys, 1_000_000,
+            "idempotency.max_cached_keys"
+        );
+        assert_eq!(
+            cfg.idempotency.ttl_seconds, 86_400,
+            "idempotency.ttl_seconds"
+        );
 
         // §14.8 session_pinning defaults
-        assert_eq!(cfg.session_pinning.max_sessions, 100_000, "session_pinning.max_sessions");
+        assert_eq!(
+            cfg.session_pinning.max_sessions, 100_000,
+            "session_pinning.max_sessions"
+        );
 
         // §14.8 query_coalescing defaults
-        assert_eq!(cfg.query_coalescing.max_subscribers, 1_000, "query_coalescing.max_subscribers");
-        assert_eq!(cfg.query_coalescing.max_pending_queries, 10_000, "query_coalescing.max_pending_queries");
+        assert_eq!(
+            cfg.query_coalescing.max_subscribers, 1_000,
+            "query_coalescing.max_subscribers"
+        );
+        assert_eq!(
+            cfg.query_coalescing.max_pending_queries, 10_000,
+            "query_coalescing.max_pending_queries"
+        );
 
         // §14.8 anti_entropy defaults
-        assert_eq!(cfg.anti_entropy.max_read_concurrency, 2, "anti_entropy.max_read_concurrency");
-        assert_eq!(cfg.anti_entropy.fingerprint_batch_size, 1_000, "anti_entropy.fingerprint_batch_size");
+        assert_eq!(
+            cfg.anti_entropy.max_read_concurrency, 2,
+            "anti_entropy.max_read_concurrency"
+        );
+        assert_eq!(
+            cfg.anti_entropy.fingerprint_batch_size, 1_000,
+            "anti_entropy.fingerprint_batch_size"
+        );
 
         // §14.8 resharding defaults
-        assert_eq!(cfg.resharding.backfill_concurrency, 4, "resharding.backfill_concurrency");
-        assert_eq!(cfg.resharding.backfill_batch_size, 1_000, "resharding.backfill_batch_size");
+        assert_eq!(
+            cfg.resharding.backfill_concurrency, 4,
+            "resharding.backfill_concurrency"
+        );
+        assert_eq!(
+            cfg.resharding.backfill_batch_size, 1_000,
+            "resharding.backfill_batch_size"
+        );
 
         // §14.8 peer_discovery defaults
-        assert_eq!(cfg.peer_discovery.service_name, "miroir-headless", "peer_discovery.service_name");
-        assert_eq!(cfg.peer_discovery.refresh_interval_s, 15, "peer_discovery.refresh_interval_s");
+        assert_eq!(
+            cfg.peer_discovery.service_name, "miroir-headless",
+            "peer_discovery.service_name"
+        );
+        assert_eq!(
+            cfg.peer_discovery.refresh_interval_s, 15,
+            "peer_discovery.refresh_interval_s"
+        );
 
         // §14.8 leader_election defaults
-        assert_eq!(cfg.leader_election.lease_ttl_s, 10, "leader_election.lease_ttl_s");
-        assert_eq!(cfg.leader_election.renew_interval_s, 3, "leader_election.renew_interval_s");
+        assert_eq!(
+            cfg.leader_election.lease_ttl_s, 10,
+            "leader_election.lease_ttl_s"
+        );
+        assert_eq!(
+            cfg.leader_election.renew_interval_s, 3,
+            "leader_election.renew_interval_s"
+        );
     }
 }

@@ -111,7 +111,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let admin_key = admin_key.unwrap();
-    let api_url = cli.api_url.unwrap_or_else(|| "http://localhost:8080".to_string());
+    let api_url = cli
+        .api_url
+        .unwrap_or_else(|| "http://localhost:8080".to_string());
 
     match cli.command {
         Commands::Status(cmd) => commands::status::run(cmd, &admin_key, &api_url).await,
