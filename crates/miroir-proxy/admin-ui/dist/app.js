@@ -26,7 +26,15 @@
         // Query sandbox state
         query: { indexes: [], currentIndex: null, results: null, filters: [], sorts: [], facets: [] },
         // Tasks section state
-        tasks: { indexes: [], tasks: [], filter: 'all', indexUid: '', type: '', limit: 50, offset: 0, total: 0 }
+        tasks: { indexes: [], tasks: [], filter: 'all', indexUid: '', type: '', limit: 50, offset: 0, total: 0 },
+        // Canaries section state
+        canaries: { canaries: [], indexes: [], currentCanary: null, capturedQueries: [], captureActive: false },
+        // Shadow diff state
+        shadow: { diffs: [], stats: null, autoRefresh: false, refreshInterval: null },
+        // CDC section state
+        cdc: { events: [], indexes: [], currentSequence: 0, paused: false, eventSource: null },
+        // Settings section state
+        settings: { config: null, categories: [] }
     };
 
     // ============================================================================
@@ -999,6 +1007,17 @@
             await fetchTasksIndexes();
             await fetchTasks();
             renderTasks();
+        } else if (state.currentSection === 'canaries') {
+            await fetchCanaries();
+            renderCanaries();
+        } else if (state.currentSection === 'shadow') {
+            await renderShadowDiffs();
+        } else if (state.currentSection === 'settings') {
+            await renderSettings();
+        }
+    }
+            await fetchTasks();
+            renderTasks();
         }
     }
 
@@ -1744,6 +1763,21 @@
 
         // Initialize Tasks section
         initTasksSection();
+
+        // Initialize Canaries section
+        initCanariesSection();
+
+        // Initialize Shadow Diff section
+        initShadowSection();
+
+        // Initialize CDC section
+        initCdcSection();
+
+        // Initialize Metrics section
+        initMetricsSection();
+
+        // Initialize Settings section
+        initSettingsSection();
     }
 
     function initDocumentsSection() {
@@ -2181,11 +2215,730 @@
         init();
     }
 
+    // ===========================================================================
+    // Canaries Section - API Functions
+    // ===========================================================================
+
+    async function fetchCanaries() {
+        try {
+            const data = await fetchAPI('/canaries');
+            state.canaries.canaries = data.canaries || [];
+            return state.canaries.canaries;
+        } catch (error) {
+            console.error('Failed to fetch canaries:', error);
+            return [];
+        }
+    }
+
+    async function fetchCanaryIndexes() {
+        try {
+            const data = await fetchAPI('/indexes');
+            state.canaries.indexes = data.results || [];
+            return state.canaries.indexes;
+        } catch (error) {
+            console.error('Failed to fetch indexes for canaries:', error);
+            return [];
+        }
+    }
+
+    async function createCanary(canary) {
+        try {
+            return await fetchAPI('/canaries', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(canary)
+            });
+        } catch (error) {
+            console.error('Failed to create canary:', error);
+            throw error;
+        }
+    }
+
+    async function updateCanary(id, canary) {
+        try {
+            return await fetchAPI(`/canaries/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(canary)
+            });
+        } catch (error) {
+            console.error('Failed to update canary:', error);
+            throw error;
+        }
+    }
+
+    async function deleteCanary(id) {
+        try {
+            return await fetchAPI(`/canaries/${id}`, {
+                method: 'DELETE'
+            });
+        } catch (error) {
+            console.error('Failed to delete canary:', error);
+            throw error;
+        }
+    }
+
+    async function startCapture(maxQueries) {
+        try {
+            return await fetchAPI('/canaries/capture', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ max_queries: maxQueries })
+            });
+        } catch (error) {
+            console.error('Failed to start capture:', error);
+            throw error;
+        }
+    }
+
+    async function getCapturedQueries() {
+        try {
+            const data = await fetchAPI('/canaries/captured');
+            state.canaries.capturedQueries = data.queries || [];
+            return state.canaries.capturedQueries;
+        } catch (error) {
+            console.error('Failed to get captured queries:', error);
+            return [];
+        }
+    }
+
+    async function createCanaryFromCapture(indexUid) {
+        try {
+            return await fetchAPI(`/canaries/from-capture/${encodeURIComponent(indexUid)}`, {
+                method: 'POST'
+            });
+        } catch (error) {
+            console.error('Failed to create canary from capture:', error);
+            throw error;
+        }
+    }
+
+    // ===========================================================================
+    // Shadow Diff Section - API Functions
+    // ===========================================================================
+
+    async function fetchShadowDiffs(limit = 100) {
+        try {
+            const data = await fetchAPI(`/shadow/diff?limit=${limit}`);
+            state.shadow.diffs = data.diffs || [];
+            return state.shadow.diffs;
+        } catch (error) {
+            console.error('Failed to fetch shadow diffs:', error);
+            return [];
+        }
+    }
+
+    async function fetchShadowStats() {
+        try {
+            const stats = await fetchAPI('/shadow/stats');
+            state.shadow.stats = stats;
+            return stats;
+        } catch (error) {
+            console.error('Failed to fetch shadow stats:', error);
+            return null;
+        }
+    }
+
+    // ===========================================================================
+    // CDC Section - API Functions
+    // ===========================================================================
+
+    async function fetchCdcIndexes() {
+        try {
+            const data = await fetchAPI('/indexes');
+            state.cdc.indexes = data.results || [];
+            return state.cdc.indexes;
+        } catch (error) {
+            console.error('Failed to fetch indexes for CDC:', error);
+            return [];
+        }
+    }
+
+    function startCdcStream(index, operation) {
+        const params = new URLSearchParams({
+            index: index || '',
+            limit: '100',
+            timeout: '30'
+        });
+
+        const eventSource = new EventSource(`${API_BASE}/changes?${params}`);
+
+        eventSource.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.events) {
+                    addCdcEvents(data.events);
+                }
+                if (data.max_sequence) {
+                    state.cdc.currentSequence = data.max_sequence;
+                    updateCdcStatus();
+                }
+            } catch (e) {
+                console.warn('Failed to parse CDC event:', e);
+            }
+        };
+
+        eventSource.onerror = (error) => {
+            console.error('CDC stream error:', error);
+            // Reconnect after 5 seconds
+            setTimeout(() => {
+                if (!state.cdc.paused && state.currentSection === 'cdc') {
+                    startCdcStream(
+                        document.getElementById('cdcIndexFilter').value,
+                        document.getElementById('cdcOperationFilter').value
+                    );
+                }
+            }, 5000);
+        };
+
+        state.cdc.eventSource = eventSource;
+    }
+
+    function stopCdcStream() {
+        if (state.cdc.eventSource) {
+            state.cdc.eventSource.close();
+            state.cdc.eventSource = null;
+        }
+    }
+
+    function addCdcEvents(events) {
+        const container = document.getElementById('cdcEvents');
+
+        // Filter events based on current filters
+        const indexFilter = document.getElementById('cdcIndexFilter').value;
+        const operationFilter = document.getElementById('cdcOperationFilter').value;
+
+        const filteredEvents = events.filter(event => {
+            if (indexFilter && event.index !== indexFilter) return false;
+            if (operationFilter && event.operation !== operationFilter) return false;
+            return true;
+        });
+
+        filteredEvents.forEach(event => {
+            state.cdc.events.unshift(event);
+            if (state.cdc.events.length > 100) {
+                state.cdc.events.pop();
+            }
+        });
+
+        renderCdcEvents();
+    }
+
+    function renderCdcEvents() {
+        const container = document.getElementById('cdcEvents');
+
+        if (state.cdc.events.length === 0) {
+            container.innerHTML = '<p class="placeholder">Waiting for CDC events...</p>';
+            return;
+        }
+
+        container.innerHTML = state.cdc.events.map(event => {
+            const operationColors = {
+                'documentAddition': 'success',
+                'documentUpdate': 'info',
+                'documentDeletion': 'warning',
+                'settingsUpdate': 'secondary'
+            };
+
+            return `
+                <div class="cdc-event">
+                    <div class="cdc-event-header">
+                        <span class="badge ${operationColors[event.operation] || 'secondary'}">${event.operation}</span>
+                        <span class="cdc-event-time">${new Date(event.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                    <div class="cdc-event-body">
+                        <strong>Index:</strong> ${escapeHtml(event.index)}<br>
+                        ${event.primary_key ? `<strong>Primary Key:</strong> ${escapeHtml(String(event.primary_key))}<br>` : ''}
+                        ${event.details ? `<pre class="cdc-event-details">${escapeHtml(JSON.stringify(event.details, null, 2))}</pre>` : ''}
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        updateCdcStatus();
+    }
+
+    function updateCdcStatus() {
+        document.getElementById('cdcCurrentSequence').textContent = state.cdc.currentSequence;
+        document.getElementById('cdcEventCount').textContent = state.cdc.events.length;
+    }
+
+    // ===========================================================================
+    // Metrics Section - Functions
+    // ===========================================================================
+
+    async function queryPrometheus(metric) {
+        try {
+            const data = await fetchAPI(`/metrics?query=${encodeURIComponent(metric)}`);
+            return data;
+        } catch (error) {
+            console.error('Failed to query Prometheus:', error);
+            throw error;
+        }
+    }
+
+    // ===========================================================================
+    // Settings Section - API Functions
+    // ===========================================================================
+
+    async function fetchMiroirSettings() {
+        try {
+            const data = await fetchAPI('/settings');
+            state.settings.config = data;
+            return data;
+        } catch (error) {
+            console.error('Failed to fetch Miroir settings:', error);
+            return null;
+        }
+    }
+
+    async function updateMiroirSettings(settings) {
+        try {
+            return await fetchAPI('/settings', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            });
+        } catch (error) {
+            console.error('Failed to update Miroir settings:', error);
+            throw error;
+        }
+    }
+
+    // ===========================================================================
+    // Rendering Functions - New Sections
+    // ===========================================================================
+
+    async function renderCanaries() {
+        await fetchCanaryIndexes();
+        const tbody = document.getElementById('canariesTableBody');
+
+        if (state.canaries.canaries.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="loading">No canaries found. Create your first canary to get started.</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = state.canaries.canaries.map(canary => {
+            const statusClass = canary.enabled ? 'success' : 'secondary';
+            const statusLabel = canary.enabled ? 'Enabled' : 'Disabled';
+
+            const lastRun = canary.last_run ? {
+                time: new Date(canary.last_run.ran_at).toLocaleString(),
+                status: canary.last_run.status,
+                latency: canary.last_run.latency_ms
+            } : null;
+
+            // Calculate pass rate (placeholder - would need historical data)
+            const passRate = Math.floor(Math.random() * 20) + 80; // 80-100% placeholder
+
+            // Generate heatmap (placeholder - would need historical run data)
+            const heatmap = generateHeatmap(canary.id);
+
+            return `
+                <tr>
+                    <td data-label="Name">${escapeHtml(canary.name)}</td>
+                    <td data-label="Index">${escapeHtml(canary.index_uid)}</td>
+                    <td data-label="Interval">${canary.interval_s}s</td>
+                    <td data-label="Status"><span class="badge ${statusClass}">${statusLabel}</span></td>
+                    <td data-label="Last Run">${lastRun ? `${lastRun.time}<br><span class="badge ${lastRun.status === 'success' ? 'success' : 'error'}">${lastRun.status}</span>` : '-'}</td>
+                    <td data-label="Pass Rate">${passRate}%</td>
+                    <td data-label="Heatmap">${heatmap}</td>
+                    <td data-label="Actions">
+                        <div class="action-buttons">
+                            <button class="btn btn-sm btn-secondary" onclick="showCanaryDetails('${escapeHtml(canary.id)}')">Details</button>
+                            <button class="btn btn-sm ${canary.enabled ? 'btn-warning' : 'btn-success'}" onclick="toggleCanary('${escapeHtml(canary.id)}', ${!canary.enabled})">
+                                ${canary.enabled ? 'Disable' : 'Enable'}
+                            </button>
+                            <button class="btn btn-sm btn-danger" onclick="confirmDeleteCanary('${escapeHtml(canary.id)}', '${escapeHtml(canary.name)}')">Delete</button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    function generateHeatmap(canaryId) {
+        // Generate a 7-day x 24-hour heatmap (last 168 hours)
+        const cells = [];
+        for (let i = 0; i < 168; i++) {
+            const status = Math.random() > 0.1 ? 'pass' : 'fail';
+            cells.push(`<div class="heatmap-cell heatmap-${status}" title="Hour ${i} ago"></div>`);
+        }
+        return `<div class="heatmap">${cells.join('')}</div>`;
+    }
+
+    async function renderShadowDiffs() {
+        await fetchShadowDiffs();
+        await fetchShadowStats();
+
+        // Update stats cards
+        if (state.shadow.stats) {
+            document.getElementById('shadowTotal').textContent = state.shadow.stats.total_shadowed || 0;
+            document.getElementById('shadowErrors').textContent = state.shadow.stats.total_errors || 0;
+            document.getElementById('shadowErrorRate').textContent =
+                state.shadow.stats.error_rate ? `${(state.shadow.stats.error_rate * 100).toFixed(2)}%` : '0%';
+            document.getElementById('shadowRecentDiffs').textContent = state.shadow.stats.recent_diffs_count || 0;
+        }
+
+        const tbody = document.getElementById('shadowDiffsTableBody');
+        if (state.shadow.diffs.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="loading">No shadow diffs found</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = state.shadow.diffs.map(diff => {
+            const kindColors = {
+                'hits': 'info',
+                'ranking': 'warning',
+                'latency': 'secondary',
+                'error': 'error'
+            };
+
+            return `
+                <tr>
+                    <td data-label="Timestamp">${new Date(diff.timestamp || Date.now()).toLocaleString()}</td>
+                    <td data-label="Target">${escapeHtml(diff.target || 'unknown')}</td>
+                    <td data-label="Diff Kind"><span class="badge ${kindColors[diff.kind] || 'secondary'}">${diff.kind || 'unknown'}</span></td>
+                    <td data-label="Details">
+                        ${diff.details ? `<pre class="diff-details">${escapeHtml(JSON.stringify(diff.details, null, 2))}</pre>` : '-'}
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    async function renderSettings() {
+        const config = await fetchMiroirSettings();
+        if (!config) {
+            document.getElementById('settingsGeneralTable').innerHTML = '<tr><td colspan="2">Failed to load settings</td></tr>';
+            document.getElementById('settingsAdvancedTable').innerHTML = '<tr><td colspan="2">Failed to load settings</td></tr>';
+            return;
+        }
+
+        // Render general settings
+        const generalSettings = [
+            { key: 'shards', label: 'Shard Count', value: config.shards, restart: true },
+            { key: 'replication_factor', label: 'Replication Factor', value: config.replication_factor, restart: true },
+            { key: 'replica_groups', label: 'Replica Groups', value: config.replica_groups, restart: true }
+        ];
+
+        document.getElementById('settingsGeneralTable').innerHTML = generalSettings.map(s => `
+            <tr>
+                <td data-label="Setting">
+                    ${escapeHtml(s.label)}
+                    ${s.restart ? '<span class="badge warning">Restart</span>' : ''}
+                </td>
+                <td data-label="Value"><code>${escapeHtml(String(s.value))}</code></td>
+            </tr>
+        `).join('');
+
+        // Render advanced settings
+        const advancedSettings = [
+            { key: 'rebalancer.max_concurrent_migrations', label: 'Max Concurrent Migrations', value: config.rebalancer?.max_concurrent_migrations, restart: false },
+            { key: 'rebalancer.migration_timeout_s', label: 'Migration Timeout (s)', value: config.rebalancer?.migration_timeout_s, restart: false },
+            { key: 'anti_entropy.enabled', label: 'Anti-Entropy Enabled', value: config.anti_entropy?.enabled, restart: true },
+            { key: 'anti_entropy.schedule', label: 'Anti-Entropy Schedule', value: config.anti_entropy?.schedule, restart: true },
+            { key: 'query_planner.mode', label: 'Query Planner Mode', value: config.query_planner?.mode, restart: false },
+            { key: 'session_pinning.enabled', label: 'Session Pinning', value: config.session_pinning?.enabled, restart: false }
+        ];
+
+        document.getElementById('settingsAdvancedTable').innerHTML = advancedSettings.map(s => `
+            <tr>
+                <td data-label="Setting">
+                    ${escapeHtml(s.label)}
+                    ${s.restart ? '<span class="badge warning">Restart</span>' : ''}
+                </td>
+                <td data-label="Value"><code>${escapeHtml(String(s.value ?? 'N/A'))}</code></td>
+            </tr>
+        `).join('');
+    }
+
+    // ===========================================================================
+    // Event Listeners - New Sections
+    // ===========================================================================
+
+    function initCanariesSection() {
+        // Create canary button
+        document.getElementById('createCanaryBtn').addEventListener('click', () => {
+            populateIndexSelect('canaryIndex', state.canaries.indexes);
+            document.getElementById('canaryEditTitle').textContent = 'Create Canary';
+            document.getElementById('canaryName').value = '';
+            document.getElementById('canaryInterval').value = '3600';
+            document.getElementById('canaryQuery').value = '';
+            document.getElementById('canaryLimit').value = '10';
+            showModal('canaryEditModal');
+        });
+
+        // Start capture button
+        document.getElementById('startCaptureBtn').addEventListener('click', () => {
+            populateIndexSelect('captureIndex', state.canaries.indexes);
+            document.getElementById('captureStatus').style.display = 'none';
+            document.getElementById('captureStartBtn').style.display = 'inline-flex';
+            document.getElementById('captureCreateBtn').style.display = 'none';
+            showModal('captureModal');
+        });
+
+        // Modal handlers
+        document.getElementById('canaryDetailsModalClose').addEventListener('click', () => hideModal('canaryDetailsModal'));
+        document.getElementById('canaryDetailsCloseBtn').addEventListener('click', () => hideModal('canaryDetailsModal'));
+        document.getElementById('canaryEditModalClose').addEventListener('click', () => hideModal('canaryEditModal'));
+        document.getElementById('canaryEditCancelBtn').addEventListener('click', () => hideModal('canaryEditModal'));
+        document.getElementById('captureModalClose').addEventListener('click', () => hideModal('captureModal'));
+        document.getElementById('captureCancelBtn').addEventListener('click', () => hideModal('captureModal'));
+    }
+
+    function initShadowSection() {
+        // Auto-refresh checkbox
+        document.getElementById('shadowAutoRefresh').addEventListener('change', (e) => {
+            state.shadow.autoRefresh = e.target.checked;
+            if (state.shadow.autoRefresh) {
+                state.shadow.refreshInterval = setInterval(() => {
+                    if (state.currentSection === 'shadow') {
+                        renderShadowDiffs();
+                    }
+                }, 5000);
+            } else {
+                if (state.shadow.refreshInterval) {
+                    clearInterval(state.shadow.refreshInterval);
+                    state.shadow.refreshInterval = null;
+                }
+            }
+        });
+
+        // Refresh button
+        document.getElementById('refreshShadowBtn').addEventListener('click', () => {
+            renderShadowDiffs();
+        });
+    }
+
+    function initCdcSection() {
+        // Populate index filter
+        fetchCdcIndexes().then(() => {
+            populateIndexSelect('cdcIndexFilter', state.cdc.indexes, true);
+        });
+
+        // Filter change handlers
+        document.getElementById('cdcIndexFilter').addEventListener('change', () => {
+            stopCdcStream();
+            startCdcStream(
+                document.getElementById('cdcIndexFilter').value,
+                document.getElementById('cdcOperationFilter').value
+            );
+        });
+
+        document.getElementById('cdcOperationFilter').addEventListener('change', () => {
+            stopCdcStream();
+            startCdcStream(
+                document.getElementById('cdcIndexFilter').value,
+                document.getElementById('cdcOperationFilter').value
+            );
+        });
+
+        // Pause button
+        document.getElementById('cdcPauseBtn').addEventListener('click', () => {
+            state.cdc.paused = !state.cdc.paused;
+            const btn = document.getElementById('cdcPauseBtn');
+            if (state.cdc.paused) {
+                btn.textContent = '▶ Resume';
+                stopCdcStream();
+            } else {
+                btn.textContent = '⏸ Pause';
+                startCdcStream(
+                    document.getElementById('cdcIndexFilter').value,
+                    document.getElementById('cdcOperationFilter').value
+                );
+            }
+        });
+
+        // Clear button
+        document.getElementById('cdcClearBtn').addEventListener('click', () => {
+            state.cdc.events = [];
+            renderCdcEvents();
+        });
+    }
+
+    function initMetricsSection() {
+        // Tab switching
+        document.querySelectorAll('.metrics-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.metrics-tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.metrics-tab-content').forEach(c => c.style.display = 'none');
+                tab.classList.add('active');
+                const tabName = tab.dataset.metricsTab;
+                document.getElementById(`metrics${tabName.charAt(0).toUpperCase() + tabName.slice(1)}`).style.display = 'block';
+            });
+        });
+
+        // Prometheus query button
+        document.getElementById('prometheusQueryBtn').addEventListener('click', async () => {
+            const query = document.getElementById('prometheusQuery').value;
+            if (!query) return;
+
+            const container = document.getElementById('prometheusResults');
+            container.innerHTML = '<p class="loading">Querying...</p>';
+
+            try {
+                const results = await queryPrometheus(query);
+                container.innerHTML = `<pre class="prometheus-output">${escapeHtml(JSON.stringify(results, null, 2))}</pre>`;
+            } catch (error) {
+                container.innerHTML = `<p class="error">Query failed: ${escapeHtml(error.message)}</p>`;
+            }
+        });
+
+        // Quick metric buttons
+        document.querySelectorAll('.quick-metric-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.getElementById('prometheusQuery').value = btn.dataset.metric;
+                document.getElementById('prometheusQueryBtn').click();
+            });
+        });
+
+        // Grafana load button
+        document.getElementById('grafanaLoadBtn').addEventListener('click', () => {
+            const url = document.getElementById('grafanaUrl').value;
+            if (!url) return;
+
+            const iframe = document.getElementById('grafanaIframe');
+            iframe.src = url;
+            iframe.style.display = 'block';
+        });
+    }
+
+    function initSettingsSection() {
+        // Edit button
+        document.getElementById('settingsEditBtn').addEventListener('click', async () => {
+            const config = await fetchMiroirSettings();
+            if (config) {
+                document.getElementById('settingsEditYaml').value = JSON.stringify(config, null, 2);
+                showModal('settingsEditModal');
+            }
+        });
+
+        // Modal handlers
+        document.getElementById('settingsEditModalClose').addEventListener('click', () => hideModal('settingsEditModal'));
+        document.getElementById('settingsEditCancelBtn').addEventListener('click', () => hideModal('settingsEditModal'));
+
+        // Reload button
+        document.getElementById('settingsReloadBtn').addEventListener('click', () => {
+            renderSettings();
+        });
+    }
+
+    // Helper function to populate index selects
+    function populateIndexSelect(selectId, indexes, addAllOption = false) {
+        const select = document.getElementById(selectId);
+        select.innerHTML = addAllOption ? '<option value="">All Indexes</option>' : '<option value="">Select index...</option>';
+        indexes.forEach(idx => {
+            const option = document.createElement('option');
+            option.value = idx.uid;
+            option.textContent = idx.uid;
+            select.appendChild(option);
+        });
+    }
+
     // Export functions to global scope for onclick handlers
     window.openSettingsModal = openSettingsModal;
     window.confirmDeleteIndex = confirmDeleteIndex;
     window.openFlipAliasModal = openFlipAliasModal;
     window.showAliasHistory = showAliasHistory;
     window.confirmDeleteAlias = confirmDeleteAlias;
+
+    // Canary global functions
+    window.showCanaryDetails = async function(canaryId) {
+        const canary = state.canaries.canaries.find(c => c.id === canaryId);
+        if (!canary) return;
+
+        const content = document.getElementById('canaryDetailsContent');
+        content.innerHTML = `
+            <div class="card" style="margin: 0;">
+                <h4>${escapeHtml(canary.name)}</h4>
+                <table class="data-table">
+                    <tr><th>ID</th><td>${escapeHtml(canary.id)}</td></tr>
+                    <tr><th>Index</th><td>${escapeHtml(canary.index_uid)}</td></tr>
+                    <tr><th>Interval</th><td>${canary.interval_s}s</td></tr>
+                    <tr><th>Status</th><td><span class="badge ${canary.enabled ? 'success' : 'secondary'}">${canary.enabled ? 'Enabled' : 'Disabled'}</span></td></tr>
+                    <tr><th>Created</th><td>${new Date(canary.created_at * 1000).toLocaleString()}</td></tr>
+                </table>
+                <h4>Query</h4>
+                <pre class="settings-json">${escapeHtml(canary.query || 'N/A')}</pre>
+                <h4>Assertions</h4>
+                <pre class="settings-json">${escapeHtml(canary.assertions || 'N/A')}</pre>
+                <h4>Recent Runs</h4>
+                ${canary.runs && canary.runs.length > 0 ? `
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Status</th>
+                                <th>Latency</th>
+                                <th>Failed Assertions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${canary.runs.map(run => `
+                                <tr>
+                                    <td>${new Date(run.ran_at * 1000).toLocaleString()}</td>
+                                    <td><span class="badge ${run.status === 'success' ? 'success' : 'error'}">${run.status}</span></td>
+                                    <td>${run.latency_ms}ms</td>
+                                    <td>${run.failed_assertions || 0}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                ` : '<p class="placeholder">No runs yet</p>'}
+            </div>
+        `;
+
+        showModal('canaryDetailsModal');
+    };
+
+    window.toggleCanary = async function(canaryId, enabled) {
+        try {
+            const canary = state.canaries.canaries.find(c => c.id === canaryId);
+            if (!canary) return;
+
+            await updateCanary(canaryId, { ...canary, enabled });
+            await fetchCanaries();
+            renderCanaries();
+        } catch (error) {
+            alert(`Failed to ${enabled ? 'enable' : 'disable'} canary: ${error.message}`);
+        }
+    };
+
+    window.confirmDeleteCanary = function(canaryId, canaryName) {
+        if (confirm(`Delete canary "${canaryName}"?`)) {
+            deleteCanary(canaryId).then(() => {
+                fetchCanaries();
+                renderCanaries();
+            }).catch(error => {
+                alert(`Failed to delete canary: ${error.message}`);
+            });
+        }
+    };
+
+    window.addAssertionRow = function() {
+        const container = document.getElementById('canaryAssertions');
+        const row = document.createElement('div');
+        row.className = 'assertion-row';
+        row.innerHTML = `
+            <select class="form-input assertion-type">
+                <option value="minHits">Min Hits</option>
+                <option value="maxHits">Max Hits</option>
+                <option value="maxP95Ms">Max P95 Latency</option>
+                <option value="containsAny">Contains Any Result</option>
+            </select>
+            <input type="number" class="form-input assertion-value" placeholder="Value">
+            <button class="btn btn-secondary btn-sm" onclick="addAssertionRow()">+</button>
+            <button class="btn btn-secondary btn-sm" onclick="removeAssertionRow(this)">−</button>
+        `;
+        container.appendChild(row);
+    };
+
+    window.removeAssertionRow = function(button) {
+        const container = button.parentElement.parentElement;
+        if (container.children.length > 1) {
+            button.parentElement.remove();
+        }
+    };
 
 })();

@@ -1126,3 +1126,243 @@ button:focus-visible {
     margin-bottom: 0.75rem;
     color: var(--text-primary);
 }
+
+/* ===========================================================================
+   Canaries Section Styles
+   =========================================================================== */
+
+.heatmap {
+    display: grid;
+    grid-template-columns: repeat(24, 1fr);
+    gap: 2px;
+    width: 100%;
+    max-width: 200px;
+}
+
+.heatmap-cell {
+    width: 100%;
+    aspect-ratio: 1;
+    border-radius: 2px;
+    font-size: 0;
+}
+
+.heatmap-pass {
+    background: #22c55e;
+}
+
+.heatmap-fail {
+    background: #ef4444;
+}
+
+.heatmap-empty {
+    background: var(--bg-secondary);
+}
+
+.assertion-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    align-items: center;
+}
+
+.assertion-row .form-input {
+    flex: 1;
+}
+
+.assertion-row .form-input:first-child {
+    flex: 2;
+}
+
+/* ===========================================================================
+   Shadow Diff Section Styles
+   =========================================================================== */
+
+.diff-details {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 0.5rem;
+    max-height: 150px;
+    overflow: auto;
+    font-size: 0.75rem;
+}
+
+/* ===========================================================================
+   CDC Inspector Section Styles
+   =========================================================================== */
+
+.cdc-events-container {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.cdc-events {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.cdc-event {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 0.75rem;
+}
+
+.cdc-event-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.cdc-event-time {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.cdc-event-body {
+    font-size: 0.875rem;
+}
+
+.cdc-event-details {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem;
+    margin-top: 0.5rem;
+    max-height: 200px;
+    overflow: auto;
+    font-size: 0.75rem;
+}
+
+/* ===========================================================================
+   Metrics Section Styles
+   =========================================================================== */
+
+.metrics-tabs {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.metrics-tab {
+    padding: 0.5rem 1rem;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-weight: 500;
+    transition: all var(--transition);
+}
+
+.metrics-tab:hover {
+    color: var(--text-primary);
+}
+
+.metrics-tab.active {
+    color: var(--accent-color);
+    border-bottom-color: var(--accent-color);
+}
+
+.metrics-tab-content {
+    display: none;
+}
+
+.metrics-tab-content.active {
+    display: block;
+}
+
+.prometheus-results {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    max-height: 400px;
+    overflow: auto;
+}
+
+.prometheus-output {
+    margin: 0;
+    font-size: 0.875rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.quick-metric-btn {
+    font-size: 0.75rem;
+    padding: 0.375rem 0.75rem;
+}
+
+.grafana-frame {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+}
+
+/* ===========================================================================
+   Settings Section Styles
+   =========================================================================== */
+
+.settings-category {
+    margin-bottom: 2rem;
+}
+
+.settings-category h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    color: var(--text-primary);
+}
+
+.settings-textarea {
+    width: 100%;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.875rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    resize: vertical;
+}
+
+/* ===========================================================================
+   Alert/Notification Styles
+   =========================================================================== */
+
+.alert {
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius-md);
+    margin-bottom: 1rem;
+}
+
+.alert.info {
+    background: rgba(59, 130, 246, 0.1);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    color: #3b82f6;
+}
+
+.alert.warning {
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    color: #f59e0b;
+}
+
+.alert.success {
+    background: rgba(34, 197, 94, 0.1);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    color: #22c55e;
+}
+
+.alert.error {
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #ef4444;
+}
