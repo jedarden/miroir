@@ -7,11 +7,13 @@
 use axum::{
     body::Body,
     extract::{FromRef, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::Response,
 };
 use miroir_core::config::MiroirConfig;
 use rust_embed::RustEmbed;
+
+use crate::auth::build_csp_header;
 
 // Re-export for use in the handler
 pub use crate::routes::admin_endpoints;
@@ -81,7 +83,22 @@ where
     // Determine if this is a static asset (has file extension)
     let is_static_asset = path.contains('.');
 
-    serve_embedded_file(path, is_static_asset)
+    // Build CSP header (plan §9)
+    let csp_value = build_csp_header(
+        &admin_state.config.admin_ui.csp,
+        &admin_state.config.admin_ui.csp_overrides,
+    );
+
+    let mut response = serve_embedded_file(path, is_static_asset)?;
+
+    // Add CSP header to response (plan §9)
+    if let Ok(csp_header) = HeaderValue::from_str(&csp_value) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, csp_header);
+    }
+
+    Ok(response)
 }
 
 /// Serve an embedded file from the Admin UI assets.
