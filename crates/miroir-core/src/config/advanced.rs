@@ -112,6 +112,16 @@ impl Default for QueryPlannerConfig {
     }
 }
 
+impl From<QueryPlannerConfig> for crate::query_planner::QueryPlannerConfig {
+    fn from(config: QueryPlannerConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            max_pk_literals_narrowable: config.max_pk_literals_narrowable,
+            log_plans: config.log_plans,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 13.5  Two-phase settings broadcast
 // ---------------------------------------------------------------------------

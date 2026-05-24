@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};
 
-use crate::routes::{admin_endpoints::AppState, documents};
+use crate::routes::{admin_endpoints::AppState, documents, explain};
 
 /// Convert MiroirError to MeilisearchError.
 fn convert_miroir_error(e: MiroirError) -> MeilisearchError {
@@ -321,6 +321,7 @@ where
             get(get_settings_subpath_handler).patch(update_settings_subpath_handler),
         )
         .route("/:index/_preflight", post(preflight_handler))
+        .route("/:index/explain", post(explain::explain_search::<S>))
         .nest("/:index/documents", documents::router::<S>())
 }
 

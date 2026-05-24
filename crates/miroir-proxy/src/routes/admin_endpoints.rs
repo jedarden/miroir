@@ -376,6 +376,8 @@ pub struct AppState {
     pub idempotency_cache: Arc<miroir_core::idempotency::IdempotencyCache>,
     /// Query coalescer for read deduplication (plan §13.10).
     pub query_coalescer: Arc<miroir_core::idempotency::QueryCoalescer>,
+    /// Query planner for shard-aware query planning (plan §13.4).
+    pub query_planner: Arc<miroir_core::query_planner::QueryPlanner>,
     /// Group addition coordinator for replica group addition flow (plan §2).
     pub group_addition_coordinator: Option<Arc<RwLock<GroupAdditionCoordinator>>>,
     /// Group sync worker for background document sync.
@@ -763,6 +765,9 @@ impl AppState {
                 config.query_coalescing.window_ms,
                 config.query_coalescing.max_pending_queries as usize,
                 config.query_coalescing.max_subscribers as usize,
+            )),
+            query_planner: Arc::new(miroir_core::query_planner::QueryPlanner::new(
+                config.query_planner.clone().into(),
             )),
             group_addition_coordinator,
             group_sync_worker,
