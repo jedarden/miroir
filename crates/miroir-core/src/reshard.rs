@@ -1128,6 +1128,465 @@ impl ReshardRegistry {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Phase 1: Shadow create (plan §13.1 step 1 + §13.5 broadcast)
+// ---------------------------------------------------------------------------
+
+/// Result of shadow index creation.
+#[derive(Debug, Clone)]
+pub struct ShadowCreateResult {
+    /// Shadow index UID created.
+    pub shadow_index: String,
+    /// Number of nodes the index was created on.
+    pub nodes_created: usize,
+    /// Whether settings broadcast succeeded.
+    pub settings_broadcast_ok: bool,
+    /// New settings version after broadcast (if successful).
+    pub settings_version: Option<u64>,
+    /// Per-node task UIDs from index creation.
+    pub node_task_uids: Vec<(String, u64)>,
+}
+
+/// Error during shadow create phase.
+#[derive(Debug, thiserror::Error)]
+pub enum ShadowCreateError {
+    #[error("index already exists on node: {0}")]
+    IndexAlreadyExists(String),
+
+    #[error("settings broadcast failed: {0}")]
+    SettingsBroadcastFailed(String),
+
+    #[error("node creation failed on {node}: {error}")]
+    NodeCreationFailed { node: String, error: String },
+
+    #[error("rollback required: {0}")]
+    RollbackRequired(String),
+}
+
+/// Execute Phase 1: Shadow create (plan §13.1 step 1).
+///
+/// Creates the shadow index `{uid}__reshard_{S_new}` on every node and
+/// propagates the live index's settings via two-phase broadcast (§13.5).
+///
+/// # Arguments
+/// * `live_index_uid` - The live index UID being resharded
+/// * `target_shards` - The new shard count (S_new)
+/// * `node_addresses` - List of all node addresses
+/// * `master_key` - Meilisearch master key for authentication
+/// * `primary_key` - Optional primary key for the shadow index
+///
+/// # Returns
+/// `Ok(ShadowCreateResult)` on success, `Err(ShadowCreateError)` on failure.
+///
+/// # Failure handling
+/// Any failure during this phase triggers rollback: the shadow index is
+/// deleted from all nodes where it was created. This is safe because the
+/// shadow is not yet addressable by clients.
+pub async fn shadow_create_phase(
+    live_index_uid: &str,
+    target_shards: u32,
+    node_addresses: &[String],
+    master_key: &str,
+    primary_key: Option<String>,
+) -> Result<ShadowCreateResult, ShadowCreateError> {
+    let shadow_index = format!("{}__reshard_{}", live_index_uid, target_shards);
+
+    tracing::info!(
+        live_index = %live_index_uid,
+        shadow_index = %shadow_index,
+        target_shards,
+        nodes = node_addresses.len(),
+        "starting Phase 1: shadow create"
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| ShadowCreateError::NodeCreationFailed {
+            node: "client".to_string(),
+            error: format!("failed to create HTTP client: {}", e),
+        })?;
+
+    // Step 1: Create shadow index on every node sequentially
+    let mut created_on: Vec<String> = Vec::new();
+    let mut node_task_uids: Vec<(String, u64)> = Vec::new();
+
+    for address in node_addresses {
+        let url = format!("{}/indexes", address.trim_end_matches('/'));
+
+        let create_body = serde_json::json!({
+            "uid": shadow_index,
+            "primaryKey": primary_key,
+        });
+
+        match create_index_on_node(&client, address, &url, &create_body, master_key).await {
+            Ok(task_uid) => {
+                created_on.push(address.clone());
+                if let Some(uid) = task_uid {
+                    node_task_uids.push((address.clone(), uid));
+                    tracing::debug!(node = %address, task_uid = uid, "shadow index created");
+                } else {
+                    tracing::debug!(node = %address, "shadow index created (no task UID)");
+                }
+            }
+            Err(e) => {
+                // Rollback: delete shadow index from all nodes where it was created
+                rollback_shadow_index(&client, &shadow_index, &created_on, master_key).await;
+                return Err(match e {
+                    ShadowCreateError::IndexAlreadyExists(_) => e,
+                    other => ShadowCreateError::RollbackRequired(format!(
+                        "creation failed on {}: {}",
+                        address, other
+                    )),
+                });
+            }
+        }
+    }
+
+    tracing::info!(
+        shadow_index = %shadow_index,
+        nodes_created = created_on.len(),
+        "shadow index created on all nodes"
+    );
+
+    // Step 2: Fetch live index settings from first node
+    let first_address =
+        node_addresses
+            .first()
+            .ok_or_else(|| ShadowCreateError::NodeCreationFailed {
+                node: "none".to_string(),
+                error: "no nodes available".to_string(),
+            })?;
+
+    let live_settings =
+        match fetch_index_settings(&client, first_address, live_index_uid, master_key).await {
+            Ok(settings) => settings,
+            Err(e) => {
+                rollback_shadow_index(&client, &shadow_index, &created_on, master_key).await;
+                return Err(ShadowCreateError::SettingsBroadcastFailed(format!(
+                    "failed to fetch live index settings: {}",
+                    e
+                )));
+            }
+        };
+
+    // Step 3: Add _miroir_shard to filterableAttributes if not already present
+    let settings_to_broadcast = ensure_shard_filterable(&live_settings);
+
+    // Step 4: Two-phase broadcast of settings to shadow index
+    let broadcast_result = two_phase_broadcast_settings(
+        &client,
+        &shadow_index,
+        &settings_to_broadcast,
+        node_addresses,
+        master_key,
+    )
+    .await;
+
+    let settings_version = match broadcast_result {
+        Ok(version) => {
+            tracing::info!(
+                shadow_index = %shadow_index,
+                settings_version = version,
+                "settings broadcast committed"
+            );
+            Some(version)
+        }
+        Err(e) => {
+            // Settings broadcast failed - rollback shadow index creation
+            rollback_shadow_index(&client, &shadow_index, &created_on, master_key).await;
+            return Err(ShadowCreateError::SettingsBroadcastFailed(format!(
+                "two-phase broadcast failed: {}",
+                e
+            )));
+        }
+    };
+
+    Ok(ShadowCreateResult {
+        shadow_index,
+        nodes_created: created_on.len(),
+        settings_broadcast_ok: true,
+        settings_version,
+        node_task_uids,
+    })
+}
+
+/// Create an index on a single node.
+async fn create_index_on_node(
+    client: &reqwest::Client,
+    address: &str,
+    url: &str,
+    body: &serde_json::Value,
+    master_key: &str,
+) -> Result<Option<u64>, ShadowCreateError> {
+    let response = client
+        .post(url)
+        .header("Authorization", format!("Bearer {}", master_key))
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| ShadowCreateError::NodeCreationFailed {
+            node: address.to_string(),
+            error: format!("request failed: {}", e),
+        })?;
+
+    let status = response.status();
+    let body_text = response
+        .text()
+        .await
+        .map_err(|e| ShadowCreateError::NodeCreationFailed {
+            node: address.to_string(),
+            error: format!("failed to read response: {}", e),
+        })?;
+
+    if status.as_u16() == 409 {
+        // Index already exists
+        return Err(ShadowCreateError::IndexAlreadyExists(address.to_string()));
+    }
+
+    if !status.is_success() {
+        return Err(ShadowCreateError::NodeCreationFailed {
+            node: address.to_string(),
+            error: format!("HTTP {}: {}", status.as_u16(), body_text),
+        });
+    }
+
+    // Parse task UID from response
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body_text) {
+        Ok(json.get("taskUid").and_then(|v| v.as_u64()))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Fetch index settings from a node.
+async fn fetch_index_settings(
+    client: &reqwest::Client,
+    address: &str,
+    index_uid: &str,
+    master_key: &str,
+) -> Result<serde_json::Value, String> {
+    let url = format!(
+        "{}/indexes/{}/settings",
+        address.trim_end_matches('/'),
+        index_uid
+    );
+
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", master_key))
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {}", e))?;
+
+    let status = response.status();
+    let body_text = response
+        .text()
+        .await
+        .map_err(|e| format!("failed to read response: {}", e))?;
+
+    if !status.is_success() {
+        return Err(format!("HTTP {}: {}", status.as_u16(), body_text));
+    }
+
+    serde_json::from_str(&body_text).map_err(|e| format!("failed to parse settings JSON: {}", e))
+}
+
+/// Ensure `_miroir_shard` is in filterableAttributes.
+fn ensure_shard_filterable(settings: &serde_json::Value) -> serde_json::Value {
+    let mut result = settings.clone();
+
+    if let Some(obj) = result.as_object_mut() {
+        let filterable = obj
+            .entry("filterableAttributes")
+            .or_insert_with(|| serde_json::Value::Array(vec![]));
+
+        if let Some(arr) = filterable.as_array_mut() {
+            // Add _miroir_shard if not already present
+            if !arr.iter().any(|v| v.as_str() == Some("_miroir_shard")) {
+                arr.push(serde_json::json!("_miroir_shard"));
+            }
+        }
+    }
+
+    result
+}
+
+/// Two-phase broadcast of settings to all nodes (plan §13.5).
+async fn two_phase_broadcast_settings(
+    client: &reqwest::Client,
+    index_uid: &str,
+    settings: &serde_json::Value,
+    node_addresses: &[String],
+    master_key: &str,
+) -> Result<u64, String> {
+    // Phase 1: Propose - PATCH all nodes in parallel
+    let propose_tasks: Vec<_> = node_addresses
+        .iter()
+        .map(|address| {
+            let client = client.clone();
+            let address = address.clone();
+            let index = index_uid.to_string();
+            let settings = settings.clone();
+            let key = master_key.to_string();
+            async move {
+                let url = format!(
+                    "{}/indexes/{}/settings",
+                    address.trim_end_matches('/'),
+                    index
+                );
+                let result = client
+                    .patch(&url)
+                    .header("Authorization", format!("Bearer {}", key))
+                    .json(&settings)
+                    .send()
+                    .await;
+
+                match result {
+                    Ok(resp) if resp.status().is_success() => {
+                        let text = resp.text().await.unwrap_or_default();
+                        let task_uid = serde_json::from_str::<serde_json::Value>(&text)
+                            .ok()
+                            .and_then(|v| v.get("taskUid").and_then(|t| t.as_u64()));
+                        Ok((address, task_uid))
+                    }
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let text = resp.text().await.unwrap_or_default();
+                        Err(format!("{}: HTTP {}", address, status.as_u16()))
+                    }
+                    Err(e) => Err(format!("{}: {}", address, e)),
+                }
+            }
+        })
+        .collect();
+
+    let propose_results: Vec<_> = futures_util::future::join_all(propose_tasks).await;
+
+    // Check all nodes succeeded
+    let mut node_task_uids: Vec<(String, u64)> = Vec::new();
+    for result in propose_results {
+        match result {
+            Ok((address, Some(task_uid))) => {
+                node_task_uids.push((address, task_uid));
+            }
+            Ok((address, None)) => {
+                // Some nodes may not return taskUid, still consider success
+                node_task_uids.push((address, 0));
+            }
+            Err(e) => {
+                return Err(format!("Phase 1 propose failed: {}", e));
+            }
+        }
+    }
+
+    // Phase 2: Verify - GET settings from all nodes and verify fingerprints
+    let verify_tasks: Vec<_> = node_addresses
+        .iter()
+        .map(|address| {
+            let client = client.clone();
+            let address = address.clone();
+            let index = index_uid.to_string();
+            let key = master_key.to_string();
+            async move {
+                let url = format!(
+                    "{}/indexes/{}/settings",
+                    address.trim_end_matches('/'),
+                    index
+                );
+                let result = client
+                    .get(&url)
+                    .header("Authorization", format!("Bearer {}", key))
+                    .send()
+                    .await;
+
+                match result {
+                    Ok(resp) if resp.status().is_success() => {
+                        let text = resp.text().await.unwrap_or_default();
+                        if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&text) {
+                            let hash = crate::settings::fingerprint_settings(&settings);
+                            Ok((address, hash))
+                        } else {
+                            Err(format!("{}: failed to parse settings", address))
+                        }
+                    }
+                    Ok(resp) => Err(format!("{}: HTTP {}", address, resp.status().as_u16())),
+                    Err(e) => Err(format!("{}: {}", address, e)),
+                }
+            }
+        })
+        .collect();
+
+    let verify_results: Vec<_> = futures_util::future::join_all(verify_tasks).await;
+
+    // Compute expected fingerprint
+    let expected_fingerprint = crate::settings::fingerprint_settings(settings);
+
+    // Verify all hashes match
+    let mut node_hashes: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for result in verify_results {
+        match result {
+            Ok((address, hash)) => {
+                if hash != expected_fingerprint {
+                    return Err(format!(
+                        "Phase 2 verify failed: hash mismatch on {}",
+                        address
+                    ));
+                }
+                node_hashes.insert(address, hash);
+            }
+            Err(e) => {
+                return Err(format!("Phase 2 verify failed: {}", e));
+            }
+        }
+    }
+
+    // Phase 3: Commit - return a new settings version
+    // In production, this would increment the global settings version
+    // For now, return 1 as a placeholder
+    Ok(1)
+}
+
+/// Rollback shadow index creation by deleting from specified nodes.
+async fn rollback_shadow_index(
+    client: &reqwest::Client,
+    shadow_index: &str,
+    nodes: &[String],
+    master_key: &str,
+) {
+    tracing::warn!(
+        shadow_index = %shadow_index,
+        nodes = nodes.len(),
+        "rolling back shadow index creation"
+    );
+
+    for address in nodes {
+        let url = format!("{}/indexes/{}", address.trim_end_matches('/'), shadow_index);
+
+        match client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {}", master_key))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                tracing::info!(node = %address, "rollback: deleted shadow index");
+            }
+            Ok(resp) => {
+                tracing::error!(
+                    node = %address,
+                    status = %resp.status(),
+                    "rollback: failed to delete shadow index"
+                );
+            }
+            Err(e) => {
+                tracing::error!(node = %address, error = %e, "rollback: request failed");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests_reshard_execution {
     use super::*;
@@ -1232,5 +1691,112 @@ mod tests_reshard_execution {
         reg.register(op).unwrap();
         reg.prune_completed(50_000); // prune ops older than 50s
         assert!(reg.get(&id).is_none());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shadow create phase tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_shadow_create {
+    use super::*;
+
+    #[test]
+    fn shadow_index_name_format() {
+        let shadow = format!("{}__reshard_{}", "products", 128);
+        assert_eq!(shadow, "products__reshard_128");
+    }
+
+    #[test]
+    fn ensure_shard_filterable_adds_missing() {
+        let settings = serde_json::json!({
+            "rankingRules": ["words", "typo"],
+            "filterableAttributes": ["category", "price"]
+        });
+
+        let result = ensure_shard_filterable(&settings);
+
+        let filterable = result
+            .get("filterableAttributes")
+            .and_then(|v| v.as_array())
+            .expect("filterableAttributes should be an array");
+
+        assert!(filterable.contains(&serde_json::json!("category")));
+        assert!(filterable.contains(&serde_json::json!("price")));
+        assert!(filterable.contains(&serde_json::json!("_miroir_shard")));
+    }
+
+    #[test]
+    fn ensure_shard_filterable_idempotent() {
+        let settings = serde_json::json!({
+            "filterableAttributes": ["_miroir_shard", "category"]
+        });
+
+        let result = ensure_shard_filterable(&settings);
+
+        let filterable = result
+            .get("filterableAttributes")
+            .and_then(|v| v.as_array())
+            .expect("filterableAttributes should be an array");
+
+        // Should only appear once
+        let shard_count = filterable
+            .iter()
+            .filter(|v| v.as_str() == Some("_miroir_shard"))
+            .count();
+
+        assert_eq!(shard_count, 1);
+    }
+
+    #[test]
+    fn ensure_shard_filterable_empty_array() {
+        let settings = serde_json::json!({
+            "rankingRules": ["words"]
+        });
+
+        let result = ensure_shard_filterable(&settings);
+
+        let filterable = result
+            .get("filterableAttributes")
+            .and_then(|v| v.as_array())
+            .expect("filterableAttributes should be an array");
+
+        assert!(filterable.contains(&serde_json::json!("_miroir_shard")));
+    }
+
+    #[test]
+    fn shadow_create_result_fields() {
+        let result = ShadowCreateResult {
+            shadow_index: "products__reshard_128".to_string(),
+            nodes_created: 3,
+            settings_broadcast_ok: true,
+            settings_version: Some(1),
+            node_task_uids: vec![("node-1".to_string(), 100), ("node-2".to_string(), 101)],
+        };
+
+        assert_eq!(result.shadow_index, "products__reshard_128");
+        assert_eq!(result.nodes_created, 3);
+        assert!(result.settings_broadcast_ok);
+        assert_eq!(result.settings_version, Some(1));
+        assert_eq!(result.node_task_uids.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn shadow_create_error_display() {
+        let err = ShadowCreateError::IndexAlreadyExists("node-1".to_string());
+        assert!(err.to_string().contains("already exists"));
+
+        let err = ShadowCreateError::SettingsBroadcastFailed("broadcast failed".to_string());
+        assert!(err.to_string().contains("broadcast failed"));
+
+        let err = ShadowCreateError::NodeCreationFailed {
+            node: "node-2".to_string(),
+            error: "connection refused".to_string(),
+        };
+        assert!(err.to_string().contains("node-2"));
+
+        let err = ShadowCreateError::RollbackRequired("creation failed".to_string());
+        assert!(err.to_string().contains("rollback"));
     }
 }
