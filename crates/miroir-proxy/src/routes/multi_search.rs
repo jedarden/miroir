@@ -11,7 +11,7 @@ use miroir_core::{
     multi_search::{MultiSearchExecutor, MultiSearchResponse, SearchResultData},
     query_planner::QueryPlanner,
     scatter::{
-        dfs_query_then_fetch_search, plan_search_scatter_with_narrowing, NodeClient, SearchRequest,
+        dfs_query_then_fetch_search, plan_search_scatter_with_narrowing, NodeClient, SearchRequest, VectorMode,
     },
     topology::Topology,
 };
@@ -327,6 +327,10 @@ where
                     .filter
                     .as_ref()
                     .and_then(|s| serde_json::from_str::<Value>(s).ok());
+
+                // Detect vector search mode (plan §13.12)
+                let vector_mode = SearchRequest::detect_vector_mode(&serde_json::json!(query.other));
+
                 let search_req = SearchRequest {
                     index_uid: query.indexUid.clone(),
                     query: query.q.clone(),
@@ -344,6 +348,8 @@ where
                         .unwrap_or(false),
                     body: serde_json::json!(query.other),
                     global_idf: None,
+                    over_fetch_factor: 1, // TODO: support over-fetch in multi-search
+                    vector_mode,
                 };
 
                 // Execute DFS query-then-fetch
