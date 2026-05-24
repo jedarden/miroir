@@ -1,0 +1,13 @@
+# Chart.yaml shim for declarative-config instances
+# Copy to jedarden/declarative-config/k8s/<cluster>/miroir/<instance>/Chart.yaml
+# This file references the upstream Miroir chart via OCI
+apiVersion: v2
+name: miroir
+version: 1.0.0  # Instance version; increment when values change significantly
+description: Miroir instance - shim for upstream chart
+type: application
+dependencies:
+  - name: miroir
+    repository: oci://ghcr.io/jedarden/charts
+    version: ">=0.1.0"
+    # alias: miroir  # Optional: use if parent chart name conflicts

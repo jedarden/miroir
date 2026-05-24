@@ -1,0 +1,39 @@
+# ArgoCD Application: Miroir production on ardenone-cluster
+# Copy to: jedarden/declarative-config/k8s/ardenone-cluster/miroir/prod/app.yaml
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: miroir-ardenone-cluster-prod
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: miroir
+    app.kubernetes.io/instance: prod
+    app.kubernetes.io/component: application
+    app.kubernetes.io/part-of: miroir
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jedarden/declarative-config
+    targetRevision: HEAD
+    path: k8s/ardenone-cluster/miroir/prod
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: miroir-prod
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10

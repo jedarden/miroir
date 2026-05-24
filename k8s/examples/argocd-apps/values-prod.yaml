@@ -1,0 +1,78 @@
+# Production values.yaml example
+# Copy to jedarden/declarative-config/k8s/<cluster>/miroir/<instance>/values.yaml
+# Update <placeholders> with actual values
+
+miroir:
+  image:
+    repository: ghcr.io/jedarden/miroir
+    tag: ""  # Defaults to Chart.appVersion
+  replicas: 2  # Minimum for HA; scale via HPA
+  shards: 64
+  replicationFactor: 2  # HA: tolerates 1 node failure per group
+  replicaGroups: 2  # Throughput: 2x parallel queries
+  existingSecret: <secret-name>  # K8s Secret with masterKey, nodeMasterKey, adminApiKey
+  logLevel: info
+  scatter:
+    unavailableShardPolicy: partial
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  ingress:
+    enabled: true
+    host: <ingress-host>
+    annotations:
+      cert-manager.io/cluster-issuer: <issuer-name>
+  serviceMonitor:
+    enabled: true
+
+taskStore:
+  backend: redis
+  url: redis://<redis-service>.<namespace>.svc.cluster.local:6379
+
+meilisearch:
+  image:
+    repository: getmeili/meilisearch
+    tag: v1.37.0
+  replicas: 4  # replicaGroups (2) × nodesPerGroup (2) = 4
+  nodesPerGroup: 2
+  existingSecret: <meilisearch-secret-name>  # MEILI_MASTER_KEY
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClassName: sata  # Rackspace Spot; use ssd for latency-sensitive workloads
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  podAntiAffinity:
+    enabled: true
+    topologyKey: kubernetes.io/hostname
+
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: 7-alpine
+  persistence:
+    enabled: true
+    size: 5Gi
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
