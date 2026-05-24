@@ -362,6 +362,21 @@
         "annotations": {"type": "object"},
         "name": {"type": "string"}
       }
+    },
+    "serviceMonitor": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "interval": {"type": "string"},
+        "annotations": {"type": "object"}
+      }
+    },
+    "prometheusRule": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "annotations": {"type": "object"}
+      }
     }
   }
 }

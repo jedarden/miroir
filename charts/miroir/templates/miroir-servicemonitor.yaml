@@ -1,5 +1,6 @@
 {{/*
 Miroir ServiceMonitor (requires prometheus-operator)
+Plan §10: metrics scraping via ServiceMonitor
 */}}
 {{- if .Values.serviceMonitor.enabled }}
 apiVersion: monitoring.coreos.com/v1
@@ -17,7 +18,7 @@ spec:
   selector:
     matchLabels:
       {{- include "miroir.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: miroir
+      app.kubernetes.io/component: metrics
   endpoints:
     - port: metrics
       interval: {{ .Values.serviceMonitor.interval | default "30s" }}

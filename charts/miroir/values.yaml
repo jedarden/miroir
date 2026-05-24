@@ -187,3 +187,14 @@ serviceAccount:
   create: true
   annotations: {}
   name: ""
+
+# ServiceMonitor (plan §10)
+serviceMonitor:
+  enabled: false  # requires prometheus-operator in cluster
+  interval: 30s
+  annotations: {}
+
+# PrometheusRule (plan §10 + §14.9)
+prometheusRule:
+  enabled: false  # requires prometheus-operator in cluster
+  annotations: {}

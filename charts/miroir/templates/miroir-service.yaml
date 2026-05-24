@@ -9,6 +9,7 @@ metadata:
   labels:
     {{- include "miroir.labels" . | nindent 4 }}
     app.kubernetes.io/component: miroir
+    app.kubernetes.io/component: metrics
   {{- with .Values.service.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
