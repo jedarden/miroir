@@ -89,7 +89,11 @@ impl TestCluster {
             .unwrap()
     }
 
-    async fn add_documents(&self, index: &str, documents: Vec<serde_json::Value>) -> reqwest::Response {
+    async fn add_documents(
+        &self,
+        index: &str,
+        documents: Vec<serde_json::Value>,
+    ) -> reqwest::Response {
         let client = reqwest::Client::new();
         client
             .post(format!("{}/indexes/{}/documents", self.proxy_url, index))
@@ -258,11 +262,7 @@ async fn test_unique_keyword_search_finds_all_docs_once() {
     let mut seen_ids = HashSet::new();
     for hit in all_hits {
         let id = hit["id"].as_str().unwrap();
-        assert!(
-            seen_ids.insert(id),
-            "Duplicate document ID found: {}",
-            id
-        );
+        assert!(seen_ids.insert(id), "Duplicate document ID found: {}", id);
     }
 
     assert_eq!(seen_ids.len(), 100, "Expected 100 unique documents");
@@ -283,7 +283,10 @@ async fn test_facet_aggregation_sums_correctly() {
     // Set filterable attributes to include color
     let client = reqwest::Client::new();
     let filter_resp = client
-        .post(format!("{}/indexes/facet_test/settings/filterable-attributes", cluster.proxy_url))
+        .post(format!(
+            "{}/indexes/facet_test/settings/filterable-attributes",
+            cluster.proxy_url
+        ))
         .json(&serde_json::json!(["id", "color", "_miroir_shard"]))
         .send()
         .await
@@ -471,7 +474,9 @@ async fn test_write_with_degraded_group_succeeds_with_header() {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     // Verify documents are still retrievable
-    let doc_resp = cluster.get_document("degraded_test", "degraded-doc-0").await;
+    let doc_resp = cluster
+        .get_document("degraded_test", "degraded-doc-0")
+        .await;
     assert!(doc_resp.status().is_success());
 }
 
@@ -491,15 +496,14 @@ async fn test_topology_endpoint_shape() {
     assert!(topology.is_object());
     assert!(topology.get("nodes").and_then(|v| v.as_array()).is_some());
     assert!(topology.get("shards").and_then(|v| v.as_u64()).is_some());
-    assert!(
-        topology.get("replicationFactor").and_then(|v| v.as_u64()).is_some()
-    );
-    assert!(
-        topology
-            .get("replicaGroups")
-            .and_then(|v| v.as_u64())
-            .is_some()
-    );
+    assert!(topology
+        .get("replicationFactor")
+        .and_then(|v| v.as_u64())
+        .is_some());
+    assert!(topology
+        .get("replicaGroups")
+        .and_then(|v| v.as_u64())
+        .is_some());
 
     // Verify nodes structure
     let nodes = topology["nodes"].as_array().unwrap();
@@ -584,12 +588,14 @@ async fn test_index_stats_aggregation() {
     let stats: serde_json::Value = stats_resp.json().await.unwrap();
 
     // Verify stats shape
-    assert!(stats.get("numberOfDocuments").and_then(|v| v.as_u64()).is_some());
-    assert!(
-        stats.get("fieldDistribution")
-            .and_then(|v| v.as_object())
-            .is_some()
-    );
+    assert!(stats
+        .get("numberOfDocuments")
+        .and_then(|v| v.as_u64())
+        .is_some());
+    assert!(stats
+        .get("fieldDistribution")
+        .and_then(|v| v.as_object())
+        .is_some());
 
     // Verify document count
     let doc_count = stats["numberOfDocuments"].as_u64().unwrap();

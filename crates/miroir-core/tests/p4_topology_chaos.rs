@@ -544,7 +544,10 @@ async fn p45_group_removal_drains_first() {
     let topo_read = topology.read().await;
     let group = topo_read.group(1);
     assert!(group.is_some(), "Group should still exist");
-    assert!(group.unwrap().is_draining(), "Group should be in draining state");
+    assert!(
+        group.unwrap().is_draining(),
+        "Group should be in draining state"
+    );
     drop(topo_read);
 
     // Second call with force=true completes removal
@@ -598,17 +601,18 @@ async fn p45_rf2_with_one_failed_node_succeeds() {
     // For each shard, verify RF=2 assignment still has healthy nodes
     for shard_id in 0..shard_count {
         let assigned = assign_shard_in_group(shard_id, group.nodes(), rf);
-        assert_eq!(assigned.len(), 2, "Shard {} should have {} replicas", shard_id, rf);
+        assert_eq!(
+            assigned.len(),
+            2,
+            "Shard {} should have {} replicas",
+            shard_id,
+            rf
+        );
 
         // At least one should be healthy
         let healthy_count = assigned
             .iter()
-            .filter(|n| {
-                topo_read
-                    .node(n)
-                    .map(|nn| nn.is_healthy())
-                    .unwrap_or(false)
-            })
+            .filter(|n| topo_read.node(n).map(|nn| nn.is_healthy()).unwrap_or(false))
             .count();
 
         assert!(
@@ -652,8 +656,16 @@ async fn p45_rf1_with_failed_node_has_cross_group_fallback() {
     let group_0_healthy = group_0.healthy_nodes(&node_map);
     let group_1_healthy = group_1.healthy_nodes(&node_map);
 
-    assert_eq!(group_0_healthy.len(), 1, "Group 0 should have 1 healthy node");
-    assert_eq!(group_1_healthy.len(), 2, "Group 1 should have 2 healthy nodes");
+    assert_eq!(
+        group_0_healthy.len(),
+        1,
+        "Group 0 should have 1 healthy node"
+    );
+    assert_eq!(
+        group_1_healthy.len(),
+        2,
+        "Group 1 should have 2 healthy nodes"
+    );
 
     // For each shard assigned to the failed node, verify group 1 has a replica
     for shard_id in 0..shard_count {
