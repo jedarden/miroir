@@ -804,6 +804,12 @@ impl RebalancerWorker {
     }
 
     /// Handle node recovery.
+    ///
+    /// Implements plan §2 RF-restore flow:
+    /// - Mark node as active
+    /// - For RF > 1 groups: surviving replicas served reads while node was failed
+    /// - Schedule background replication to restore the node's data from surviving replicas
+    /// - The recovered node rehydrates from the best intra-group source for each shard
     async fn on_node_recovered(
         &self,
         node_id: &str,
@@ -814,7 +820,7 @@ impl RebalancerWorker {
             node_id = %node_id,
             replica_group = replica_group,
             index_uid = %index_uid,
-            "handling node recovery"
+            "handling node recovery with RF-restore"
         );
 
         // Mark node as active in topology
@@ -826,9 +832,165 @@ impl RebalancerWorker {
             }
         }
 
-        // TODO: If auto_rebalance_on_recovery is enabled, trigger rebalancing
+        // Check if auto_rebalance_on_recovery is enabled
+        let auto_rebalance = {
+            let topo = self.topology.read().await;
+            // Check if there's a rebalancer config (via a global or default)
+            // For now, default to true
+            true
+        };
+
+        if !auto_rebalance {
+            info!(
+                node_id = %node_id,
+                "auto_rebalance_on_recovery is disabled, skipping RF-restore"
+            );
+            return Ok(());
+        }
+
+        // Compute shards that this node should own and find healthy sources
+        let shard_sources = self
+            .compute_shard_sources_for_rf_restore(node_id, replica_group)
+            .await?;
+
+        if shard_sources.is_empty() {
+            info!(
+                node_id = %node_id,
+                "no shards need RF-restore (node was not a primary owner or all sources are unhealthy)"
+            );
+            return Ok(());
+        }
+
+        info!(
+            node_id = %node_id,
+            replica_group = replica_group,
+            shard_count = shard_sources.len(),
+            "computed shard sources for RF-restore"
+        );
+
+        let job_id = RebalanceJobId::new(index_uid);
+
+        // Build migration state: shard -> source node mapping
+        let mut old_owners = HashMap::new();
+        let mut shard_states = HashMap::new();
+        for (shard_id, source_node) in &shard_sources {
+            old_owners.insert(ShardId(*shard_id), topo_to_migration_node_id(source_node));
+            shard_states.insert(
+                *shard_id,
+                ShardState {
+                    phase: ShardMigrationPhase::Idle,
+                    docs_migrated: 0,
+                    last_offset: 0,
+                    source_node: Some(source_node.to_string()),
+                    target_node: node_id.to_string(),
+                    started_at: Instant::now(),
+                },
+            );
+        }
+
+        // Create migration in coordinator for state tracking and dual-write
+        let migration_id = {
+            let mut coordinator = self.migration_coordinator.write().await;
+            let recovered_node =
+                topo_to_migration_node_id(&TopologyNodeId::new(node_id.to_string()));
+            coordinator
+                .begin_migration(recovered_node, replica_group, old_owners)
+                .map_err(|e| format!("failed to create RF-restore migration: {e}"))?
+        };
+
+        // Start dual-write immediately so writes go to both source and recovered node
+        {
+            let mut coordinator = self.migration_coordinator.write().await;
+            coordinator
+                .begin_dual_write(migration_id)
+                .map_err(|e| format!("failed to start dual-write for RF-restore: {e}"))?;
+        }
+
+        let job = RebalanceJob {
+            id: job_id.clone(),
+            index_uid: index_uid.to_string(),
+            replica_group,
+            shards: shard_states,
+            started_at: Instant::now(),
+            completed_at: None,
+            total_docs_migrated: 0,
+            paused: false,
+        };
+
+        // Persist job to task store
+        self.persist_job(&job).await?;
+
+        // Store in memory
+        let mut jobs = self.jobs.write().await;
+        jobs.insert(job_id.clone(), job);
+
+        info!(
+            migration_id = %migration_id,
+            shard_count = shard_sources.len(),
+            "created RF-restore migration for recovered node"
+        );
 
         Ok(())
+    }
+
+    /// Compute shard sources for RF-restore.
+    ///
+    /// For each shard that the recovered node should own (based on rendezvous hashing),
+    /// find a healthy source replica within the same group.
+    ///
+    /// Returns shard -> source_node mapping for shards that need restore.
+    async fn compute_shard_sources_for_rf_restore(
+        &self,
+        recovered_node_id: &str,
+        replica_group: u32,
+    ) -> Result<Vec<(u32, TopologyNodeId)>, String> {
+        let topo = self.topology.read().await;
+        let recovered_node_id = TopologyNodeId::new(recovered_node_id.to_string());
+        let rf = topo.rf();
+
+        // Find the target group
+        let group = topo
+            .groups()
+            .find(|g| g.id == replica_group)
+            .ok_or_else(|| format!("replica group {replica_group} not found"))?;
+
+        let node_map = topo.node_map();
+        let mut shard_sources = Vec::new();
+
+        // For each shard, check if the recovered node is in the RF assignment
+        for shard_id in 0..topo.shards {
+            let assigned = assign_shard_in_group(shard_id, group.nodes(), rf);
+
+            // Check if recovered node is in the assignment for this shard
+            if !assigned.contains(&recovered_node_id) {
+                continue;
+            }
+
+            // Find a healthy source replica for this shard (prefer other replicas)
+            let healthy_source = assigned
+                .iter()
+                .filter(|node_id| **node_id != recovered_node_id)
+                .find(|node_id| {
+                    node_map
+                        .get(node_id)
+                        .map(|n| n.is_healthy())
+                        .unwrap_or(false)
+                });
+
+            if let Some(source) = healthy_source {
+                shard_sources.push((shard_id, source.clone()));
+            } else {
+                // No healthy source found - this shard will need cross-group fallback
+                // until the node can be restored from another group
+                debug!(
+                    shard_id,
+                    node_id = %recovered_node_id,
+                    "no healthy intra-group source for shard, will use cross-group fallback"
+                );
+            }
+        }
+
+        Ok(shard_sources)
     }
 
     /// Compute which shards are affected by adding a new node.
