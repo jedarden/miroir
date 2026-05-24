@@ -173,6 +173,13 @@ where
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    // Record multi-search metrics (plan §13.11)
+    let query_count = body.queries.len() as u64;
+    state
+        .metrics
+        .observe_multisearch_queries_per_batch(query_count);
+    state.metrics.inc_multisearch_batches_total();
+
     let executor = MultiSearchExecutor::new(state.config.multi_search.clone());
 
     // Get topology and policy once for all queries
@@ -420,6 +427,12 @@ where
             tracing::error!(error = %e, "multi-search execution failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+
+    // Record partial failures metric (plan §13.11)
+    let has_failures = response.results.iter().any(|r| !r.is_success());
+    if has_failures {
+        state.metrics.inc_multisearch_partial_failures();
+    }
 
     Ok(Json(response))
 }
