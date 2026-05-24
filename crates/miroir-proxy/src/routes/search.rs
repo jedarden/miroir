@@ -316,6 +316,70 @@ async fn search_handler(
         );
     }
 
+    // Tenant affinity resolution (plan §13.15): Resolve tenant from headers
+    // This happens after session pinning - session pin wins on conflict
+    let (tenant_pinned_group, tenant_id) = if state.config.tenant_affinity.enabled {
+        // Convert HeaderMap to HashMap for tenant resolution
+        let mut headers_map = std::collections::HashMap::new();
+        for (name, value) in headers.iter() {
+            if let (Some(name_str), Ok(value_str)) = (name.as_str(), value.to_str()) {
+                headers_map.insert(name_str.to_string(), value_str.to_string());
+            }
+        }
+
+        // This is a read operation - writes always fan out to all groups
+        match state
+            .tenant_affinity_manager
+            .resolve_from_headers(&headers_map, false)
+            .await
+        {
+            Ok(resolution) => {
+                let tid = resolution.tenant_id.clone();
+                if let Some(group) = resolution.pinned_group {
+                    // Record tenant affinity metrics
+                    if let Some(ref tenant) = tid {
+                        state
+                            .metrics
+                            .inc_tenant_queries(tenant, &group.to_string());
+                        state
+                            .metrics
+                            .set_tenant_pinned_groups(tenant, group);
+                    }
+                    debug!(
+                        tenant_id = ?tid,
+                        pinned_group = group,
+                        reason = %resolution.reason,
+                        "tenant affinity applied"
+                    );
+                    (Some(group), tid)
+                } else {
+                    (None, tid)
+                }
+            }
+            Err(e) => {
+                // Tenant resolution failed (e.g., reject policy)
+                warn!(error = %e, "tenant affinity resolution failed");
+                return Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .body(axum::body::Body::from(format!("Tenant not allowed: {e}")))
+                    .unwrap();
+            }
+        }
+    } else {
+        (None, None)
+    };
+
+    // Combine session pin and tenant affinity: session pin wins on conflict (plan §13.15)
+    let effective_pinned_group = if pinned_group.is_some() {
+        if tenant_pinned_group.is_some() {
+            // Record override metric
+            state.metrics.inc_tenant_session_pin_override();
+        }
+        pinned_group
+    } else {
+        tenant_pinned_group
+    };
+
     // Query coalescing (plan §13.10): Check for identical in-flight queries
     // Skip for multi-target aliases (each target is different)
     if state.config.query_coalescing.enabled && resolved_targets.len() == 1 {
@@ -488,15 +552,16 @@ async fn search_handler(
             None
         };
 
-        // Session pinning: if pinned_group is set, use group-specific planning
-        if let Some(group) = pinned_group {
+        // Session pinning or tenant affinity: if effective_pinned_group is set, use group-specific planning
+        if let Some(group) = effective_pinned_group {
             let _plan_span = tracing::info_span!(
                 "scatter_plan",
                 replica_groups = state.config.replica_groups,
                 shards = state.config.shards,
                 rf = state.config.replication_factor,
                 min_settings_version,
-                pinned_group = ?pinned_group,
+                pinned_group = ?effective_pinned_group,
+                tenant_id = ?tenant_id,
                 strategy = %state.config.replica_selection.strategy,
             )
             .entered();

@@ -394,6 +394,8 @@ pub struct AppState {
     pub shadow_manager: Option<Arc<miroir_core::shadow::ShadowManager>>,
     /// CDC manager for change data capture (plan §13.13).
     pub cdc_manager: Option<Arc<miroir_core::cdc::CdcManager>>,
+    /// Tenant affinity manager for noisy-neighbor isolation (plan §13.15).
+    pub tenant_affinity_manager: Arc<miroir_core::tenant::TenantAffinityManager>,
 }
 
 impl AppState {
@@ -637,6 +639,14 @@ impl AppState {
             ),
         ));
 
+        // Create tenant affinity manager (plan §13.15)
+        let tenant_affinity_manager = Arc::new(
+            miroir_core::tenant::TenantAffinityManager::with_replica_groups(
+                config.tenant_affinity.clone(),
+                config.replica_groups,
+            ),
+        );
+
         // Create alias registry (§13.7)
         // Note: Aliases are loaded asynchronously in background, not during initialization
         let alias_registry = Arc::new(miroir_core::alias::AliasRegistry::new());
@@ -787,6 +797,7 @@ impl AppState {
                 miroir_core::reshard::ReshardingRegistry::new(),
             )),
             shadow_manager: None, // Initialized in main.rs if shadow is enabled
+            tenant_affinity_manager,
             cdc_manager: {
                 // Create CDC manager if enabled in config
                 if config.cdc.enabled {

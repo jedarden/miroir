@@ -258,6 +258,7 @@ pub struct Metrics {
     tenant_queries_total: Option<CounterVec>,
     tenant_pinned_groups: Option<GaugeVec>,
     tenant_fallback_total: Option<CounterVec>,
+    tenant_session_pin_override_total: Option<Counter>,
 
     // ── §13.16 Shadow traffic metrics (feature-gated) ──
     shadow_diff_total: Option<CounterVec>,
@@ -396,6 +397,7 @@ impl Clone for Metrics {
             tenant_queries_total: self.tenant_queries_total.clone(),
             tenant_pinned_groups: self.tenant_pinned_groups.clone(),
             tenant_fallback_total: self.tenant_fallback_total.clone(),
+            tenant_session_pin_override_total: self.tenant_session_pin_override_total.clone(),
             shadow_diff_total: self.shadow_diff_total.clone(),
             shadow_kendall_tau: self.shadow_kendall_tau.clone(),
             shadow_latency_delta_seconds: self.shadow_latency_delta_seconds.clone(),
@@ -806,7 +808,7 @@ impl Metrics {
             };
 
         // ── §13.15 Tenant affinity metrics (cardinality cap: top 100 tenants, rest bucketed) ──
-        let (tenant_queries_total, tenant_pinned_groups, tenant_fallback_total) =
+        let (tenant_queries_total, tenant_pinned_groups, tenant_fallback_total, tenant_session_pin_override_total) =
             if config.tenant_affinity.enabled {
                 let q = CounterVec::new(
                     Opts::new(
@@ -832,12 +834,18 @@ impl Metrics {
                     &["reason"],
                 )
                 .expect("create tenant_fallback_total");
+                let o = Counter::new(
+                    "miroir_tenant_session_pin_override_total",
+                    "Session pin overrides tenant affinity (plan §13.15 interaction)",
+                )
+                .expect("create tenant_session_pin_override_total");
                 reg!(q);
                 reg!(p);
                 reg!(f);
-                (Some(q), Some(p), Some(f))
+                reg!(o);
+                (Some(q), Some(p), Some(f), Some(o))
             } else {
-                (None, None, None)
+                (None, None, None, None)
             };
 
         // ── §13.16 Shadow traffic metrics ──
@@ -1408,6 +1416,7 @@ impl Metrics {
             tenant_queries_total,
             tenant_pinned_groups,
             tenant_fallback_total,
+            tenant_session_pin_override_total,
             shadow_diff_total,
             shadow_kendall_tau,
             shadow_latency_delta_seconds,
@@ -1924,6 +1933,12 @@ impl Metrics {
     pub fn inc_tenant_fallback(&self, reason: &str) {
         if let Some(ref m) = self.tenant_fallback_total {
             m.with_label_values(&[reason]).inc();
+        }
+    }
+
+    pub fn inc_tenant_session_pin_override(&self) {
+        if let Some(ref m) = self.tenant_session_pin_override_total {
+            m.inc();
         }
     }
 
