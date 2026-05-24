@@ -6,7 +6,15 @@ mod credentials;
 
 #[derive(Parser)]
 #[command(name = "miroir-ctl")]
-#[command(about = "Miroir management CLI", long_about = None)]
+#[command(
+    about = "Miroir management CLI",
+    long_about = "Miroir management CLI
+
+Runbook documentation for each subcommand is available at:
+  https://github.com/jedarden/miroir/tree/main/docs/ctl/
+
+For local docs, see docs/ctl/*.md in the repository."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
