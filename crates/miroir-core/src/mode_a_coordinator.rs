@@ -186,6 +186,47 @@ impl ModeACoordinator {
         Ok(is_owner)
     }
 
+    /// Synchronous version of `owns_task` for use with sync callbacks.
+    ///
+    /// Uses `try_read` on the cached peer set to avoid blocking.
+    /// Returns `true` if ownership can be determined and this pod owns the task,
+    /// `false` if ownership can be determined and this pod doesn't own it,
+    /// or `false` if the peer set lock is contended (safe default: skip).
+    ///
+    /// This is designed for use with the task pruner's `mode_a_owner_fn` callback.
+    pub fn owns_task_sync(&self, miroir_id: &str) -> bool {
+        if miroir_id.is_empty() {
+            return false;
+        }
+
+        // Try to read the cached peer set without blocking
+        let peer_set = match self.cached_peer_set.try_read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => {
+                // Lock is contended, return false (safe default: skip this task)
+                // Another pod will handle it
+                return false;
+            }
+        };
+
+        if peer_set.peers.is_empty() {
+            return false;
+        }
+
+        let mut best_score = 0u64;
+        let mut is_owner = false;
+
+        for peer in &peer_set.peers {
+            let score = Self::rendezvous_score(miroir_id, peer);
+            if score > best_score {
+                best_score = score;
+                is_owner = (peer == &self.pod_id);
+            }
+        }
+
+        is_owner
+    }
+
     /// Check if this pod owns a canary (by canary ID).
     ///
     /// Canary runner uses this to partition canary execution.
@@ -362,6 +403,104 @@ mod tests {
 
         let result = coordinator.owns_shard("shard-1").await;
         assert!(matches!(result, Err(ModeAError::NoPeers)));
+    }
+
+    /// Acceptance test (P6.3): owns() returns true for exactly one peer per item across the peer set.
+    #[tokio::test]
+    async fn test_owns_exactly_one_peer_per_item() {
+        // Create multiple coordinators representing different pods
+        let peer_discovery_1 = Arc::new(PeerDiscovery::new(
+            "pod-1".to_string(),
+            "default".to_string(),
+            "miroir-headless".to_string(),
+        ));
+        let coordinator_1 = ModeACoordinator::new("pod-1".to_string(), peer_discovery_1);
+
+        let peer_discovery_2 = Arc::new(PeerDiscovery::new(
+            "pod-2".to_string(),
+            "default".to_string(),
+            "miroir-headless".to_string(),
+        ));
+        let coordinator_2 = ModeACoordinator::new("pod-2".to_string(), peer_discovery_2);
+
+        let peer_discovery_3 = Arc::new(PeerDiscovery::new(
+            "pod-3".to_string(),
+            "default".to_string(),
+            "miroir-headless".to_string(),
+        ));
+        let coordinator_3 = ModeACoordinator::new("pod-3".to_string(), peer_discovery_3);
+
+        // Set up a shared peer set with all 3 pods
+        let peer_set = PeerSet::new(vec![
+            "pod-1".to_string(),
+            "pod-2".to_string(),
+            "pod-3".to_string(),
+        ]);
+        *coordinator_1.cached_peer_set.write().await = peer_set.clone();
+        *coordinator_2.cached_peer_set.write().await = peer_set.clone();
+        *coordinator_3.cached_peer_set.write().await = peer_set;
+
+        // Test various items
+        let test_items = vec!["shard-0", "shard-1", "shard-42", "task-abc", "index:node-1"];
+
+        for item in test_items {
+            let owns_1 = coordinator_1.owns_shard(item).await.unwrap();
+            let owns_2 = coordinator_2.owns_shard(item).await.unwrap();
+            let owns_3 = coordinator_3.owns_shard(item).await.unwrap();
+
+            // Count how many pods own this item
+            let owner_count = [owns_1, owns_2, owns_3].iter().filter(|&&x| x).count();
+
+            // Exactly one pod should own each item
+            assert_eq!(
+                owner_count, 1,
+                "Item '{}' should be owned by exactly one pod, but {} pods claim ownership",
+                item, owner_count
+            );
+
+            // Verify that if a pod owns it, it knows it owns it
+            if owns_1 {
+                assert!(
+                    !owns_2 && !owns_3,
+                    "pod-1 owns '{}', so no other pod should",
+                    item
+                );
+            } else if owns_2 {
+                assert!(!owns_3, "pod-2 owns '{}', so pod-3 should not", item);
+            } else {
+                assert!(owns_3, "one pod must own '{}'", item);
+            }
+        }
+    }
+
+    /// Test sync version of owns_task
+    #[test]
+    fn test_owns_task_sync() {
+        let peer_discovery = Arc::new(PeerDiscovery::new(
+            "test-pod".to_string(),
+            "default".to_string(),
+            "miroir-headless".to_string(),
+        ));
+
+        let coordinator = ModeACoordinator::new("test-pod".to_string(), peer_discovery);
+
+        // With single pod, we own all tasks
+        assert!(coordinator.owns_task_sync("miroir-task-123"));
+        assert!(coordinator.owns_task_sync("some-other-task"));
+    }
+
+    /// Test sync version returns false for empty miroir_id
+    #[test]
+    fn test_owns_task_sync_empty_id() {
+        let peer_discovery = Arc::new(PeerDiscovery::new(
+            "test-pod".to_string(),
+            "default".to_string(),
+            "miroir-headless".to_string(),
+        ));
+
+        let coordinator = ModeACoordinator::new("test-pod".to_string(), peer_discovery);
+
+        assert!(!coordinator.owns_task_sync(""));
     }
 
     fn test_coordinator() -> ModeACoordinator {

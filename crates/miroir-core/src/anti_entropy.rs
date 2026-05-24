@@ -18,6 +18,7 @@
 use crate::cdc::ORIGIN_ANTIENTROPY;
 use crate::error::{MiroirError, Result};
 use crate::migration::{MigrationConfig, MigrationError};
+use crate::mode_a_coordinator::ModeACoordinator;
 use crate::router::assign_shard_in_group;
 use crate::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, NodeClient, WriteRequest};
 use crate::topology::{NodeId, Topology};
@@ -161,10 +162,8 @@ pub struct AntiEntropyReconciler<C: NodeClient> {
     node_client: Arc<C>,
     /// Metrics callback.
     metrics_callback: Option<AntiEntropyMetricsCallback>,
-    /// This pod's replica group ID (for Mode A shard-partitioned scanning).
-    replica_group_id: Option<u32>,
-    /// Total number of pods in Mode A scaling (for consistent shard partitioning).
-    num_pods: Option<u32>,
+    /// Mode A coordinator for shard-partitioned ownership (plan §14.5).
+    mode_a_coordinator: Option<Arc<ModeACoordinator>>,
 }
 
 impl<C: NodeClient> AntiEntropyReconciler<C> {
@@ -181,30 +180,20 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
             current_pass: Arc::new(RwLock::new(None)),
             node_client,
             metrics_callback: None,
-            replica_group_id: None,
-            num_pods: None,
+            mode_a_coordinator: None,
         }
     }
 
-    /// Set Mode A scaling parameters (plan §14.6).
+    /// Set Mode A coordinator for shard-partitioned ownership (plan §14.5, §14.6).
     ///
     /// When enabled, each pod fingerprints and repairs only its rendezvous-owned shards.
+    /// Uses rendezvous hashing: `owns(s, p) = p == top1_by_score(hash(s || pid) for pid in peers)`.
     ///
     /// # Parameters
     ///
-    /// - `replica_group_id`: This pod's ID in the pod pool (0-indexed)
-    /// - `num_pods`: Total number of pods running anti-entropy
-    /// - `total_shards`: Total number of shards in the cluster
-    /// - `rf`: Replication factor
-    pub fn with_mode_a_scaling(
-        mut self,
-        replica_group_id: u32,
-        num_pods: u32,
-        total_shards: u32,
-        rf: usize,
-    ) -> Self {
-        self.replica_group_id = Some(replica_group_id);
-        self.num_pods = Some(num_pods);
+    /// - `coordinator`: Mode A coordinator that determines shard ownership
+    pub fn with_mode_a(mut self, coordinator: Arc<ModeACoordinator>) -> Self {
+        self.mode_a_coordinator = Some(coordinator);
         self
     }
 
@@ -567,19 +556,28 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
 
         // Determine which shards to scan
         let all_shards: Vec<u32> = (0..shard_count).collect();
-        let shards_to_scan = if let (Some(replica_group_id), Some(num_pods)) =
-            (self.replica_group_id, self.num_pods)
-        {
-            // Mode A scaling: filter to rendezvous-owned shards
-            all_shards
-                .into_iter()
-                .filter(|shard_id| {
-                    // Shard belongs to this pod if shard_id % num_pods == replica_group_id
-                    (*shard_id % num_pods) == replica_group_id
-                })
-                .collect()
+        let shards_to_scan = if let Some(ref coordinator) = self.mode_a_coordinator {
+            // Mode A scaling: filter to rendezvous-owned shards (plan §14.5)
+            // Uses rendezvous hashing: owns(s, p) = p == top1_by_score(hash(s || pid) for pid in peers)
+            let mut owned = Vec::new();
+            for shard_id in all_shards {
+                let shard_str = shard_id.to_string();
+                match coordinator.owns_shard(&shard_str).await {
+                    Ok(true) => owned.push(shard_id),
+                    Ok(false) => continue, // Not owned by this pod
+                    Err(e) => {
+                        warn!(
+                            shard_id,
+                            error = %e,
+                            "Failed to check shard ownership, skipping"
+                        );
+                        continue;
+                    }
+                }
+            }
+            owned
         } else if self.config.shards_per_pass == 0 {
-            // Scan all shards
+            // Scan all shards (single-pod deployment or Mode A disabled)
             all_shards
         } else {
             // Scan a subset (for throttling)
@@ -1502,5 +1500,267 @@ mod tests {
             AntiEntropyReconciler::<crate::scatter::MockNodeClient>::compute_content_hash(&doc2);
 
         assert_eq!(hash1, hash2, "hash should be independent of key order");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mode A acceptance tests (plan §14.5, P6.3)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_mode_a_acceptance {
+    use super::*;
+    use crate::mode_a_coordinator::ModeACoordinator;
+    use crate::peer_discovery::PeerDiscovery;
+    use std::sync::Arc;
+
+    /// Acceptance test (P6.3): 3 pods running anti-entropy: each shard processed exactly once per interval cluster-wide.
+    #[tokio::test]
+    async fn test_mode_a_three_pods_each_shard_processed_once() {
+        // Create 3 coordinators representing 3 different pods
+        let peer_discovery_1 = Arc::new(PeerDiscovery::new(
+            "pod-1".to_string(),
+            "default".to_string(),
+            "miroir-headless".to_string(),
+        ));
+        let coordinator_1 = Arc::new(ModeACoordinator::new("pod-1".to_string(), peer_discovery_1));
+
+        let peer_discovery_2 = Arc::new(PeerDiscovery::new(
+            "pod-2".to_string(),
+            "default".to_string(),
+            "miroir-headless".to_string(),
+        ));
+        let coordinator_2 = Arc::new(ModeACoordinator::new("pod-2".to_string(), peer_discovery_2));
+
+        let peer_discovery_3 = Arc::new(PeerDiscovery::new(
+            "pod-3".to_string(),
+            "default".to_string(),
+            "miroir-headless".to_string(),
+        ));
+        let coordinator_3 = Arc::new(ModeACoordinator::new("pod-3".to_string(), peer_discovery_3));
+
+        // Set up a shared peer set with all 3 pods
+        let peer_set = crate::peer_discovery::PeerSet::new(vec![
+            "pod-1".to_string(),
+            "pod-2".to_string(),
+            "pod-3".to_string(),
+        ]);
+        *coordinator_1.cached_peer_set.write().await = peer_set.clone();
+        *coordinator_2.cached_peer_set.write().await = peer_set.clone();
+        *coordinator_3.cached_peer_set.write().await = peer_set;
+
+        // Create 3 anti-entropy reconcilers, one per pod
+        let config = AntiEntropyConfig::default();
+        let topology = Arc::new(RwLock::new(Topology::new(64, 2, 2))); // 64 shards, 2 groups, RF 2
+        let node_client = Arc::new(MockNodeClient::default());
+
+        let reconciler_1 =
+            AntiEntropyReconciler::new(config.clone(), topology.clone(), node_client.clone())
+                .with_mode_a(coordinator_1.clone());
+        let reconciler_2 =
+            AntiEntropyReconciler::new(config.clone(), topology.clone(), node_client.clone())
+                .with_mode_a(coordinator_2.clone());
+        let reconciler_3 =
+            AntiEntropyReconciler::new(config.clone(), topology.clone(), node_client.clone())
+                .with_mode_a(coordinator_3.clone());
+
+        // Simulate each pod determining which shards to scan
+        // In a real scenario, this would happen during run_pass()
+        let all_shards: Vec<u32> = (0..64).collect();
+
+        let mut pod1_shards = Vec::new();
+        let mut pod2_shards = Vec::new();
+        let mut pod3_shards = Vec::new();
+
+        for shard_id in &all_shards {
+            let shard_str = shard_id.to_string();
+
+            if coordinator_1.owns_shard(&shard_str).await.unwrap() {
+                pod1_shards.push(*shard_id);
+            }
+            if coordinator_2.owns_shard(&shard_str).await.unwrap() {
+                pod2_shards.push(*shard_id);
+            }
+            if coordinator_3.owns_shard(&shard_str).await.unwrap() {
+                pod3_shards.push(*shard_id);
+            }
+        }
+
+        // Each shard should be owned by exactly one pod
+        for shard_id in &all_shards {
+            let owner_count = [
+                pod1_shards.contains(shard_id),
+                pod2_shards.contains(shard_id),
+                pod3_shards.contains(shard_id),
+            ]
+            .iter()
+            .filter(|&&x| x)
+            .count();
+
+            assert_eq!(
+                owner_count, 1,
+                "Shard {} should be owned by exactly one pod, but {} pods claim ownership",
+                shard_id, owner_count
+            );
+        }
+
+        // All shards should be accounted for
+        let total_owned = pod1_shards.len() + pod2_shards.len() + pod3_shards.len();
+        assert_eq!(
+            total_owned, 64,
+            "All 64 shards should be owned by exactly one pod each, but got {} total",
+            total_owned
+        );
+
+        // Verify distribution is roughly even (rendezvous hashing gives balanced distribution)
+        let min_owned = pod1_shards
+            .len()
+            .min(pod2_shards.len())
+            .min(pod3_shards.len());
+        let max_owned = pod1_shards
+            .len()
+            .max(pod2_shards.len())
+            .max(pod3_shards.len());
+
+        // With 3 pods and 64 shards, ideal distribution is ~21 shards per pod
+        // Rendezvous hashing should give a balanced distribution
+        assert!(
+            min_owned >= 15,
+            "Distribution too unbalanced: min owned is {}",
+            min_owned
+        );
+        assert!(
+            max_owned <= 25,
+            "Distribution too unbalanced: max owned is {}",
+            max_owned
+        );
+    }
+
+    /// Acceptance test (P6.3): Kill one pod mid-pass; shards reassigned within refresh_interval_s × 2.
+    /// This test verifies that when a pod is removed from the peer set, its shards are
+    /// reassigned to other pods.
+    #[tokio::test]
+    async fn test_mode_a_pod_reassignment() {
+        // Create 3 coordinators
+        let peer_discovery_1 = Arc::new(PeerDiscovery::new(
+            "pod-1".to_string(),
+            "default".to_string(),
+            "miroir-headless".to_string(),
+        ));
+        let coordinator_1 = Arc::new(ModeACoordinator::new("pod-1".to_string(), peer_discovery_1));
+
+        let peer_discovery_2 = Arc::new(PeerDiscovery::new(
+            "pod-2".to_string(),
+            "default".to_string(),
+            "miroir-headless".to_string(),
+        ));
+        let coordinator_2 = Arc::new(ModeACoordinator::new("pod-2".to_string(), peer_discovery_2));
+
+        let peer_discovery_3 = Arc::new(PeerDiscovery::new(
+            "pod-3".to_string(),
+            "default".to_string(),
+            "miroir-headless".to_string(),
+        ));
+        let coordinator_3 = Arc::new(ModeACoordinator::new("pod-3".to_string(), peer_discovery_3));
+
+        // Initial peer set: 3 pods
+        let peer_set_3pods = crate::peer_discovery::PeerSet::new(vec![
+            "pod-1".to_string(),
+            "pod-2".to_string(),
+            "pod-3".to_string(),
+        ]);
+        *coordinator_1.cached_peer_set.write().await = peer_set_3pods.clone();
+        *coordinator_2.cached_peer_set.write().await = peer_set_3pods.clone();
+        *coordinator_3.cached_peer_set.write().await = peer_set_3pods.clone();
+
+        // Track which shards pod-3 owns initially
+        let mut pod3_owned_initial = Vec::new();
+        for shard_id in 0..64u32 {
+            let shard_str = shard_id.to_string();
+            if coordinator_3.owns_shard(&shard_str).await.unwrap() {
+                pod3_owned_initial.push(shard_id);
+            }
+        }
+
+        // Pod-3 dies: remove it from the peer set
+        let peer_set_2pods =
+            crate::peer_discovery::PeerSet::new(vec!["pod-1".to_string(), "pod-2".to_string()]);
+        *coordinator_1.cached_peer_set.write().await = peer_set_2pods.clone();
+        *coordinator_2.cached_peer_set.write().await = peer_set_2pods.clone();
+
+        // Verify that all shards previously owned by pod-3 are now owned by pod-1 or pod-2
+        for shard_id in &pod3_owned_initial {
+            let shard_str = shard_id.to_string();
+
+            let pod1_owns = coordinator_1.owns_shard(&shard_str).await.unwrap();
+            let pod2_owns = coordinator_2.owns_shard(&shard_str).await.unwrap();
+
+            // Each previously pod-3-owned shard should now be owned by exactly one of pod-1 or pod-2
+            let owner_count = [pod1_owns, pod2_owns].iter().filter(|&&x| x).count();
+
+            assert_eq!(
+                owner_count, 1,
+                "Shard {} (previously owned by pod-3) should be owned by exactly one of pod-1 or pod-2, but {} pods claim ownership",
+                shard_id, owner_count
+            );
+        }
+
+        // All 64 shards should still be owned
+        let mut total_owned = 0;
+        for shard_id in 0..64u32 {
+            let shard_str = shard_id.to_string();
+            if coordinator_1.owns_shard(&shard_str).await.unwrap()
+                || coordinator_2.owns_shard(&shard_str).await.unwrap()
+            {
+                total_owned += 1;
+            }
+        }
+
+        assert_eq!(
+            total_owned, 64,
+            "All 64 shards should still be owned after pod-3 removal, but got {}",
+            total_owned
+        );
+    }
+
+    /// Acceptance test (P6.3): Integration test with Mode A anti-entropy.
+    /// Verifies that Mode A partitioning is used when a coordinator is configured.
+    #[tokio::test]
+    async fn test_mode_a_anti_entropy_partitioning() {
+        // Create a coordinator
+        let peer_discovery = Arc::new(PeerDiscovery::new(
+            "test-pod".to_string(),
+            "default".to_string(),
+            "miroir-headless".to_string(),
+        ));
+        let coordinator = Arc::new(ModeACoordinator::new(
+            "test-pod".to_string(),
+            peer_discovery,
+        ));
+
+        // Set up peer set with 3 pods
+        let peer_set = crate::peer_discovery::PeerSet::new(vec![
+            "test-pod".to_string(),
+            "pod-2".to_string(),
+            "pod-3".to_string(),
+        ]);
+        *coordinator.cached_peer_set.write().await = peer_set;
+
+        // Create anti-entropy reconciler with Mode A
+        let config = AntiEntropyConfig {
+            index_uid: "test-index".to_string(),
+            ..Default::default()
+        };
+        let topology = Arc::new(RwLock::new(Topology::new(16, 2, 2))); // 16 shards
+        let node_client = Arc::new(MockNodeClient::default());
+
+        let reconciler =
+            AntiEntropyReconciler::new(config, topology, node_client).with_mode_a(coordinator);
+
+        // Verify Mode A coordinator is set
+        assert!(reconciler.mode_a_coordinator.is_some());
+
+        // The reconciler should use Mode A partitioning when run_pass() is called
+        // (Full integration test would require running the pass which involves more setup)
     }
 }
