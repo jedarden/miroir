@@ -781,23 +781,24 @@ impl AppState {
             cdc_manager: {
                 // Create CDC manager if enabled in config
                 if config.cdc.enabled {
-                    let task_store: Option<Arc<dyn TaskStore>> = match config.task_store.backend.as_str() {
-                        "redis" => redis_store
-                            .as_ref()
-                            .map(|s| Arc::new(s.clone()) as Arc<dyn TaskStore>),
-                        "sqlite" if !config.task_store.path.is_empty() => Some(Arc::new(
-                            miroir_core::task_store::SqliteTaskStore::open(std::path::Path::new(
-                                &config.task_store.path,
-                            ))
-                            .expect("Failed to open SQLite task store"),
-                        )
-                            as Arc<dyn TaskStore>),
-                        _ => None,
-                    };
+                    let task_store: Option<Arc<dyn TaskStore>> =
+                        match config.task_store.backend.as_str() {
+                            "redis" => redis_store
+                                .as_ref()
+                                .map(|s| Arc::new(s.clone()) as Arc<dyn TaskStore>),
+                            "sqlite" if !config.task_store.path.is_empty() => Some(Arc::new(
+                                miroir_core::task_store::SqliteTaskStore::open(
+                                    std::path::Path::new(&config.task_store.path),
+                                )
+                                .expect("Failed to open SQLite task store"),
+                            )
+                                as Arc<dyn TaskStore>),
+                            _ => None,
+                        };
                     Some(Arc::new(miroir_core::cdc::CdcManager::with_metrics(
                         config.cdc.clone().into(), // Convert config::advanced::CdcConfig to cdc::CdcConfig
-                        None, // suppressed_metric_callback
-                        None, // dropped_metric_callback
+                        None,                      // suppressed_metric_callback
+                        None,                      // dropped_metric_callback
                         task_store,
                     )))
                 } else {
