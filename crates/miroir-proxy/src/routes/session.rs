@@ -65,11 +65,13 @@ pub struct AdminSessionResponse {
     pub expires_at: Option<i64>,
 }
 
-/// Search UI session response.
+/// Search UI session response (plan §13.21).
 #[derive(Debug, Serialize)]
 pub struct SearchUiSessionResponse {
     pub token: String,
     pub expires_at: i64,
+    pub index: String,
+    pub rate_limit: String,
 }
 
 /// POST /_miroir/admin/login - admin login with credentials.
@@ -399,7 +401,7 @@ where
         .sign_jwt(
             &subject,
             &index,
-            "search",
+            &["search", "multi_search", "beacon"],
             config.search_ui.auth.session_ttl_s,
         )
         .ok_or_else(|| {
@@ -410,6 +412,7 @@ where
         })?;
 
     let expires_at = epoch_seconds() + config.search_ui.auth.session_ttl_s as i64;
+    let rate_limit = config.search_ui.auth.session_rate_limit.clone();
 
     info!(
         index = %index,
@@ -421,8 +424,13 @@ where
     // Build CSP header
     let csp_value = build_csp_header(&config.search_ui.csp, &config.search_ui.csp_overrides);
 
-    // Build response with CSP header
-    let response = SearchUiSessionResponse { token, expires_at };
+    // Build response with CSP header (plan §13.21)
+    let response = SearchUiSessionResponse {
+        token,
+        expires_at,
+        index: index.clone(),
+        rate_limit,
+    };
     let mut resp = Json(response).into_response();
     resp.headers_mut().insert(
         "Content-Security-Policy",

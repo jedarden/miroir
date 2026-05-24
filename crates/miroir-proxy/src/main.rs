@@ -233,10 +233,12 @@ impl FromRef<UnifiedState> for std::sync::Arc<miroir_core::cdc::CdcManager> {
             Arc::clone(cdc)
         } else {
             // Create a disabled CDC manager
-            Arc::new(miroir_core::cdc::CdcManager::new(miroir_core::cdc::CdcConfig {
-                enabled: false,
-                ..Default::default()
-            }))
+            Arc::new(miroir_core::cdc::CdcManager::new(
+                miroir_core::cdc::CdcConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+            ))
         }
     }
 }
@@ -525,7 +527,8 @@ async fn main() -> anyhow::Result<()> {
         let pruner_config = config.task_registry.clone();
         tokio::spawn(async move {
             // The pruner runs in its own thread via spawn_pruner
-            let _pruner_handle = task_pruner::spawn_pruner::<fn(&str) -> bool>(store, pruner_config, None);
+            let _pruner_handle =
+                task_pruner::spawn_pruner::<fn(&str) -> bool>(store, pruner_config, None);
             // The handle is dropped here only on process exit
             info!("task registry TTL pruner started");
             // Keep this task alive forever

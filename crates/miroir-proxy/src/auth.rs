@@ -46,15 +46,17 @@ pub struct CsrfState {
 // JWT claims (plan §13.21)
 // ---------------------------------------------------------------------------
 
-/// Claims embedded in a search UI JWT session token.
+/// Claims embedded in a search UI JWT session token (plan §13.21).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JwtClaims {
-    /// Subject — user identifier or "anonymous".
+    /// Issuer — always "miroir".
+    pub iss: String,
+    /// Subject — "search-ui-session" or user identifier in oauth_proxy mode.
     pub sub: String,
     /// Index this token grants access to.
     pub idx: String,
-    /// Granted scope (e.g. "search").
-    pub scope: String,
+    /// Granted scope — array of allowed action names.
+    pub scope: Vec<String>,
     /// Issued-at timestamp (seconds since epoch).
     pub iat: u64,
     /// Expiration timestamp (seconds since epoch).
@@ -183,15 +185,17 @@ impl std::fmt::Debug for AuthState {
 // ---------------------------------------------------------------------------
 
 impl AuthState {
-    /// Create a new signed JWT session token for the given index.
+    /// Create a new signed JWT session token for the given index (plan §13.21).
     /// Always signs with the primary secret; `kid` header identifies it.
-    pub fn sign_jwt(&self, sub: &str, idx: &str, scope: &str, ttl_s: u64) -> Option<String> {
+    /// Scope defaults to ["search", "multi_search", "beacon"] for search UI sessions.
+    pub fn sign_jwt(&self, sub: &str, idx: &str, scope: &[&str], ttl_s: u64) -> Option<String> {
         let secret = self.jwt_primary.as_ref()?;
         let now = epoch_seconds();
         let claims = JwtClaims {
+            iss: "miroir".to_string(),
             sub: sub.to_string(),
             idx: idx.to_string(),
-            scope: scope.to_string(),
+            scope: scope.iter().map(|s| s.to_string()).collect(),
             iat: now,
             exp: now + ttl_s,
         };
@@ -242,6 +246,8 @@ pub enum JwtValidationError {
     Expired,
     /// `SEARCH_UI_JWT_SECRET_PREVIOUS` is set to the empty string (leak response).
     PreviousSecretEmpty,
+    /// Token scope does not permit this (method, path) or idx claim mismatch.
+    ScopeDenied,
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +558,86 @@ pub fn constant_time_compare(token: &[u8], expected: &[u8]) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Scope and index validation (plan §13.21 defense-in-depth)
+// ---------------------------------------------------------------------------
+
+/// Action name for a given (method, path) combination per plan §13.21.
+/// Returns the scope action name if the path is a search UI endpoint, None otherwise.
+fn action_for_method_path(method: &Method, path: &str) -> Option<&'static str> {
+    // POST /indexes/{idx}/search → "search"
+    if method == Method::POST {
+        if let Some(rest) = path.strip_prefix("/indexes/") {
+            if let Some(idx_rest) = rest.strip_suffix("/search") {
+                // Ensure the middle part is a valid index uid (non-empty, no slashes)
+                if !idx_rest.is_empty() && !idx_rest.contains('/') {
+                    return Some("search");
+                }
+            }
+        }
+    }
+
+    // POST /multi-search → "multi_search"
+    if method == Method::POST && path == "/multi-search" {
+        return Some("multi_search");
+    }
+
+    // POST /_miroir/ui/search/{idx}/beacon → "beacon"
+    if method == Method::POST {
+        if let Some(rest) = path.strip_prefix("/_miroir/ui/search/") {
+            if let Some(idx_rest) = rest.strip_suffix("/beacon") {
+                if !idx_rest.is_empty() && !idx_rest.contains('/') {
+                    return Some("beacon");
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Validate JWT scope and index claims against the request (plan §13.21).
+/// Returns Ok(()) if the (method, path) is allowed by the scope and idx claim,
+/// or Err(JwtScopeDenied) if the validation fails.
+pub fn validate_jwt_scope(
+    claims: &JwtClaims,
+    method: &Method,
+    path: &str,
+) -> Result<(), JwtValidationError> {
+    // Determine the required action for this (method, path)
+    let Some(required_action) = action_for_method_path(method, path) else {
+        // This endpoint doesn't require scope validation
+        return Ok(());
+    };
+
+    // Check if the required action is in the scope
+    if !claims.scope.contains(&required_action.to_string()) {
+        return Err(JwtValidationError::ScopeDenied);
+    }
+
+    // For multi_search, we need to validate that every sub-query's indexUid matches idx
+    // This is handled later in the request handler since we need to parse the body.
+    // For search and beacon, validate the index in the path matches the claim.
+    if required_action == "search" || required_action == "beacon" {
+        let expected_idx = &claims.idx;
+        let actual_idx = if required_action == "search" {
+            // Extract index from /indexes/{idx}/search
+            path.strip_prefix("/indexes/")
+                .and_then(|rest| rest.strip_suffix("/search"))
+        } else {
+            // Extract index from /_miroir/ui/search/{idx}/beacon
+            path.strip_prefix("/_miroir/ui/search/")
+                .and_then(|rest| rest.strip_suffix("/beacon"))
+        };
+
+        if actual_idx != Some(expected_idx) {
+            return Err(JwtValidationError::ScopeDenied);
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Core dispatch — rules 0–4
 // ---------------------------------------------------------------------------
 
@@ -575,10 +661,19 @@ pub fn dispatch_bearer(
         None => return AuthVerdict::InvalidAuth, // Rule 4 — missing auth
     };
 
-    // Rule 1 — JWT-shape probe, then full validation
+    // Rule 1 — JWT-shape probe, then full validation including scope check
     if probe_jwt_shape(token) {
         match state.validate_jwt(token) {
-            Ok(_claims) => return AuthVerdict::Authenticated(TokenKind::Jwt),
+            Ok(claims) => {
+                // Defense-in-depth: validate scope and index claims (plan §13.21)
+                match validate_jwt_scope(&claims, method, path) {
+                    Ok(()) => return AuthVerdict::Authenticated(TokenKind::Jwt),
+                    Err(JwtValidationError::ScopeDenied) => {
+                        return AuthVerdict::JwtScopeDenied;
+                    }
+                    Err(_) => return AuthVerdict::JwtInvalid,
+                }
+            }
             Err(JwtValidationError::PreviousSecretEmpty) => {
                 return AuthVerdict::JwtInvalid;
             }
@@ -1216,18 +1311,22 @@ mod tests {
     #[test]
     fn sign_and_validate_primary_jwt() {
         let state = test_state_with_jwt();
-        let token = state.sign_jwt("user1", "products", "search", 900).unwrap();
+        let token = state
+            .sign_jwt("user1", "products", &["search"], 900)
+            .unwrap();
 
         let claims = state.validate_jwt(&token).unwrap();
         assert_eq!(claims.sub, "user1");
         assert_eq!(claims.idx, "products");
-        assert_eq!(claims.scope, "search");
+        assert_eq!(claims.scope, vec!["search"]);
     }
 
     #[test]
     fn signed_jwt_authenticates_via_dispatch() {
         let state = test_state_with_jwt();
-        let token = state.sign_jwt("user1", "products", "search", 900).unwrap();
+        let token = state
+            .sign_jwt("user1", "products", &["search"], 900)
+            .unwrap();
 
         let verdict = dispatch_bearer(&Method::GET, "/indexes/products", Some(&token), &state);
         assert_eq!(verdict, AuthVerdict::Authenticated(TokenKind::Jwt));
@@ -1238,9 +1337,10 @@ mod tests {
         let state = test_state_with_jwt();
         let now = epoch_seconds();
         let claims = JwtClaims {
+            iss: "miroir".to_string(),
             sub: "user1".to_string(),
             idx: "products".to_string(),
-            scope: "search".to_string(),
+            scope: vec!["search".to_string()],
             iat: now - 3600,
             exp: now - 100, // expired well beyond 30s leeway
         };
@@ -1263,7 +1363,9 @@ mod tests {
     #[test]
     fn tampered_signature_returns_invalid_signature() {
         let state = test_state_with_jwt();
-        let mut token = state.sign_jwt("user1", "products", "search", 900).unwrap();
+        let mut token = state
+            .sign_jwt("user1", "products", &["search"], 900)
+            .unwrap();
         // Tamper with the signature
         let parts: Vec<&str> = token.split('.').collect();
         token = format!("{}.{}.tampered_sig", parts[0], parts[1]);
@@ -1284,9 +1386,10 @@ mod tests {
         // Sign token with the previous secret
         let now = epoch_seconds();
         let claims = JwtClaims {
+            iss: "miroir".to_string(),
             sub: "user1".to_string(),
             idx: "products".to_string(),
-            scope: "search".to_string(),
+            scope: vec!["search".to_string()],
             iat: now,
             exp: now + 900,
         };
@@ -1324,7 +1427,7 @@ mod tests {
     #[test]
     fn rotation_new_token_validates_via_primary_secret() {
         let state = test_state_with_dual_jwt();
-        let new_token = state.sign_jwt("user2", "orders", "search", 900).unwrap();
+        let new_token = state.sign_jwt("user2", "orders", &["search"], 900).unwrap();
 
         let validated = state.validate_jwt(&new_token).unwrap();
         assert_eq!(validated.sub, "user2");
@@ -1350,9 +1453,10 @@ mod tests {
         // Token signed with a completely different secret
         let now = epoch_seconds();
         let claims = JwtClaims {
+            iss: "miroir".to_string(),
             sub: "user1".to_string(),
             idx: "products".to_string(),
-            scope: "search".to_string(),
+            scope: vec!["search".to_string()],
             iat: now,
             exp: now + 900,
         };
@@ -1410,14 +1514,17 @@ mod tests {
         };
 
         // Tokens signed with current primary work
-        let token = state.sign_jwt("user1", "products", "search", 900).unwrap();
+        let token = state
+            .sign_jwt("user1", "products", &["search"], 900)
+            .unwrap();
         assert!(state.validate_jwt(&token).is_ok());
 
         // Old tokens signed with now-removed previous fail
         let old_claims = JwtClaims {
+            iss: "miroir".to_string(),
             sub: "user1".to_string(),
             idx: "products".to_string(),
-            scope: "search".to_string(),
+            scope: vec!["search".to_string()],
             iat: epoch_seconds() - 100,
             exp: epoch_seconds() + 800,
         };
@@ -1458,7 +1565,7 @@ mod tests {
             ))
             .unwrap(),
         };
-        let token_v1 = pre.sign_jwt("alice", "idx", "search", 900).unwrap();
+        let token_v1 = pre.sign_jwt("alice", "idx", &["search"], 900).unwrap();
         assert!(pre.validate_jwt(&token_v1).is_ok());
 
         // During rotation: v2 primary, v1 previous
@@ -1478,7 +1585,7 @@ mod tests {
         // Old token still validates
         assert!(during.validate_jwt(&token_v1).is_ok());
         // New tokens work too
-        let token_v2 = during.sign_jwt("bob", "idx", "search", 900).unwrap();
+        let token_v2 = during.sign_jwt("bob", "idx", &["search"], 900).unwrap();
         assert!(during.validate_jwt(&token_v2).is_ok());
 
         // Post-rotation: only v2
@@ -1782,5 +1889,190 @@ mod tests {
                 path,
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Scope and index validation tests (plan §13.21)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn scope_validation_allows_search_on_matching_index() {
+        let claims = JwtClaims {
+            iss: "miroir".to_string(),
+            sub: "user1".to_string(),
+            idx: "products".to_string(),
+            scope: vec![
+                "search".to_string(),
+                "multi_search".to_string(),
+                "beacon".to_string(),
+            ],
+            iat: epoch_seconds(),
+            exp: epoch_seconds() + 900,
+        };
+
+        let result = validate_jwt_scope(&claims, &Method::POST, "/indexes/products/search");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn scope_validation_denies_search_on_different_index() {
+        let claims = JwtClaims {
+            iss: "miroir".to_string(),
+            sub: "user1".to_string(),
+            idx: "products".to_string(),
+            scope: vec![
+                "search".to_string(),
+                "multi_search".to_string(),
+                "beacon".to_string(),
+            ],
+            iat: epoch_seconds(),
+            exp: epoch_seconds() + 900,
+        };
+
+        let result = validate_jwt_scope(&claims, &Method::POST, "/indexes/orders/search");
+        assert_eq!(result, Err(JwtValidationError::ScopeDenied));
+    }
+
+    #[test]
+    fn scope_validation_denies_missing_scope_action() {
+        let claims = JwtClaims {
+            iss: "miroir".to_string(),
+            sub: "user1".to_string(),
+            idx: "products".to_string(),
+            scope: vec!["beacon".to_string()], // missing "search"
+            iat: epoch_seconds(),
+            exp: epoch_seconds() + 900,
+        };
+
+        let result = validate_jwt_scope(&claims, &Method::POST, "/indexes/products/search");
+        assert_eq!(result, Err(JwtValidationError::ScopeDenied));
+    }
+
+    #[test]
+    fn scope_validation_allows_multi_search() {
+        let claims = JwtClaims {
+            iss: "miroir".to_string(),
+            sub: "user1".to_string(),
+            idx: "products".to_string(),
+            scope: vec![
+                "search".to_string(),
+                "multi_search".to_string(),
+                "beacon".to_string(),
+            ],
+            iat: epoch_seconds(),
+            exp: epoch_seconds() + 900,
+        };
+
+        let result = validate_jwt_scope(&claims, &Method::POST, "/multi-search");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn scope_validation_denies_multi_search_without_scope() {
+        let claims = JwtClaims {
+            iss: "miroir".to_string(),
+            sub: "user1".to_string(),
+            idx: "products".to_string(),
+            scope: vec!["search".to_string()], // missing "multi_search"
+            iat: epoch_seconds(),
+            exp: epoch_seconds() + 900,
+        };
+
+        let result = validate_jwt_scope(&claims, &Method::POST, "/multi-search");
+        assert_eq!(result, Err(JwtValidationError::ScopeDenied));
+    }
+
+    #[test]
+    fn scope_validation_allows_beacon_on_matching_index() {
+        let claims = JwtClaims {
+            iss: "miroir".to_string(),
+            sub: "user1".to_string(),
+            idx: "products".to_string(),
+            scope: vec![
+                "search".to_string(),
+                "multi_search".to_string(),
+                "beacon".to_string(),
+            ],
+            iat: epoch_seconds(),
+            exp: epoch_seconds() + 900,
+        };
+
+        let result =
+            validate_jwt_scope(&claims, &Method::POST, "/_miroir/ui/search/products/beacon");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn scope_validation_denies_beacon_on_different_index() {
+        let claims = JwtClaims {
+            iss: "miroir".to_string(),
+            sub: "user1".to_string(),
+            idx: "products".to_string(),
+            scope: vec![
+                "search".to_string(),
+                "multi_search".to_string(),
+                "beacon".to_string(),
+            ],
+            iat: epoch_seconds(),
+            exp: epoch_seconds() + 900,
+        };
+
+        let result = validate_jwt_scope(&claims, &Method::POST, "/_miroir/ui/search/orders/beacon");
+        assert_eq!(result, Err(JwtValidationError::ScopeDenied));
+    }
+
+    #[test]
+    fn scope_validation_skips_non_scoped_endpoints() {
+        let claims = JwtClaims {
+            iss: "miroir".to_string(),
+            sub: "user1".to_string(),
+            idx: "products".to_string(),
+            scope: vec!["search".to_string()],
+            iat: epoch_seconds(),
+            exp: epoch_seconds() + 900,
+        };
+
+        // Endpoints that don't require scope validation should pass
+        assert!(validate_jwt_scope(&claims, &Method::GET, "/indexes/products").is_ok());
+        assert!(validate_jwt_scope(&claims, &Method::POST, "/indexes/products/documents").is_ok());
+        assert!(validate_jwt_scope(&claims, &Method::GET, "/_miroir/admin/settings").is_ok());
+    }
+
+    #[test]
+    fn dispatch_with_jwt_scope_denied_returns_scope_denied_verdict() {
+        let state = test_state_with_jwt();
+        let token = state
+            .sign_jwt("user1", "products", &["search"], 900)
+            .unwrap();
+
+        // Token should be valid, but trying to use it on a different index should fail
+        let verdict = dispatch_bearer(
+            &Method::POST,
+            "/indexes/orders/search",
+            Some(&token),
+            &state,
+        );
+        assert_eq!(verdict, AuthVerdict::JwtScopeDenied);
+    }
+
+    #[test]
+    fn dispatch_with_jwt_correct_index_and_scope_succeeds() {
+        let state = test_state_with_jwt();
+        let token = state
+            .sign_jwt(
+                "user1",
+                "products",
+                &["search", "multi_search", "beacon"],
+                900,
+            )
+            .unwrap();
+
+        let verdict = dispatch_bearer(
+            &Method::POST,
+            "/indexes/products/search",
+            Some(&token),
+            &state,
+        );
+        assert_eq!(verdict, AuthVerdict::Authenticated(TokenKind::Jwt));
     }
 }
