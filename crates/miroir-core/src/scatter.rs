@@ -336,6 +336,17 @@ pub enum NodeError {
     NetworkError(String),
 }
 
+/// Vector search mode for a query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VectorMode {
+    /// Pure keyword (BM25) search — no vector component.
+    KeywordOnly,
+    /// Pure vector (semantic) search — no keyword component.
+    VectorOnly,
+    /// Hybrid search combining BM25 + semantic scores.
+    Hybrid,
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchRequest {
     pub index_uid: String,
@@ -348,6 +359,11 @@ pub struct SearchRequest {
     pub body: Value,
     /// Global IDF data from the preflight phase (OP#4).
     pub global_idf: Option<GlobalIdf>,
+    /// Over-fetch factor for vector/hybrid search (plan §13.12).
+    /// For a request with limit L, each shard returns L × over_fetch_factor hits.
+    pub over_fetch_factor: u32,
+    /// Vector search mode (keyword-only, vector-only, or hybrid).
+    pub vector_mode: VectorMode,
 }
 
 impl SearchRequest {
@@ -356,15 +372,28 @@ impl SearchRequest {
     /// Injects `showRankingScore: true` unconditionally so the merger can global-sort.
     /// Each node receives `offset + limit` results to ensure the coordinator has enough
     /// data to apply pagination.
+    /// Build the request body for sending to a node.
+    ///
+    /// Injects `showRankingScore: true` unconditionally so the merger can global-sort.
+    /// Each node receives `offset + limit` results to ensure the coordinator has enough
+    /// data to apply pagination.
+    ///
+    /// For vector/hybrid queries, applies over-fetch factor (plan §13.12): each shard
+    /// returns `limit × over_fetch_factor` hits so the global reranker can recover
+    /// correct ordering on sparse semantic matches.
     pub fn to_node_body(&self) -> Value {
         let mut body = self.body.clone();
 
         // Inject showRankingScore: true unconditionally for global sorting
         body["showRankingScore"] = serde_json::json!(true);
 
-        // Set limit to offset + limit so we get enough results for pagination
-        // (coordinator applies final offset/limit after merging)
-        body["limit"] = serde_json::json!(self.offset + self.limit);
+        // For vector/hybrid search, apply over-fetch factor (plan §13.12)
+        let per_shard_limit = if self.vector_mode != VectorMode::KeywordOnly {
+            (self.offset + self.limit) * self.over_fetch_factor as usize
+        } else {
+            self.offset + self.limit
+        };
+        body["limit"] = serde_json::json!(per_shard_limit);
 
         // Set offset to 0 on individual nodes (coordinator handles offset)
         body["offset"] = serde_json::json!(0);
@@ -385,6 +414,46 @@ impl SearchRequest {
         }
 
         body
+    }
+
+    /// Detect the vector search mode from the request body.
+    ///
+    /// Returns VectorMode::Hybrid if the request has a `hybrid` field,
+    /// VectorMode::VectorOnly if it has `vector` field but no `q`,
+    /// KeywordOnly otherwise.
+    pub fn detect_vector_mode(body: &Value) -> VectorMode {
+        // Check for hybrid search (plan §13.12)
+        if body.get("hybrid").is_some() {
+            return VectorMode::Hybrid;
+        }
+
+        // Check for pure vector search (has vector field, no query)
+        if body.get("vector").is_some() {
+            if body
+                .get("q")
+                .and_then(|v| v.as_str())
+                .map_or(false, |s| !s.is_empty())
+            {
+                // Has both vector and query → hybrid
+                return VectorMode::Hybrid;
+            }
+            return VectorMode::VectorOnly;
+        }
+
+        // Check for _vectors (Meilisearch's stored vectors field)
+        if body.get("_vectors").is_some() {
+            if body
+                .get("q")
+                .and_then(|v| v.as_str())
+                .map_or(false, |s| !s.is_empty())
+            {
+                return VectorMode::Hybrid;
+            }
+            return VectorMode::VectorOnly;
+        }
+
+        // Pure keyword search
+        VectorMode::KeywordOnly
     }
 }
 
@@ -1446,6 +1515,8 @@ mod tests {
             ranking_score: false,
             body: serde_json::json!({}),
             global_idf: None,
+            over_fetch_factor: 1,
+            vector_mode: VectorMode::KeywordOnly,
         }
     }
 
@@ -1941,6 +2012,8 @@ mod tests {
             ranking_score: false, // Client didn't request scores
             body: serde_json::json!({"custom": "field"}),
             global_idf: None,
+            over_fetch_factor: 1,
+            vector_mode: VectorMode::KeywordOnly,
         };
 
         let body = req.to_node_body();
@@ -1986,6 +2059,8 @@ mod tests {
             ranking_score: true, // Client requested scores
             body: serde_json::json!({}),
             global_idf: None,
+            over_fetch_factor: 1,
+            vector_mode: VectorMode::KeywordOnly,
         };
 
         let body = req.to_node_body();
@@ -2013,6 +2088,8 @@ mod tests {
             ranking_score: false,
             body: serde_json::json!({}),
             global_idf: None,
+            over_fetch_factor: 1,
+            vector_mode: VectorMode::KeywordOnly,
         };
 
         let body = req.to_node_body();
@@ -2022,6 +2099,98 @@ mod tests {
 
         // offset must be 0 (coordinator handles offset)
         assert_eq!(body.get("offset"), Some(&serde_json::json!(0)));
+    }
+
+    /// Test vector mode detection (plan §13.12).
+    #[test]
+    fn test_detect_vector_mode() {
+        // Pure keyword search (no vector fields)
+        let body = serde_json::json!({"q": "test"});
+        assert_eq!(
+            SearchRequest::detect_vector_mode(&body),
+            VectorMode::KeywordOnly
+        );
+
+        // Hybrid search (has hybrid field)
+        let body = serde_json::json!({"q": "test", "hybrid": {"embedder": "openai"}});
+        assert_eq!(SearchRequest::detect_vector_mode(&body), VectorMode::Hybrid);
+
+        // Pure vector search (has vector field, no query)
+        let body = serde_json::json!({"vector": [0.1, 0.2, 0.3]});
+        assert_eq!(
+            SearchRequest::detect_vector_mode(&body),
+            VectorMode::VectorOnly
+        );
+
+        // Vector + query = hybrid
+        let body = serde_json::json!({"q": "test", "vector": [0.1, 0.2, 0.3]});
+        assert_eq!(SearchRequest::detect_vector_mode(&body), VectorMode::Hybrid);
+
+        // _vectors field (Meilisearch stored vectors)
+        let body = serde_json::json!({"_vectors": {"default": [0.1, 0.2]}});
+        assert_eq!(
+            SearchRequest::detect_vector_mode(&body),
+            VectorMode::VectorOnly
+        );
+
+        // _vectors + query = hybrid
+        let body = serde_json::json!({"q": "test", "_vectors": {"default": [0.1, 0.2]}});
+        assert_eq!(SearchRequest::detect_vector_mode(&body), VectorMode::Hybrid);
+    }
+
+    /// Test over-fetch behavior for vector/hybrid queries (plan §13.12).
+    #[test]
+    fn test_to_node_body_over_fetch() {
+        // Keyword-only: no over-fetch
+        let req = SearchRequest {
+            index_uid: "test".into(),
+            query: Some("test".into()),
+            offset: 0,
+            limit: 10,
+            filter: None,
+            facets: None,
+            ranking_score: false,
+            body: serde_json::json!({}),
+            global_idf: None,
+            over_fetch_factor: 3,
+            vector_mode: VectorMode::KeywordOnly,
+        };
+        let body = req.to_node_body();
+        assert_eq!(body.get("limit"), Some(&serde_json::json!(10)));
+
+        // Hybrid: apply over-fetch
+        let req = SearchRequest {
+            index_uid: "test".into(),
+            query: Some("test".into()),
+            offset: 0,
+            limit: 10,
+            filter: None,
+            facets: None,
+            ranking_score: false,
+            body: serde_json::json!({"hybrid": {}}),
+            global_idf: None,
+            over_fetch_factor: 3,
+            vector_mode: VectorMode::Hybrid,
+        };
+        let body = req.to_node_body();
+        assert_eq!(body.get("limit"), Some(&serde_json::json!(30))); // 10 * 3
+
+        // Vector-only: apply over-fetch
+        let req = SearchRequest {
+            index_uid: "test".into(),
+            query: None,
+            offset: 0,
+            limit: 20,
+            filter: None,
+            facets: None,
+            ranking_score: false,
+            body: serde_json::json!({"vector": [0.1, 0.2]}),
+            global_idf: None,
+            over_fetch_factor: 5,
+            vector_mode: VectorMode::VectorOnly,
+        };
+        let body = req.to_node_body();
+        assert_eq!(body.get("limit"), Some(&serde_json::json!(100))); // 20 * 5
     }
 
     /// Test group fallback when primary group has failed nodes.

@@ -253,6 +253,8 @@ async fn p43_drain_node_searches_still_succeed_zero_degraded() {
         ranking_score: false,
         body: serde_json::json!({}),
         global_idf: None,
+        over_fetch_factor: 1,
+        vector_mode: miroir_core::scatter::VectorMode::KeywordOnly,
     };
 
     let result = execute_scatter(

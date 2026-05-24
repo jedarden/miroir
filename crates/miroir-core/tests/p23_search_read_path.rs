@@ -99,6 +99,8 @@ async fn test_unique_keyword_returns_exactly_one_hit() {
         ranking_score: false,
         body: json!({}),
         global_idf: None,
+        over_fetch_factor: 1,
+        vector_mode: miroir_core::scatter::VectorMode::KeywordOnly,
     };
 
     // Use RRF strategy which deduplicates by primary key

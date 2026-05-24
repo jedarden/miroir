@@ -10,7 +10,7 @@ use miroir_core::{
     config::MiroirConfig,
     explainer::{BroadcastPending, Explainer, SearchQueryExplanation, Warning},
     query_planner::QueryPlanner,
-    scatter::{plan_search_scatter, SearchRequest},
+    scatter::{plan_search_scatter, SearchRequest, VectorMode},
     topology::Topology,
 };
 use serde::Deserialize;
@@ -304,6 +304,8 @@ async fn execute_search(
         ranking_score: false,
         body: serde_json::json!({}),
         global_idf: None,
+        over_fetch_factor: 1,
+        vector_mode: VectorMode::KeywordOnly,
     };
 
     // Get topology and plan scatter

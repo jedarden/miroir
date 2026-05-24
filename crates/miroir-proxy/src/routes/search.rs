@@ -12,7 +12,7 @@ use miroir_core::merger::ScoreMergeStrategy;
 use miroir_core::replica_selection::SelectionObserver;
 use miroir_core::scatter::{
     dfs_query_then_fetch_search, plan_search_scatter, plan_search_scatter_for_group,
-    plan_search_scatter_with_version_floor, NodeClient, SearchRequest,
+    plan_search_scatter_with_version_floor, NodeClient, SearchRequest, VectorMode,
 };
 use miroir_core::session_pinning::WaitStrategy;
 use serde::{Deserialize, Serialize};
@@ -412,6 +412,15 @@ async fn search_handler(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
 
+    // Extract X-Miroir-Over-Fetch header (plan §13.12)
+    // Per-request override of vector_search.over_fetch_factor
+    let over_fetch_factor = headers
+        .get("X-Miroir-Over-Fetch")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u32>().ok())
+        .filter(|&f| f >= 1)
+        .unwrap_or_else(|| state.config.vector_search.over_fetch_factor);
+
     // Handle multi-target alias fanout (plan §13.7, §13.11, §13.17)
     // Multi-target aliases (ILM read_alias) require fanning out to all targets
     // and merging results by _rankingScore
@@ -608,6 +617,23 @@ async fn search_handler(
     // Clone facets for fingerprinting before moving into SearchRequest
     let facets_clone = body.facets.clone();
     let rest_body = body.rest.clone(); // Clone before body is partially moved
+
+    // Detect vector search mode from request body (plan §13.12)
+    let vector_mode = SearchRequest::detect_vector_mode(&rest_body);
+
+    // Apply over-fetch factor for vector/hybrid queries (plan §13.12)
+    let effective_over_fetch = if vector_mode != VectorMode::KeywordOnly {
+        // Record over-fetch metric (plan §13.12)
+        state.metrics.inc_vector_search_over_fetched();
+        // Record merge strategy metric
+        state.metrics.inc_vector_merge_strategy(
+            &state.config.vector_search.merge_strategy
+        );
+        over_fetch_factor
+    } else {
+        1 // No over-fetch for pure keyword queries
+    };
+
     let search_req = SearchRequest {
         index_uid: effective_index.clone(),
         query: body.q,
@@ -618,6 +644,8 @@ async fn search_handler(
         ranking_score: client_requested_score,
         body: rest_body,
         global_idf: None,
+        over_fetch_factor: effective_over_fetch,
+        vector_mode,
     };
 
     // Create node client with the scoped key (or node_master_key as fallback)
@@ -1041,6 +1069,23 @@ async fn search_multi_targets(
     // Record scatter fan-out size
     state.metrics.record_scatter_fan_out(node_count);
 
+    // Detect vector search mode from request body (plan §13.12)
+    let vector_mode = SearchRequest::detect_vector_mode(&body.rest);
+
+    // Apply over-fetch factor for vector/hybrid queries (plan §13.12)
+    let over_fetch_factor = state.config.vector_search.over_fetch_factor;
+    let effective_over_fetch = if vector_mode != VectorMode::KeywordOnly {
+        // Record over-fetch metric (plan §13.12)
+        state.metrics.inc_vector_search_over_fetched();
+        // Record merge strategy metric
+        state.metrics.inc_vector_merge_strategy(
+            &state.config.vector_search.merge_strategy
+        );
+        over_fetch_factor
+    } else {
+        1 // No over-fetch for pure keyword queries
+    };
+
     // Build search request for primary target
     let search_req = SearchRequest {
         index_uid: primary_target.to_string(),
@@ -1052,6 +1097,8 @@ async fn search_multi_targets(
         ranking_score: client_requested_score,
         body: body.rest.clone(),
         global_idf: None,
+        over_fetch_factor: effective_over_fetch,
+        vector_mode,
     };
 
     // Create node client
