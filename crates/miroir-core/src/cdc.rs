@@ -30,12 +30,18 @@
 //! // Anti-entropy repair write (suppressed by default)
 //! WriteRequest { origin: Some(ORIGIN_ANTIENTROPY.to_string()), .. }
 //! ```
+//!
+//! # Internal Queue Long-Poll (plan §13.13, P5.13.d)
+//!
+//! The internal queue sink supports long-polling via `GET /_miroir/changes?since={cursor}&index={uid}`.
+//! When no new events are available, the endpoint waits up to `timeout` seconds (default 30s)
+//! before returning an empty response. This allows in-cluster consumers to efficiently
+//! tail the change stream without tight polling loops.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
@@ -156,7 +162,8 @@ pub struct CdcPublisherState {
 ///
 /// Stores events with per-index monotonic sequence numbers for the
 /// `GET /_miroir/changes` endpoint. Events are stored in memory with
-/// optional Redis persistence.
+/// optional Redis persistence. Supports long-polling via broadcast
+/// notifications when new events arrive.
 pub struct CdcInternalQueue {
     /// Per-index event storage: index -> (sequence -> event)
     events: Arc<RwLock<HashMap<String, Vec<(u64, CdcEvent)>>>>,
@@ -164,16 +171,29 @@ pub struct CdcInternalQueue {
     sequences: Arc<RwLock<HashMap<String, u64>>>,
     /// Optional task store for cursor persistence.
     task_store: Option<Arc<dyn TaskStore>>,
+    /// Broadcast channel for notifying waiting consumers of new events.
+    /// Sender is cloned and stored here; receivers are created per-request.
+    notify_tx: tokio::sync::broadcast::Sender<String>,
 }
 
 impl CdcInternalQueue {
     /// Create a new internal queue.
     pub fn new(task_store: Option<Arc<dyn TaskStore>>) -> Self {
+        // Create a broadcast channel for event notifications.
+        // Channel size is small because we only need to signal that new events exist.
+        let (notify_tx, _) = tokio::sync::broadcast::channel(100);
         Self {
             events: Arc::new(RwLock::new(HashMap::new())),
             sequences: Arc::new(RwLock::new(HashMap::new())),
             task_store,
+            notify_tx,
         }
+    }
+
+    /// Subscribe to event notifications for long-polling.
+    /// Returns a receiver that gets notified when events are added for any index.
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.notify_tx.subscribe()
     }
 
     /// Store an event and return its sequence number.
@@ -197,6 +217,10 @@ impl CdcInternalQueue {
             }
         }
 
+        // Notify waiting consumers of the new event
+        // We ignore errors because there may be no receivers subscribed
+        let _ = self.notify_tx.send(index.clone());
+
         sequence
     }
 
@@ -214,6 +238,89 @@ impl CdcInternalQueue {
         } else {
             Vec::new()
         }
+    }
+
+    /// Get events for an index since a given cursor with long-poll support.
+    /// Waits up to `timeout` for new events if none are immediately available.
+    ///
+    /// # Arguments
+    /// * `index` - Index UID to query
+    /// * `cursor` - Sequence number to start from (exclusive)
+    /// * `limit` - Maximum number of events to return
+    /// * `timeout` - Maximum time to wait for new events (None = return immediately)
+    ///
+    /// Returns events with sequence > cursor, up to `limit` events.
+    pub async fn get_since_long_poll(
+        &self,
+        index: &str,
+        cursor: u64,
+        limit: usize,
+        timeout: Option<Duration>,
+    ) -> Vec<CdcEvent> {
+        // First, check if there are events immediately available
+        {
+            let events = self.events.read().await;
+            if let Some(events_vec) = events.get(index) {
+                let available: Vec<_> = events_vec
+                    .iter()
+                    .filter(|(seq, _)| *seq > cursor)
+                    .take(limit)
+                    .map(|(_, event)| event.clone())
+                    .collect();
+                if !available.is_empty() {
+                    return available;
+                }
+            }
+        }
+
+        // No events immediately available - wait for timeout if specified
+        if let Some(timeout_duration) = timeout {
+            // Subscribe to notifications
+            let mut rx = self.subscribe();
+            let start = Instant::now();
+
+            loop {
+                let remaining = timeout_duration.saturating_sub(start.elapsed());
+                if remaining.is_zero() {
+                    // Timeout expired - return empty
+                    return Vec::new();
+                }
+
+                // Wait for either a notification or timeout
+                match tokio::time::timeout(remaining, rx.recv()).await {
+                    Ok(Ok(notified_index)) => {
+                        // Check if the notification is for our index
+                        if notified_index == index {
+                            // Re-check for events
+                            let events = self.events.read().await;
+                            if let Some(events_vec) = events.get(index) {
+                                let available: Vec<_> = events_vec
+                                    .iter()
+                                    .filter(|(seq, _)| *seq > cursor)
+                                    .take(limit)
+                                    .map(|(_, event)| event.clone())
+                                    .collect();
+                                if !available.is_empty() {
+                                    return available;
+                                }
+                            }
+                        }
+                        // Continue waiting - notification was for a different index
+                    }
+                    Ok(Err(_)) => {
+                        // Sender lagged - continue waiting
+                        continue;
+                    }
+                    Err(_) => {
+                        // Timeout - return empty
+                        return Vec::new();
+                    }
+                }
+            }
+        }
+
+        // No timeout configured - return empty immediately
+        Vec::new()
     }
 
     /// Get the current maximum sequence number for an index.
@@ -558,7 +665,7 @@ impl CdcRedisOverflow {
 
 #[async_trait::async_trait]
 impl CdcOverflowBackend for CdcRedisOverflow {
-    async fn push(&self, event: CdcEvent) -> Result<(), CdcError> {
+    async fn push(&self, _event: CdcEvent) -> Result<(), CdcError> {
         #[cfg(feature = "redis-store")]
         return self.push_inner(event).await;
 
@@ -767,7 +874,7 @@ impl CdcDropOverflow {
 
 #[async_trait::async_trait]
 impl CdcOverflowBackend for CdcDropOverflow {
-    async fn push(&self, event: CdcEvent) -> Result<(), CdcError> {
+    async fn push(&self, _event: CdcEvent) -> Result<(), CdcError> {
         // Increment dropped metric
         if let Some(ref callback) = self.metric_callback {
             callback(&self.sink_name);
@@ -855,7 +962,7 @@ impl CdcBuffer {
             .len() as u64;
 
         // Try primary buffer
-        if let Some(_) = self.primary.acquire(size).await {
+        if (self.primary.acquire(size).await).is_some() {
             return Ok(()); // Buffered in memory
         }
 
@@ -1026,6 +1133,29 @@ impl CdcManager {
     /// Returns events with sequence > cursor, up to `limit` events.
     pub async fn get_changes(&self, index: &str, cursor: u64, limit: usize) -> Vec<CdcEvent> {
         self.internal_queue.get_since(index, cursor, limit).await
+    }
+
+    /// Get events from the internal queue since a given cursor with long-poll support.
+    ///
+    /// # Arguments
+    /// * `index` - Index UID to query
+    /// * `cursor` - Sequence number to start from (exclusive)
+    /// * `limit` - Maximum number of events to return
+    /// * `timeout_secs` - Maximum time to wait for new events (None = return immediately)
+    ///
+    /// Returns events with sequence > cursor, up to `limit` events.
+    /// Waits up to `timeout_secs` for new events if none are immediately available.
+    pub async fn get_changes_long_poll(
+        &self,
+        index: &str,
+        cursor: u64,
+        limit: usize,
+        timeout_secs: Option<u64>,
+    ) -> Vec<CdcEvent> {
+        let timeout = timeout_secs.map(Duration::from_secs);
+        self.internal_queue
+            .get_since_long_poll(index, cursor, limit, timeout)
+            .await
     }
 
     /// Get the current maximum sequence number for an index.
@@ -1753,5 +1883,172 @@ mod tests {
         // Check that we get different results (variance)
         let unique: std::collections::HashSet<_> = results.iter().collect();
         assert!(unique.len() > 10, "Jitter should produce variance");
+    }
+
+    #[tokio::test]
+    async fn test_cdc_internal_queue_subscribe() {
+        let queue = CdcInternalQueue::new(None);
+
+        // Subscribe to notifications
+        let mut rx = queue.subscribe();
+
+        // Store an event
+        let event = CdcEvent {
+            mtask_id: "mtask-123".into(),
+            index: "products".into(),
+            operation: CdcOperation::Add,
+            primary_keys: vec!["sku-123".into()],
+            shard_ids: vec![5],
+            settings_version: 1,
+            timestamp: 1234567890,
+            document: None,
+            origin: None,
+            event_id: uuid::Uuid::new_v4().to_string(),
+        };
+        queue.store(event).await;
+
+        // Should receive notification
+        let notified = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
+        assert!(notified.is_ok());
+        let notified_index = notified.unwrap().unwrap();
+        assert_eq!(notified_index, "products");
+    }
+
+    #[tokio::test]
+    async fn test_cdc_internal_queue_get_since_immediate() {
+        let queue = CdcInternalQueue::new(None);
+
+        // Store some events
+        for i in 1..=5 {
+            let event = CdcEvent {
+                mtask_id: format!("mtask-{}", i),
+                index: "products".into(),
+                operation: CdcOperation::Add,
+                primary_keys: vec![format!("sku-{}", i)],
+                shard_ids: vec![i],
+                settings_version: 1,
+                timestamp: 1234567890 + i as u64,
+                document: None,
+                origin: None,
+                event_id: uuid::Uuid::new_v4().to_string(),
+            };
+            queue.store(event).await;
+        }
+
+        // Get events since cursor 0 - should get all 5
+        let events = queue.get_since("products", 0, 100).await;
+        assert_eq!(events.len(), 5);
+
+        // Get events since cursor 3 - should get 2
+        let events = queue.get_since("products", 3, 100).await;
+        assert_eq!(events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_cdc_internal_queue_long_poll_timeout() {
+        let queue = CdcInternalQueue::new(None);
+
+        // Try to get events when none exist, with a short timeout
+        let start = Instant::now();
+        let events = queue
+            .get_since_long_poll("products", 0, 10, Some(Duration::from_millis(100)))
+            .await;
+        let elapsed = start.elapsed();
+
+        // Should timeout and return empty
+        assert!(events.is_empty());
+        assert!(elapsed >= Duration::from_millis(95));
+    }
+
+    #[tokio::test]
+    async fn test_cdc_internal_queue_long_poll_no_timeout_returns_immediately() {
+        let queue = CdcInternalQueue::new(None);
+
+        // Store an event first
+        let event = CdcEvent {
+            mtask_id: "mtask-123".into(),
+            index: "products".into(),
+            operation: CdcOperation::Add,
+            primary_keys: vec!["sku-123".into()],
+            shard_ids: vec![5],
+            settings_version: 1,
+            timestamp: 1234567890,
+            document: None,
+            origin: None,
+            event_id: uuid::Uuid::new_v4().to_string(),
+        };
+        queue.store(event).await;
+
+        // Get events with None timeout - should return immediately
+        let start = Instant::now();
+        let events = queue.get_since_long_poll("products", 0, 10, None).await;
+        let elapsed = start.elapsed();
+
+        assert!(!events.is_empty());
+        assert!(elapsed < Duration::from_millis(10));
+    }
+
+    #[tokio::test]
+    async fn test_cdc_manager_get_changes_long_poll() {
+        let config = CdcConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let manager = CdcManager::new(config);
+
+        // Test with None timeout (returns immediately)
+        let events = manager.get_changes_long_poll("products", 0, 10, None).await;
+        assert!(events.is_empty());
+
+        // Test with Some timeout (waits)
+        let start = Instant::now();
+        let events = manager
+            .get_changes_long_poll("products", 0, 10, Some(1))
+            .await;
+        let elapsed = start.elapsed();
+
+        assert!(events.is_empty());
+        assert!(elapsed >= Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn test_cdc_manager_long_poll_with_delayed_event() {
+        let config = CdcConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let manager = Arc::new(CdcManager::new(config));
+        let manager_clone = manager.clone();
+
+        // Spawn a task that will publish an event after a delay
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let event = CdcEvent {
+                mtask_id: "mtask-delayed".into(),
+                index: "products".into(),
+                operation: CdcOperation::Add,
+                primary_keys: vec!["sku-delayed".into()],
+                shard_ids: vec![99],
+                settings_version: 1,
+                timestamp: 1234567890,
+                document: None,
+                origin: None,
+                event_id: uuid::Uuid::new_v4().to_string(),
+            };
+            manager_clone.publish(event).ok();
+        });
+
+        // Try to get events with a 1 second timeout - should receive the delayed event
+        let start = Instant::now();
+        let events = manager
+            .get_changes_long_poll("products", 0, 10, Some(1))
+            .await;
+        let elapsed = start.elapsed();
+
+        // Should have received the event
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].mtask_id, "mtask-delayed");
+        // Should have waited at least 100ms for the event
+        assert!(elapsed >= Duration::from_millis(90));
     }
 }

@@ -22,10 +22,17 @@ pub struct ChangesQueryParams {
     /// Maximum number of events to return (default 100).
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// Long-poll timeout in seconds (default 30, 0 = return immediately).
+    #[serde(default = "default_timeout")]
+    pub timeout: u64,
 }
 
 fn default_limit() -> usize {
     100
+}
+
+fn default_timeout() -> u64 {
+    30
 }
 
 /// Response body for GET /_miroir/changes.
@@ -37,14 +44,16 @@ pub struct ChangesResponse {
     pub max_sequence: u64,
 }
 
-/// GET /_miroir/changes — CDC event stream (plan §13.13).
+/// GET /_miroir/changes — CDC event stream (plan §13.13, P5.13.d).
 ///
 /// Query parameters:
 /// - `since`: Cursor to start from (exclusive). Defaults to 0.
 /// - `index`: Index UID to query (required).
 /// - `limit`: Maximum events to return (default 100, max 1000).
+/// - `timeout`: Long-poll timeout in seconds (default 30, 0 = return immediately).
 ///
 /// Returns events with sequence > `since`, up to `limit` events.
+/// Waits up to `timeout` seconds for new events if none are immediately available.
 /// Use the returned `max_sequence` as the next `since` value for pagination.
 pub async fn get_changes<S>(
     Query(params): Query<ChangesQueryParams>,
@@ -64,8 +73,17 @@ where
     // Default cursor to 0 if not provided
     let cursor = params.since.unwrap_or(0);
 
-    // Get events since cursor
-    let events = cdc_manager.get_changes(&params.index, cursor, limit).await;
+    // Determine timeout: 0 means return immediately (no long-poll)
+    let timeout = if params.timeout == 0 {
+        None
+    } else {
+        Some(params.timeout)
+    };
+
+    // Get events since cursor with long-poll support
+    let events = cdc_manager
+        .get_changes_long_poll(&params.index, cursor, limit, timeout)
+        .await;
 
     // Get current max sequence
     let max_sequence = cdc_manager.max_sequence(&params.index).await;
@@ -93,14 +111,24 @@ mod tests {
         assert_eq!(params.limit, 100);
         assert_eq!(params.since, None);
         assert_eq!(params.index, "products");
+        assert_eq!(params.timeout, 30); // Default timeout
     }
 
     #[test]
     fn test_changes_query_params_with_values() {
         let params: ChangesQueryParams =
-            serde_urlencoded::from_str("index=products&since=100&limit=50").unwrap();
+            serde_urlencoded::from_str("index=products&since=100&limit=50&timeout=60").unwrap();
         assert_eq!(params.limit, 50);
         assert_eq!(params.since, Some(100));
         assert_eq!(params.index, "products");
+        assert_eq!(params.timeout, 60);
+    }
+
+    #[test]
+    fn test_changes_query_params_zero_timeout() {
+        let params: ChangesQueryParams =
+            serde_urlencoded::from_str("index=products&timeout=0").unwrap();
+        assert_eq!(params.timeout, 0); // No long-poll
+        assert_eq!(params.limit, 100);
     }
 }
