@@ -65,3 +65,14 @@ Service Account Name
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Validate values at render time (cross-field checks that JSON Schema cannot express).
+*/}}
+{{- define "miroir.validate.values" -}}
+{{- if .Values.miroir.search_ui.scoped_key_rotate_before_expiry_days }}
+{{- if ge (int .Values.miroir.search_ui.scoped_key_rotate_before_expiry_days) (int .Values.miroir.search_ui.scoped_key_max_age_days) }}
+{{- fail "search_ui.scoped_key_rotate_before_expiry_days must be strictly less than search_ui.scoped_key_max_age_days (otherwise rotation would fire immediately or before key issuance, producing a continuous rotation loop)" }}
+{{- end }}
+{{- end }}
+{{- end }}
