@@ -1529,7 +1529,7 @@ mod tests {
 // Mode A acceptance tests (plan §14.5, P6.3)
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "peer-discovery"))]
 mod tests_mode_a_acceptance {
     use super::*;
     use crate::mode_a_coordinator::ModeACoordinator;
