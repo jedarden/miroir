@@ -2171,6 +2171,7 @@ dependencies = [
  "opentelemetry_sdk",
  "prometheus",
  "rand 0.8.6",
+ "regex",
  "reqwest",
  "rust-embed",
  "serde",
