@@ -20,7 +20,13 @@
         indexes: null,
         aliases: null,
         currentSettingsIndex: null,
-        currentAliasForHistory: null
+        currentAliasForHistory: null,
+        // Documents section state
+        documents: { indexes: [], currentIndex: null, documents: [], limit: 50, offset: 0, filters: [], totalHits: 0 },
+        // Query sandbox state
+        query: { indexes: [], currentIndex: null, results: null, filters: [], sorts: [], facets: [] },
+        // Tasks section state
+        tasks: { indexes: [], tasks: [], filter: 'all', indexUid: '', type: '', limit: 50, offset: 0, total: 0 }
     };
 
     // ============================================================================
@@ -177,6 +183,792 @@
         }
     }
 
+    // ===========================================================================
+    // Documents Section
+    // ===========================================================================
+
+    async function fetchDocumentsIndexes() {
+        try {
+            const data = await fetchAPI('/indexes');
+            state.documents.indexes = data.results || [];
+            return state.documents.indexes;
+        } catch (error) {
+            console.error('Failed to fetch indexes for documents:', error);
+            return [];
+        }
+    }
+
+    async function fetchDocuments(indexUid, limit, offset, filters) {
+        try {
+            const filter = filters.length > 0 ? buildFilterString(filters) : undefined;
+            const params = new URLSearchParams({
+                limit: limit.toString(),
+                offset: offset.toString()
+            });
+            if (filter) params.set('filter', filter);
+
+            const data = await fetchAPI(`/indexes/${encodeURIComponent(indexUid)}/documents?${params}`);
+            return {
+                results: data.results || [],
+                total: data.total || 0,
+                limit: data.limit || limit,
+                offset: data.offset || offset
+            };
+        } catch (error) {
+            console.error(`Failed to fetch documents for ${indexUid}:`, error);
+            return { results: [], total: 0, limit, offset };
+        }
+    }
+
+    async function fetchDocumentFields(indexUid) {
+        try {
+            const settings = await fetchAPI(`/indexes/${encodeURIComponent(indexUid)}/settings`);
+            return {
+                filterable: settings.filterableAttributes || [],
+                sortable: settings.sortableAttributes || [],
+                displayed: settings.displayedAttributes || ['*']
+            };
+        } catch (error) {
+            console.error(`Failed to fetch settings for ${indexUid}:`, error);
+            return { filterable: [], sortable: [], displayed: ['*'] };
+        }
+    }
+
+    async function importDocuments(indexUid, formData, onProgress) {
+        const streaming = document.getElementById('importMethod').value === 'stream';
+        const endpoint = streaming
+            ? `/_miroir/indexes/${encodeURIComponent(indexUid)}/documents/stream`
+            : `/indexes/${encodeURIComponent(indexUid)}/documents`;
+
+        try {
+            const response = await fetch(`${API_BASE}${endpoint}`, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json'
+                },
+                body: formData
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            // For streaming, we need to handle the response differently
+            if (streaming) {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.trim()) {
+                            try {
+                                const event = JSON.parse(line);
+                                if (event.type === 'progress' && onProgress) {
+                                    onProgress(event);
+                                }
+                            } catch (e) {
+                                console.warn('Failed to parse SSE line:', line);
+                            }
+                        }
+                    }
+                }
+                return { success: true };
+            } else {
+                return await response.json();
+            }
+        } catch (error) {
+            console.error('Failed to import documents:', error);
+            throw error;
+        }
+    }
+
+    // ===========================================================================
+    // Query Sandbox Section
+    // ===========================================================================
+
+    async function fetchQueryIndexes() {
+        try {
+            const data = await fetchAPI('/indexes');
+            state.query.indexes = data.results || [];
+            return state.query.indexes;
+        } catch (error) {
+            console.error('Failed to fetch indexes for query:', error);
+            return [];
+        }
+    }
+
+    async function runQuery(indexUid, query) {
+        try {
+            const response = await fetch(`${API_BASE}/indexes/${encodeURIComponent(indexUid)}/search`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify(query)
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.error('Failed to run query:', error);
+            throw error;
+        }
+    }
+
+    async function explainQuery(indexUid, query) {
+        try {
+            const response = await fetch(`${API_BASE}/indexes/${encodeURIComponent(indexUid)}/explain`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify(query)
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.error('Failed to explain query:', error);
+            throw error;
+        }
+    }
+
+    async function runShadowDiff(indexUid, query) {
+        try {
+            const response = await fetch(`${API_BASE}/_miroir/shadow/query`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({ indexUid, query })
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.error('Failed to run shadow diff:', error);
+            throw error;
+        }
+    }
+
+    // ===========================================================================
+    // Tasks Section
+    // ===========================================================================
+
+    async function fetchTasksIndexes() {
+        try {
+            const data = await fetchAPI('/indexes');
+            state.tasks.indexes = data.results || [];
+            return state.tasks.indexes;
+        } catch (error) {
+            console.error('Failed to fetch indexes for tasks:', error);
+            return [];
+        }
+    }
+
+    async function fetchTasks() {
+        try {
+            const params = new URLSearchParams({
+                limit: state.tasks.limit.toString(),
+                from: state.tasks.offset.toString()
+            });
+
+            // Add filters
+            if (state.tasks.filter !== 'all') {
+                const statuses = {
+                    'active': ['enqueued', 'processing'],
+                    'pending': ['enqueued'],
+                    'succeeded': ['succeeded'],
+                    'failed': ['failed']
+                };
+                if (statuses[state.tasks.filter]) {
+                    params.set('statuses', statuses[state.tasks.filter].join(','));
+                }
+            }
+
+            if (state.tasks.indexUid) {
+                params.set('indexUids', state.tasks.indexUid);
+            }
+
+            if (state.tasks.type) {
+                const types = {
+                    'documentAddition': 'documentAddition',
+                    'documentUpdate': 'documentUpdate',
+                    'documentDeletion': 'documentDeletion',
+                    'settingsUpdate': 'settingsUpdate',
+                    'indexCreation': 'indexCreation',
+                    'indexDeletion': 'indexDeletion',
+                    'indexUpdate': 'indexUpdate',
+                    'indexSwap': 'indexSwap'
+                };
+                if (types[state.tasks.type]) {
+                    params.set('types', types[state.tasks.type]);
+                }
+            }
+
+            const data = await fetchAPI(`/tasks?${params}`);
+            state.tasks.tasks = data.results || [];
+            state.tasks.total = data.total || 0;
+            return state.tasks;
+        } catch (error) {
+            console.error('Failed to fetch tasks:', error);
+            return { tasks: [], total: 0 };
+        }
+    }
+
+    async function fetchTaskDetails(taskUid) {
+        try {
+            return await fetchAPI(`/tasks/${taskUid}`);
+        } catch (error) {
+            console.error(`Failed to fetch task ${taskUid}:`, error);
+            return null;
+        }
+    }
+
+    async function cancelTask(taskUid) {
+        try {
+            return await fetchAPI(`/tasks/${taskUid}/cancel`, {
+                method: 'POST'
+            });
+        } catch (error) {
+            console.error(`Failed to cancel task ${taskUid}:`, error);
+            throw error;
+        }
+    }
+
+    async function deleteTask(taskUid) {
+        try {
+            return await fetchAPI(`/tasks/${taskUid}`, {
+                method: 'DELETE'
+            });
+        } catch (error) {
+            console.error(`Failed to delete task ${taskUid}:`, error);
+            throw error;
+        }
+    }
+
+    // ===========================================================================
+    // Utility Functions
+    // ===========================================================================
+
+    function buildFilterString(filters) {
+        if (!filters || filters.length === 0) return '';
+
+        const parts = filters.map(f => {
+            const { field, operator, value } = f;
+            switch (operator) {
+                case 'equals': return `${field} = "${value}"`;
+                case 'notEquals': return `${field} != "${value}"`;
+                case 'gt': return `${field} > "${value}"`;
+                case 'gte': return `${field} >= "${value}"`;
+                case 'lt': return `${field} < "${value}"`;
+                case 'lte': return `${field} <= "${value}"`;
+                case 'in': return `${field} IN [${value.split(',').map(v => `"${v.trim()}"`).join(', ')}]`;
+                case 'exists': return `${field} EXISTS`;
+                default: return '';
+            }
+        }).filter(p => p);
+
+        return parts.join(' AND ');
+    }
+
+    function formatDuration(ms) {
+        if (!ms) return '-';
+        const seconds = Math.floor(ms / 1000);
+        if (seconds < 60) return `${seconds}s`;
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = seconds % 60;
+        return `${minutes}m ${remainingSeconds}s`;
+    }
+
+    function formatDate(timestamp) {
+        if (!timestamp) return '-';
+        return new Date(timestamp).toISOString().replace('T', ' ').substring(0, 19);
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function extractReplicaGroup(node) {
+        // Try to extract from address or use a default
+        const match = node.address.match(/(\d+)$/);
+        return match ? parseInt(match[1]) : 0;
+    }
+
+    function formatLastSeen(ms) {
+        if (!ms) return 'Unknown';
+        const seconds = Math.floor(ms / 1000);
+        if (seconds < 60) return `${seconds}s ago`;
+        const minutes = Math.floor(seconds / 60);
+        if (minutes < 60) return `${minutes}m ago`;
+        const hours = Math.floor(minutes / 60);
+        return `${hours}h ago`;
+    }
+
+    function showModal(modalId) {
+        document.getElementById(modalId).classList.add('active');
+    }
+
+    function hideModal(modalId) {
+        document.getElementById(modalId).classList.remove('active');
+    }
+
+    // ===========================================================================
+    // Rendering - Documents Section
+    // ===========================================================================
+
+    function renderDocuments() {
+        const select = document.getElementById('documentIndexSelect');
+        select.innerHTML = '<option value="">Select an index...</option>';
+        state.documents.indexes.forEach(idx => {
+            const option = document.createElement('option');
+            option.value = idx.uid;
+            option.textContent = idx.uid;
+            if (state.documents.currentIndex === idx.uid) {
+                option.selected = true;
+            }
+            select.appendChild(option);
+        });
+
+        if (state.documents.currentIndex && state.documents.documents.length > 0) {
+            renderDocumentsTable();
+        }
+    }
+
+    async function loadDocuments() {
+        if (!state.documents.currentIndex) return;
+
+        const data = await fetchDocuments(
+            state.documents.currentIndex,
+            state.documents.limit,
+            state.documents.offset,
+            state.documents.filters
+        );
+
+        state.documents.documents = data.results;
+        state.documents.totalHits = data.total;
+
+        renderDocumentsTable();
+        renderDocumentsPagination();
+    }
+
+    async function renderDocumentsTable() {
+        const thead = document.getElementById('documentsTableHead');
+        const tbody = document.getElementById('documentsTableBody');
+
+        if (!state.documents.documents || state.documents.documents.length === 0) {
+            thead.innerHTML = '<tr><th>Select an index to browse documents</th></tr>';
+            tbody.innerHTML = '<tr><td class="loading">Select an index to browse documents</td></tr>';
+            return;
+        }
+
+        // Get columns from first document
+        const firstDoc = state.documents.documents[0];
+        const columns = Object.keys(firstDoc);
+
+        thead.innerHTML = '<tr>' + columns.map(col => `<th>${escapeHtml(col)}</th>`).join('') + '</tr>';
+
+        tbody.innerHTML = state.documents.documents.map(doc => {
+            return '<tr>' + columns.map(col => {
+                const value = doc[col];
+                if (value === null || value === undefined) return '<td class="text-secondary">null</td>';
+                if (typeof value === 'object') return `<td><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></td>`;
+                return `<td>${escapeHtml(String(value))}</td>`;
+            }).join('') + '</tr>';
+        }).join('');
+
+        document.getElementById('documentCount').textContent =
+            `${state.documents.totalHits} total documents`;
+    }
+
+    function renderDocumentsPagination() {
+        const pagination = document.getElementById('documentPagination');
+        const prevBtn = document.getElementById('documentPrevPage');
+        const nextBtn = document.getElementById('documentNextPage');
+        const pageInfo = document.getElementById('documentPageInfo');
+
+        if (state.documents.totalHits === 0) {
+            pagination.style.display = 'none';
+            return;
+        }
+
+        pagination.style.display = 'flex';
+
+        const from = state.documents.offset + 1;
+        const to = Math.min(state.documents.offset + state.documents.limit, state.documents.totalHits);
+
+        pageInfo.textContent = `Showing ${from}-${to} of ${state.documents.totalHits}`;
+
+        prevBtn.disabled = state.documents.offset === 0;
+        nextBtn.disabled = to >= state.documents.totalHits;
+    }
+
+    // ===========================================================================
+    // Rendering - Query Sandbox Section
+    // ===========================================================================
+
+    function renderQuerySandbox() {
+        const select = document.getElementById('queryIndexSelect');
+        select.innerHTML = '<option value="">Select an index...</option>';
+        state.query.indexes.forEach(idx => {
+            const option = document.createElement('option');
+            option.value = idx.uid;
+            option.textContent = idx.uid;
+            if (state.query.currentIndex === idx.uid) {
+                option.selected = true;
+            }
+            select.appendChild(option);
+        });
+
+        if (state.query.currentIndex) {
+            loadQueryFields();
+        }
+    }
+
+    async function loadQueryFields() {
+        if (!state.query.currentIndex) return;
+
+        const settings = await fetchDocumentFields(state.query.currentIndex);
+
+        // Update filter field selects
+        document.querySelectorAll('#queryFilterBuilder .filter-field').forEach(select => {
+            select.innerHTML = '<option value="">Select field...</option>' +
+                settings.filterable.map(f => `<option value="${f}">${f}</option>`).join('');
+        });
+
+        // Update sort field selects
+        document.querySelectorAll('#sortBuilder .sort-field').forEach(select => {
+            select.innerHTML = '<option value="">Select field...</option>' +
+                settings.sortable.map(f => `<option value="${f}">${f}</option>`).join('');
+        });
+
+        // Update facet field selects
+        document.querySelectorAll('#facetBuilder .facet-field').forEach(select => {
+            select.innerHTML = '<option value="">Select field...</option>' +
+                settings.filterable.map(f => `<option value="${f}">${f}</option>`).join('');
+        });
+    }
+
+    function renderQueryResults(results, duration) {
+        const container = document.getElementById('queryResults');
+        const stats = document.getElementById('queryStats');
+
+        if (!results || !results.hits || results.hits.length === 0) {
+            container.innerHTML = '<p class="placeholder">No results found</p>';
+            stats.style.display = 'none';
+            return;
+        }
+
+        const columns = Object.keys(results.hits[0]);
+
+        container.innerHTML = `
+            <div class="results-header">
+                <span class="badge info">${results.limit} results</span>
+                <span class="text-secondary">of ${results.estimatedTotalHits || results.totalHits} total hits</span>
+            </div>
+            <table class="data-table">
+                <thead>
+                    <tr>${columns.map(col => `<th>${escapeHtml(col)}</th>`).join('')}</tr>
+                </thead>
+                <tbody>
+                    ${results.hits.map(hit => `
+                        <tr>${columns.map(col => {
+                            const value = hit[col];
+                            if (value === null || value === undefined) return '<td class="text-secondary">null</td>';
+                            if (typeof value === 'object') return `<td><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></td>`;
+                            return `<td>${escapeHtml(String(value))}</td>`;
+                        }).join('')}</tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+
+        stats.style.display = 'block';
+        document.getElementById('queryHits').textContent = results.estimatedTotalHits || results.totalHits;
+        document.getElementById('queryProcessingTime').textContent = duration ? `${duration}ms` : '-';
+        document.getElementById('queryShardsQueried').textContent = results.shardsQueried || '-';
+
+        // Render latency breakdown if available
+        if (results.shardBreakdown) {
+            renderShardLatencyBreakdown(results.shardBreakdown);
+        }
+    }
+
+    function renderShardLatencyBreakdown(breakdown) {
+        const container = document.getElementById('latencyBreakdown');
+        const table = document.getElementById('shardLatencyTable');
+
+        container.style.display = 'block';
+
+        table.innerHTML = `
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Shard ID</th>
+                        <th>Node</th>
+                        <th>Latency</th>
+                        <th>Hits</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${breakdown.map(b => `
+                        <tr>
+                            <td>${b.shardId}</td>
+                            <td>${escapeHtml(b.node)}</td>
+                            <td>${b.latencyMs}ms</td>
+                            <td>${b.hits}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+    }
+
+    function renderExplainResults(explain) {
+        const container = document.getElementById('explainResults');
+        const pre = document.getElementById('explainJson');
+
+        container.style.display = 'block';
+        pre.textContent = JSON.stringify(explain, null, 2);
+    }
+
+    function renderShadowDiffResults(diff) {
+        const container = document.getElementById('shadowDiffResults');
+        const content = document.getElementById('shadowDiffContent');
+
+        container.style.display = 'block';
+
+        if (!diff || !diff.diffs || diff.diffs.length === 0) {
+            content.innerHTML = '<p class="placeholder">No differences found between live and shadow results</p>';
+            return;
+        }
+
+        content.innerHTML = `
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Differences Found</div>
+                    <div class="stat-value">${diff.diffs.length}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Hit Differences</div>
+                    <div class="stat-value">${diff.hitDiffs || 0}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Ranking Differences</div>
+                    <div class="stat-value">${diff.rankingDiffs || 0}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Errors</div>
+                    <div class="stat-value">${diff.errors || 0}</div>
+                </div>
+            </div>
+            <table class="data-table" style="margin-top: 1rem;">
+                <thead>
+                    <tr>
+                        <th>Document ID</th>
+                        <th>Type</th>
+                        <th>Live</th>
+                        <th>Shadow</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${diff.diffs.map(d => `
+                        <tr>
+                            <td>${escapeHtml(d.docId)}</td>
+                            <td><span class="badge ${d.type === 'error' ? 'error' : 'warning'}">${d.type}</span></td>
+                            <td>${escapeHtml(JSON.stringify(d.live))}</td>
+                            <td>${escapeHtml(JSON.stringify(d.shadow))}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+    }
+
+    // ===========================================================================
+    // Rendering - Tasks Section
+    // ===========================================================================
+
+    function renderTasks() {
+        // Populate index filter
+        const indexSelect = document.getElementById('taskIndex');
+        indexSelect.innerHTML = '<option value="">All Indexes</option>';
+        state.tasks.indexes.forEach(idx => {
+            const option = document.createElement('option');
+            option.value = idx.uid;
+            option.textContent = idx.uid;
+            if (state.tasks.indexUid === idx.uid) {
+                option.selected = true;
+            }
+            indexSelect.appendChild(option);
+        });
+
+        renderTasksTable();
+        renderTasksPagination();
+    }
+
+    function renderTasksTable() {
+        const tbody = document.getElementById('tasksTableBody');
+
+        if (!state.tasks.tasks || state.tasks.tasks.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9" class="loading">No tasks found</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = state.tasks.tasks.map(task => {
+            const statusClass = {
+                'enqueued': 'info',
+                'processing': 'warning',
+                'succeeded': 'success',
+                'failed': 'error',
+                'canceled': 'secondary'
+            }[task.status] || 'secondary';
+
+            const progress = task.details && task.details.totalDocuments
+                ? `${Math.round((task.details.loadedDocuments || 0) / task.details.totalDocuments * 100)}%`
+                : '-';
+
+            const duration = task.startedAt && task.finishedAt
+                ? formatDuration(new Date(task.finishedAt) - new Date(task.startedAt))
+                : task.startedAt ? formatDuration(Date.now() - new Date(task.startedAt)) : '-';
+
+            const actions = [];
+            if (task.status === 'enqueued' || task.status === 'processing') {
+                actions.push(`<button class="btn btn-secondary btn-sm" onclick="cancelTaskById(${task.uid})">Cancel</button>`);
+            }
+            actions.push(`<button class="btn btn-secondary btn-sm" onclick="showTaskDetails(${task.uid})">Details</button>`);
+
+            return `
+                <tr>
+                    <td>${task.uid}</td>
+                    <td>${task.type}</td>
+                    <td>${task.indexUid || '-'}</td>
+                    <td><span class="badge ${statusClass}">${task.status}</span></td>
+                    <td>${progress}</td>
+                    <td>${task.enqueuedAt ? formatDate(task.enqueuedAt) : '-'}</td>
+                    <td>${task.finishedAt ? formatDate(task.finishedAt) : '-'}</td>
+                    <td>${duration}</td>
+                    <td>${actions.join(' ')}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    function renderTasksPagination() {
+        const prevBtn = document.getElementById('taskPrevPage');
+        const nextBtn = document.getElementById('taskNextPage');
+        const pageInfo = document.getElementById('taskPageInfo');
+
+        const from = state.tasks.offset + 1;
+        const to = Math.min(state.tasks.offset + state.tasks.limit, state.tasks.total);
+
+        pageInfo.textContent = `Showing ${from}-${to} of ${state.tasks.total} tasks`;
+
+        prevBtn.disabled = state.tasks.offset === 0;
+        nextBtn.disabled = to >= state.tasks.total;
+    }
+
+    async function showTaskDetails(taskUid) {
+        const details = await fetchTaskDetails(taskUid);
+        if (!details) {
+            alert('Failed to load task details');
+            return;
+        }
+
+        const content = document.getElementById('taskDetailsContent');
+        content.innerHTML = `
+            <div class="card" style="margin: 0;">
+                <h4>Task ${taskUid}</h4>
+                <table class="data-table">
+                    <tr><th>UID</th><td>${details.uid}</td></tr>
+                    <tr><th>Type</th><td>${details.type}</td></tr>
+                    <tr><th>Index</th><td>${details.indexUid || '-'}</td></tr>
+                    <tr><th>Status</th><td><span class="badge ${details.status}">${details.status}</span></td></tr>
+                    <tr><th>Enqueued</th><td>${details.enqueuedAt ? formatDate(details.enqueuedAt) : '-'}</td></tr>
+                    <tr><th>Started</th><td>${details.startedAt ? formatDate(details.startedAt) : '-'}</td></tr>
+                    <tr><th>Finished</th><td>${details.finishedAt ? formatDate(details.finishedAt) : '-'}</td></tr>
+                    <tr><th>Duration</th><td>${details.startedAt && details.finishedAt ? formatDuration(new Date(details.finishedAt) - new Date(details.startedAt)) : '-'}</td></tr>
+                    <tr><th>Error</th><td>${details.error ? `<pre class="error">${escapeHtml(details.error)}</pre>` : '-'}</td></tr>
+                </table>
+                ${details.details ? `
+                    <h4>Details</h4>
+                    <pre class="settings-json">${escapeHtml(JSON.stringify(details.details, null, 2))}</pre>
+                ` : ''}
+            </div>
+        `;
+
+        showModal('taskDetailsModal');
+    }
+
+    // Global function for onclick handler
+    window.cancelTaskById = async function(taskUid) {
+        if (!confirm(`Cancel task ${taskUid}?`)) return;
+
+        try {
+            await cancelTask(taskUid);
+            await fetchTasks();
+            renderTasks();
+        } catch (error) {
+            alert(`Failed to cancel task: ${error.message}`);
+        }
+    };
+
+    // Global functions for filter/sort/facet builders
+    window.addFilterRow = function(containerId) {
+        const container = document.getElementById(containerId);
+        const row = document.createElement('div');
+        row.className = 'filter-row';
+        row.innerHTML = `
+            <select class="form-input filter-field">
+                <option value="">Select field...</option>
+            </select>
+            <select class="form-input filter-operator">
+                <option value="equals">Equals</option>
+                <option value="notEquals">Not Equals</option>
+                <option value="gt">Greater Than</option>
+                <option value="gte">Greater Than or Equal</option>
+                <option value="lt">Less Than</option>
+                <option value="lte">Less Than or Equal</option>
+                <option value="in">In</option>
+                <option value="exists">Exists</option>
+            </select>
+            <input type="text" class="form-input filter-value" placeholder="Value">
+            <button class="btn btn-secondary btn-sm" onclick="addFilterRow('${containerId}')">+</button>
+            <button class="btn btn-secondary btn-sm" onclick="removeFilterRow(this)">−</button>
+        `;
+        container.appendChild(row);
+    };
+
+    window.removeFilterRow = function(button) {
+        const container = button.parentElement.parentElement;
+        if (container.children.length > 1) {
+            button.parentElement.remove();
+        }
+    };
+
     async function refreshData() {
         // Always fetch topology (used by overview and topology sections)
         await fetchTopology();
@@ -197,6 +989,16 @@
         } else if (state.currentSection === 'aliases') {
             await fetchAliases();
             renderAliases();
+        } else if (state.currentSection === 'documents') {
+            await fetchDocumentsIndexes();
+            renderDocuments();
+        } else if (state.currentSection === 'query') {
+            await fetchQueryIndexes();
+            renderQuerySandbox();
+        } else if (state.currentSection === 'tasks') {
+            await fetchTasksIndexes();
+            await fetchTasks();
+            renderTasks();
         }
     }
 
@@ -933,6 +1735,416 @@
                 }
             });
         });
+
+        // Initialize Documents section
+        initDocumentsSection();
+
+        // Initialize Query Sandbox section
+        initQuerySandboxSection();
+
+        // Initialize Tasks section
+        initTasksSection();
+    }
+
+    function initDocumentsSection() {
+        // Index selection
+        document.getElementById('documentIndexSelect').addEventListener('change', async (e) => {
+            state.documents.currentIndex = e.target.value;
+            if (state.documents.currentIndex) {
+                await loadDocuments();
+            }
+        });
+
+        // Pagination
+        document.getElementById('documentLimit').addEventListener('change', (e) => {
+            state.documents.limit = parseInt(e.target.value);
+            if (state.documents.currentIndex) loadDocuments();
+        });
+
+        document.getElementById('documentOffset').addEventListener('change', (e) => {
+            state.documents.offset = parseInt(e.target.value);
+            if (state.documents.currentIndex) loadDocuments();
+        });
+
+        document.getElementById('documentPrevPage').addEventListener('click', () => {
+            const newOffset = Math.max(0, state.documents.offset - state.documents.limit);
+            state.documents.offset = newOffset;
+            document.getElementById('documentOffset').value = newOffset;
+            if (state.documents.currentIndex) loadDocuments();
+        });
+
+        document.getElementById('documentNextPage').addEventListener('click', () => {
+            const newOffset = state.documents.offset + state.documents.limit;
+            state.documents.offset = newOffset;
+            document.getElementById('documentOffset').value = newOffset;
+            if (state.documents.currentIndex) loadDocuments();
+        });
+
+        // Filter builder
+        document.getElementById('applyDocumentFilterBtn').addEventListener('click', async () => {
+            const filters = [];
+            document.querySelectorAll('#documentFilterBuilder .filter-row').forEach(row => {
+                const field = row.querySelector('.filter-field').value;
+                const operator = row.querySelector('.filter-operator').value;
+                const value = row.querySelector('.filter-value').value;
+                if (field && value) {
+                    filters.push({ field, operator, value });
+                }
+            });
+            state.documents.filters = filters;
+            state.documents.offset = 0;
+            document.getElementById('documentOffset').value = 0;
+            if (state.documents.currentIndex) loadDocuments();
+        });
+
+        document.getElementById('clearDocumentFilterBtn').addEventListener('click', async () => {
+            state.documents.filters = [];
+            state.documents.offset = 0;
+            document.getElementById('documentOffset').value = 0;
+            // Clear filter inputs
+            document.querySelectorAll('#documentFilterBuilder .filter-row').forEach(row => {
+                row.querySelector('.filter-field').value = '';
+                row.querySelector('.filter-value').value = '';
+            });
+            if (state.documents.currentIndex) loadDocuments();
+        });
+
+        // Import documents
+        document.getElementById('importDocumentsBtn').addEventListener('click', () => showModal('importDocumentsModal'));
+        document.getElementById('importDocumentsModalClose').addEventListener('click', () => hideModal('importDocumentsModal'));
+        document.getElementById('importCancelBtn').addEventListener('click', () => hideModal('importDocumentsModal'));
+
+        // File dropzone
+        const dropzone = document.getElementById('importDropzone');
+        const fileInput = document.getElementById('importFileInput');
+
+        dropzone.addEventListener('click', () => fileInput.click());
+        dropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropzone.classList.add('dragover');
+        });
+        dropzone.addEventListener('dragleave', () => {
+            dropzone.classList.remove('dragover');
+        });
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropzone.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+
+        let selectedFiles = [];
+
+        function handleFiles(files) {
+            selectedFiles = Array.from(files);
+            const preview = document.getElementById('importPreview');
+            const previewContent = document.getElementById('importPreviewContent');
+            const fileCount = document.getElementById('importFileCount');
+            const confirmBtn = document.getElementById('importConfirmBtn');
+
+            if (selectedFiles.length === 0) {
+                preview.style.display = 'none';
+                confirmBtn.disabled = true;
+                return;
+            }
+
+            // Show preview of first file
+            const firstFile = selectedFiles[0];
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                previewContent.textContent = e.target.result.substring(0, 1000);
+                if (firstFile.size > 1000) {
+                    previewContent.textContent += '\n... (truncated)';
+                }
+            };
+            reader.readAsText(firstFile);
+
+            fileCount.textContent = `${selectedFiles.length} file(s) selected: ${selectedFiles.map(f => f.name).join(', ')}`;
+            preview.style.display = 'block';
+            confirmBtn.disabled = !state.documents.currentIndex;
+        }
+
+        document.getElementById('importConfirmBtn').addEventListener('click', async () => {
+            if (!state.documents.currentIndex || selectedFiles.length === 0) return;
+
+            const format = document.getElementById('importFormat').value;
+            const formData = new FormData();
+
+            selectedFiles.forEach(file => {
+                formData.append('files', file);
+            });
+            formData.append('format', format);
+
+            const progress = document.getElementById('importProgress');
+            const progressBar = document.getElementById('importProgressBar');
+            const status = document.getElementById('importStatus');
+
+            progress.style.display = 'block';
+
+            try {
+                await importDocuments(state.documents.currentIndex, formData, (event) => {
+                    if (event.progress !== undefined) {
+                        const pct = Math.round(event.progress * 100);
+                        progressBar.style.width = `${pct}%`;
+                        status.textContent = `Processing: ${pct}%`;
+                    }
+                    if (event.status) {
+                        status.textContent = event.status;
+                    }
+                });
+
+                status.textContent = 'Import completed successfully!';
+                setTimeout(() => {
+                    hideModal('importDocumentsModal');
+                    progress.style.display = 'none';
+                    loadDocuments();
+                }, 1500);
+            } catch (error) {
+                status.textContent = `Import failed: ${error.message}`;
+                progressBar.style.width = '0%';
+            }
+        });
+
+        // Export documents
+        document.getElementById('exportDocumentsBtn').addEventListener('click', async () => {
+            if (!state.documents.currentIndex) {
+                alert('Please select an index first');
+                return;
+            }
+
+            try {
+                const data = await fetchDocuments(state.documents.currentIndex, 1000, 0, []);
+                const blob = new Blob([JSON.stringify(data.results, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${state.documents.currentIndex}-export-${Date.now()}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (error) {
+                alert(`Export failed: ${error.message}`);
+            }
+        });
+    }
+
+    function initQuerySandboxSection() {
+        // Index selection
+        document.getElementById('queryIndexSelect').addEventListener('change', async (e) => {
+            state.query.currentIndex = e.target.value;
+            if (state.query.currentIndex) {
+                await loadQueryFields();
+            }
+        });
+
+        // Run query
+        document.getElementById('runQueryBtn').addEventListener('click', async () => {
+            if (!state.query.currentIndex) {
+                alert('Please select an index first');
+                return;
+            }
+
+            const query = buildQuery();
+            const startTime = Date.now();
+
+            try {
+                const results = await runQuery(state.query.currentIndex, query);
+                const duration = Date.now() - startTime;
+                renderQueryResults(results, duration);
+            } catch (error) {
+                alert(`Query failed: ${error.message}`);
+            }
+        });
+
+        // Explain query
+        document.getElementById('explainQueryBtn').addEventListener('click', async () => {
+            if (!state.query.currentIndex) {
+                alert('Please select an index first');
+                return;
+            }
+
+            const query = buildQuery();
+
+            try {
+                const explain = await explainQuery(state.query.currentIndex, query);
+                renderExplainResults(explain);
+            } catch (error) {
+                alert(`Explain failed: ${error.message}`);
+            }
+        });
+
+        // Shadow diff
+        document.getElementById('shadowDiffBtn').addEventListener('click', async () => {
+            if (!state.query.currentIndex) {
+                alert('Please select an index first');
+                return;
+            }
+
+            const query = buildQuery();
+
+            try {
+                const diff = await runShadowDiff(state.query.currentIndex, query);
+                renderShadowDiffResults(diff);
+            } catch (error) {
+                alert(`Shadow diff failed: ${error.message}`);
+            }
+        });
+
+        // Add sort button
+        document.getElementById('addSortBtn').addEventListener('click', () => {
+            const container = document.getElementById('sortBuilder');
+            const row = document.createElement('div');
+            row.className = 'sort-row';
+            row.innerHTML = `
+                <select class="form-input sort-field">
+                    <option value="">Select field...</option>
+                </select>
+                <select class="form-input sort-direction">
+                    <option value="asc">Ascending</option>
+                    <option value="desc">Descending</option>
+                </select>
+                <button class="btn btn-secondary btn-sm" onclick="removeSortRow(this)">−</button>
+            `;
+            container.appendChild(row);
+            // Load fields if index is selected
+            if (state.query.currentIndex) {
+                loadQueryFields();
+            }
+        });
+
+        // Add facet button
+        document.getElementById('addFacetBtn').addEventListener('click', () => {
+            const container = document.getElementById('facetBuilder');
+            const row = document.createElement('div');
+            row.className = 'facet-row';
+            row.innerHTML = `
+                <select class="form-input facet-field">
+                    <option value="">Select field...</option>
+                </select>
+                <button class="btn btn-secondary btn-sm" onclick="removeFacetRow(this)">−</button>
+            `;
+            container.appendChild(row);
+            // Load fields if index is selected
+            if (state.query.currentIndex) {
+                loadQueryFields();
+            }
+        });
+
+        // Add filter button
+        document.getElementById('addQueryFilterBtn').addEventListener('click', () => {
+            addFilterRow('queryFilterBuilder');
+            // Load fields if index is selected
+            if (state.query.currentIndex) {
+                loadQueryFields();
+            }
+        });
+    }
+
+    function buildQuery() {
+        const query = {
+            q: document.getElementById('queryQ').value || '',
+            limit: parseInt(document.getElementById('queryLimit').value) || 20,
+            offset: parseInt(document.getElementById('queryOffset').value) || 0
+        };
+
+        // Build filter
+        const filters = [];
+        document.querySelectorAll('#queryFilterBuilder .filter-row').forEach(row => {
+            const field = row.querySelector('.filter-field').value;
+            const operator = row.querySelector('.filter-operator').value;
+            const value = row.querySelector('.filter-value').value;
+            if (field && value) {
+                filters.push({ field, operator, value });
+            }
+        });
+
+        if (filters.length > 0) {
+            query.filter = buildFilterString(filters);
+        }
+
+        // Build sort
+        const sorts = [];
+        document.querySelectorAll('#sortBuilder .sort-row').forEach(row => {
+            const field = row.querySelector('.sort-field').value;
+            const direction = row.querySelector('.sort-direction').value;
+            if (field) {
+                sorts.push(`${field}:${direction}`);
+            }
+        });
+
+        if (sorts.length > 0) {
+            query.sort = sorts;
+        }
+
+        // Build facets
+        const facets = [];
+        document.querySelectorAll('#facetBuilder .facet-row').forEach(row => {
+            const field = row.querySelector('.facet-field').value;
+            if (field) {
+                facets.push(field);
+            }
+        });
+
+        if (facets.length > 0) {
+            query.facets = facets;
+        }
+
+        return query;
+    }
+
+    // Global functions for removing rows
+    window.removeSortRow = function(button) {
+        const container = button.parentElement.parentElement;
+        if (container.children.length > 1) {
+            button.parentElement.remove();
+        }
+    };
+
+    window.removeFacetRow = function(button) {
+        const container = button.parentElement.parentElement;
+        if (container.children.length > 1) {
+            button.parentElement.remove();
+        }
+    };
+
+    function initTasksSection() {
+        // Filter controls
+        document.getElementById('taskFilter').addEventListener('change', (e) => {
+            state.tasks.filter = e.target.value;
+            state.tasks.offset = 0;
+            fetchTasks().then(renderTasks);
+        });
+
+        document.getElementById('taskIndex').addEventListener('change', (e) => {
+            state.tasks.indexUid = e.target.value;
+            state.tasks.offset = 0;
+            fetchTasks().then(renderTasks);
+        });
+
+        document.getElementById('taskType').addEventListener('change', (e) => {
+            state.tasks.type = e.target.value;
+            state.tasks.offset = 0;
+            fetchTasks().then(renderTasks);
+        });
+
+        // Pagination
+        document.getElementById('taskPrevPage').addEventListener('click', () => {
+            const newOffset = Math.max(0, state.tasks.offset - state.tasks.limit);
+            state.tasks.offset = newOffset;
+            fetchTasks().then(renderTasks);
+        });
+
+        document.getElementById('taskNextPage').addEventListener('click', () => {
+            const newOffset = state.tasks.offset + state.tasks.limit;
+            state.tasks.offset = newOffset;
+            fetchTasks().then(renderTasks);
+        });
+
+        // Task details modal
+        document.getElementById('taskDetailsModalClose').addEventListener('click', () => hideModal('taskDetailsModal'));
+        document.getElementById('taskDetailsCloseBtn').addEventListener('click', () => hideModal('taskDetailsModal'));
     }
 
     function init() {
