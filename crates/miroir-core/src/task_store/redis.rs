@@ -22,7 +22,7 @@ use futures_util::StreamExt;
 #[derive(Clone)]
 pub struct RedisPool {
     /// Connection manager for async operations (shared across clones)
-    manager: Arc<Mutex<ConnectionManager>>,
+    pub(crate) manager: Arc<Mutex<ConnectionManager>>,
 }
 
 impl RedisPool {
@@ -543,6 +543,124 @@ impl TaskStore for RedisTaskStore {
             pool.pipeline_query::<()>(&mut pipe).await?;
 
             Ok(to_delete.len())
+        })
+    }
+
+    fn list_terminal_tasks_batch(
+        &self,
+        cutoff_ms: i64,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Vec<TaskRow>> {
+        let pool = self.pool.clone();
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+        let terminal_statuses = ["succeeded", "failed", "canceled"];
+
+        self.block_on(async move {
+            let mut conn = manager.lock().await;
+            let index_key = format!("{}:tasks:_index", key_prefix);
+            let all_ids: Vec<String> = conn
+                .smembers(&index_key)
+                .await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            let mut results = Vec::new();
+            let mut skipped = 0;
+            let mut added = 0;
+
+            for miroir_id in all_ids {
+                if added >= limit {
+                    break;
+                }
+                let key = format!("{}:tasks:{}", key_prefix, miroir_id);
+
+                // Get created_at and status
+                let mut p = pipe();
+                p.hget(&key, "created_at");
+                p.hget(&key, "status");
+                let result: (Option<String>, Option<String>) =
+                    pool.pipeline_query(&mut p).await.map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+                if let (Some(created_at_str), Some(status)) = result {
+                    if !terminal_statuses.contains(&status.as_str()) {
+                        continue;
+                    }
+                    let created_at: i64 = created_at_str
+                        .parse()
+                        .map_err(|e| MiroirError::TaskStore(format!("invalid created_at: {e}")))?;
+
+                    if created_at >= cutoff_ms {
+                        continue;
+                    }
+
+                    if skipped < offset {
+                        skipped += 1;
+                        continue;
+                    }
+
+                    // Get full task
+                    let fields: HashMap<String, Value> = conn
+                        .hgetall(&key)
+                        .await
+                        .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+                    if fields.is_empty() {
+                        continue;
+                    }
+
+                    // Construct TaskRow from fields
+                    let created_at = get_field_i64(&fields, "created_at")?;
+                    let status = get_field_string(&fields, "status")?;
+                    let node_tasks_json = get_field_string(&fields, "node_tasks")?;
+                    let node_tasks: HashMap<String, u64> = serde_json::from_str(&node_tasks_json)
+                        .map_err(|e| MiroirError::TaskStore(format!("invalid node_tasks JSON: {e}")))?;
+                    let error = opt_field(&fields, "error");
+                    let started_at = opt_field_i64(&fields, "started_at");
+                    let finished_at = opt_field_i64(&fields, "finished_at");
+                    let index_uid = opt_field(&fields, "index_uid");
+                    let task_type = opt_field(&fields, "task_type");
+                    let node_errors_json = opt_field(&fields, "node_errors").unwrap_or_else(|| "{}".to_string());
+                    let node_errors: HashMap<String, String> = serde_json::from_str(&node_errors_json)
+                        .map_err(|e| MiroirError::TaskStore(format!("invalid node_errors JSON: {e}")))?;
+
+                    results.push(TaskRow {
+                        miroir_id,
+                        created_at,
+                        status,
+                        node_tasks,
+                        error,
+                        started_at,
+                        finished_at,
+                        index_uid,
+                        task_type,
+                        node_errors,
+                    });
+                    added += 1;
+                }
+            }
+
+            Ok(results)
+        })
+    }
+
+    fn delete_tasks_batch(&self, miroir_ids: &[&str]) -> Result<usize> {
+        let pool = self.pool.clone();
+        let key_prefix = self.key_prefix.clone();
+        let index_key = format!("{}:tasks:_index", key_prefix);
+        let ids: Vec<String> = miroir_ids.iter().map(|s| s.to_string()).collect();
+
+        self.block_on(async move {
+            let mut pipe = pipe();
+            for miroir_id in &ids {
+                let key = format!("{}:tasks:{}", key_prefix, miroir_id);
+                pipe.del(&key);
+                pipe.srem(&index_key, miroir_id);
+            }
+            pool.pipeline_query::<()>(&mut pipe)
+                .await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+            Ok(ids.len())
         })
     }
 

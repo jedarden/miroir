@@ -365,7 +365,7 @@ mod tests {
 
         let mut cfg = default_cfg();
         cfg.ttl_seconds = 7 * 24 * 3600; // 7 days
-        let deleted = prune_once(&store, &cfg);
+        let deleted = prune_once(&store, &cfg, None::<fn(&str) -> bool>);
 
         assert_eq!(deleted, 10_000);
         assert_eq!(store.task_count().unwrap(), 0);
@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(store.task_count().unwrap(), 3);
 
         let cfg = default_cfg();
-        let deleted = prune_once(&store, &cfg);
+        let deleted = prune_once(&store, &cfg, None::<fn(&str) -> bool>);
 
         assert_eq!(deleted, 2);
         assert!(store.get_task("processing-old").unwrap().is_some());
@@ -425,7 +425,7 @@ mod tests {
             .unwrap();
 
         // prune_once should see the lock held and skip
-        let deleted = prune_once(&store, &cfg);
+        let deleted = prune_once(&store, &cfg, None::<fn(&str) -> bool>);
         assert_eq!(deleted, 0);
         // Tasks should still be there
         assert_eq!(store.task_count().unwrap(), 100);
@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(store.task_count().unwrap(), 10);
 
         let cfg = default_cfg();
-        prune_once(&store, &cfg);
+        prune_once(&store, &cfg, None::<fn(&str) -> bool>);
 
         // Gauge should reflect remaining tasks
         assert_eq!(task_registry_size(), 5);
@@ -471,7 +471,7 @@ mod tests {
 
         let mut cfg = default_cfg();
         cfg.prune_batch_size = 10; // small batch
-        let deleted = prune_once(&store, &cfg);
+        let deleted = prune_once(&store, &cfg, None::<fn(&str) -> bool>);
 
         assert_eq!(deleted, 25); // all deleted via multiple batches
         assert_eq!(store.task_count().unwrap(), 0);
@@ -491,7 +491,7 @@ mod tests {
 
         let mut cfg = default_cfg();
         cfg.prune_interval_s = 1;
-        let mut handle = spawn_pruner(store.clone(), cfg);
+        let mut handle = spawn_pruner(store.clone(), cfg, None::<fn(&str) -> bool>);
 
         // Give the pruner a moment to run at least one cycle
         thread::sleep(Duration::from_millis(200));
@@ -509,7 +509,7 @@ mod tests {
         let mut cfg = default_cfg();
         cfg.prune_interval_s = 600; // long interval so it sleeps in the loop
         {
-            let _handle = spawn_pruner(store, cfg);
+            let _handle = spawn_pruner(store, cfg, None::<fn(&str) -> bool>);
             // handle dropped here
         }
         // Thread should have stopped — if this hangs, the test will time out

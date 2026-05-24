@@ -662,6 +662,18 @@ impl AppState {
             None
         };
 
+        // Create Mode A coordinator for shard-partitioned ownership (plan §14.5 Mode A)
+        let mode_a_coordinator = if cfg!(feature = "peer-discovery") {
+            let pod_name = std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string());
+            let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+            let service_name = std::env::var("MIROR_SERVICE_NAME")
+                .unwrap_or_else(|_| "miroir-headless".to_string());
+            let peer_discovery = Arc::new(PeerDiscovery::new(pod_name.clone(), namespace, service_name));
+            Some(Arc::new(ModeACoordinator::new(pod_name, peer_discovery)))
+        } else {
+            None
+        };
+
         // Create group addition coordinator (needed for both API and sync worker)
         let group_addition_coordinator = if has_task_store {
             Some(Arc::new(RwLock::new(
@@ -743,6 +755,7 @@ impl AppState {
             )),
             group_addition_coordinator,
             group_sync_worker,
+            mode_a_coordinator,
         }
     }
 

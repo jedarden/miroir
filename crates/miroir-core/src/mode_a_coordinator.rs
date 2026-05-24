@@ -343,8 +343,8 @@ mod tests {
         });
     }
 
-    #[test]
-    fn test_no_peers_error() {
+    #[tokio::test]
+    async fn test_no_peers_error() {
         use tokio::sync::RwLock;
 
         // Create a coordinator with an empty peer set
@@ -360,10 +360,8 @@ mod tests {
         let empty_set = PeerSet::new(vec![]);
         *coordinator.cached_peer_set.write().await = empty_set;
 
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let result = coordinator.owns_shard("shard-1").await;
-            assert!(matches!(result, Err(ModeAError::NoPeers)));
-        });
+        let result = coordinator.owns_shard("shard-1").await;
+        assert!(matches!(result, Err(ModeAError::NoPeers)));
     }
 
     fn test_coordinator() -> ModeACoordinator {

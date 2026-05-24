@@ -38,6 +38,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
+#[cfg(feature = "redis-store")]
+use ::redis::AsyncCommands;
+
 /// Origin tag for anti-entropy repair writes (plan §13.8).
 /// These writes are suppressed from CDC unless `emit_internal_writes` is true.
 pub const ORIGIN_ANTIENTROPY: &str = "antientropy";
@@ -351,7 +354,7 @@ impl CdcRedisOverflow {
 
         // Check size limit
         let mut conn = pool.manager.lock().await;
-        let current_bytes: Option<u64> = redis::AsyncCommands::get(&mut *conn, &self.bytes_key)
+        let current_bytes: Option<u64> = conn.get(&self.bytes_key)
             .await
             .map_err(|e| CdcError::SinkError(format!("redis get error: {e}")))?;
         let current_bytes = current_bytes.unwrap_or(0);
@@ -360,7 +363,7 @@ impl CdcRedisOverflow {
             // Trim oldest entries to fit (RPOP)
             let mut pipe = redis::pipe();
             while current_bytes + size > self.max_bytes {
-                pipe.rpop(&self.list_key);
+                pipe.rpop(&self.list_key, None);
             }
             pipe.query_async(&mut *conn)
                 .await
@@ -401,15 +404,11 @@ impl CdcRedisOverflow {
         let pool = self.pool.as_ref()?;
         let mut conn = pool.manager.lock().await;
 
-        let json: Vec<u8> = redis::AsyncCommands::rpop(&mut *conn, &self.list_key)
-            .await
-            .ok()?;
+        let json: Vec<u8> = conn.rpop(&self.list_key, None).await.ok()?;
 
         // Decrement byte counter
         let size = json.len() as i64;
-        let _: i64 = redis::AsyncCommands::decr(&mut *conn, &self.bytes_key)
-            .await
-            .ok()?;
+        let _: i64 = conn.decr(&self.bytes_key, size).await.ok()?;
 
         serde_json::from_slice(&json).ok()
     }
@@ -450,9 +449,7 @@ impl CdcOverflowBackend for CdcRedisOverflow {
         {
             if let Some(pool) = &self.pool {
                 let mut conn = pool.manager.lock().await;
-                return redis::AsyncCommands::get(&mut *conn, &self.bytes_key)
-                    .await
-                    .unwrap_or(0);
+                return conn.get(&self.bytes_key).await.unwrap_or(0);
             }
         }
         0
@@ -463,10 +460,10 @@ impl CdcOverflowBackend for CdcRedisOverflow {
         {
             if let Some(pool) = &self.pool {
                 let mut conn = pool.manager.lock().await;
-                redis::AsyncCommands::del(&mut *conn, &self.list_key)
+                conn.del(&self.list_key)
                     .await
                     .map_err(|e| CdcError::SinkError(format!("redis del error: {e}")))?;
-                redis::AsyncCommands::set(&mut *conn, &self.bytes_key, 0i64)
+                conn.set(&self.bytes_key, 0i64)
                     .await
                     .map_err(|e| CdcError::SinkError(format!("redis set error: {e}")))?;
                 return Ok(());

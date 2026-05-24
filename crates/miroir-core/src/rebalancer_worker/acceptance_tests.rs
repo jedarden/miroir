@@ -379,6 +379,19 @@ impl TaskStore for MockTaskStore {
     fn prune_mode_b_operations(&self, _cutoff_ms: i64, _batch_size: u32) -> Result<usize> {
         Ok(0)
     }
+
+    fn list_terminal_tasks_batch(
+        &self,
+        _cutoff_ms: i64,
+        _offset: i64,
+        _limit: i64,
+    ) -> Result<Vec<crate::task_store::TaskRow>> {
+        Ok(Vec::new())
+    }
+
+    fn delete_tasks_batch(&self, _miroir_ids: &[&str]) -> Result<usize> {
+        Ok(0)
+    }
 }
 
 /// P4.1-A1: Advisory lock ensures only one pod runs the rebalancer at a time.
