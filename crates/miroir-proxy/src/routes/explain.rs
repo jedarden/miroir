@@ -11,6 +11,7 @@ use miroir_core::{
     explainer::{BroadcastPending, Explainer, SearchQueryExplanation, Warning},
     query_planner::QueryPlanner,
     scatter::{plan_search_scatter, SearchRequest, VectorMode},
+    shadow::ShadowOperation,
     topology::Topology,
 };
 use serde::Deserialize;
@@ -176,6 +177,84 @@ where
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         }
+    }
+
+    // Shadow the explain request to configured targets (plan §13.16)
+    // This is done asynchronously after returning the primary response
+    if let Some(ref shadow_manager) = state.shadow_manager {
+        let shadow_mgr = shadow_manager.clone();
+        let config = state.config.shadow.clone();
+        let index_clone = index.clone();
+        let query_clone = query.clone();
+
+        tokio::spawn(async move {
+            if !config.enabled {
+                return;
+            }
+
+            let targets = config.targets;
+
+            for target in targets {
+                // Check if this target has explain operation enabled
+                if !target.operations.iter().any(|op| op == "explain") {
+                    continue;
+                }
+
+                let shadow_target = miroir_core::shadow::ShadowTarget {
+                    name: target.name.clone(),
+                    url: target.url.clone(),
+                    api_key_env: target.api_key_env.clone(),
+                    sample_rate: target.sample_rate,
+                    operations: target
+                        .operations
+                        .into_iter()
+                        .filter_map(|op| match op.as_str() {
+                            "search" => Some(ShadowOperation::Search),
+                            "multi_search" => Some(ShadowOperation::MultiSearch),
+                            "explain" => Some(ShadowOperation::Explain),
+                            _ => None,
+                        })
+                        .collect(),
+                };
+
+                // Check if this request should be shadowed
+                if !shadow_mgr.should_shadow(&shadow_target) {
+                    continue;
+                }
+
+                // Build the request body for shadow
+                let request_body = serde_json::to_value(&query_clone).unwrap_or_default();
+
+                // Shadow the request
+                let result = shadow_mgr
+                    .shadow_search(
+                        &shadow_target,
+                        &index_clone,
+                        &request_body,
+                        0, // No latency info for explain
+                        &[],
+                    )
+                    .await;
+
+                match result {
+                    Ok(_) => {
+                        tracing::debug!(
+                            target = shadow_target.name,
+                            index = %index_clone,
+                            "explain shadow request completed"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target = shadow_target.name,
+                            index = %index_clone,
+                            error = %e,
+                            "explain shadow request failed"
+                        );
+                    }
+                }
+            }
+        });
     }
 
     Ok(Json(response))
