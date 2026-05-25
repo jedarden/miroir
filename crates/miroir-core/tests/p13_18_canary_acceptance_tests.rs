@@ -8,9 +8,7 @@
 //! - Canary CRUD operations
 
 use miroir_core::{
-    canary::{
-        CanaryAssertion, CanaryStatus, QueryCapture, SearchQuery, SearchResponse,
-    },
+    canary::{CanaryAssertion, CanaryStatus, QueryCapture, SearchQuery, SearchResponse},
     task_store::{NewCanary, TaskStore},
 };
 use std::collections::HashMap;
@@ -88,12 +86,15 @@ async fn ac2_canary_run_history_accumulates() {
         };
 
         let failed_assertions = if i == 1 {
-            Some(serde_json::to_string(&vec![serde_json::json!({
-                "assertion_type": "min_hits",
-                "expected": 5,
-                "actual": 2,
-                "message": "Expected at least 5 hits, got 2"
-            })]).unwrap())
+            Some(
+                serde_json::to_string(&vec![serde_json::json!({
+                    "assertion_type": "min_hits",
+                    "expected": 5,
+                    "actual": 2,
+                    "message": "Expected at least 5 hits, got 2"
+                })])
+                .unwrap(),
+            )
         } else {
             None
         };
@@ -529,7 +530,10 @@ async fn ac12_query_with_various_parameters_can_be_captured() {
     let mut params = HashMap::new();
     params.insert("q".to_string(), serde_json::json!("laptop"));
     params.insert("limit".to_string(), serde_json::json!(20));
-    params.insert("filter".to_string(), serde_json::json!("category = \"electronics\""));
+    params.insert(
+        "filter".to_string(),
+        serde_json::json!("category = \"electronics\""),
+    );
     params.insert("sort".to_string(), serde_json::json!("price:asc"));
 
     capture

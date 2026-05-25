@@ -12,7 +12,7 @@
 // Run:
 //   cargo test --test integration -- --test-threads=1
 
-use meilisearch_sdk::{client::Client, indexes::Indexes, task::Task};
+use meilisearch_sdk::{client::Client, indexes::Index, tasks::Task};
 use reqwest::StatusCode;
 use serde_json::json;
 use serde_json::Value;
@@ -57,8 +57,10 @@ async fn wait_for_task(client: &Client, task_uid: u32) -> Result<Task, Box<dyn s
 
     loop {
         let task = client.get_task(task_uid).await?;
-        if task.is_finished() {
-            return Ok(task);
+        // Check if task is finished (Succeeded or Failed)
+        match task {
+            Task::Succeeded { .. } | Task::Failed { .. } => return Ok(task),
+            _ => {}
         }
 
         if start.elapsed() > timeout {
@@ -70,7 +72,7 @@ async fn wait_for_task(client: &Client, task_uid: u32) -> Result<Task, Box<dyn s
 }
 
 /// Helper: Create or get index with primary key
-async fn get_index(client: &Client, name: &str) -> Result<Indexes, Box<dyn std::error::Error>> {
+async fn get_index(client: &Client, name: &str) -> Result<Index, Box<dyn std::error::Error>> {
     let indexes = client.clone();
     match indexes.get_index(name).await {
         Ok(_) => Ok(indexes),
@@ -459,7 +461,11 @@ async fn task_polling() -> Result<(), Box<dyn std::error::Error>> {
 
     // Poll GET /tasks/{id} until succeeded
     let task = wait_for_task(&client, task_uid).await?;
-    assert!(task.is_succeeded(), "Task did not succeed: {:?}", task);
+    assert!(
+        matches!(task, Task::Succeeded { .. }),
+        "Task did not succeed: {:?}",
+        task
+    );
 
     // Verify all documents are searchable
     for i in 0..500 {

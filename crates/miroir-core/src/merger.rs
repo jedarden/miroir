@@ -772,6 +772,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let strategy = RrfStrategy::default_strategy();
@@ -801,6 +803,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let strategy_k1 = RrfStrategy::new(1);
@@ -818,6 +822,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let strategy = RrfStrategy::default_strategy();
@@ -883,6 +889,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -911,6 +919,8 @@ mod tests {
             client_requested_score: true,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -965,6 +975,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -1013,6 +1025,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -1042,6 +1056,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -1061,6 +1077,8 @@ mod tests {
             client_requested_score: true,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -1106,6 +1124,8 @@ mod tests {
             client_requested_score: true,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -1140,6 +1160,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -1198,6 +1220,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -1236,6 +1260,8 @@ mod tests {
             client_requested_score: false,
             facets: Some(vec!["category".to_string()]),
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -1258,6 +1284,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -1277,6 +1305,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -1295,6 +1325,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -1323,6 +1355,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -1360,6 +1394,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result1 = merge(input.clone()).unwrap();
@@ -1395,6 +1431,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let full_result = merge(input.clone()).unwrap();
@@ -1409,6 +1447,8 @@ mod tests {
                 client_requested_score: false,
                 facets: None,
                 failed_shards: Vec::new(),
+                vector_mode: crate::scatter::VectorMode::KeywordOnly,
+                vector_config: None,
             };
             let page_result = merge(page_input).unwrap();
 
@@ -1464,6 +1504,8 @@ mod tests {
                 client_requested_score: false,
                 facets: None,
                 failed_shards: Vec::new(),
+                vector_mode: VectorMode::KeywordOnly,
+                vector_config: None,
             })
             .unwrap();
 
@@ -1517,6 +1559,8 @@ mod tests {
                 client_requested_score: false,
                 facets: None,
                 failed_shards: Vec::new(),
+                vector_mode: VectorMode::KeywordOnly,
+                vector_config: None,
             })
             .unwrap();
 
@@ -1548,6 +1592,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let strategy = RrfStrategy::default_strategy();
@@ -1583,6 +1629,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
         let result = merge(input).unwrap();
         assert_eq!(result.hits.len(), 1);
@@ -1658,6 +1706,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1696,6 +1746,8 @@ mod tests {
             client_requested_score: true,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1723,6 +1775,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1751,6 +1805,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1769,6 +1825,8 @@ mod tests {
             client_requested_score: true,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1788,6 +1846,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1860,6 +1920,8 @@ mod tests {
             client_requested_score: true,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1926,6 +1988,8 @@ mod tests {
             client_requested_score: true,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = strategy.merge(input).unwrap();
@@ -1957,6 +2021,8 @@ mod tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = strategy.merge(input).unwrap();
@@ -2020,6 +2086,8 @@ mod tests {
                 client_requested_score: true,
                 facets: None,
                 failed_shards: Vec::new(),
+                vector_mode: VectorMode::KeywordOnly,
+                vector_config: None,
             })
             .unwrap();
 
@@ -2183,6 +2251,8 @@ mod tests {
                 client_requested_score: true,
                 facets: None,
                 failed_shards: Vec::new(),
+                vector_mode: VectorMode::KeywordOnly,
+                vector_config: None,
             })
             .unwrap();
 

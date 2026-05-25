@@ -21,7 +21,7 @@
 //!   correctly ranks higher after normalization.
 
 use miroir_core::merger::{MergeInput, MergeStrategy, ScoreMergeStrategy};
-use miroir_core::scatter::{GlobalIdf, PreflightRequest, PreflightResponse, TermStats};
+use miroir_core::scatter::{GlobalIdf, PreflightRequest, PreflightResponse, TermStats, VectorMode};
 use miroir_core::topology::{Node, NodeId, Topology};
 use serde_json::json;
 use std::collections::HashMap;
@@ -211,6 +211,8 @@ fn test_score_merge_without_global_idf_fails_skewed_corpus() {
         client_requested_score: true,
         facets: None,
         failed_shards: Vec::new(),
+        vector_mode: VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     let result = strategy.merge(input).unwrap();
@@ -252,6 +254,8 @@ fn test_score_merge_with_global_idf_corrects_skew() {
         client_requested_score: true,
         facets: None,
         failed_shards: Vec::new(),
+        vector_mode: VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     let result = strategy.merge(input).unwrap();
