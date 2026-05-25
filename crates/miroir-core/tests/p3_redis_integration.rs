@@ -24,7 +24,7 @@ async fn create_redis_store() -> (
     let redis_container = Redis::default().start().await.unwrap();
 
     let port = redis_container.get_host_port_ipv4(6379).await.unwrap();
-    let url = format!("redis://localhost:{}", port);
+    let url = format!("redis://localhost:{port}");
 
     let store = miroir_core::task_store::RedisTaskStore::open(&url)
         .await
@@ -85,7 +85,7 @@ async fn test_redis_task_count() {
 
     // Insert multiple tasks
     for i in 0..10 {
-        let task = new_test_task(&format!("mtask-count-{}", i));
+        let task = new_test_task(&format!("mtask-count-{i}"));
         store.insert_task(&task).unwrap();
     }
 
@@ -410,7 +410,7 @@ async fn test_redis_alias_history_retention() {
     // Flip 15 times (more than retention limit of 10)
     for i in 1..=15 {
         store
-            .flip_alias("retention-alias", &format!("index-{}", i), 10)
+            .flip_alias("retention-alias", &format!("index-{i}"), 10)
             .unwrap();
     }
 
@@ -459,6 +459,10 @@ async fn test_redis_job_claim_cas() {
         params: "{}".to_string(),
         state: "queued".to_string(),
         progress: "{}".to_string(),
+        parent_job_id: None,
+        chunk_index: None,
+        total_chunks: None,
+        created_at: 1714500100000,
     };
 
     store.insert_job(&job).unwrap();
@@ -488,6 +492,10 @@ async fn test_redis_job_claim_renew() {
         params: "{}".to_string(),
         state: "queued".to_string(),
         progress: "{}".to_string(),
+        parent_job_id: None,
+        chunk_index: None,
+        total_chunks: None,
+        created_at: 1714500100000,
     };
 
     store.insert_job(&job).unwrap();
@@ -510,22 +518,30 @@ async fn test_redis_list_jobs_by_state() {
     // Insert jobs with different states
     for i in 0..5 {
         let job = NewJob {
-            id: format!("job-queued-{}", i),
+            id: format!("job-queued-{i}"),
             type_: "test".to_string(),
             params: "{}".to_string(),
             state: "queued".to_string(),
             progress: "{}".to_string(),
+            parent_job_id: None,
+            chunk_index: None,
+            total_chunks: None,
+            created_at: 1714500100000 + i as i64,
         };
         store.insert_job(&job).unwrap();
     }
 
     for i in 0..3 {
         let job = NewJob {
-            id: format!("job-progress-{}", i),
+            id: format!("job-progress-{i}"),
             type_: "test".to_string(),
             params: "{}".to_string(),
             state: "in_progress".to_string(),
             progress: "{}".to_string(),
+            parent_job_id: None,
+            chunk_index: None,
+            total_chunks: None,
+            created_at: 1714500200000 + i as i64,
         };
         store.insert_job(&job).unwrap();
     }
@@ -641,7 +657,7 @@ async fn test_redis_admin_session_revoke() {
         .unwrap()
         .unwrap();
 
-    assert_eq!(retrieved.revoked, true);
+    assert!(retrieved.revoked);
 }
 
 #[tokio::test]
@@ -795,7 +811,7 @@ async fn test_redis_rollover_policy() {
     let retrieved = store.get_rollover_policy("daily-logs").unwrap().unwrap();
 
     assert_eq!(retrieved.pattern, "logs-{YYYY-MM-DD}");
-    assert_eq!(retrieved.enabled, true);
+    assert!(retrieved.enabled);
 
     // List policies
     let policies = store.list_rollover_policies().unwrap();

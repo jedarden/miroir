@@ -1,7 +1,10 @@
 use clap::Subcommand;
 
 #[derive(Subcommand, Debug)]
-#[command(about = "Monitor and manage background tasks", after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/task.md\n\nSee `miroir-ctl help` for a list of all subcommands.")]
+#[command(
+    about = "Monitor and manage background tasks",
+    after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/task.md\n\nSee `miroir-ctl help` for a list of all subcommands."
+)]
 pub enum TaskSubcommand {
     /// Show all background tasks
     List,

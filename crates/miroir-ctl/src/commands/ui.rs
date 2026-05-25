@@ -7,7 +7,10 @@ use std::io::{self, Write};
 use std::process::Command;
 
 #[derive(Subcommand, Debug)]
-#[command(about = "Launch the web UI", after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/ui.md\n\nSee `miroir-ctl help` for a list of all subcommands.")]
+#[command(
+    about = "Launch the web UI",
+    after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/ui.md\n\nSee `miroir-ctl help` for a list of all subcommands."
+)]
 pub enum UiSubcommand {
     /// Launch the web UI
     Launch {

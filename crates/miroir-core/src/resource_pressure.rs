@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn test_read_cpu_throttling() {
         // This test will only pass on Linux with cgroup
-        let (nr_throttled, throttled_time) = read_cpu_throttling().unwrap();
+        let (_nr_throttled, throttled_time) = read_cpu_throttling().unwrap();
         // nr_throttled should be a valid count
         // throttled_time should be non-negative
         assert!(

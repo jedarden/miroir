@@ -9,7 +9,10 @@ use std::time::Duration;
 use tokio::time::sleep as tokio_sleep;
 
 #[derive(Subcommand, Debug)]
-#[command(about = "Manage rebalancing operations", after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/rebalance.md\n\nSee `miroir-ctl help` for a list of all subcommands.")]
+#[command(
+    about = "Manage rebalancing operations",
+    after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/rebalance.md\n\nSee `miroir-ctl help` for a list of all subcommands."
+)]
 pub enum RebalanceSubcommand {
     /// Show rebalancing status
     Status {
