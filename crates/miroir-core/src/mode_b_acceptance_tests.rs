@@ -138,7 +138,7 @@ async fn p6_4_a1_three_pods_exactly_one_leader() {
     let acquired3 = result3.unwrap();
 
     // Exactly one should acquire leadership
-    let leaders_acquired = vec![acquired1, acquired2, acquired3]
+    let leaders_acquired = [acquired1, acquired2, acquired3]
         .iter()
         .filter(|&&x| x)
         .count();

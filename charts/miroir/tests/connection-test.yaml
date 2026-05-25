@@ -1,18 +1,49 @@
-{{/*
-Helm test: verify miroir proxy is healthy
-*/}}
+# ── Helm test: Miroir → Meilisearch connection ───────────────────────────────────
+# Plan §6: validates that the Miroir orchestrator can reach its configured
+# Meilisearch nodes. Runs as a post-install pod that exits 0 on success.
+#
+# Usage: helm test <release> (automatically invoked by helm install --wait)
 apiVersion: v1
 kind: Pod
 metadata:
-  name: "{{ include "miroir.fullname" . }}-connection-test"
+  name: "{{ .Release.Name }}-miroir-connection-test"
+  namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "miroir.labels" . | nindent 4 }}
+    app: miroir-test
+    helm-chart-test: "true"
   annotations:
-    "helm.sh/hook": test
+    "helm.sh/hook": test-success
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
+  restartPolicy: Never
   containers:
     - name: curl
-      image: curlimages/curl:latest
-      command: ["curl", "-f", "http://{{ include "miroir.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:7700/health"]
-  restartPolicy: Never
+      image: curlimages/curl:8.6.0
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+
+          # Target the Miroir service (ClusterIP)
+          MIROIR_URL="http://{{ .Release.Name }}-miroir.{{ .Release.Namespace }}.svc.cluster.local:7700"
+
+          echo "Testing Miroir connection: $MIROIR_URL"
+
+          # 1. Health endpoint (always returns 200)
+          echo "1. Checking /health..."
+          curl -f -s "$MIROIR_URL/health" | grep 'ok'
+
+          # 2. Ready endpoint (all deps healthy)
+          echo "2. Checking /_miroir/ready..."
+          curl -f -s "$MIROIR_URL/_miroir/ready" | grep 'ready'
+
+          # 3. Version endpoint (confirms we're talking to Miroir)
+          echo "3. Checking /version..."
+          curl -f -s "$MIROIR_URL/version" | grep 'miroir'
+
+          # 4. Config endpoint (confirms topology loaded)
+          echo "4. Checking /_miroir/config..."
+          curl -f -s "$MIROIR_URL/_miroir/config" | grep 'shards'
+
+          echo "✓ All connection tests passed"
