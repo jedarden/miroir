@@ -154,7 +154,7 @@ async fn multi_target_alias_rejects_flip_operation() {
 /// - 11th flip evicts the oldest entry
 #[tokio::test]
 async fn history_retention_evicts_oldest_on_11th_flip() {
-    use crate::task_store::{AliasHistoryEntry, SqliteTaskStore};
+    use crate::task_store::SqliteTaskStore;
     use std::time::SystemTime;
 
     // Create in-memory store with migration

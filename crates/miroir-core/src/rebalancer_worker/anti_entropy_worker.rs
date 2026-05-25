@@ -20,10 +20,10 @@ use reqwest::Client;
 
 // Type alias for ModeACoordinator that becomes a dummy type when feature is disabled
 #[cfg(feature = "peer-discovery")]
-type ModeACoordinator = ActualModeACoordinator;
+pub type ModeACoordinator = ActualModeACoordinator;
 
 #[cfg(not(feature = "peer-discovery"))]
-struct ModeACoordinator;
+pub struct ModeACoordinator;
 
 #[cfg(not(feature = "peer-discovery"))]
 impl ModeACoordinator {
@@ -273,7 +273,8 @@ impl NodeClient for HttpNodeClient {
 
         let results = json
             .get("results")
-            .and_then(|v| v.as_array()).cloned()
+            .and_then(|v| v.as_array())
+            .cloned()
             .unwrap_or_default();
 
         let total = json.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -460,18 +461,19 @@ pub struct AntiEntropyWorker {
     config: AntiEntropyWorkerConfig,
     reconciler: AntiEntropyReconciler<HttpNodeClient>,
     topology: Arc<RwLock<Topology>>,
+    #[allow(dead_code)]
     task_store: Arc<dyn TaskStore>,
     pod_id: String,
     /// Mode A coordinator for shard-partitioned ownership (plan §14.5 Mode A).
     mode_a_coordinator: Option<Arc<ModeACoordinator>>,
     /// Total shards in the cluster (for Mode A scaling).
-    total_shards: u32,
+    _total_shards: u32,
     /// This pod's replica group ID (for Mode A scaling).
     replica_group_id: Option<u32>,
     /// Total number of pods in Mode A scaling.
     num_pods: Option<u32>,
     /// RF (replication factor) for Mode A scaling.
-    rf: usize,
+    _rf: usize,
     /// Whether TTL is enabled for expired document handling (plan §13.14 interaction).
     ttl_enabled: bool,
     /// Metrics callback for shards scanned.
@@ -517,10 +519,10 @@ impl AntiEntropyWorker {
             task_store,
             pod_id,
             mode_a_coordinator: None,
-            total_shards: 0, // Will be set when Mode A is enabled
+            _total_shards: 0, // Will be set when Mode A is enabled
             replica_group_id: None,
             num_pods: None,
-            rf: 2, // Default RF
+            _rf: 2, // Default RF
             ttl_enabled: false,
             metrics_shards_scanned: None,
             metrics_mismatches_found: None,
@@ -617,6 +619,7 @@ impl AntiEntropyWorker {
     ///
     /// This runs the pass immediately after acquiring lease, then waits
     /// for the configured interval before running again (if still leader).
+    #[allow(dead_code)]
     async fn run_pass_cycle(&self) -> Result<(), String> {
         let scope = "anti_entropy";
         let mut lease_renewal =
@@ -675,7 +678,7 @@ impl AntiEntropyWorker {
         info!("starting anti-entropy pass");
 
         // Get topology info for Mode A scaling
-        let (total_shards, rf) = {
+        let (_total_shards, _rf) = {
             let topo = self.topology.read().await;
             (topo.shards, topo.rf())
         };
@@ -715,6 +718,7 @@ impl AntiEntropyWorker {
 }
 
 /// Get current time in milliseconds since Unix epoch.
+#[allow(dead_code)]
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
