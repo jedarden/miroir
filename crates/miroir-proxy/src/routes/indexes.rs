@@ -314,7 +314,9 @@ where
         .route("/:index/stats", get(get_index_stats_handler))
         .route(
             "/:index/settings",
-            get(get_settings_handler).patch(update_settings_handler),
+            get(get_settings_handler)
+                .patch(update_settings_handler)
+                .post(preview_settings_handler),
         )
         .route(
             "/:index/settings/*subpath",
@@ -1280,6 +1282,163 @@ async fn get_settings_handler(
     } else {
         Err(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
     }
+}
+
+/// POST /indexes/{index}/settings — 2PC preview endpoint (plan §13.5, §13.19).
+///
+/// Shows what the two-phase settings broadcast will do BEFORE committing.
+/// Returns:
+/// - Proposed settings fingerprint
+/// - Current settings fingerprint
+/// - List of nodes that will be targeted
+/// - Expected settings version after commit
+/// - Diff summary of what will change
+async fn preview_settings_handler(
+    Path(index): Path<String>,
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(config): Extension<Arc<Config>>,
+    Json(proposed_settings): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let client = MeilisearchClient::new(config.node_master_key.clone());
+    let nodes = all_node_addresses(&config);
+
+    // Fetch current settings from the first node
+    let first_address = config
+        .nodes
+        .first()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let current_settings_path = format!("/indexes/{}/settings", index);
+    let (status, text) = client
+        .get_raw(&first_address.address, &current_settings_path)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, index = %index, "fetch current settings failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let current_settings: Value = if status >= 200 && status < 300 {
+        serde_json::from_str(&text).unwrap_or(Value::Null)
+    } else {
+        // Index doesn't exist yet - current settings are null
+        Value::Null
+    };
+
+    // Compute fingerprints
+    let current_fingerprint = if current_settings.is_null() {
+        String::new()
+    } else {
+        fingerprint_settings(&current_settings)
+    };
+    let proposed_fingerprint = fingerprint_settings(&proposed_settings);
+
+    // Get current settings version
+    let current_version = state.settings_broadcast.current_version().await;
+
+    // Compute diff
+    let diff_changes = compute_settings_diff(&current_settings, &proposed_settings);
+
+    // Build node targets list
+    let node_targets: Vec<Value> = config
+        .nodes
+        .iter()
+        .map(|n| {
+            serde_json::json!({
+                "address": n.address,
+                "id": n.id,
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "index": index,
+        "currentSettings": current_settings,
+        "proposedSettings": proposed_settings,
+        "currentFingerprint": current_fingerprint,
+        "proposedFingerprint": proposed_fingerprint,
+        "fingerprintChanged": current_fingerprint != proposed_fingerprint,
+        "currentVersion": current_version,
+        "expectedVersion": current_version + 1,
+        "nodeTargets": node_targets,
+        "nodeCount": nodes.len(),
+        "diff": diff_changes,
+        "twoPhaseFlow": {
+            "phase1": {
+                "name": "Propose",
+                "description": "PATCH settings to all nodes in parallel",
+                "nodeCount": nodes.len(),
+            },
+            "phase2": {
+                "name": "Verify",
+                "description": "GET settings from all nodes, verify SHA256 fingerprints match",
+                "expectedFingerprint": proposed_fingerprint,
+            },
+            "phase3": {
+                "name": "Commit",
+                "description": "Increment settings_version, persist to task store",
+                "newVersion": current_version + 1,
+            }
+        }
+    });
+
+    Ok(Json(response))
+}
+
+/// Compute a diff summary of settings changes.
+/// Compute a diff summary of settings changes.
+/// Visible for testing.
+pub fn compute_settings_diff(current: &Value, proposed: &Value) -> Vec<Value> {
+    let mut changes = Vec::new();
+
+    let current_obj = current.as_object();
+    let proposed_obj = proposed.as_object();
+
+    match (current_obj, proposed_obj) {
+        (Some(curr), Some(prop)) => {
+            // Find added and modified keys
+            for (key, new_value) in prop {
+                if let Some(old_value) = curr.get(key) {
+                    if old_value != new_value {
+                        changes.push(serde_json::json!({
+                            "type": "modified",
+                            "key": key,
+                            "old": old_value,
+                            "new": new_value,
+                        }));
+                    }
+                } else {
+                    changes.push(serde_json::json!({
+                        "type": "added",
+                        "key": key,
+                        "value": new_value,
+                    }));
+                }
+            }
+
+            // Find deleted keys
+            for key in curr.keys() {
+                if !prop.contains_key(key) {
+                    changes.push(serde_json::json!({
+                        "type": "removed",
+                        "key": key,
+                        "oldValue": curr.get(key),
+                    }));
+                }
+            }
+        }
+        (None, Some(_)) => {
+            // All settings are new
+            for (key, value) in proposed.as_object().unwrap() {
+                changes.push(serde_json::json!({
+                    "type": "added",
+                    "key": key,
+                    "value": value,
+                }));
+            }
+        }
+        _ => {}
+    }
+
+    changes
 }
 
 async fn get_settings_subpath_handler(
