@@ -6,7 +6,7 @@ use super::{admin_endpoints, aliases, canary, cdc, dumps, explain, session};
 use crate::admin_ui;
 use axum::{
     extract::FromRef,
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 
@@ -42,6 +42,12 @@ where
         .route("/shards", get(admin_endpoints::get_shards::<S>))
         .route("/ready", get(admin_endpoints::get_ready::<S>))
         .route("/metrics", get(admin_endpoints::get_metrics::<S>))
+        // Settings endpoint (plan §13.19 Admin UI — Settings section)
+        .route("/settings", get(admin_endpoints::get_settings::<S>))
+        .route(
+            "/settings",
+            axum::routing::patch(admin_endpoints::patch_settings::<S>),
+        )
         .route(
             "/ui/search/{index}/rotate-scoped-key",
             post(admin_endpoints::rotate_scoped_key_handler),
