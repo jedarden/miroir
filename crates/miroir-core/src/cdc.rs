@@ -1017,42 +1017,41 @@ impl CdcBuffer {
     ) -> Result<Self, CdcError> {
         let primary = Arc::new(CdcMemoryBuffer::new(config.memory_bytes));
 
-        let overflow: Arc<dyn CdcOverflowBackend + Send + Sync> = match CdcBufferType::parse_from_str(
-            config.overflow.as_str(),
-        ) {
-            Some(CdcBufferType::Redis) => {
-                #[cfg(feature = "redis-store")]
-                {
-                    // Redis pool will be created lazily on first use
-                    let redis_url = std::env::var("MIROIR_REDIS_URL")
-                        .unwrap_or_else(|_| "redis://localhost:6379".to_string());
-                    let backend =
-                        CdcRedisOverflow::lazy_new(sink_name, config.redis_bytes, redis_url);
-                    Arc::new(backend)
+        let overflow: Arc<dyn CdcOverflowBackend + Send + Sync> =
+            match CdcBufferType::parse_from_str(config.overflow.as_str()) {
+                Some(CdcBufferType::Redis) => {
+                    #[cfg(feature = "redis-store")]
+                    {
+                        // Redis pool will be created lazily on first use
+                        let redis_url = std::env::var("MIROIR_REDIS_URL")
+                            .unwrap_or_else(|_| "redis://localhost:6379".to_string());
+                        let backend =
+                            CdcRedisOverflow::lazy_new(sink_name, config.redis_bytes, redis_url);
+                        Arc::new(backend)
+                    }
+                    #[cfg(not(feature = "redis-store"))]
+                    {
+                        warn!("CDC: redis overflow requested but redis-store feature not enabled, using drop backend");
+                        Arc::new(CdcDropOverflow::new(sink_name, dropped_callback.clone()))
+                    }
                 }
-                #[cfg(not(feature = "redis-store"))]
-                {
-                    warn!("CDC: redis overflow requested but redis-store feature not enabled, using drop backend");
+                Some(CdcBufferType::Pvc) => {
+                    let data_dir =
+                        std::env::var("MIROIR_DATA_DIR").unwrap_or_else(|_| "/data".to_string());
+                    Arc::new(CdcPvcOverflow::new(
+                        sink_name,
+                        std::path::PathBuf::from(data_dir),
+                        config.redis_bytes, // Use same budget
+                    ))
+                }
+                Some(CdcBufferType::Drop) => {
                     Arc::new(CdcDropOverflow::new(sink_name, dropped_callback.clone()))
                 }
-            }
-            Some(CdcBufferType::Pvc) => {
-                let data_dir =
-                    std::env::var("MIROIR_DATA_DIR").unwrap_or_else(|_| "/data".to_string());
-                Arc::new(CdcPvcOverflow::new(
-                    sink_name,
-                    std::path::PathBuf::from(data_dir),
-                    config.redis_bytes, // Use same budget
-                ))
-            }
-            Some(CdcBufferType::Drop) => {
-                Arc::new(CdcDropOverflow::new(sink_name, dropped_callback.clone()))
-            }
-            Some(CdcBufferType::Memory) | None => {
-                // Memory overflow = drop (no secondary buffer)
-                Arc::new(CdcDropOverflow::new(sink_name, dropped_callback.clone()))
-            }
-        };
+                Some(CdcBufferType::Memory) | None => {
+                    // Memory overflow = drop (no secondary buffer)
+                    Arc::new(CdcDropOverflow::new(sink_name, dropped_callback.clone()))
+                }
+            };
 
         Ok(Self {
             primary,
@@ -2123,9 +2122,18 @@ mod tests {
             CdcBufferType::parse_from_str("MEMORY"),
             Some(CdcBufferType::Memory)
         );
-        assert_eq!(CdcBufferType::parse_from_str("redis"), Some(CdcBufferType::Redis));
-        assert_eq!(CdcBufferType::parse_from_str("pvc"), Some(CdcBufferType::Pvc));
-        assert_eq!(CdcBufferType::parse_from_str("drop"), Some(CdcBufferType::Drop));
+        assert_eq!(
+            CdcBufferType::parse_from_str("redis"),
+            Some(CdcBufferType::Redis)
+        );
+        assert_eq!(
+            CdcBufferType::parse_from_str("pvc"),
+            Some(CdcBufferType::Pvc)
+        );
+        assert_eq!(
+            CdcBufferType::parse_from_str("drop"),
+            Some(CdcBufferType::Drop)
+        );
         assert_eq!(CdcBufferType::parse_from_str("unknown"), None);
     }
 
