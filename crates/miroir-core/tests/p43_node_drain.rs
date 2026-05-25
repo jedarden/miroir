@@ -255,6 +255,7 @@ async fn p43_drain_node_searches_still_succeed_zero_degraded() {
         global_idf: None,
         over_fetch_factor: 1,
         vector_mode: miroir_core::scatter::VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     let result = execute_scatter(

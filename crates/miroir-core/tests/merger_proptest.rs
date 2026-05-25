@@ -7,6 +7,7 @@
 //! - Result size respects limit
 
 use miroir_core::merger::{merge, MergeInput, MergeStrategy, RrfStrategy, ShardHitPage};
+use miroir_core::scatter::VectorMode;
 use proptest::prelude::*;
 use serde_json::json;
 
@@ -67,6 +68,8 @@ proptest! {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result1 = merge(input.clone()).unwrap();
@@ -105,6 +108,8 @@ proptest! {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let reference = merge(input.clone()).unwrap();
@@ -144,6 +149,8 @@ proptest! {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -186,6 +193,8 @@ proptest! {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let input_large = MergeInput {
@@ -195,6 +204,8 @@ proptest! {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result_small = merge(input_small).unwrap();
@@ -236,6 +247,8 @@ proptest! {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result_all = merge(input_all).unwrap();
@@ -251,6 +264,8 @@ proptest! {
                 client_requested_score: false,
                 facets: None,
                 failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
             };
 
             let result_page = merge(input_page).unwrap();
@@ -301,6 +316,8 @@ proptest! {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let input_with_offset = MergeInput {
@@ -310,6 +327,8 @@ proptest! {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result_no_offset = merge(input_no_offset).unwrap();
@@ -353,6 +372,8 @@ proptest! {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let strategy = RrfStrategy::default_strategy();
@@ -388,6 +409,8 @@ proptest! {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -422,6 +445,8 @@ proptest! {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -458,6 +483,8 @@ proptest! {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -504,6 +531,8 @@ proptest! {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input.clone()).unwrap();
@@ -534,6 +563,8 @@ proptest! {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();
@@ -567,6 +598,8 @@ mod regression_tests {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = merge(input).unwrap();

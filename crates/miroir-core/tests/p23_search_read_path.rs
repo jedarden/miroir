@@ -363,6 +363,9 @@ async fn test_node_down_rf2_covers_all_shards() {
         ranking_score: false,
         body: json!({}),
         global_idf: None,
+        over_fetch_factor: 1,
+        vector_mode: miroir_core::scatter::VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     let result = miroir_core::scatter::execute_scatter(
@@ -436,6 +439,9 @@ async fn test_group_down_fallback_succeeds_not_degraded() {
         ranking_score: false,
         body: json!({}),
         global_idf: None,
+        over_fetch_factor: 1,
+        vector_mode: miroir_core::scatter::VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     let result = miroir_core::scatter::execute_scatter(
@@ -494,6 +500,9 @@ async fn test_degraded_header_includes_shard_ids() {
         ranking_score: false,
         body: json!({}),
         global_idf: None,
+        over_fetch_factor: 1,
+        vector_mode: miroir_core::scatter::VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     let result = miroir_core::scatter::execute_scatter(
@@ -615,6 +624,9 @@ async fn test_search_read_path_integration() {
         ranking_score: true,
         body: json!({}),
         global_idf: None,
+        over_fetch_factor: 1,
+        vector_mode: miroir_core::scatter::VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     let result = miroir_core::scatter::scatter_gather_search(
@@ -672,6 +684,9 @@ fn test_show_ranking_score_injected_unconditionally() {
         ranking_score: false, // Client didn't request scores
         body: json!({}),
         global_idf: None,
+        over_fetch_factor: 1,
+        vector_mode: miroir_core::scatter::VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     let body = req.to_node_body();
@@ -699,6 +714,9 @@ fn test_limit_is_offset_plus_limit() {
         ranking_score: false,
         body: json!({}),
         global_idf: None,
+        over_fetch_factor: 1,
+        vector_mode: miroir_core::scatter::VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     let body = req.to_node_body();
