@@ -56,6 +56,17 @@ Redis enabled
 {{- end }}
 
 {{/*
+Redis secret name
+*/}}
+{{- define "miroir.redisSecretName" -}}
+{{- if .Values.redis.auth.existingSecret }}
+{{- .Values.redis.auth.existingSecret }}
+{{- else }}
+{{- printf "%s-redis-secret" (include "miroir.fullname" .) }}
+{{- end }}
+{{- end }}
+
+{{/*
 CDC PVC enabled — only rendered when cdc.buffer.primary=="pvc" or cdc.buffer.overflow=="pvc" (plan §13.13)
 */}}
 {{- define "miroir.cdcPvcEnabled" -}}
@@ -71,6 +82,104 @@ Service Account Name
 {{- else }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
+{{- end }}
+
+{{/*
+Secret name
+*/}}
+{{- define "miroir.secretName" -}}
+{{- if .Values.miroir.existingSecret }}
+{{- .Values.miroir.existingSecret }}
+{{- else }}
+{{- printf "%s-miroir-secret" (include "miroir.fullname" .) }}
+{{- end }}
+{{- end }}
+
+{{/*
+Miroir config (miroir.yaml)
+*/}}
+{{- define "miroir.config" -}}
+# Miroir configuration (plan §4)
+shards: {{ .Values.miroir.shards }}
+replication_factor: {{ .Values.miroir.replicationFactor }}
+replica_groups: {{ .Values.miroir.replicaGroups }}
+
+nodes: []
+task_store:
+  backend: {{ .Values.miroir.taskStore.backend | quote }}
+  path: {{ .Values.miroir.taskStore.path | quote }}
+  {{- if and (eq (include "miroir.redisEnabled" .) "true") .Values.redis.enabled }}
+  url: {{ printf "redis://%s-redis:6379" (include "miroir.fullname" .) | quote }}
+  {{- else if .Values.miroir.taskStore.url }}
+  url: {{ .Values.miroir.taskStore.url | quote }}
+  {{- end }}
+
+admin:
+  enabled: true
+
+health:
+  interval_ms: 5000
+  timeout_ms: 2000
+  unhealthy_threshold: 3
+  recovery_threshold: 2
+
+scatter:
+  node_timeout_ms: 5000
+  retry_on_timeout: true
+  unavailable_shard_policy: {{ .Values.miroir.scatter.unavailableShardPolicy | quote }}
+
+rebalancer:
+  auto_rebalance_on_recovery: true
+  max_concurrent_migrations: 4
+  migration_timeout_s: 3600
+
+server:
+  port: 7700
+  bind: "0.0.0.0"
+  max_body_bytes: 104857600
+  max_concurrent_requests: 500
+  request_timeout_ms: 30000
+
+connection_pool_per_node:
+  max_idle: 32
+  max_total: 128
+  idle_timeout_s: 60
+
+task_registry:
+  cache_size: 10000
+  redis_pool_max: 50
+  ttl_seconds: 604800
+  prune_interval_s: 300
+  prune_batch_size: 10000
+
+{{- if .Values.miroir.cdc.enabled }}
+cdc:
+  enabled: true
+  emit_ttl_deletes: {{ .Values.miroir.cdc.emit_ttl_deletes }}
+  emit_internal_writes: {{ .Values.miroir.cdc.emit_internal_writes }}
+  sinks:
+{{- if .Values.miroir.cdc.sinks }}
+{{ toYaml .Values.miroir.cdc.sinks | indent 4 }}
+{{- else }}
+  []
+{{- end }}
+  buffer:
+    primary: {{ .Values.miroir.cdc.buffer.primary | quote }}
+    memory_bytes: {{ .Values.miroir.cdc.buffer.memory_bytes }}
+    overflow: {{ .Values.miroir.cdc.buffer.overflow | quote }}
+    {{- if eq .Values.miroir.cdc.buffer.primary "redis" }}
+    redis_bytes: {{ .Values.miroir.cdc.buffer.redis_bytes }}
+    {{- end }}
+{{- end }}
+
+peer_discovery:
+  service_name: "miroir-headless"
+  refresh_interval_s: 15
+
+leader_election:
+  enabled: true
+  lease_ttl_s: 10
+  renew_interval_s: 3
 {{- end }}
 
 {{/*
