@@ -2312,9 +2312,7 @@ impl MigrationExecutor for HttpMigrationExecutor {
             .get("results")
             .and_then(|v| v.as_array())
             .ok_or_else(|| {
-                format!(
-                    "Invalid response from {source_address}: missing 'results' field"
-                )
+                format!("Invalid response from {source_address}: missing 'results' field")
             })?;
 
         let total = json_body.get("total").and_then(|v| v.as_u64()).unwrap_or(0);

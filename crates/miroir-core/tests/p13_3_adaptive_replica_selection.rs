@@ -229,9 +229,7 @@ async fn p5_3_a3_exploration_samples_degraded_node() {
     let count1 = *dist.get("node-1").unwrap_or(&0);
     let count2 = *dist.get("node-2").unwrap_or(&0);
 
-    println!(
-        "Distribution: node-0={count0}, node-1={count1}, node-2={count2}"
-    );
+    println!("Distribution: node-0={count0}, node-1={count1}, node-2={count2}");
 
     // Node-2 is severely degraded but should still get some traffic via exploration
     // With 5% epsilon and random exploration across 3 nodes:

@@ -167,10 +167,7 @@ where
     );
 
     let status = manager.get_status(&id).await.ok_or_else(|| {
-        MeilisearchError::new(
-            MiroirCode::NotFound,
-            format!("import task not found: {id}"),
-        )
+        MeilisearchError::new(MiroirCode::NotFound, format!("import task not found: {id}"))
     })?;
 
     // Record metrics from status

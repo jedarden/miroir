@@ -22,7 +22,6 @@ use std::time::Instant;
 use tokio::sync::RwLock;
 use tracing::{debug, instrument};
 
-
 /// Multi-search state.
 #[derive(Clone)]
 pub struct MultiSearchState {

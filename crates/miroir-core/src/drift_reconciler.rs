@@ -335,9 +335,7 @@ impl DriftReconciler {
             )
             .send()
             .await
-            .map_err(|e| {
-                MiroirError::Task(format!("failed to fetch settings for repair: {e}"))
-            })?;
+            .map_err(|e| MiroirError::Task(format!("failed to fetch settings for repair: {e}")))?;
 
         if !response.status().is_success() {
             return Err(MiroirError::Task(format!(
@@ -346,9 +344,10 @@ impl DriftReconciler {
             )));
         }
 
-        let correct_settings: Value = response.json().await.map_err(|e| {
-            MiroirError::Task(format!("failed to parse settings for repair: {e}"))
-        })?;
+        let correct_settings: Value = response
+            .json()
+            .await
+            .map_err(|e| MiroirError::Task(format!("failed to parse settings for repair: {e}")))?;
 
         // PATCH the drifted node with correct settings
         let patch_url = format!(

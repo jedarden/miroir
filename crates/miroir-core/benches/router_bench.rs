@@ -167,9 +167,7 @@ fn bench_varying_node_count(c: &mut Criterion) {
 
 /// Benchmark: Varying replication factors.
 fn bench_varying_rf(c: &mut Criterion) {
-    let nodes: Vec<NodeId> = (0..10)
-        .map(|i| NodeId::new(format!("node-{i}")))
-        .collect();
+    let nodes: Vec<NodeId> = (0..10).map(|i| NodeId::new(format!("node-{i}"))).collect();
 
     let mut group = c.benchmark_group("varying_rf");
     for rf in [1, 2, 3, 5].iter() {

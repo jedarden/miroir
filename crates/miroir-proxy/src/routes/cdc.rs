@@ -101,7 +101,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_changes_query_params_default_limit() {

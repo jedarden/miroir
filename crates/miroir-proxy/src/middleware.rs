@@ -9,7 +9,8 @@ use axum::{
     http::{HeaderMap, HeaderValue},
     middleware::Next,
     response::Response,
-    routing::get, Router,
+    routing::get,
+    Router,
 };
 
 use miroir_core::config::MiroirConfig;
@@ -70,10 +71,8 @@ impl RequestId {
 ///
 /// Extracted from the `X-Miroir-Session` header and stored in request extensions.
 /// Handlers can access it via `Request.extensions().get::<SessionId>()`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub struct SessionId(pub String);
-
 
 impl SessionId {
     /// Get the inner session ID string.
@@ -1532,9 +1531,8 @@ impl Metrics {
         let metric_families = self.registry.gather();
         let mut buffer = Vec::new();
         encoder.encode(&metric_families, &mut buffer)?;
-        String::from_utf8(buffer).map_err(|e| {
-            prometheus::Error::Msg(format!("failed to convert metrics to UTF-8: {e}"))
-        })
+        String::from_utf8(buffer)
+            .map_err(|e| prometheus::Error::Msg(format!("failed to convert metrics to UTF-8: {e}")))
     }
 
     pub fn admin_session_key_generated(&self) -> Gauge {
@@ -2880,7 +2878,6 @@ mod tests {
     fn test_json_log_format_is_valid() {
         // Verify that tracing-subscriber's JSON layer produces valid JSON
         // This test ensures the log format matches plan §10 requirements
-        
 
         // Build a JSON subscriber like the one in main.rs
         let subscriber = tracing_subscriber::fmt()

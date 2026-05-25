@@ -28,9 +28,7 @@ fn print_actual_hash_values() {
     for (key, shard_count) in fixtures {
         let hash = hash_for_key(key);
         let shard = shard_for_key(key, shard_count);
-        println!(
-            "(\"{key}\", {shard_count}, {shard}),  // hash={hash}"
-        );
+        println!("(\"{key}\", {shard_count}, {shard}),  // hash={hash}");
     }
     println!("========================\n");
 }

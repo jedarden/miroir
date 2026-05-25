@@ -6,11 +6,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use miroir_core::{
-    alias::AliasKind,
-    config::MiroirConfig,
-    task_store::TaskStore,
-};
+use miroir_core::{alias::AliasKind, config::MiroirConfig, task_store::TaskStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -512,9 +508,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
-    
 
     #[test]
     fn test_create_alias_request_single() {

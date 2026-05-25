@@ -1584,9 +1584,7 @@ where
             StatusCode::OK,
             [(
                 "Set-Cookie",
-                format!(
-                    "{COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0"
-                ),
+                format!("{COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0"),
             )],
             Json(AdminLogoutResponse {
                 success: true,
@@ -1633,9 +1631,7 @@ where
         StatusCode::OK,
         [(
             "Set-Cookie",
-            format!(
-                "{COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0"
-            ),
+            format!("{COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0"),
         )],
         Json(AdminLogoutResponse {
             success: true,
@@ -1712,10 +1708,7 @@ where
         // Check if node already exists
         let node_id = NodeId::new(id.clone());
         if topo.node(&node_id).is_some() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("Node {id} already exists"),
-            ));
+            return Err((StatusCode::BAD_REQUEST, format!("Node {id} already exists")));
         }
         // Check if replica group exists
         let group_count = topo.groups().count() as u32;
@@ -2555,9 +2548,7 @@ where
             .ok_or_else(|| {
                 (
                     StatusCode::PRECONDITION_FAILED,
-                    format!(
-                        "Group {group_id} is not ready for activation (sync not complete)"
-                    ),
+                    format!("Group {group_id} is not ready for activation (sync not complete)"),
                 )
             })?;
 

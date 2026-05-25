@@ -128,8 +128,7 @@ impl JobType {
 }
 
 /// Job progress tracking.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JobProgress {
     /// Bytes processed so far (for dump import).
     pub bytes_processed: u64,
@@ -140,7 +139,6 @@ pub struct JobProgress {
     /// Any error message.
     pub error: Option<String>,
 }
-
 
 /// Chunk specification for a job.
 #[derive(Debug, Clone, Serialize, Deserialize)]

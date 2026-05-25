@@ -1072,7 +1072,6 @@ fn epoch_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn test_key() -> SealKey {
         SealKey::from_bytes([42u8; 32])
