@@ -9,14 +9,13 @@ use axum::{
     extract::{FromRef, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::Response,
+    Extension,
 };
 use miroir_core::config::MiroirConfig;
 use rust_embed::RustEmbed;
 
-use crate::auth::build_csp_header;
-
-// Re-export for use in the handler
-pub use crate::routes::admin_endpoints;
+use crate::auth::{build_csp_header, AdminSessionId};
+use crate::routes::admin_endpoints;
 
 /// Embedded static assets for the Admin Web UI.
 ///
@@ -51,6 +50,7 @@ pub async fn serve_admin_ui<S>(
     State(state): State<S>,
     headers: HeaderMap,
     axum::extract::Path(path): axum::extract::Path<String>,
+    Extension(admin_session): Extension<Option<AdminSessionId>>,
 ) -> Result<Response, StatusCode>
 where
     S: Clone + Send + Sync + 'static,
@@ -58,8 +58,8 @@ where
 {
     let admin_state = admin_endpoints::AppState::from_ref(&state);
 
-    // Check authentication - X-Admin-Key or Authorization: Bearer header
-    let is_authorized = check_admin_auth(&headers, &admin_state.config);
+    // Check authentication - X-Admin-Key, Authorization: Bearer header, or session cookie
+    let is_authorized = check_admin_auth(&headers, &admin_state.config) || admin_session.is_some();
 
     if !is_authorized {
         return Err(StatusCode::UNAUTHORIZED);
@@ -172,11 +172,85 @@ fn check_admin_auth(headers: &HeaderMap, config: &MiroirConfig) -> bool {
 mod tests {
     use super::*;
     use axum::http::StatusCode;
+    use miroir_core::config::MiroirConfig;
 
     #[test]
     fn test_serve_embedded_file_not_found() {
         let result = serve_embedded_file("nonexistent.html", false);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_check_admin_auth_with_x_admin_key() {
+        let config = MiroirConfig::default();
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Admin-Key", config.admin.api_key.parse().unwrap());
+
+        assert!(check_admin_auth(&headers, &config));
+    }
+
+    #[test]
+    fn test_check_admin_auth_with_bearer_token() {
+        let config = MiroirConfig::default();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Authorization",
+            format!("Bearer {}", config.admin.api_key).parse().unwrap(),
+        );
+
+        assert!(check_admin_auth(&headers, &config));
+    }
+
+    #[test]
+    fn test_check_admin_auth_with_wrong_key() {
+        let config = MiroirConfig::default();
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Admin-Key", "wrong-key".parse().unwrap());
+
+        assert!(!check_admin_auth(&headers, &config));
+    }
+
+    #[test]
+    fn test_check_admin_auth_with_no_header() {
+        let config = MiroirConfig::default();
+        let headers = HeaderMap::new();
+
+        assert!(!check_admin_auth(&headers, &config));
+    }
+
+    #[test]
+    fn test_serve_embedded_file_index_html() {
+        let result = serve_embedded_file("index.html", false);
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert_eq!(
+            response.headers().get("Content-Type").unwrap(),
+            "text/html"
+        );
+        assert_eq!(
+            response.headers().get("Cache-Control").unwrap(),
+            "no-cache, no-store, must-revalidate"
+        );
+    }
+
+    #[test]
+    fn test_serve_embedded_file_static_asset() {
+        let result = serve_embedded_file("app.js", true);
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert!(response
+            .headers()
+            .get("Content-Type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert_eq!(
+            response.headers().get("Cache-Control").unwrap(),
+            "public, max-age=31536000, immutable"
+        );
     }
 }
