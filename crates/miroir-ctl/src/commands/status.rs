@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio::time::sleep as tokio_sleep;
 
 #[derive(Parser, Debug)]
+#[command(about = "Show cluster status and health", after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/status.md\n\nSee `miroir-ctl help` for a list of all subcommands.")]
 pub struct StatusSubcommand {
     /// Watch mode: continuously refresh status
     #[arg(short, long)]

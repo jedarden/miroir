@@ -1,6 +1,7 @@
 use clap::Subcommand;
 
 #[derive(Subcommand, Debug)]
+#[command(about = "Manage shadow indexing", after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/shadow.md\n\nSee `miroir-ctl help` for a list of all subcommands.")]
 pub enum ShadowSubcommand {
     /// Create a shadow index
     Create,

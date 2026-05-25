@@ -10,6 +10,7 @@ use std::io::{self, Write};
 
 /// Key management commands.
 #[derive(Subcommand, Debug)]
+#[command(about = "Manage API keys", after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/key.md\n\nSee `miroir-ctl help` for a list of all subcommands.")]
 pub enum KeySubcommand {
     /// Rotate the admin-scoped nodeMasterKey (zero-downtime).
     ///

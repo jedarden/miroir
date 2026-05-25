@@ -9,6 +9,7 @@ use serde_json::json;
 use std::time::Duration;
 
 #[derive(Subcommand, Debug)]
+#[command(about = "Manage cluster nodes", after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/node.md\n\nSee `miroir-ctl help` for a list of all subcommands.")]
 pub enum NodeSubcommand {
     /// Add a new node to the cluster
     Add(AddNodeArgs),

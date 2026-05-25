@@ -1,6 +1,7 @@
 use clap::Subcommand;
 
 #[derive(Subcommand, Debug)]
+#[command(about = "Explain query plans", after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/explain.md\n\nSee `miroir-ctl help` for a list of all subcommands.")]
 pub enum ExplainSubcommand {
     /// Explain a query plan or operation
     Query {

@@ -1,6 +1,7 @@
 use clap::Subcommand;
 
 #[derive(Subcommand, Debug)]
+#[command(about = "Manage canary deployments", after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/canary.md\n\nSee `miroir-ctl help` for a list of all subcommands.")]
 pub enum CanarySubcommand {
     /// Create a canary deployment
     Create,
