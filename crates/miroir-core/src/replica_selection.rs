@@ -417,7 +417,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_select_adaptive() {
-        let selector = ReplicaSelector::new(ReplicaSelectionConfig::default());
+        // Disable exploration for deterministic test
+        let config = ReplicaSelectionConfig {
+            exploration_epsilon: 0.0,
+            ..Default::default()
+        };
+        let selector = ReplicaSelector::new(config);
 
         let node1 = NodeId::new("node-1".to_string());
         let node2 = NodeId::new("node-2".to_string());
