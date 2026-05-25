@@ -3005,7 +3005,7 @@ mod tests {
             assert!(store.get_canary("canary-r").unwrap().is_some());
             assert_eq!(store.get_canary_runs("canary-r", 10).unwrap().len(), 1);
             assert!(store.get_cdc_cursor("sink-r", "idx-r").unwrap().is_some());
-            assert!(store.get_tenant_mapping(&vec![1u8; 32]).unwrap().is_some());
+            assert!(store.get_tenant_mapping(&[1u8; 32]).unwrap().is_some());
             assert!(store.get_rollover_policy("policy-r").unwrap().is_some());
             assert!(store.get_search_ui_config("idx-r").unwrap().is_some());
             assert!(store.get_admin_session("admin-r").unwrap().is_some());
