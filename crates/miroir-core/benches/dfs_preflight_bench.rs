@@ -95,10 +95,11 @@ fn bench_global_idf_aggregation(c: &mut Criterion) {
 /// latency without actual I/O.
 fn bench_preflight_phase(c: &mut Criterion) {
     let mut group = c.benchmark_group("preflight_phase");
+    let rt = tokio::runtime::Runtime::new().unwrap();
 
     for shard_count in [3, 5, 10, 20].iter() {
         let topo = make_test_topology(*shard_count, 2, 2);
-        let plan = plan_search_scatter(&topo, 0, 2, *shard_count, None::<&ReplicaSelector>).await;
+        let plan = rt.block_on(plan_search_scatter(&topo, 0, 2, *shard_count, None::<&ReplicaSelector>));
 
         // Create mock client with preflight responses
         let mut client = MockNodeClient::default();
@@ -143,8 +144,9 @@ fn bench_preflight_phase(c: &mut Criterion) {
 ///
 /// The difference is the preflight overhead.
 fn bench_dfs_vs_standard_scatter(c: &mut Criterion) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
     let topo = make_test_topology(64, 2, 2);
-    let plan = plan_search_scatter(&topo, 0, 2, 64, None::<&ReplicaSelector>).await;
+    let plan = rt.block_on(plan_search_scatter(&topo, 0, 2, 64, None::<&ReplicaSelector>));
 
     // Create mock client with search responses
     let mut client = MockNodeClient::default();
