@@ -705,9 +705,12 @@ impl CdcRedisOverflow {
 
         if current_bytes + size > self.max_bytes {
             // Trim oldest entries to fit (RPOP)
+            let mut bytes_to_remove = (current_bytes + size).saturating_sub(self.max_bytes);
             let mut pipe = redis::pipe();
-            while current_bytes + size > self.max_bytes {
+            while bytes_to_remove > 0 {
                 pipe.rpop(&self.list_key, None);
+                // Assume average entry size to avoid infinite loop
+                bytes_to_remove = bytes_to_remove.saturating_sub(1024);
             }
             pipe.query_async::<()>(&mut *conn)
                 .await
