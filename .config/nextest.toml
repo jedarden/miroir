@@ -1,0 +1,28 @@
+# nextest configuration for miroir
+#
+# Usage:
+#   cargo nextest run                      # default profile (the marathon's gate)
+#   cargo nextest run -E 'test(<name>)'    # run a single test by name substring
+#   cargo nextest run -p <crate> <filter>  # run a package + filter
+#
+# IMPORTANT: every profile sets `slow-timeout` WITH `terminate-after`. Bare `slow-timeout`
+# only *warns* that a test is slow — it never stops it. `terminate-after = N` KILLS a test
+# still running after period × N. This is the safety net that turns a hung test into a normal
+# failure instead of wedging the runner and stalling the marathon loop.
+#
+# On 2026-05-25 the miroir marathon froze for 8+ hours and accumulated 42 leaked
+# acceptance-test processes over days because the gate used bare `cargo test` (no timeout).
+# Do NOT remove `terminate-after`. See `.marathon/instruction.md` "Test & process hygiene".
+
+[profile.default]
+# Marathon-safety default. A test still running after 60s × 5 = 300s is KILLED and the run
+# fails, instead of freezing the loop. 300s is generous for the orchestration / rebalancer
+# acceptance tests while still bounding any single hang to 5 minutes.
+slow-timeout = { period = "60s", terminate-after = 5 }
+fail-fast = false
+
+[profile.ci]
+# CI profile: 1 retry for flaky tests. Killed after 60s × 5 = 300s.
+fail-fast = true
+retries = 1
+slow-timeout = { period = "60s", terminate-after = 5 }

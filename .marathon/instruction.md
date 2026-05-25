@@ -82,8 +82,38 @@ br update <bead-id> --status in_progress --assignee marathon
    cargo check --all-targets
    cargo clippy --all-targets -- -D warnings
    cargo fmt
-   cargo test
+   cargo nextest run        # NEVER bare `cargo test` (see "Test & process hygiene" below).
+                            # nextest kills hung tests via .config/nextest.toml terminate-after.
+                            # Narrow runs go through nextest too: cargo nextest run -E 'test(<name>)'
+                            # If nextest is genuinely unavailable, wrap the fallback in a hard timeout:
+                            #   timeout --kill-after=30s 600s cargo test --all-targets 2>&1 | tail -80
    ```
+   A nextest `TIMEOUT`/`TERMINATED` line, or `timeout` exit code 124, means a test hung —
+   find and fix it; never close a bead claiming "tests pass" when the run was killed.
+
+#### Test & process hygiene — never let a hung command stall the loop
+
+On 2026-05-25 this loop froze for **8+ hours**: one iteration ran `miroir-proxy --version`,
+the binary never exited, and that hung child held the marathon's stdout pipe open so
+`launcher.sh` never advanced — meanwhile **42 leaked acceptance-test processes** piled up
+over days (bare `cargo test` with no timeout). Prevent recurrence:
+
+- **Never run bare `cargo test`** — not even a narrow one. Use nextest, which enforces the
+  per-test kill timeout from `.config/nextest.toml`:
+  `cargo nextest run -E 'test(<name>)'` or `cargo nextest run -p <crate> <filter>`.
+- **Wrap EVERY ad-hoc command that runs a built binary or could block in a hard timeout**, so
+  a hang becomes a fast failure instead of a wedged loop. Never invoke the bare binary:
+  ```bash
+  timeout 30s ./target/release/miroir-proxy --version   # not: ./target/release/miroir-proxy --version
+  ```
+  This applies to any `--version`/`--help`/smoke check, any server you start, any `curl`.
+  (A `--version` that hangs is itself a bug — file a `plan-gap:` bead for it.)
+- **Tests that spawn a process or bind a socket must clean up deterministically:** kill the
+  child from an RAII `Drop` guard with a *bounded* wait, give it `Stdio::null()` (or drain its
+  pipes on a thread), and bind servers to port `:0`. A bare `child.wait()` blocks forever.
+- **Leave no orphans.** Before closing the bead and exiting, confirm nothing you spawned
+  survives — `pgrep -af 'miroir/target/.*/deps/|miroir-proxy'` must be empty; if not, kill
+  the whole tree (explicit PIDs) before you exit.
 
 ### 4. Commit, push, close
 
