@@ -111,16 +111,15 @@ pub async fn check_and_rotate(
         .map_err(|e| format!("redis read failed: {e}"))?;
 
     // Timing gate check (skip if force)
-    if !force
-        && !should_rotate(&current, &state.config) {
-            return Ok(RotateScopedKeyResponse {
-                status: "skipped".into(),
-                index_uid: index_uid.into(),
-                generation: current.as_ref().map(|k| k.generation).unwrap_or(0),
-                previous_uid_revoked: None,
-                error: None,
-            });
-        }
+    if !force && !should_rotate(&current, &state.config) {
+        return Ok(RotateScopedKeyResponse {
+            status: "skipped".into(),
+            index_uid: index_uid.into(),
+            generation: current.as_ref().map(|k| k.generation).unwrap_or(0),
+            previous_uid_revoked: None,
+            error: None,
+        });
+    }
 
     // Step 1: Mint new scoped key via Meilisearch POST /keys
     let client = MeilisearchClient::new(state.config.node_master_key.clone());
