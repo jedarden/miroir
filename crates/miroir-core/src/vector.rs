@@ -335,8 +335,10 @@ mod tests {
         // Should deduplicate doc1, keeping the highest combined score
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].pk, "doc2"); // (0.7 + 0.9) / 2 = 0.8 (highest)
-        assert_eq!(result[1].pk, "doc1"); // (0.8 + 0.6) / 2 = 0.7, kept over shard 1's 0.7
-        assert_eq!(result[2].pk, "doc3"); // (0.9 + 0.5) / 2 = 0.7
+                                          // doc1 and doc3 both have score 0.7; order between them is unstable
+        let pks: Vec<_> = result.iter().map(|h| h.pk.as_str()).collect();
+        assert!(pks[1..].contains(&"doc1"));
+        assert!(pks[1..].contains(&"doc3"));
     }
 
     #[test]
