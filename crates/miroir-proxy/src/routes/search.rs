@@ -8,7 +8,7 @@ use axum::Json;
 use miroir_core::api_error::{MeilisearchError, MiroirCode};
 use miroir_core::config::UnavailableShardPolicy;
 use miroir_core::idempotency::QueryFingerprint;
-use miroir_core::merger::ScoreMergeStrategy;
+use miroir_core::merger::AdaptiveMergeStrategy;
 use miroir_core::replica_selection::SelectionObserver;
 use miroir_core::scatter::{
     dfs_query_then_fetch_search, plan_search_scatter, plan_search_scatter_for_group,
@@ -709,6 +709,7 @@ async fn search_handler(
         global_idf: None,
         over_fetch_factor: effective_over_fetch,
         vector_mode,
+        vector_config: Some(state.config.vector_search.clone().into()),
     };
 
     // Create node client with the scoped key (or node_master_key as fallback)
@@ -719,7 +720,7 @@ async fn search_handler(
     let client = ProxyNodeClient::new(http_client, state.metrics.clone(), None);
 
     // Use score-based merge strategy (OP#4: requires global IDF)
-    let strategy = ScoreMergeStrategy::new();
+    let strategy = AdaptiveMergeStrategy::new(&state.config.vector_search.clone().into());
 
     // Register for query coalescing (plan §13.10) - after try_coalesce, before scatter
     // Only register if coalescing is enabled and this is a single-target query
@@ -1240,6 +1241,7 @@ async fn search_multi_targets(
         global_idf: None,
         over_fetch_factor: effective_over_fetch,
         vector_mode,
+        vector_config: Some(state.config.vector_search.clone().into()),
     };
 
     // Create node client
@@ -1250,7 +1252,7 @@ async fn search_multi_targets(
     let client = ProxyNodeClient::new(http_client, state.metrics.clone(), None);
 
     // Use score-based merge strategy
-    let strategy = ScoreMergeStrategy::new();
+    let strategy = AdaptiveMergeStrategy::new(&state.config.vector_search.clone().into());
 
     // Execute search
     let mut result = match dfs_query_then_fetch_search(

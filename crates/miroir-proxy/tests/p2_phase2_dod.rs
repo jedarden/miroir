@@ -201,6 +201,9 @@ async fn test_unique_keyword_search_deduplication() {
         ranking_score: false,
         body: json!({}),
         global_idf: None,
+        over_fetch_factor: 1,
+        vector_mode: miroir_core::VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     let result = dfs_query_then_fetch_search(
@@ -330,6 +333,9 @@ async fn test_paging_preserves_global_ordering() {
         ranking_score: true,
         body: json!({}),
         global_idf: None,
+        over_fetch_factor: 1,
+        vector_mode: miroir_core::VectorMode::KeywordOnly,
+        vector_config: None,
     };
     let result1 = dfs_query_then_fetch_search(
         plan1,
@@ -355,6 +361,9 @@ async fn test_paging_preserves_global_ordering() {
         ranking_score: true,
         body: json!({}),
         global_idf: None,
+        over_fetch_factor: 1,
+        vector_mode: miroir_core::VectorMode::KeywordOnly,
+        vector_config: None,
     };
     let result2 = dfs_query_then_fetch_search(
         plan2,

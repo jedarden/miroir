@@ -92,6 +92,8 @@ async fn test_expires_at_stripped_from_search_hits() {
         client_requested_score: false,
         facets: None,
         failed_shards: vec![],
+        vector_mode: miroir_core::VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     let strategy = RrfStrategy::default_strategy();

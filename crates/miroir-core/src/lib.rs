@@ -65,3 +65,4 @@ pub mod vector;
 // Public re-exports
 pub use api_error::{ErrorType, MeilisearchError, MiroirCode};
 pub use error::{MiroirError, Result};
+pub use scatter::VectorMode;
