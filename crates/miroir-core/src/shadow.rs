@@ -189,7 +189,7 @@ impl ShadowManager {
         // Build request with optional API key
         let mut request_builder = self.client.post(&url).json(request_body);
         if let Some(key) = &api_key {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", key));
+            request_builder = request_builder.header("Authorization", format!("Bearer {key}"));
         }
 
         // Send shadow request with timeout
@@ -298,7 +298,7 @@ impl ShadowManager {
         use sha2::{Digest, Sha256};
         let json = serde_json::to_string(body).unwrap_or_default();
         let hash = Sha256::digest(json.as_bytes());
-        format!("{:x}", hash)
+        format!("{hash:x}")
     }
 
     /// Compute symmetric diff and Kendall tau correlation.

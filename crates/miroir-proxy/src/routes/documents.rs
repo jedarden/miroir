@@ -30,10 +30,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, info, instrument};
+use tracing::instrument;
 
 use crate::client::HttpClient;
-use crate::middleware::SessionId;
 use crate::routes::admin_endpoints::AppState;
 
 /// Document write parameters from query string.
@@ -386,8 +385,7 @@ async fn write_documents_impl(
                 return Err(MeilisearchError::new(
                     MiroirCode::MultiAliasNotWritable,
                     format!(
-                        "alias '{}' is a multi-target alias and is read-only (managed by ILM); writes must go to the concrete index or the write alias",
-                        index
+                        "alias '{index}' is a multi-target alias and is read-only (managed by ILM); writes must go to the concrete index or the write alias"
                     ),
                 ));
             }
@@ -404,12 +402,12 @@ async fn write_documents_impl(
 
     // 1. Extract primary key from first document if not provided
     let primary_key =
-        primary_key.or_else(|| documents.first().and_then(|doc| extract_primary_key(doc)));
+        primary_key.or_else(|| documents.first().and_then(extract_primary_key));
 
     let primary_key = primary_key.ok_or_else(|| {
         MeilisearchError::new(
             MiroirCode::PrimaryKeyRequired,
-            format!("primary key required for index `{}`", index),
+            format!("primary key required for index `{index}`"),
         )
     })?;
 
@@ -433,7 +431,7 @@ async fn write_documents_impl(
         if anti_entropy_enabled && doc.get(updated_at_field).is_some() {
             return Err(MeilisearchError::new(
                 MiroirCode::ReservedField,
-                format!("document contains reserved field `{}` (reserved when anti_entropy.enabled: true)", updated_at_field),
+                format!("document contains reserved field `{updated_at_field}` (reserved when anti_entropy.enabled: true)"),
             ));
         }
 
@@ -444,8 +442,7 @@ async fn write_documents_impl(
             return Err(MeilisearchError::new(
                 MiroirCode::ReservedField,
                 format!(
-                    "document contains reserved field `{}` (reserved when ttl.enabled: true)",
-                    expires_at_field
+                    "document contains reserved field `{expires_at_field}` (reserved when ttl.enabled: true)"
                 ),
             ));
         }
@@ -454,8 +451,7 @@ async fn write_documents_impl(
             return Err(MeilisearchError::new(
                 MiroirCode::PrimaryKeyRequired,
                 format!(
-                    "document at index {} missing primary key field `{}`",
-                    i, primary_key
+                    "document at index {i} missing primary key field `{primary_key}`"
                 ),
             ));
         }
@@ -571,7 +567,7 @@ async fn write_documents_impl(
         if targets.is_empty() {
             return Err(MeilisearchError::new(
                 MiroirCode::ShardUnavailable,
-                format!("no available nodes for shard {}", shard_id),
+                format!("no available nodes for shard {shard_id}"),
             ));
         }
 
@@ -710,7 +706,7 @@ async fn write_documents_impl(
         .map_err(|e| {
             MeilisearchError::new(
                 MiroirCode::ShardUnavailable,
-                format!("failed to register task: {}", e),
+                format!("failed to register task: {e}"),
             )
         })?;
 
@@ -831,8 +827,7 @@ async fn delete_by_ids_impl(
                 return Err(MeilisearchError::new(
                     MiroirCode::MultiAliasNotWritable,
                     format!(
-                        "alias '{}' is a multi-target alias and is read-only (managed by ILM); deletes must go to the concrete index or the write alias",
-                        index
+                        "alias '{index}' is a multi-target alias and is read-only (managed by ILM); deletes must go to the concrete index or the write alias"
                     ),
                 ));
             }
@@ -872,7 +867,7 @@ async fn delete_by_ids_impl(
         if targets.is_empty() {
             return Err(MeilisearchError::new(
                 MiroirCode::ShardUnavailable,
-                format!("no available nodes for shard {}", shard_id),
+                format!("no available nodes for shard {shard_id}"),
             ));
         }
 
@@ -942,7 +937,7 @@ async fn delete_by_ids_impl(
         .map_err(|e| {
             MeilisearchError::new(
                 MiroirCode::ShardUnavailable,
-                format!("failed to register task: {}", e),
+                format!("failed to register task: {e}"),
             )
         })?;
 
@@ -1112,7 +1107,7 @@ async fn delete_by_filter_impl(
         .map_err(|e| {
             MeilisearchError::new(
                 MiroirCode::ShardUnavailable,
-                format!("failed to register task: {}", e),
+                format!("failed to register task: {e}"),
             )
         })?;
 
@@ -1210,7 +1205,7 @@ fn build_response_with_degraded_header(
     let body = serde_json::to_string(&response).map_err(|e| {
         MeilisearchError::new(
             MiroirCode::ShardUnavailable,
-            format!("failed to serialize response: {}", e),
+            format!("failed to serialize response: {e}"),
         )
     })?;
 
@@ -1222,16 +1217,16 @@ fn build_response_with_degraded_header(
     if degraded_groups > 0 {
         builder = builder.header(
             HEADER_MIROIR_DEGRADED,
-            format!("groups={}", degraded_groups),
+            format!("groups={degraded_groups}"),
         );
     }
 
-    Ok(builder.body(axum::body::Body::from(body)).map_err(|e| {
+    builder.body(axum::body::Body::from(body)).map_err(|e| {
         MeilisearchError::new(
             MiroirCode::ShardUnavailable,
-            format!("failed to build response: {}", e),
+            format!("failed to build response: {e}"),
         )
-    })?)
+    })
 }
 
 /// Build an error response as JSON (for forwarded node errors).
@@ -1289,7 +1284,7 @@ mod tests {
     fn reserved_field_error(field: &str) -> MeilisearchError {
         MeilisearchError::new(
             MiroirCode::ReservedField,
-            format!("document contains reserved field `{}`", field),
+            format!("document contains reserved field `{field}`"),
         )
     }
 
@@ -1312,8 +1307,7 @@ mod tests {
         let err = MeilisearchError::new(
             MiroirCode::ReservedField,
             format!(
-                "document contains reserved field `{}` (reserved when anti_entropy.enabled: true)",
-                field
+                "document contains reserved field `{field}` (reserved when anti_entropy.enabled: true)"
             ),
         );
         assert_eq!(err.code, "miroir_reserved_field");
@@ -1327,8 +1321,7 @@ mod tests {
         let err = MeilisearchError::new(
             MiroirCode::ReservedField,
             format!(
-                "document contains reserved field `{}` (reserved when ttl.enabled: true)",
-                field
+                "document contains reserved field `{field}` (reserved when ttl.enabled: true)"
             ),
         );
         assert_eq!(err.code, "miroir_reserved_field");

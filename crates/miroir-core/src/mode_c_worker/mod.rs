@@ -258,7 +258,7 @@ impl ModeCWorker {
                 }
 
                 // Calculate number of chunks (ceiling division)
-                let total_chunks = ((source_size + chunk_size_bytes - 1) / chunk_size_bytes) as u32;
+                let total_chunks = source_size.div_ceil(chunk_size_bytes) as u32;
 
                 (0..total_chunks)
                     .map(|i| {
@@ -461,7 +461,7 @@ impl ModeCWorker {
         // If this is a chunk job, process the shard range
         if let Some(chunk) = &params.chunk {
             let (start_shard, end_shard) = reshard_chunking::parse_reshard_chunk(chunk)
-                .map_err(|e| MiroirError::InvalidRequest(format!("invalid chunk spec: {}", e)))?;
+                .map_err(|e| MiroirError::InvalidRequest(format!("invalid chunk spec: {e}")))?;
 
             info!(
                 "Processing reshard chunk {}/{} (shards {}-{})",
@@ -560,7 +560,7 @@ impl ModeCWorker {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
-            .map_err(|e| MiroirError::Task(format!("failed to create HTTP client: {}", e)))?;
+            .map_err(|e| MiroirError::Task(format!("failed to create HTTP client: {e}")))?;
 
         // Get node addresses from environment or topology
         // For now, use a placeholder - in production this would come from Topology
@@ -577,7 +577,7 @@ impl ModeCWorker {
             // Pagination through documents in this shard
             loop {
                 // Fetch documents from live index with _miroir_shard filter
-                let filter = format!("_miroir_shard={}", shard_id);
+                let filter = format!("_miroir_shard={shard_id}");
                 let url = format!(
                     "{}/indexes/{}/documents?filter={}&limit={}&offset={}",
                     node_addresses.trim_end_matches('/'),
@@ -589,10 +589,10 @@ impl ModeCWorker {
 
                 let response = client
                     .get(&url)
-                    .header("Authorization", format!("Bearer {}", node_master_key))
+                    .header("Authorization", format!("Bearer {node_master_key}"))
                     .send()
                     .await
-                    .map_err(|e| MiroirError::Task(format!("fetch failed: {}", e)))?;
+                    .map_err(|e| MiroirError::Task(format!("fetch failed: {e}")))?;
 
                 if !response.status().is_success() {
                     let status = response.status();
@@ -601,15 +601,14 @@ impl ModeCWorker {
                         .await
                         .unwrap_or_else(|_| "unable to read error".to_string());
                     return Err(MiroirError::Task(format!(
-                        "failed to fetch documents: HTTP {} - {}",
-                        status, body
+                        "failed to fetch documents: HTTP {status} - {body}"
                     )));
                 }
 
                 let json_body: serde_json::Value = response
                     .json()
                     .await
-                    .map_err(|e| MiroirError::Task(format!("parse response failed: {}", e)))?;
+                    .map_err(|e| MiroirError::Task(format!("parse response failed: {e}")))?;
 
                 let results = json_body
                     .get("results")
@@ -657,11 +656,11 @@ impl ModeCWorker {
 
                     let response = client
                         .post(&write_url)
-                        .header("Authorization", format!("Bearer {}", node_master_key))
+                        .header("Authorization", format!("Bearer {node_master_key}"))
                         .json(&shadow_documents)
                         .send()
                         .await
-                        .map_err(|e| MiroirError::Task(format!("write failed: {}", e)))?;
+                        .map_err(|e| MiroirError::Task(format!("write failed: {e}")))?;
 
                     if !response.status().is_success() {
                         let status = response.status();
@@ -670,8 +669,7 @@ impl ModeCWorker {
                             .await
                             .unwrap_or_else(|_| "unable to read error".to_string());
                         return Err(MiroirError::Task(format!(
-                            "failed to write to shadow index: HTTP {} - {}",
-                            status, body
+                            "failed to write to shadow index: HTTP {status} - {body}"
                         )));
                     }
 
@@ -691,7 +689,7 @@ impl ModeCWorker {
                     let progress = JobProgress {
                         bytes_processed: 0,
                         docs_routed: docs_backfilled,
-                        last_cursor: format!("{}:{}", shard_id, offset),
+                        last_cursor: format!("{shard_id}:{offset}"),
                         error: None,
                     };
                     coordinator.update_progress(

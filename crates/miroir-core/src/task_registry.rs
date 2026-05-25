@@ -60,7 +60,7 @@ impl<C: NodeClient> NodePoller for ClientNodePoller<C> {
             .get_task_status(node_id, address, &req)
             .await
             .map(|resp| resp.to_node_status())
-            .map_err(|e| format!("{:?}", e))
+            .map_err(|e| format!("{e:?}"))
     }
 }
 
@@ -88,7 +88,7 @@ impl InMemoryTaskRegistry {
         let miroir_id = format!("mtask-{}", Uuid::new_v4());
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| MiroirError::Task(format!("clock error: {}", e)))?
+            .map_err(|e| MiroirError::Task(format!("clock error: {e}")))?
             .as_millis() as u64;
 
         let mut tasks = HashMap::new();
@@ -144,7 +144,7 @@ impl InMemoryTaskRegistry {
         let miroir_id = format!("mtask-{}", Uuid::new_v4());
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| MiroirError::Task(format!("clock error: {}", e)))?
+            .map_err(|e| MiroirError::Task(format!("clock error: {e}")))?
             .as_millis() as u64;
 
         let mut tasks = HashMap::new();
@@ -218,7 +218,7 @@ impl InMemoryTaskRegistry {
                 task.started_at = Some(
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .map_err(|e| MiroirError::Task(format!("clock error: {}", e)))?
+                        .map_err(|e| MiroirError::Task(format!("clock error: {e}")))?
                         .as_millis() as u64,
                 );
             }
@@ -231,7 +231,7 @@ impl InMemoryTaskRegistry {
                 task.finished_at = Some(
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .map_err(|e| MiroirError::Task(format!("clock error: {}", e)))?
+                        .map_err(|e| MiroirError::Task(format!("clock error: {e}")))?
                         .as_millis() as u64,
                 );
             }
@@ -276,7 +276,7 @@ impl InMemoryTaskRegistry {
         let mut any_failed = false;
         let mut all_terminal = true;
 
-        for (_node_id, node_task) in &task.node_tasks {
+        for node_task in task.node_tasks.values() {
             match node_task.status {
                 NodeTaskStatus::Enqueued | NodeTaskStatus::Processing => {
                     all_terminal = false;
@@ -341,7 +341,7 @@ impl InMemoryTaskRegistry {
 
             // Check each node task's status
             let mut all_terminal = true;
-            for (_node_id, node_task) in &task.node_tasks {
+            for node_task in task.node_tasks.values() {
                 match node_task.status {
                     NodeTaskStatus::Enqueued | NodeTaskStatus::Processing => {
                         all_terminal = false;
@@ -356,7 +356,7 @@ impl InMemoryTaskRegistry {
                 // Simulate completion for testing
                 let mut tasks = self.tasks.write().await;
                 if let Some(t) = tasks.get_mut(miroir_id) {
-                    for (_node_id, node_task) in &mut t.node_tasks {
+                    for node_task in t.node_tasks.values_mut() {
                         if matches!(
                             node_task.status,
                             NodeTaskStatus::Enqueued | NodeTaskStatus::Processing
@@ -367,7 +367,7 @@ impl InMemoryTaskRegistry {
                     // Update overall status
                     let mut all_succeeded = true;
                     let mut any_failed = false;
-                    for (_node_id, node_task) in &t.node_tasks {
+                    for node_task in t.node_tasks.values() {
                         match node_task.status {
                             NodeTaskStatus::Succeeded => {}
                             NodeTaskStatus::Failed => any_failed = true,
@@ -447,7 +447,7 @@ impl InMemoryTaskRegistry {
                 if let Some(t) = tasks.get_mut(miroir_id) {
                     let mut all_succeeded = true;
                     let mut any_failed = false;
-                    for (_node_id, node_task) in &t.node_tasks {
+                    for node_task in t.node_tasks.values() {
                         match node_task.status {
                             NodeTaskStatus::Succeeded => {}
                             NodeTaskStatus::Failed => any_failed = true,
@@ -486,7 +486,7 @@ impl InMemoryTaskRegistry {
                 // For now, use a mock address - in production, this would come from the topology
                 let address = format!("http://{}", node_id.as_str());
 
-                match poller.poll_node_task(&node_id, &address, *task_uid).await {
+                match poller.poll_node_task(node_id, &address, *task_uid).await {
                     Ok(status) => {
                         node_statuses.insert(node_id.clone(), status);
                     }
@@ -549,12 +549,12 @@ impl InMemoryTaskRegistry {
 
         // Apply index_uid filter
         if let Some(index_uid) = &filter.index_uid {
-            result.retain(|t| t.index_uid.as_ref().map_or(false, |uid| uid == index_uid));
+            result.retain(|t| t.index_uid.as_ref() == Some(index_uid));
         }
 
         // Apply task_type filter
         if let Some(task_type) = &filter.task_type {
-            result.retain(|t| t.task_type.as_ref().map_or(false, |ty| ty == task_type));
+            result.retain(|t| t.task_type.as_ref() == Some(task_type));
         }
 
         // Apply offset
@@ -651,7 +651,7 @@ impl crate::task::TaskRegistry for InMemoryTaskRegistry {
         let registry = self.clone();
         tokio::task::block_in_place(|| {
             let rt = tokio::runtime::Handle::try_current()
-                .map_err(|e| MiroirError::Task(format!("runtime error: {}", e)))?;
+                .map_err(|e| MiroirError::Task(format!("runtime error: {e}")))?;
             rt.block_on(async move {
                 registry
                     .register_async_with_metadata(node_tasks, index_uid, task_type)
@@ -665,7 +665,7 @@ impl crate::task::TaskRegistry for InMemoryTaskRegistry {
         let miroir_id = miroir_id.to_string();
         tokio::task::block_in_place(|| {
             let rt = tokio::runtime::Handle::try_current()
-                .map_err(|e| MiroirError::Task(format!("runtime error: {}", e)))?;
+                .map_err(|e| MiroirError::Task(format!("runtime error: {e}")))?;
             rt.block_on(async move { Ok(registry.get_async(&miroir_id).await) })
         })
     }
@@ -675,7 +675,7 @@ impl crate::task::TaskRegistry for InMemoryTaskRegistry {
         let miroir_id = miroir_id.to_string();
         tokio::task::block_in_place(|| {
             let rt = tokio::runtime::Handle::try_current()
-                .map_err(|e| MiroirError::Task(format!("runtime error: {}", e)))?;
+                .map_err(|e| MiroirError::Task(format!("runtime error: {e}")))?;
             rt.block_on(async move {
                 let mut tasks = registry.tasks.write().await;
                 if let Some(task) = tasks.get_mut(&miroir_id) {
@@ -697,7 +697,7 @@ impl crate::task::TaskRegistry for InMemoryTaskRegistry {
         let node_id = node_id.to_string();
         tokio::task::block_in_place(|| {
             let rt = tokio::runtime::Handle::try_current()
-                .map_err(|e| MiroirError::Task(format!("runtime error: {}", e)))?;
+                .map_err(|e| MiroirError::Task(format!("runtime error: {e}")))?;
             rt.block_on(async move {
                 let mut tasks = registry.tasks.write().await;
                 if let Some(task) = tasks.get_mut(&miroir_id) {
@@ -714,7 +714,7 @@ impl crate::task::TaskRegistry for InMemoryTaskRegistry {
         let registry = self.clone();
         tokio::task::block_in_place(|| {
             let rt = tokio::runtime::Handle::try_current()
-                .map_err(|e| MiroirError::Task(format!("runtime error: {}", e)))?;
+                .map_err(|e| MiroirError::Task(format!("runtime error: {e}")))?;
             rt.block_on(async move { registry.list_async(&filter).await })
         })
     }
@@ -879,7 +879,7 @@ impl TaskRegistryImpl {
                 let miroir_id = format!("mtask-{}", Uuid::new_v4());
                 let created_at = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(|e| MiroirError::Task(format!("clock error: {}", e)))?
+                    .map_err(|e| MiroirError::Task(format!("clock error: {e}")))?
                     .as_millis() as i64;
 
                 let new_task = crate::task_store::NewTask {
@@ -927,7 +927,7 @@ impl TaskRegistryImpl {
                 let miroir_id = format!("mtask-{}", Uuid::new_v4());
                 let created_at = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(|e| MiroirError::Task(format!("clock error: {}", e)))?
+                    .map_err(|e| MiroirError::Task(format!("clock error: {e}")))?
                     .as_millis() as i64;
 
                 let new_task = crate::task_store::NewTask {

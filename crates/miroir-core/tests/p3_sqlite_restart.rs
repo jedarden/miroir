@@ -397,7 +397,7 @@ fn test_task_count_survives_restart() {
     {
         let store = open_store(path).unwrap();
         for i in 0..10 {
-            let task = new_test_task(&format!("mtask-count-{}", i));
+            let task = new_test_task(&format!("mtask-count-{i}"));
             store.insert_task(&task).unwrap();
         }
     }

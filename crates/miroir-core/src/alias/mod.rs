@@ -248,7 +248,7 @@ impl AliasRegistry {
         let mut aliases = self.aliases.write().await;
         let alias = aliases
             .get_mut(name)
-            .ok_or_else(|| MiroirError::NotFound(format!("alias '{}' not found", name)))?;
+            .ok_or_else(|| MiroirError::NotFound(format!("alias '{name}' not found")))?;
         alias.flip(new_target)?;
         Ok(())
     }
@@ -258,7 +258,7 @@ impl AliasRegistry {
         let mut aliases = self.aliases.write().await;
         let alias = aliases
             .get_mut(name)
-            .ok_or_else(|| MiroirError::NotFound(format!("alias '{}' not found", name)))?;
+            .ok_or_else(|| MiroirError::NotFound(format!("alias '{name}' not found")))?;
         alias.update_targets(new_targets)?;
         Ok(())
     }
@@ -301,7 +301,7 @@ impl AliasFlipCoordinator {
         new_uid: String,
         pod_id: String,
     ) -> Self {
-        let scope = format!("alias_flip:{}", alias_name);
+        let scope = format!("alias_flip:{alias_name}");
 
         let extra_state = AliasFlipExtraState {
             new_uid,

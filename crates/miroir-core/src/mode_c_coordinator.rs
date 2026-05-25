@@ -129,6 +129,7 @@ impl JobType {
 
 /// Job progress tracking.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct JobProgress {
     /// Bytes processed so far (for dump import).
     pub bytes_processed: u64,
@@ -140,16 +141,6 @@ pub struct JobProgress {
     pub error: Option<String>,
 }
 
-impl Default for JobProgress {
-    fn default() -> Self {
-        Self {
-            bytes_processed: 0,
-            docs_routed: 0,
-            last_cursor: String::new(),
-            error: None,
-        }
-    }
-}
 
 /// Chunk specification for a job.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,10 +234,10 @@ impl ModeCCoordinator {
     pub fn enqueue_job(&self, type_: JobType, params: JobParams) -> Result<String> {
         let job_id = format!("{}-{}", type_.as_str(), uuid::Uuid::new_v4());
         let params_json = serde_json::to_string(&params)
-            .map_err(|e| MiroirError::TaskStore(format!("failed to serialize params: {}", e)))?;
+            .map_err(|e| MiroirError::TaskStore(format!("failed to serialize params: {e}")))?;
         let progress = JobProgress::default();
         let progress_json = serde_json::to_string(&progress)
-            .map_err(|e| MiroirError::TaskStore(format!("failed to serialize progress: {}", e)))?;
+            .map_err(|e| MiroirError::TaskStore(format!("failed to serialize progress: {e}")))?;
 
         let new_job = NewJob {
             id: job_id.clone(),
@@ -346,7 +337,7 @@ impl ModeCCoordinator {
         state: JobState,
     ) -> Result<()> {
         let progress_json = serde_json::to_string(progress)
-            .map_err(|e| MiroirError::TaskStore(format!("failed to serialize progress: {}", e)))?;
+            .map_err(|e| MiroirError::TaskStore(format!("failed to serialize progress: {e}")))?;
 
         self.task_store
             .update_job_progress(job_id, state.as_str(), &progress_json)?;
@@ -379,7 +370,7 @@ impl ModeCCoordinator {
         failed_progress.error = Some(error.clone());
 
         let progress_json = serde_json::to_string(&failed_progress)
-            .map_err(|e| MiroirError::TaskStore(format!("failed to serialize progress: {}", e)))?;
+            .map_err(|e| MiroirError::TaskStore(format!("failed to serialize progress: {e}")))?;
 
         self.task_store
             .update_job_progress(job_id, JobState::Failed.as_str(), &progress_json)?;
@@ -403,7 +394,7 @@ impl ModeCCoordinator {
         chunk_specs: Vec<JobChunk>,
     ) -> Result<Vec<String>> {
         let params: JobParams = serde_json::from_str(&job.params)
-            .map_err(|e| MiroirError::TaskStore(format!("failed to deserialize params: {}", e)))?;
+            .map_err(|e| MiroirError::TaskStore(format!("failed to deserialize params: {e}")))?;
 
         let total_chunks = chunk_specs.len() as u32;
         let mut chunk_job_ids = Vec::new();
@@ -424,11 +415,11 @@ impl ModeCCoordinator {
 
             let chunk_job_id = format!("{}-chunk-{}", job.id, idx);
             let params_json = serde_json::to_string(&chunk_params).map_err(|e| {
-                MiroirError::TaskStore(format!("failed to serialize chunk params: {}", e))
+                MiroirError::TaskStore(format!("failed to serialize chunk params: {e}"))
             })?;
             let progress = JobProgress::default();
             let progress_json = serde_json::to_string(&progress).map_err(|e| {
-                MiroirError::TaskStore(format!("failed to serialize progress: {}", e))
+                MiroirError::TaskStore(format!("failed to serialize progress: {e}"))
             })?;
 
             let new_job = NewJob {
@@ -555,13 +546,13 @@ impl ClaimedJob {
     /// Parse the job parameters.
     pub fn parse_params(&self) -> Result<JobParams> {
         serde_json::from_str(&self.params)
-            .map_err(|e| MiroirError::TaskStore(format!("failed to deserialize params: {}", e)))
+            .map_err(|e| MiroirError::TaskStore(format!("failed to deserialize params: {e}")))
     }
 
     /// Parse the current progress.
     pub fn parse_progress(&self) -> Result<JobProgress> {
         serde_json::from_str(&self.progress)
-            .map_err(|e| MiroirError::TaskStore(format!("failed to deserialize progress: {}", e)))
+            .map_err(|e| MiroirError::TaskStore(format!("failed to deserialize progress: {e}")))
     }
 
     /// Check if this is a chunk job.

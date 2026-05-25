@@ -11,7 +11,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use miroir_core::hedging::{HedgeOutcome, HedgingConfig, HedgingManager};
-use miroir_core::router::assign_shard_in_group;
 use miroir_core::scatter::{
     execute_hedged_request, NodeClient, NodeError, SearchRequest, VectorMode,
 };
@@ -59,6 +58,7 @@ fn make_search_request() -> SearchRequest {
 }
 
 /// Mock node client that can simulate delays per node.
+#[derive(Default)]
 struct DelayedMockNodeClient {
     /// Responses keyed by node ID.
     responses: HashMap<NodeId, serde_json::Value>,
@@ -66,14 +66,6 @@ struct DelayedMockNodeClient {
     delays: HashMap<NodeId, Duration>,
 }
 
-impl Default for DelayedMockNodeClient {
-    fn default() -> Self {
-        Self {
-            responses: HashMap::new(),
-            delays: HashMap::new(),
-        }
-    }
-}
 
 impl NodeClient for DelayedMockNodeClient {
     async fn search_node(
@@ -171,8 +163,7 @@ async fn p5_2_a1_chaos_slow_node_avoided_via_hedging() {
     // Hedge should have fired and won
     assert!(
         outcome == Some(HedgeOutcome::HedgeWon),
-        "Hedge should fire and win: got {:?}",
-        outcome
+        "Hedge should fire and win: got {outcome:?}"
     );
 
     // Total latency should be MUCH closer to fast replica (5ms + hedge overhead)
@@ -184,8 +175,7 @@ async fn p5_2_a1_chaos_slow_node_avoided_via_hedging() {
     // Definitely NOT 500ms.
     assert!(
         total_latency < Duration::from_millis(100),
-        "Total latency {:?} should be far less than slow node's 500ms (hedging should avoid it)",
-        total_latency
+        "Total latency {total_latency:?} should be far less than slow node's 500ms (hedging should avoid it)"
     );
 
     // Verify we got a response from a fast replica (not the slow one)
@@ -194,8 +184,7 @@ async fn p5_2_a1_chaos_slow_node_avoided_via_hedging() {
     let doc_id = hits[0]["id"].as_str().unwrap();
     assert!(
         doc_id == "fast-1" || doc_id == "fast-2",
-        "Response should come from a fast replica, got {}",
-        doc_id
+        "Response should come from a fast replica, got {doc_id}"
     );
 
     // Hedge count should be 1
@@ -274,9 +263,9 @@ async fn p5_2_a2_hedging_p95_close_to_healthy_baseline() {
     let hedged_p95 = percentile(&degraded_with_hedge_latencies, 95);
     let no_hedge_p95 = percentile(&degraded_no_hedge_latencies, 95);
 
-    println!("Healthy p95: {:?}", healthy_p95);
-    println!("Hedged p95: {:?}", hedged_p95);
-    println!("No-hedge p95: {:?}", no_hedge_p95);
+    println!("Healthy p95: {healthy_p95:?}");
+    println!("Hedged p95: {hedged_p95:?}");
+    println!("No-hedge p95: {no_hedge_p95:?}");
 
     // With hedging, p95 should be close to healthy baseline
     // Without hedging, p95 would be degraded by the slow node
@@ -285,25 +274,20 @@ async fn p5_2_a2_hedging_p95_close_to_healthy_baseline() {
     // but hedging should definitely be better than no hedging
     assert!(
         hedged_p95 < no_hedge_p95,
-        "Hedged p95 {:?} should be better than no-hedge p95 {:?}",
-        hedged_p95,
-        no_hedge_p95
+        "Hedged p95 {hedged_p95:?} should be better than no-hedge p95 {no_hedge_p95:?}"
     );
 
     // Hedged p95 should not be dramatically worse than healthy baseline
     // (allowing 5× for test overhead with 15ms hedge trigger)
     assert!(
         hedged_p95 < healthy_p95 * 5,
-        "Hedged p95 {:?} should be within 5× of healthy p95 {:?}",
-        hedged_p95,
-        healthy_p95
+        "Hedged p95 {hedged_p95:?} should be within 5× of healthy p95 {healthy_p95:?}"
     );
 
     // Without hedging, p95 would be severely degraded (close to 500ms)
     assert!(
         no_hedge_p95 > Duration::from_millis(200),
-        "No-hedge p95 {:?} should be severely degraded by slow node",
-        no_hedge_p95
+        "No-hedge p95 {no_hedge_p95:?} should be severely degraded by slow node"
     );
 }
 
@@ -456,8 +440,7 @@ async fn run_searches_with_latency(
     }
 
     println!(
-        "Total hedges issued: {} out of {} queries",
-        total_hedges, count
+        "Total hedges issued: {total_hedges} out of {count} queries"
     );
 
     latencies

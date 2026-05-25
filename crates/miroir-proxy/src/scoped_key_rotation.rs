@@ -66,7 +66,7 @@ pub async fn run_scoped_key_rotator(state: ScopedKeyRotationState) {
         // Check each index for rotation need with a per-index leader lease
         let indexes = discover_scoped_indexes(&state).await;
         for index_uid in &indexes {
-            let lease_scope = format!("search_ui_key_rotation:{}", index_uid);
+            let lease_scope = format!("search_ui_key_rotation:{index_uid}");
             let lease_now = now_ms();
             let lease_ttl_ms = (state.config.leader_election.lease_ttl_s as i64) * 1000;
             let expires_at = lease_now + lease_ttl_ms;
@@ -111,8 +111,8 @@ pub async fn check_and_rotate(
         .map_err(|e| format!("redis read failed: {e}"))?;
 
     // Timing gate check (skip if force)
-    if !force {
-        if !should_rotate(&current, &state.config) {
+    if !force
+        && !should_rotate(&current, &state.config) {
             return Ok(RotateScopedKeyResponse {
                 status: "skipped".into(),
                 index_uid: index_uid.into(),
@@ -121,7 +121,6 @@ pub async fn check_and_rotate(
                 error: None,
             });
         }
-    }
 
     // Step 1: Mint new scoped key via Meilisearch POST /keys
     let client = MeilisearchClient::new(state.config.node_master_key.clone());
@@ -258,7 +257,7 @@ pub async fn mint_scoped_key(
     config: &MiroirConfig,
     index_uid: &str,
 ) -> Result<(String, String), String> {
-    let description = format!("miroir search-ui scoped key for index {}", index_uid);
+    let description = format!("miroir search-ui scoped key for index {index_uid}");
     let body = serde_json::json!({
         "description": description,
         "actions": ["search"],
@@ -272,7 +271,7 @@ pub async fn mint_scoped_key(
 
     for node in &config.nodes {
         match client.post_raw(&node.address, "/keys", &body).await {
-            Ok((status, text)) if status >= 200 && status < 300 => {
+            Ok((status, text)) if (200..300).contains(&status) => {
                 if created_key.is_none() {
                     let resp: serde_json::Value = serde_json::from_str(&text)
                         .map_err(|e| format!("parse key response: {e}"))?;
@@ -302,12 +301,12 @@ pub async fn revoke_previous_key(
     config: &MiroirConfig,
     previous_uid: &str,
 ) -> Result<(), String> {
-    let path = format!("/keys/{}", previous_uid);
+    let path = format!("/keys/{previous_uid}");
     let mut errors = Vec::new();
 
     for node in &config.nodes {
         match client.delete_raw(&node.address, &path).await {
-            Ok((_status, _text)) if _status >= 200 && _status < 300 => {}
+            Ok((_status, _text)) if (200..300).contains(&_status) => {}
             Ok((status, _text)) => {
                 // 404 is fine — key was already revoked or never existed
                 if status != 404 {

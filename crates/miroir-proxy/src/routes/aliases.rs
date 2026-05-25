@@ -7,7 +7,7 @@ use axum::{
     Json,
 };
 use miroir_core::{
-    alias::{Alias, AliasKind},
+    alias::AliasKind,
     config::MiroirConfig,
     task_store::TaskStore,
 };
@@ -152,8 +152,7 @@ where
                 Json(ErrorResponse {
                     code: "alias_exists_ilm_managed".to_string(),
                     message: format!(
-                        "alias '{}' exists and is managed by ILM policy; use ILM API to modify",
-                        name
+                        "alias '{name}' exists and is managed by ILM policy; use ILM API to modify"
                     ),
                 }),
             ));
@@ -179,7 +178,7 @@ where
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 code: "alias_creation_failed".to_string(),
-                message: format!("failed to create alias: {}", e),
+                message: format!("failed to create alias: {e}"),
             }),
         )
     })?;
@@ -229,7 +228,7 @@ where
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 code: "alias_lookup_failed".to_string(),
-                message: format!("failed to lookup alias: {}", e),
+                message: format!("failed to lookup alias: {e}"),
             }),
         )
     })?;
@@ -259,7 +258,7 @@ where
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 code: "alias_not_found".to_string(),
-                message: format!("alias '{}' not found", name),
+                message: format!("alias '{name}' not found"),
             }),
         )),
     }
@@ -307,7 +306,7 @@ where
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 code: "alias_lookup_failed".to_string(),
-                message: format!("failed to lookup alias: {}", e),
+                message: format!("failed to lookup alias: {e}"),
             }),
         )
     })?;
@@ -317,7 +316,7 @@ where
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 code: "alias_not_found".to_string(),
-                message: format!("alias '{}' not found", name),
+                message: format!("alias '{name}' not found"),
             }),
         )
     })?;
@@ -351,7 +350,7 @@ where
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
                         code: "alias_flip_failed".to_string(),
-                        message: format!("failed to flip alias: {}", e),
+                        message: format!("failed to flip alias: {e}"),
                     }),
                 )
             })?;
@@ -367,7 +366,7 @@ where
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
                         code: "alias_lookup_failed".to_string(),
-                        message: format!("failed to lookup updated alias: {}", e),
+                        message: format!("failed to lookup updated alias: {e}"),
                     }),
                 )
             })?
@@ -438,7 +437,7 @@ where
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 code: "alias_deletion_failed".to_string(),
-                message: format!("failed to delete alias: {}", e),
+                message: format!("failed to delete alias: {e}"),
             }),
         )
     })?;
@@ -450,7 +449,7 @@ where
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 code: "alias_not_found".to_string(),
-                message: format!("alias '{}' not found", name),
+                message: format!("alias '{name}' not found"),
             }),
         ))
     }
@@ -489,7 +488,7 @@ where
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 code: "alias_list_failed".to_string(),
-                message: format!("failed to list aliases: {}", e),
+                message: format!("failed to list aliases: {e}"),
             }),
         )
     })?;
@@ -513,9 +512,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
-    use axum::http::Request;
-    use tower::ServiceExt;
+    
+    
+    
 
     #[test]
     fn test_create_alias_request_single() {

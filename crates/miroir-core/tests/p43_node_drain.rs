@@ -13,8 +13,8 @@ use tokio::sync::RwLock;
 
 use miroir_core::{
     config::UnavailableShardPolicy,
-    migration::{MigrationConfig, MigrationCoordinator, NodeId as MigrationNodeId, ShardId},
-    rebalancer::{HttpMigrationExecutor, MigrationExecutor, Rebalancer, RebalancerConfig},
+    migration::MigrationConfig,
+    rebalancer::{MigrationExecutor, Rebalancer, RebalancerConfig},
     router::assign_shard_in_group,
     scatter::execute_scatter,
     scatter::{MockNodeClient, SearchRequest},
@@ -65,7 +65,7 @@ impl DrainTestExecutor {
             });
             stored
                 .entry((node.to_string(), shard_id))
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(doc);
         }
     }
@@ -119,7 +119,7 @@ impl MigrationExecutor for DrainTestExecutor {
                 let mut stored = self.stored_docs.lock().unwrap();
                 let docs = stored
                     .entry((target_node.to_string(), shard_id as u32))
-                    .or_insert_with(Vec::new);
+                    .or_default();
 
                 // Deduplicate by document ID
                 if let Some(doc_id) = doc.get("id").and_then(|v| v.as_str()) {
@@ -172,7 +172,7 @@ async fn p43_drain_node_searches_still_succeed_zero_degraded() {
     let rf = 2;
 
     // Create 3-node topology with RF=2
-    let mut topo = create_test_topology(shards, 3, rf);
+    let topo = create_test_topology(shards, 3, rf);
 
     let executor = Arc::new(DrainTestExecutor::default());
 
@@ -202,7 +202,7 @@ async fn p43_drain_node_searches_still_succeed_zero_degraded() {
         anti_entropy_enabled: false,
     };
 
-    let mut rebalancer = Rebalancer::new(config, topo_arc.clone(), migration_config)
+    let rebalancer = Rebalancer::new(config, topo_arc.clone(), migration_config)
         .with_migration_executor(executor.clone());
 
     // Start drain operation
@@ -211,7 +211,7 @@ async fn p43_drain_node_searches_still_succeed_zero_degraded() {
     };
 
     let result = rebalancer.drain_node(request).await;
-    assert!(result.is_ok(), "Drain should succeed: {:?}", result);
+    assert!(result.is_ok(), "Drain should succeed: {result:?}");
 
     // Wait for drain to complete
     let mut attempts = 0;
@@ -290,7 +290,7 @@ async fn p43_verify_drain_returns_zero_for_all_shards() {
     let docs_per_shard = 50;
     let rf = 2;
 
-    let mut topo = create_test_topology(shards, 3, rf);
+    let topo = create_test_topology(shards, 3, rf);
     let executor = Arc::new(DrainTestExecutor::default());
 
     // Populate node-1 with documents for shards it's actually assigned to hold
@@ -309,7 +309,7 @@ async fn p43_verify_drain_returns_zero_for_all_shards() {
     let config = RebalancerConfig::default();
     let migration_config = MigrationConfig::default();
 
-    let mut rebalancer = Rebalancer::new(config, topo_arc.clone(), migration_config)
+    let rebalancer = Rebalancer::new(config, topo_arc.clone(), migration_config)
         .with_migration_executor(executor.clone());
 
     let request = miroir_core::rebalancer::DrainNodeRequest {
@@ -348,8 +348,7 @@ async fn p43_verify_drain_returns_zero_for_all_shards() {
             let count = executor.get_stored_doc_count("node-1", shard_id);
             assert_eq!(
                 count, 0,
-                "Shard {} should have 0 documents after drain, got {}",
-                shard_id, count
+                "Shard {shard_id} should have 0 documents after drain, got {count}"
             );
         }
     }
@@ -369,9 +368,7 @@ async fn p43_verify_drain_returns_zero_for_all_shards() {
             // We verify at least some documents were migrated (not exact count)
             assert!(
                 total_docs > 0,
-                "Shard {} should have at least some docs on remaining nodes, got {}",
-                shard_id,
-                total_docs
+                "Shard {shard_id} should have at least some docs on remaining nodes, got {total_docs}"
             );
         }
     }
@@ -386,7 +383,7 @@ async fn p43_remove_without_drain_returns_conflict() {
     let shards = 64;
     let rf = 2;
 
-    let mut topo = create_test_topology(shards, 3, rf);
+    let topo = create_test_topology(shards, 3, rf);
 
     // Try to remove node-1 without draining first
     let topo_arc = Arc::new(RwLock::new(topo.clone()));
@@ -405,11 +402,10 @@ async fn p43_remove_without_drain_returns_conflict() {
     // Should fail with 409 Conflict
     assert!(result.is_err(), "Remove without drain should fail");
     let err = result.unwrap_err();
-    let err_msg = format!("{}", err);
+    let err_msg = format!("{err}");
     assert!(
         err_msg.contains("not in draining state") || err_msg.contains("drain"),
-        "Error should mention draining: {}",
-        err
+        "Error should mention draining: {err}"
     );
 }
 
@@ -430,7 +426,7 @@ async fn p43_force_drain_rf1_surfaces_warning() {
     let config = RebalancerConfig::default();
     let migration_config = MigrationConfig::default();
 
-    let mut rebalancer = Rebalancer::new(config, topo_arc.clone(), migration_config);
+    let rebalancer = Rebalancer::new(config, topo_arc.clone(), migration_config);
 
     // Try force drain
     let request = miroir_core::rebalancer::DrainNodeRequest {
@@ -503,7 +499,7 @@ async fn p43_cannot_drain_last_node_in_group() {
     let config = RebalancerConfig::default();
     let migration_config = MigrationConfig::default();
 
-    let mut rebalancer = Rebalancer::new(config, topo_arc.clone(), migration_config);
+    let rebalancer = Rebalancer::new(config, topo_arc.clone(), migration_config);
 
     let request = miroir_core::rebalancer::DrainNodeRequest {
         node_id: "node-0".to_string(),

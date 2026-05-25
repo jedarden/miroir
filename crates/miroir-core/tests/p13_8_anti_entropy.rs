@@ -13,8 +13,8 @@ fn make_test_topology() -> Topology {
     let mut topo = Topology::new(64, 2, 2);
     for i in 0u32..3 {
         let mut node = Node::new(
-            NodeId::new(format!("node-{}", i)),
-            format!("http://node-{}:7700", i),
+            NodeId::new(format!("node-{i}")),
+            format!("http://node-{i}:7700"),
             i % 2,
         );
         node.status = NodeStatus::Active;

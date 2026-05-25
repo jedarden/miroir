@@ -624,8 +624,7 @@ async fn search_handler(
                     let _err = MeilisearchError::new(
                         MiroirCode::SettingsVersionStale,
                         format!(
-                            "no covering set available for settings version floor {} on index '{}'",
-                            floor, index
+                            "no covering set available for settings version floor {floor} on index '{index}'"
                         ),
                     );
                     return Response::builder()
@@ -848,7 +847,7 @@ async fn search_handler(
             .map(|id| id.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        response = response.header("X-Miroir-Degraded", format!("shards={}", shard_ids));
+        response = response.header("X-Miroir-Degraded", format!("shards={shard_ids}"));
     } else if result.degraded {
         response = response.header("X-Miroir-Degraded", "partial");
     }
@@ -1185,8 +1184,7 @@ async fn search_multi_targets(
                     let _err = MeilisearchError::new(
                         MiroirCode::SettingsVersionStale,
                         format!(
-                            "no covering set available for settings version floor {} on index '{}'",
-                            floor, primary_target
+                            "no covering set available for settings version floor {floor} on index '{primary_target}'"
                         ),
                     );
                     return Response::builder()
@@ -1317,7 +1315,7 @@ async fn search_multi_targets(
             .map(|id| id.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        response = response.header("X-Miroir-Degraded", format!("shards={}", shard_ids));
+        response = response.header("X-Miroir-Degraded", format!("shards={shard_ids}"));
     } else if result.degraded {
         response = response.header("X-Miroir-Degraded", "partial");
     }
@@ -1369,7 +1367,7 @@ mod tests {
             ranking_score: Some(false),
             rest: serde_json::json!({}),
         };
-        let debug_output = format!("{:?}", body);
+        let debug_output = format!("{body:?}");
 
         assert!(
             !debug_output.contains("sensitive"),

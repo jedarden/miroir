@@ -182,7 +182,7 @@ impl Explainer {
         let coalescing_eligible = self.config.query_coalescing.enabled;
 
         // Check cache candidate
-        let cache_candidate = !query.filter.is_some() && query.q.is_some();
+        let cache_candidate = query.filter.is_none() && query.q.is_some();
 
         // Estimate p95 latency
         let estimated_p95_ms = self.estimate_latency(topology, chosen_group.id, &target_shards);
@@ -250,7 +250,7 @@ impl Explainer {
                         let group_id = self.hash_tenant_to_group(tenant, topology);
                         return ChosenGroup {
                             id: group_id,
-                            reason: format!("tenant affinity: {}", tenant),
+                            reason: format!("tenant affinity: {tenant}"),
                         };
                     }
                     "explicit" => {
@@ -258,7 +258,7 @@ impl Explainer {
                         {
                             return ChosenGroup {
                                 id: group_id,
-                                reason: format!("explicit tenant mapping: {}", tenant),
+                                reason: format!("explicit tenant mapping: {tenant}"),
                             };
                         }
                     }

@@ -315,9 +315,7 @@ impl<C: NodeClient> ReshardExecutor<C> {
         // Get a healthy node from topology for verification
         let topology = self.topology.read().await;
         let node = topology
-            .nodes()
-            .filter(|n| n.is_healthy())
-            .next()
+            .nodes().find(|n| n.is_healthy())
             .ok_or_else(|| {
                 MiroirError::Topology("No healthy nodes available for verification".to_string())
             })?;
@@ -433,7 +431,7 @@ impl<C: NodeClient> ReshardExecutor<C> {
         let history_retention = 10; // Default history retention for rollback
         let flipped = task_store
             .flip_alias(&state.index_uid, shadow_name, history_retention)
-            .map_err(|e| MiroirError::AliasSwapFailed(format!("{}", e)))?;
+            .map_err(|e| MiroirError::AliasSwapFailed(format!("{e}")))?;
 
         if !flipped {
             return Err(MiroirError::AliasSwapFailed(format!(

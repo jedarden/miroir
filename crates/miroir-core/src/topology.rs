@@ -121,8 +121,7 @@ impl NodeStatus {
             Ok(target)
         } else {
             Err(MiroirError::Topology(format!(
-                "illegal state transition: {:?} → {:?}",
-                self, target
+                "illegal state transition: {self:?} → {target:?}"
             )))
         }
     }

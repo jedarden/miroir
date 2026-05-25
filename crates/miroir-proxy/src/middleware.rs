@@ -6,14 +6,12 @@ use async_trait::async_trait;
 use axum::http::request::Parts;
 use axum::{
     extract::{FromRequestParts, Request, State},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue},
     middleware::Next,
-    response::{IntoResponse, Response},
-    routing::get,
-    Extension, Router,
+    response::Response,
+    routing::get, Router,
 };
 
-use hex;
 use miroir_core::config::MiroirConfig;
 use prometheus::{
     Counter, CounterVec, Encoder, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts,
@@ -30,6 +28,12 @@ use uuid::Uuid;
 /// allowing handlers to extract it via `Request.extensions().get::<RequestId>()`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RequestId(pub String);
+
+impl Default for RequestId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl RequestId {
     /// Create a new RequestId from a UUIDv7.
@@ -67,13 +71,9 @@ impl RequestId {
 /// Extracted from the `X-Miroir-Session` header and stored in request extensions.
 /// Handlers can access it via `Request.extensions().get::<SessionId>()`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub struct SessionId(pub String);
 
-impl Default for SessionId {
-    fn default() -> Self {
-        Self(String::new())
-    }
-}
 
 impl SessionId {
     /// Get the inner session ID string.
@@ -142,7 +142,7 @@ pub async fn request_id_middleware(mut req: Request, next: Next) -> Response {
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| RequestId::parse(s.to_string()))
-        .unwrap_or_else(RequestId::new);
+        .unwrap_or_default();
 
     // Store in request extensions for handler access
     req.extensions_mut().insert(request_id.clone());
@@ -1532,9 +1532,9 @@ impl Metrics {
         let metric_families = self.registry.gather();
         let mut buffer = Vec::new();
         encoder.encode(&metric_families, &mut buffer)?;
-        Ok(String::from_utf8(buffer).map_err(|e| {
-            prometheus::Error::Msg(format!("failed to convert metrics to UTF-8: {}", e))
-        })?)
+        String::from_utf8(buffer).map_err(|e| {
+            prometheus::Error::Msg(format!("failed to convert metrics to UTF-8: {e}"))
+        })
     }
 
     pub fn admin_session_key_generated(&self) -> Gauge {
@@ -1562,7 +1562,7 @@ pub fn generate_request_id() -> String {
     let hash = hasher.finish();
 
     // Encode as hex (16 chars = 64 bits)
-    format!("{:016x}", hash)
+    format!("{hash:016x}")
 }
 
 /// Extension trait to add request ID extraction utilities.
@@ -1695,7 +1695,7 @@ pub async fn telemetry_middleware(
     // Base fields: timestamp (from tracing-subscriber), level, message, duration_ms
     // Additional fields (index, node_count, estimated_hits, degraded)
     // are added by request handlers via the tracing span.
-    let message = format!("{} {}", method, status);
+    let message = format!("{method} {status}");
     if status.is_server_error() {
         tracing::error!(
             target: "miroir.request",
@@ -1753,7 +1753,7 @@ async fn metrics_handler(State(metrics): State<Metrics>) -> Response {
         Ok(metrics) => metrics,
         Err(e) => {
             tracing::error!(error = %e, "failed to encode metrics");
-            format!("# ERROR: failed to encode metrics: {}\n", e)
+            format!("# ERROR: failed to encode metrics: {e}\n")
         }
     };
 
@@ -2516,7 +2516,7 @@ mod tests {
             "miroir_rebalance_duration_seconds",
         ];
         for name in &expected_metrics {
-            assert!(output.contains(name), "missing metric: {}", name);
+            assert!(output.contains(name), "missing metric: {name}");
         }
 
         // With defaults (all §13 enabled), advanced metrics should be present
@@ -2574,7 +2574,7 @@ mod tests {
             "miroir_search_ui_p95_ms",
         ];
         for name in &advanced_metrics {
-            assert!(output.contains(name), "missing advanced metric: {}", name);
+            assert!(output.contains(name), "missing advanced metric: {name}");
         }
     }
 
@@ -2625,8 +2625,7 @@ mod tests {
         for name in &advanced_names {
             assert!(
                 !encoded.contains(name),
-                "advanced metric should not appear when disabled: {}",
-                name
+                "advanced metric should not appear when disabled: {name}"
             );
         }
     }
@@ -2881,7 +2880,7 @@ mod tests {
     fn test_json_log_format_is_valid() {
         // Verify that tracing-subscriber's JSON layer produces valid JSON
         // This test ensures the log format matches plan §10 requirements
-        use tracing_subscriber::fmt::format::FmtSpan;
+        
 
         // Build a JSON subscriber like the one in main.rs
         let subscriber = tracing_subscriber::fmt()

@@ -8,7 +8,7 @@ use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::RwLock;
 
 /// Replica selection strategy.
@@ -270,7 +270,7 @@ impl ReplicaSelector {
 
     /// Round-robin selection.
     async fn select_round_robin(&self, candidates: &[NodeId], group_id: u64) -> Option<NodeId> {
-        let key = format!("group_{}", group_id);
+        let key = format!("group_{group_id}");
         let mut counter = self.rr_counter.write().await;
         let idx = *counter.entry(key.clone()).or_insert(0) as usize % candidates.len();
         *counter.get_mut(&key).unwrap() += 1;

@@ -99,7 +99,7 @@ where
     let assertions: Vec<CanaryAssertion> = req
         .assertions
         .into_iter()
-        .map(|v| serde_json::from_value(v))
+        .map(serde_json::from_value)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| {
             tracing::error!(error = %e, "Invalid canary assertion");
@@ -197,7 +197,7 @@ where
             tracing::error!(error = %e, "Failed to get canary");
             StatusCode::INTERNAL_SERVER_ERROR
         })?
-        .ok_or_else(|| StatusCode::NOT_FOUND)?;
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     let runs = state.store.get_canary_runs(&id, 100).unwrap_or_default();
 
@@ -232,7 +232,7 @@ where
             tracing::error!(error = %e, "Failed to get canary");
             StatusCode::INTERNAL_SERVER_ERROR
         })?
-        .ok_or_else(|| StatusCode::NOT_FOUND)?;
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     // Parse query
     let query: SearchQuery = serde_json::from_value(serde_json::json!(req.query)).map_err(|e| {
@@ -244,7 +244,7 @@ where
     let assertions: Vec<CanaryAssertion> = req
         .assertions
         .into_iter()
-        .map(|v| serde_json::from_value(v))
+        .map(serde_json::from_value)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| {
             tracing::error!(error = %e, "Invalid canary assertion");
@@ -351,7 +351,7 @@ where
     let captured = queries
         .iter()
         .find(|q| q.index_uid == index_uid)
-        .ok_or_else(|| StatusCode::NOT_FOUND)?;
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     let id = Uuid::new_v4().to_string();
 

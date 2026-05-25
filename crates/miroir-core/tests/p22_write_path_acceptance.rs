@@ -103,8 +103,8 @@ fn test_1000_docs_indexed_retrievable_by_id() {
 
         // Verify the original fields are present
         assert_eq!(stored_doc["id"], doc_id);
-        assert_eq!(stored_doc["title"], format!("Document {}", i));
-        assert_eq!(stored_doc["content"], format!("Content for document {}", i));
+        assert_eq!(stored_doc["title"], format!("Document {i}"));
+        assert_eq!(stored_doc["content"], format!("Content for document {i}"));
 
         // Verify _miroir_shard was injected
         assert!(
@@ -150,26 +150,19 @@ fn test_docs_distribute_uniformly_across_nodes() {
     for (node, count) in &node_shard_counts {
         assert!(
             (*count as f64) >= (shard_count as f64 * 0.15),
-            "node {} has {} shards, expected at least 15% of {}",
-            node,
-            count,
-            shard_count
+            "node {node} has {count} shards, expected at least 15% of {shard_count}"
         );
         assert!(
             (*count as f64) <= (shard_count as f64 * 0.50),
-            "node {} has {} shards, expected at most 50% of {}",
-            node,
-            count,
-            shard_count
+            "node {node} has {count} shards, expected at most 50% of {shard_count}"
         );
     }
 
     // Verify the exact 17-26 range from plan §8
-    for (_node, count) in &node_shard_counts {
+    for count in node_shard_counts.values() {
         assert!(
             (17..=26).contains(count),
-            "node has {} shards, expected 17-26",
-            count
+            "node has {count} shards, expected 17-26"
         );
     }
 }
@@ -375,16 +368,16 @@ async fn test_delete_by_ids_array_produces_independent_per_shard_calls() {
         // Find IDs that route to different shards
         let s1 = 0u32;
         let mut s2 = 1u32;
-        while shard_for_key(&format!("doc-{}", s1), shard_count)
-            == shard_for_key(&format!("doc-{}", s2), shard_count)
+        while shard_for_key(&format!("doc-{s1}"), shard_count)
+            == shard_for_key(&format!("doc-{s2}"), shard_count)
         {
             s2 += 1;
         }
         (
-            format!("doc-{}", s1),
-            format!("doc-{}", s2),
-            shard_for_key(&format!("doc-{}", s1), shard_count),
-            shard_for_key(&format!("doc-{}", s2), shard_count),
+            format!("doc-{s1}"),
+            format!("doc-{s2}"),
+            shard_for_key(&format!("doc-{s1}"), shard_count),
+            shard_for_key(&format!("doc-{s2}"), shard_count),
         )
     } else {
         (doc_a.to_string(), doc_b.to_string(), shard_a, shard_b)
@@ -424,7 +417,7 @@ async fn test_delete_by_ids_array_produces_independent_per_shard_calls() {
 
     // Each shard should have exactly one ID
     for (shard_id, id_list) in &shard_id_map {
-        assert_eq!(id_list.len(), 1, "shard {} should have 1 ID", shard_id);
+        assert_eq!(id_list.len(), 1, "shard {shard_id} should have 1 ID");
     }
 }
 

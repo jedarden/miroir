@@ -23,23 +23,19 @@ fn test_all_miroir_error_codes_have_correct_shape() {
         // Verify all required fields exist
         assert!(
             json_val.get("message").is_some(),
-            "message field missing for {:?}",
-            code
+            "message field missing for {code:?}"
         );
         assert!(
             json_val.get("code").is_some(),
-            "code field missing for {:?}",
-            code
+            "code field missing for {code:?}"
         );
         assert!(
             json_val.get("type").is_some(),
-            "type field missing for {:?}",
-            code
+            "type field missing for {code:?}"
         );
         assert!(
             json_val.get("link").is_some(),
-            "link field missing for {:?}",
-            code
+            "link field missing for {code:?}"
         );
 
         // Verify field types
@@ -60,9 +56,7 @@ fn test_error_code_strings_have_miroir_prefix() {
         let code_str = code.as_str();
         assert!(
             code_str.starts_with("miroir_"),
-            "Error code {:?} ({}) does not start with 'miroir_'",
-            code,
-            code_str
+            "Error code {code:?} ({code_str}) does not start with 'miroir_'"
         );
     }
 }
@@ -167,7 +161,7 @@ fn test_error_json_matches_meilisearch_shape() {
 /// Test 6: Error with custom metadata preserves shape.
 #[test]
 fn test_error_with_custom_metadata_preserves_shape() {
-    let mut err = MeilisearchError::new(
+    let err = MeilisearchError::new(
         MiroirCode::ReservedField,
         "document contains reserved field `_miroir_shard`",
     );
@@ -217,7 +211,7 @@ fn test_reserved_field_error_includes_field_name() {
     let field_name = "_miroir_internal";
     let err = MeilisearchError::new(
         MiroirCode::ReservedField,
-        &format!("document contains reserved field `{}`", field_name),
+        format!("document contains reserved field `{field_name}`"),
     );
 
     let json_val = serde_json::to_value(&err).expect("failed to serialize");
@@ -263,15 +257,11 @@ fn test_error_link_format_is_consistent() {
         let link = code.doc_link();
         assert!(
             link.starts_with("https://github.com/jedarden/miroir/blob/main/docs/errors.md#"),
-            "Error code {:?} has unexpected link format: {}",
-            code,
-            link
+            "Error code {code:?} has unexpected link format: {link}"
         );
         assert!(
             link.ends_with(code.as_str()),
-            "Error code {:?} link doesn't end with code: {}",
-            code,
-            link
+            "Error code {code:?} link doesn't end with code: {link}"
         );
     }
 }

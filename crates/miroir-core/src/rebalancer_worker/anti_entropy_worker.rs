@@ -174,7 +174,7 @@ impl NodeClient for HttpNodeClient {
             .json(&request.documents)
             .send()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("write failed: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("write failed: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -191,7 +191,7 @@ impl NodeClient for HttpNodeClient {
         let json: Value = response
             .json()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("parse response failed: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("parse response failed: {e}")))?;
 
         let success = json
             .get("success")
@@ -252,7 +252,7 @@ impl NodeClient for HttpNodeClient {
             .header("Authorization", format!("Bearer {}", self.node_master_key))
             .send()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("fetch failed: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("fetch failed: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -269,12 +269,11 @@ impl NodeClient for HttpNodeClient {
         let json: Value = response
             .json()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("parse failed: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("parse failed: {e}")))?;
 
         let results = json
             .get("results")
-            .and_then(|v| v.as_array())
-            .map(|v| v.clone())
+            .and_then(|v| v.as_array()).cloned()
             .unwrap_or_default();
 
         let total = json.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -306,7 +305,7 @@ impl NodeClient for HttpNodeClient {
             .json(&request.body)
             .send()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("search failed: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("search failed: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -323,7 +322,7 @@ impl NodeClient for HttpNodeClient {
         response
             .json()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("parse response failed: {}", e)))
+            .map_err(|e| NodeError::NetworkError(format!("parse response failed: {e}")))
     }
 
     async fn preflight_node(
@@ -350,7 +349,7 @@ impl NodeClient for HttpNodeClient {
             .header("Authorization", format!("Bearer {}", self.node_master_key))
             .send()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("preflight failed: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("preflight failed: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -367,7 +366,7 @@ impl NodeClient for HttpNodeClient {
         let json: Value = response
             .json()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("parse response failed: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("parse response failed: {e}")))?;
 
         let total_docs = json.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
 
@@ -412,7 +411,7 @@ impl NodeClient for HttpNodeClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("delete failed: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("delete failed: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -429,7 +428,7 @@ impl NodeClient for HttpNodeClient {
         let json: Value = response
             .json()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("parse response failed: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("parse response failed: {e}")))?;
 
         Ok(crate::scatter::DeleteResponse {
             success: json
@@ -658,7 +657,7 @@ impl AntiEntropyWorker {
                     }
                     Err(e) => {
                         error!(scope = %scope, error = %e, "spawn_blocking task failed");
-                        return Err(format!("spawn_blocking task failed: {}", e));
+                        return Err(format!("spawn_blocking task failed: {e}"));
                     }
                 }
             }
@@ -710,7 +709,7 @@ impl AntiEntropyWorker {
 
                 Ok(())
             }
-            Err(e) => Err(format!("anti-entropy pass failed: {}", e)),
+            Err(e) => Err(format!("anti-entropy pass failed: {e}")),
         }
     }
 }

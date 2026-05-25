@@ -173,22 +173,21 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
 
         // Get source group
         let source = topology.group(source_group).ok_or_else(|| {
-            crate::error::MiroirError::Topology(format!("source group {} not found", source_group))
+            crate::error::MiroirError::Topology(format!("source group {source_group} not found"))
         })?;
 
         // Get target group (the new group being added)
         let target_group_id = {
             let coord = self.coordinator.read().await;
             let state = coord.get_state(addition_id).ok_or_else(|| {
-                crate::error::MiroirError::Topology(format!("addition {} not found", addition_id))
+                crate::error::MiroirError::Topology(format!("addition {addition_id} not found"))
             })?;
             state.group_id
         };
 
         let target = topology.group(target_group_id).ok_or_else(|| {
             crate::error::MiroirError::Topology(format!(
-                "target group {} not found",
-                target_group_id
+                "target group {target_group_id} not found"
             ))
         })?;
 
@@ -199,15 +198,13 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
 
         let source_node = source_healthy.first().ok_or_else(|| {
             crate::error::MiroirError::Topology(format!(
-                "no healthy nodes in source group {}",
-                source_group
+                "no healthy nodes in source group {source_group}"
             ))
         })?;
 
         let target_node = target_healthy.first().ok_or_else(|| {
             crate::error::MiroirError::Topology(format!(
-                "no healthy nodes in target group {}",
-                target_group_id
+                "no healthy nodes in target group {target_group_id}"
             ))
         })?;
 
@@ -242,14 +239,12 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
             .await
             .map_err(|_| {
                 crate::error::MiroirError::Routing(format!(
-                    "fetch timeout for shard {} from group {}",
-                    shard_id, source_group
+                    "fetch timeout for shard {shard_id} from group {source_group}"
                 ))
             })?
             .map_err(|e| {
                 crate::error::MiroirError::Routing(format!(
-                    "fetch failed for shard {}: {}",
-                    shard_id, e
+                    "fetch failed for shard {shard_id}: {e}"
                 ))
             })?;
 
@@ -281,8 +276,7 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
                 .await
                 .map_err(|e| {
                     crate::error::MiroirError::Routing(format!(
-                        "write failed for shard {}: {}",
-                        shard_id, e
+                        "write failed for shard {shard_id}: {e}"
                     ))
                 })?;
 
@@ -309,7 +303,7 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
         coord
             .shard_sync_complete(addition_id, shard_id, total_copied)
             .map_err(|e| {
-                crate::error::MiroirError::Topology(format!("failed to mark shard complete: {}", e))
+                crate::error::MiroirError::Topology(format!("failed to mark shard complete: {e}"))
             })?;
 
         info!(
@@ -349,7 +343,7 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
 
                     let mut coord = self.coordinator.write().await;
                     let _ = coord
-                        .fail_addition(addition_id, format!("sync timeout after {:?}", timeout));
+                        .fail_addition(addition_id, format!("sync timeout after {timeout:?}"));
                 }
             }
         }

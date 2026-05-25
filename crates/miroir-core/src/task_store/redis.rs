@@ -248,7 +248,7 @@ impl TaskStore for RedisTaskStore {
     fn migrate(&self) -> Result<()> {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
-        let version_key = format!("{}:schema_version", key_prefix);
+        let version_key = format!("{key_prefix}:schema_version");
         self.block_on(async move {
             let mut conn = manager.lock().await;
             let current: Option<i64> = conn
@@ -288,7 +288,7 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let task = task.clone();
         let key = format!("{}:tasks:{}", key_prefix, task.miroir_id);
-        let index_key = format!("{}:tasks:_index", key_prefix);
+        let index_key = format!("{key_prefix}:tasks:_index");
         let created_at_str = task.created_at.to_string();
 
         self.block_on(async move {
@@ -443,7 +443,7 @@ impl TaskStore for RedisTaskStore {
 
             let mut tasks = Vec::new();
             for miroir_id in all_ids {
-                let key = format!("{}:tasks:{}", key_prefix, miroir_id);
+                let key = format!("{key_prefix}:tasks:{miroir_id}");
                 let fields: HashMap<String, Value> = conn
                     .hgetall(&key)
                     .await
@@ -511,7 +511,7 @@ impl TaskStore for RedisTaskStore {
             let mut to_delete = Vec::new();
 
             for miroir_id in all_ids.into_iter().take(batch_size as usize) {
-                let key = format!("{}:tasks:{}", key_prefix, miroir_id);
+                let key = format!("{key_prefix}:tasks:{miroir_id}");
 
                 // Use a pipeline to get both fields atomically
                 let mut p = pipe();
@@ -536,7 +536,7 @@ impl TaskStore for RedisTaskStore {
             // Delete tasks and remove from index
             let mut pipe = pipe();
             for miroir_id in &to_delete {
-                let key = format!("{}:tasks:{}", key_prefix, miroir_id);
+                let key = format!("{key_prefix}:tasks:{miroir_id}");
                 pipe.del(&key);
                 pipe.srem(&index_key, miroir_id);
             }
@@ -559,7 +559,7 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let index_key = format!("{}:tasks:_index", key_prefix);
+            let index_key = format!("{key_prefix}:tasks:_index");
             let all_ids: Vec<String> = conn
                 .smembers(&index_key)
                 .await
@@ -573,7 +573,7 @@ impl TaskStore for RedisTaskStore {
                 if added >= limit {
                     break;
                 }
-                let key = format!("{}:tasks:{}", key_prefix, miroir_id);
+                let key = format!("{key_prefix}:tasks:{miroir_id}");
 
                 // Get created_at and status
                 let mut p = pipe();
@@ -654,13 +654,13 @@ impl TaskStore for RedisTaskStore {
     fn delete_tasks_batch(&self, miroir_ids: &[&str]) -> Result<usize> {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
-        let index_key = format!("{}:tasks:_index", key_prefix);
+        let index_key = format!("{key_prefix}:tasks:_index");
         let ids: Vec<String> = miroir_ids.iter().map(|s| s.to_string()).collect();
 
         self.block_on(async move {
             let mut pipe = pipe();
             for miroir_id in &ids {
-                let key = format!("{}:tasks:{}", key_prefix, miroir_id);
+                let key = format!("{key_prefix}:tasks:{miroir_id}");
                 pipe.del(&key);
                 pipe.srem(&index_key, miroir_id);
             }
@@ -698,15 +698,14 @@ impl TaskStore for RedisTaskStore {
         let index_uid = index_uid.to_string();
         let node_id = node_id.to_string();
         let key = format!(
-            "{}:node_settings_version:{}:{}",
-            key_prefix, index_uid, node_id
+            "{key_prefix}:node_settings_version:{index_uid}:{node_id}"
         );
-        let index_key = format!("{}:node_settings_version:_index", key_prefix);
+        let index_key = format!("{key_prefix}:node_settings_version:_index");
 
         self.block_on(async move {
             let version_str = version.to_string();
             let updated_at_str = updated_at.to_string();
-            let index_value = format!("{}:{}", index_uid, node_id);
+            let index_value = format!("{index_uid}:{node_id}");
 
             let mut pipe = pipe();
             pipe.hset_multiple(
@@ -734,8 +733,7 @@ impl TaskStore for RedisTaskStore {
         let index_uid = index_uid.to_string();
         let node_id = node_id.to_string();
         let key = format!(
-            "{}:node_settings_version:{}:{}",
-            key_prefix, index_uid, node_id
+            "{key_prefix}:node_settings_version:{index_uid}:{node_id}"
         );
 
         self.block_on(async move {
@@ -768,7 +766,7 @@ impl TaskStore for RedisTaskStore {
         let target_uids_json = alias
             .target_uids
             .as_ref()
-            .map(|uids| serde_json::to_string(uids))
+            .map(serde_json::to_string)
             .transpose()?
             .unwrap_or_default();
         let history_json = serde_json::to_string(&alias.history)?;
@@ -776,8 +774,8 @@ impl TaskStore for RedisTaskStore {
         let created_at_str = alias.created_at.to_string();
         let current_uid = alias.current_uid.clone();
         let has_target_uids = alias.target_uids.is_some();
-        let key = format!("{}:aliases:{}", key_prefix, name);
-        let index_key = format!("{}:aliases:_index", key_prefix);
+        let key = format!("{key_prefix}:aliases:{name}");
+        let index_key = format!("{key_prefix}:aliases:_index");
 
         self.block_on(async move {
             let mut pipe = pipe();
@@ -807,7 +805,7 @@ impl TaskStore for RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let name = name.to_string();
-        let key = format!("{}:aliases:{}", key_prefix, name);
+        let key = format!("{key_prefix}:aliases:{name}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -850,7 +848,7 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let name = name.to_string();
         let new_uid = new_uid.to_string();
-        let key = format!("{}:aliases:{}", key_prefix, name);
+        let key = format!("{key_prefix}:aliases:{name}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -897,8 +895,8 @@ impl TaskStore for RedisTaskStore {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
         let name = name.to_string();
-        let key = format!("{}:aliases:{}", key_prefix, name);
-        let index_key = format!("{}:aliases:_index", key_prefix);
+        let key = format!("{key_prefix}:aliases:{name}");
+        let index_key = format!("{key_prefix}:aliases:_index");
 
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
@@ -924,7 +922,7 @@ impl TaskStore for RedisTaskStore {
     fn list_aliases(&self) -> Result<Vec<AliasRow>> {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
-        let index_key = format!("{}:aliases:_index", key_prefix);
+        let index_key = format!("{key_prefix}:aliases:_index");
 
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
@@ -937,7 +935,7 @@ impl TaskStore for RedisTaskStore {
 
             let mut result = Vec::new();
             for name in names {
-                let key = format!("{}:aliases:{}", key_prefix, name);
+                let key = format!("{key_prefix}:aliases:{name}");
                 let fields: HashMap<String, Value> = conn
                     .hgetall(&key)
                     .await
@@ -991,7 +989,7 @@ impl TaskStore for RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let session_id = session_id.to_string();
-        let key = format!("{}:session:{}", key_prefix, session_id);
+        let key = format!("{key_prefix}:session:{session_id}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -1052,7 +1050,7 @@ impl TaskStore for RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let key = key.to_string();
-        let redis_key = format!("{}:idemp:{}", key_prefix, key);
+        let redis_key = format!("{key_prefix}:idemp:{key}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -1090,8 +1088,8 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let job = job.clone();
         let key = format!("{}:jobs:{}", key_prefix, job.id);
-        let queued_key = format!("{}:jobs:_queued", key_prefix);
-        let index_key = format!("{}:jobs:_index", key_prefix);
+        let queued_key = format!("{key_prefix}:jobs:_queued");
+        let index_key = format!("{key_prefix}:jobs:_index");
 
         self.block_on(async move {
             let mut pipe = pipe();
@@ -1139,7 +1137,7 @@ impl TaskStore for RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let id = id.to_string();
-        let key = format!("{}:jobs:{}", key_prefix, id);
+        let key = format!("{key_prefix}:jobs:{id}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -1173,8 +1171,8 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let id = id.to_string();
         let claimed_by = claimed_by.to_string();
-        let key = format!("{}:jobs:{}", key_prefix, id);
-        let queued_key = format!("{}:jobs:_queued", key_prefix);
+        let key = format!("{key_prefix}:jobs:{id}");
+        let queued_key = format!("{key_prefix}:jobs:_queued");
 
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
@@ -1206,7 +1204,7 @@ impl TaskStore for RedisTaskStore {
         let id = id.to_string();
         let state = state.to_string();
         let progress = progress.to_string();
-        let key = format!("{}:jobs:{}", key_prefix, id);
+        let key = format!("{key_prefix}:jobs:{id}");
 
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
@@ -1232,7 +1230,7 @@ impl TaskStore for RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let id = id.to_string();
-        let key = format!("{}:jobs:{}", key_prefix, id);
+        let key = format!("{key_prefix}:jobs:{id}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -1264,14 +1262,14 @@ impl TaskStore for RedisTaskStore {
             let mut conn = manager.lock().await;
 
             // Use the _index set for O(cardinality) iteration (no SCAN).
-            let index_key = format!("{}:jobs:_index", key_prefix);
+            let index_key = format!("{key_prefix}:jobs:_index");
             let ids: Vec<String> = conn
                 .smembers(&index_key)
                 .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             for id in ids {
-                let key = format!("{}:jobs:{}", key_prefix, id);
+                let key = format!("{key_prefix}:jobs:{id}");
                 let fields: HashMap<String, Value> = conn
                     .hgetall(&key)
                     .await
@@ -1313,7 +1311,7 @@ impl TaskStore for RedisTaskStore {
             // For queued state, use the _queued set for O(1) count
             // This is used for HPA queue depth metric per plan §14.4
             if state == "queued" {
-                let queued_key = format!("{}:jobs:_queued", key_prefix);
+                let queued_key = format!("{key_prefix}:jobs:_queued");
                 let count: u64 = conn
                     .scard(&queued_key)
                     .await
@@ -1324,7 +1322,7 @@ impl TaskStore for RedisTaskStore {
             // For other states, iterate through _index and count by state
             // This is O(n) but acceptable for non-queued states which are
             // typically few (only actively running jobs)
-            let index_key = format!("{}:jobs:_index", key_prefix);
+            let index_key = format!("{key_prefix}:jobs:_index");
             let ids: Vec<String> = conn
                 .smembers(&index_key)
                 .await
@@ -1332,7 +1330,7 @@ impl TaskStore for RedisTaskStore {
 
             let mut count = 0u64;
             for id in ids {
-                let key = format!("{}:jobs:{}", key_prefix, id);
+                let key = format!("{key_prefix}:jobs:{id}");
                 let job_state: Option<String> = conn
                     .hget(&key, "state")
                     .await
@@ -1355,14 +1353,14 @@ impl TaskStore for RedisTaskStore {
             let mut conn = manager.lock().await;
 
             // Use the _index set for O(cardinality) iteration
-            let index_key = format!("{}:jobs:_index", key_prefix);
+            let index_key = format!("{key_prefix}:jobs:_index");
             let ids: Vec<String> = conn
                 .smembers(&index_key)
                 .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             for id in ids {
-                let key = format!("{}:jobs:{}", key_prefix, id);
+                let key = format!("{key_prefix}:jobs:{id}");
                 let fields: HashMap<String, Value> = conn
                     .hgetall(&key)
                     .await
@@ -1411,14 +1409,14 @@ impl TaskStore for RedisTaskStore {
             let mut conn = manager.lock().await;
 
             // Use the _index set for iteration
-            let index_key = format!("{}:jobs:_index", key_prefix);
+            let index_key = format!("{key_prefix}:jobs:_index");
             let ids: Vec<String> = conn
                 .smembers(&index_key)
                 .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             for id in ids {
-                let key = format!("{}:jobs:{}", key_prefix, id);
+                let key = format!("{key_prefix}:jobs:{id}");
                 let fields: HashMap<String, Value> = conn
                     .hgetall(&key)
                     .await
@@ -1454,11 +1452,11 @@ impl TaskStore for RedisTaskStore {
         let id = id.to_string();
         let state = state.to_string();
         let progress = progress.to_string();
-        let key = format!("{}:jobs:{}", key_prefix, id);
-        let queued_key = format!("{}:jobs:_queued", key_prefix);
+        let key = format!("{key_prefix}:jobs:{id}");
+        let queued_key = format!("{key_prefix}:jobs:_queued");
 
         self.block_on(async move {
-            let mut conn = pool.manager.lock().await;
+            let conn = pool.manager.lock().await;
 
             let mut pipe = pipe();
             pipe.hset(&key, "state", &state);
@@ -1485,7 +1483,7 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let scope = scope.to_string();
         let holder = holder.to_string();
-        let key = format!("{}:lease:{}", key_prefix, scope);
+        let key = format!("{key_prefix}:lease:{scope}");
         let ttl_seconds = ((expires_at - now_ms) / 1000).max(1) as u64;
 
         self.block_on(async move {
@@ -1564,7 +1562,7 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let scope = scope.to_string();
         let holder = holder.to_string();
-        let key = format!("{}:lease:{}", key_prefix, scope);
+        let key = format!("{key_prefix}:lease:{scope}");
         let ttl_seconds = ((expires_at - now_ms()) / 1000).max(1) as u64;
 
         self.block_on(async move {
@@ -1587,7 +1585,7 @@ impl TaskStore for RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let scope = scope.to_string();
-        let key = format!("{}:lease:{}", key_prefix, scope);
+        let key = format!("{key_prefix}:lease:{scope}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -1633,7 +1631,7 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let canary = canary.clone();
         let key = format!("{}:canary:{}", key_prefix, canary.id);
-        let index_key = format!("{}:canary:_index", key_prefix);
+        let index_key = format!("{key_prefix}:canary:_index");
 
         let interval_s_str = canary.interval_s.to_string();
         let enabled_str = (canary.enabled as i64).to_string();
@@ -1664,7 +1662,7 @@ impl TaskStore for RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let id = id.to_string();
-        let key = format!("{}:canary:{}", key_prefix, id);
+        let key = format!("{key_prefix}:canary:{id}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -1686,7 +1684,7 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
 
         self.block_on(async move {
-            let index_key = format!("{}:canary:_index", key_prefix);
+            let index_key = format!("{key_prefix}:canary:_index");
             let mut conn = manager.lock().await;
             let ids: Vec<String> = conn
                 .smembers(&index_key)
@@ -1695,7 +1693,7 @@ impl TaskStore for RedisTaskStore {
 
             let mut result = Vec::new();
             for id in ids {
-                let key = format!("{}:canary:{}", key_prefix, id);
+                let key = format!("{key_prefix}:canary:{id}");
                 let fields: HashMap<String, Value> = conn
                     .hgetall(&key)
                     .await
@@ -1714,8 +1712,8 @@ impl TaskStore for RedisTaskStore {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
         let id = id.to_string();
-        let key = format!("{}:canary:{}", key_prefix, id);
-        let index_key = format!("{}:canary:_index", key_prefix);
+        let key = format!("{key_prefix}:canary:{id}");
+        let index_key = format!("{key_prefix}:canary:_index");
 
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
@@ -1772,7 +1770,7 @@ impl TaskStore for RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let canary_id = canary_id.to_string();
-        let key = format!("{}:canary_runs:{}", key_prefix, canary_id);
+        let key = format!("{key_prefix}:canary_runs:{canary_id}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -1835,7 +1833,7 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let sink_name = sink_name.to_string();
         let index_uid = index_uid.to_string();
-        let key = format!("{}:cdc_cursor:{}:{}", key_prefix, sink_name, index_uid);
+        let key = format!("{key_prefix}:cdc_cursor:{sink_name}:{index_uid}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -1861,7 +1859,7 @@ impl TaskStore for RedisTaskStore {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
         let sink_name = sink_name.to_string();
-        let index_key = format!("{}:cdc_cursor:_index:{}", key_prefix, sink_name);
+        let index_key = format!("{key_prefix}:cdc_cursor:_index:{sink_name}");
 
         self.block_on(async move {
             // Use the _index set for O(cardinality) iteration (no SCAN).
@@ -1882,7 +1880,7 @@ impl TaskStore for RedisTaskStore {
                     Some(idx) => idx.to_string(),
                     None => continue,
                 };
-                let key = format!("{}:cdc_cursor:{}:{}", key_prefix, sink_name, idx);
+                let key = format!("{key_prefix}:cdc_cursor:{sink_name}:{idx}");
                 let fields: HashMap<String, Value> = conn
                     .hgetall(&key)
                     .await
@@ -1911,7 +1909,7 @@ impl TaskStore for RedisTaskStore {
         let tenant_id = mapping.tenant_id.clone();
         let group_id = mapping.group_id;
         let hex_hash = hex::encode(&api_key_hash);
-        let key = format!("{}:tenant_map:{}", key_prefix, hex_hash);
+        let key = format!("{key_prefix}:tenant_map:{hex_hash}");
 
         self.block_on(async move {
             let mut pipe = pipe();
@@ -1930,7 +1928,7 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let api_key_hash = api_key_hash.to_vec();
         let hex_hash = hex::encode(&api_key_hash);
-        let key = format!("{}:tenant_map:{}", key_prefix, hex_hash);
+        let key = format!("{key_prefix}:tenant_map:{hex_hash}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -1956,7 +1954,7 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let api_key_hash = api_key_hash.to_vec();
         let hex_hash = hex::encode(&api_key_hash);
-        let key = format!("{}:tenant_map:{}", key_prefix, hex_hash);
+        let key = format!("{key_prefix}:tenant_map:{hex_hash}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -1986,7 +1984,7 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let policy = policy.clone();
         let key = format!("{}:rollover:{}", key_prefix, policy.name);
-        let index_key = format!("{}:rollover:_index", key_prefix);
+        let index_key = format!("{key_prefix}:rollover:_index");
         let enabled_str = (policy.enabled as i64).to_string();
 
         self.block_on(async move {
@@ -2014,7 +2012,7 @@ impl TaskStore for RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let name = name.to_string();
-        let key = format!("{}:rollover:{}", key_prefix, name);
+        let key = format!("{key_prefix}:rollover:{name}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -2045,7 +2043,7 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
 
         self.block_on(async move {
-            let index_key = format!("{}:rollover:_index", key_prefix);
+            let index_key = format!("{key_prefix}:rollover:_index");
             let mut conn = manager.lock().await;
             let names: Vec<String> = conn
                 .smembers(&index_key)
@@ -2054,7 +2052,7 @@ impl TaskStore for RedisTaskStore {
 
             let mut result = Vec::new();
             for name in names {
-                let key = format!("{}:rollover:{}", key_prefix, name);
+                let key = format!("{key_prefix}:rollover:{name}");
                 let fields: HashMap<String, Value> = conn
                     .hgetall(&key)
                     .await
@@ -2082,8 +2080,8 @@ impl TaskStore for RedisTaskStore {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
         let name = name.to_string();
-        let key = format!("{}:rollover:{}", key_prefix, name);
-        let index_key = format!("{}:rollover:_index", key_prefix);
+        let key = format!("{key_prefix}:rollover:{name}");
+        let index_key = format!("{key_prefix}:rollover:_index");
 
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
@@ -2131,7 +2129,7 @@ impl TaskStore for RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let index_uid = index_uid.to_string();
-        let key = format!("{}:search_ui_config:{}", key_prefix, index_uid);
+        let key = format!("{key_prefix}:search_ui_config:{index_uid}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -2156,7 +2154,7 @@ impl TaskStore for RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let index_uid = index_uid.to_string();
-        let key = format!("{}:search_ui_config:{}", key_prefix, index_uid);
+        let key = format!("{key_prefix}:search_ui_config:{index_uid}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -2225,7 +2223,7 @@ impl TaskStore for RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let session_id = session_id.to_string();
-        let key = format!("{}:admin_session:{}", key_prefix, session_id);
+        let key = format!("{key_prefix}:admin_session:{session_id}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -2255,8 +2253,8 @@ impl TaskStore for RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let session_id = session_id.to_string();
-        let key = format!("{}:admin_session:{}", key_prefix, session_id);
-        let channel = format!("{}:admin_session:revoked", key_prefix);
+        let key = format!("{key_prefix}:admin_session:{session_id}");
+        let channel = format!("{key_prefix}:admin_session:revoked");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -2337,13 +2335,13 @@ impl TaskStore for RedisTaskStore {
             }
 
             // Store the hash
-            conn.hset_multiple(&key, &items)
+            conn.hset_multiple::<_, _, _, ()>(&key, &items)
                 .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             // Add to scope index
             let scope_key = format!("{}:mode_b_ops_scope:{}", key_prefix, op.scope);
-            conn.set(&scope_key, &op.operation_id)
+            conn.set::<_, _, ()>(&scope_key, &op.operation_id)
                 .await
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
@@ -2358,7 +2356,7 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let key = format!("{}:mode_b_ops:{}", key_prefix, id);
+            let key = format!("{key_prefix}:mode_b_ops:{id}");
 
             // Check if key exists
             let exists: bool = conn
@@ -2412,7 +2410,7 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let scope_key = format!("{}:mode_b_ops_scope:{}", key_prefix, scope);
+            let scope_key = format!("{key_prefix}:mode_b_ops_scope:{scope}");
 
             // Get operation ID from scope index
             let operation_id: Option<String> = conn
@@ -2425,7 +2423,7 @@ impl TaskStore for RedisTaskStore {
             };
 
             // Get the operation
-            let key = format!("{}:mode_b_ops:{}", key_prefix, id);
+            let key = format!("{key_prefix}:mode_b_ops:{id}");
             let exists: bool = conn
                 .exists(&key)
                 .await
@@ -2479,7 +2477,7 @@ impl TaskStore for RedisTaskStore {
             let mut conn = manager.lock().await;
 
             // Scan for mode_b_ops keys
-            let pattern = format!("{}:mode_b_ops:*", key_prefix);
+            let pattern = format!("{key_prefix}:mode_b_ops:*");
             let keys: Vec<String> = conn
                 .keys(&pattern)
                 .await
@@ -2569,7 +2567,7 @@ impl TaskStore for RedisTaskStore {
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
-            let key = format!("{}:mode_b_ops:{}", key_prefix, id);
+            let key = format!("{key_prefix}:mode_b_ops:{id}");
 
             // Get scope for cleanup
             let scope: Option<String> = conn
@@ -2586,7 +2584,7 @@ impl TaskStore for RedisTaskStore {
 
             // Clean up scope index
             if let Some(s) = scope {
-                let scope_key = format!("{}:mode_b_ops_scope:{}", key_prefix, s);
+                let scope_key = format!("{key_prefix}:mode_b_ops_scope:{s}");
                 let _: () = conn
                     .del(&scope_key)
                     .await
@@ -2605,7 +2603,7 @@ impl TaskStore for RedisTaskStore {
             let mut conn = manager.lock().await;
 
             // Scan for mode_b_ops keys
-            let pattern = format!("{}:mode_b_ops:*", key_prefix);
+            let pattern = format!("{key_prefix}:mode_b_ops:*");
             let keys: Vec<String> = conn
                 .keys(&pattern)
                 .await
@@ -2650,7 +2648,7 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let index_uid = index_uid.to_string();
         let event_id = event_id.to_string();
-        let key = format!("{}:search_ui_beacon:{}", key_prefix, index_uid);
+        let key = format!("{key_prefix}:search_ui_beacon:{index_uid}");
         let field = event_id.clone();
 
         self.block_on(async move {
@@ -2703,7 +2701,7 @@ impl RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let ip = ip.to_string();
-        let key = format!("{}:ratelimit:searchui:{}", key_prefix, ip);
+        let key = format!("{key_prefix}:ratelimit:searchui:{ip}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -2758,8 +2756,8 @@ impl RedisTaskStore {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
         let ip = ip.to_string();
-        let backoff_key = format!("{}:ratelimit:adminlogin:backoff:{}", key_prefix, ip);
-        let key = format!("{}:ratelimit:adminlogin:{}", key_prefix, ip);
+        let backoff_key = format!("{key_prefix}:ratelimit:adminlogin:backoff:{ip}");
+        let key = format!("{key_prefix}:ratelimit:adminlogin:{ip}");
 
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
@@ -2819,7 +2817,7 @@ impl RedisTaskStore {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
         let ip = ip.to_string();
-        let backoff_key = format!("{}:ratelimit:adminlogin:backoff:{}", key_prefix, ip);
+        let backoff_key = format!("{key_prefix}:ratelimit:adminlogin:backoff:{ip}");
 
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
@@ -2872,8 +2870,8 @@ impl RedisTaskStore {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
         let ip = ip.to_string();
-        let key = format!("{}:ratelimit:adminlogin:{}", key_prefix, ip);
-        let backoff_key = format!("{}:ratelimit:adminlogin:backoff:{}", key_prefix, ip);
+        let key = format!("{key_prefix}:ratelimit:adminlogin:{ip}");
+        let backoff_key = format!("{key_prefix}:ratelimit:adminlogin:backoff:{ip}");
 
         self.block_on(async move {
             let mut pipe = pipe();
@@ -2898,7 +2896,7 @@ impl RedisTaskStore {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
         let ip = ip.to_string();
-        let key = format!("{}:ratelimit:searchui:{}", key_prefix, ip);
+        let key = format!("{key_prefix}:ratelimit:searchui:{ip}");
 
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
@@ -2933,7 +2931,7 @@ impl RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let index_uid = index_uid.to_string();
-        let key = format!("{}:search_ui_scoped_key:{}", key_prefix, index_uid);
+        let key = format!("{key_prefix}:search_ui_scoped_key:{index_uid}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -3008,8 +3006,7 @@ impl RedisTaskStore {
         let pod_id = pod_id.to_string();
         let index_uid = index_uid.to_string();
         let key = format!(
-            "{}:search_ui_scoped_key_observed:{}:{}",
-            key_prefix, pod_id, index_uid
+            "{key_prefix}:search_ui_scoped_key_observed:{pod_id}:{index_uid}"
         );
 
         self.block_on(async move {
@@ -3041,8 +3038,7 @@ impl RedisTaskStore {
 
             for pod_id in &live_pods {
                 let key = format!(
-                    "{}:search_ui_scoped_key_observed:{}:{}",
-                    key_prefix, pod_id, index_uid
+                    "{key_prefix}:search_ui_scoped_key_observed:{pod_id}:{index_uid}"
                 );
                 let fields: HashMap<String, Value> = conn
                     .hgetall(&key)
@@ -3068,7 +3064,7 @@ impl RedisTaskStore {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
         let index_uid = index_uid.to_string();
-        let redis_key = format!("{}:search_ui_scoped_key:{}", key_prefix, index_uid);
+        let redis_key = format!("{key_prefix}:search_ui_scoped_key:{index_uid}");
 
         self.block_on(async move {
             let mut pipe = pipe();
@@ -3085,7 +3081,7 @@ impl RedisTaskStore {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
         let pod_id = pod_id.to_string();
-        let key = format!("{}:live_pods", key_prefix);
+        let key = format!("{key_prefix}:live_pods");
         let now = now_ms();
 
         self.block_on(async move {
@@ -3103,7 +3099,7 @@ impl RedisTaskStore {
     pub fn get_live_pods(&self) -> Result<Vec<String>> {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
-        let key = format!("{}:live_pods", key_prefix);
+        let key = format!("{key_prefix}:live_pods");
         let cutoff = now_ms() - 120_000; // 120 seconds ago
 
         self.block_on(async move {
@@ -3122,7 +3118,7 @@ impl RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
 
         self.block_on(async move {
-            let pattern = format!("{}:search_ui_scoped_key:*", key_prefix);
+            let pattern = format!("{key_prefix}:search_ui_scoped_key:*");
             let mut conn = pool.manager.lock().await;
 
             let mut indexes = Vec::new();
@@ -3170,8 +3166,8 @@ impl RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let sink_name = sink_name.to_string();
         let data = data.to_vec();
-        let key = format!("{}:cdc:overflow:{}", key_prefix, sink_name);
-        let bytes_key = format!("{}:cdc:overflow_bytes:{}", key_prefix, sink_name);
+        let key = format!("{key_prefix}:cdc:overflow:{sink_name}");
+        let bytes_key = format!("{key_prefix}:cdc:overflow_bytes:{sink_name}");
         let data_len = data.len();
 
         self.block_on(async move {
@@ -3246,8 +3242,8 @@ impl RedisTaskStore {
         let pool = self.pool.clone();
         let key_prefix = self.key_prefix.clone();
         let sink_name = sink_name.to_string();
-        let key = format!("{}:cdc:overflow:{}", key_prefix, sink_name);
-        let bytes_key = format!("{}:cdc:overflow_bytes:{}", key_prefix, sink_name);
+        let key = format!("{key_prefix}:cdc:overflow:{sink_name}");
+        let bytes_key = format!("{key_prefix}:cdc:overflow_bytes:{sink_name}");
 
         self.block_on(async move {
             let mut conn = pool.manager.lock().await;
@@ -3275,7 +3271,7 @@ impl RedisTaskStore {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let sink_name = sink_name.to_string();
-        let key = format!("{}:cdc:overflow:{}", key_prefix, sink_name);
+        let key = format!("{key_prefix}:cdc:overflow:{sink_name}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -3304,7 +3300,7 @@ impl RedisTaskStore {
             .await
             .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
-        let channel = format!("{}:admin_session:revoked", key_prefix);
+        let channel = format!("{key_prefix}:admin_session:revoked");
         conn.subscribe(&channel)
             .await
             .map_err(|e| MiroirError::Redis(e.to_string()))?;

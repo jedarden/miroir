@@ -4,7 +4,7 @@
 //! Uses leader-only singleton coordination (plan §14.5) to ensure only one pod
 //! performs key rotation for a given index at a time.
 
-use crate::error::{MiroirError, Result};
+use crate::error::Result;
 use crate::leader_election::LeaderElection;
 use crate::mode_b_coordinator::ModeBOpLeader;
 use crate::task_store::TaskStore;
@@ -94,7 +94,7 @@ impl ScopedKeyRotationCoordinator {
         drain_target_s: u64,
         pod_id: String,
     ) -> Self {
-        let scope = format!("search_ui_key_rotation:{}", index_uid);
+        let scope = format!("search_ui_key_rotation:{index_uid}");
 
         let extra_state = ScopedKeyRotationExtraState {
             index_uid,

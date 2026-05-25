@@ -207,7 +207,7 @@ impl VectorMerger {
         // First, sort each shard's hits by their original ranking score
         let mut per_shard: HashMap<u32, Vec<VectorHit>> = HashMap::new();
         for (shard_id, hit) in shard_hits {
-            per_shard.entry(shard_id).or_insert_with(Vec::new).push(hit);
+            per_shard.entry(shard_id).or_default().push(hit);
         }
 
         // Compute RRF scores

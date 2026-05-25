@@ -3,7 +3,7 @@
 //! Splits reshard backfill work by shard-id ranges.
 //! Each chunk can process a range of old shards independently.
 
-use crate::mode_c_coordinator::{JobChunk, JobParams};
+use crate::mode_c_coordinator::JobChunk;
 
 /// Chunk specification for a reshard backfill.
 #[derive(Debug, Clone)]
@@ -102,11 +102,11 @@ pub fn parse_reshard_chunk(chunk: &JobChunk) -> Result<(u32, u32), String> {
     let start_shard = chunk
         .start
         .parse::<u32>()
-        .map_err(|e| format!("invalid start shard: {}", e))?;
+        .map_err(|e| format!("invalid start shard: {e}"))?;
     let end_shard = chunk
         .end
         .parse::<u32>()
-        .map_err(|e| format!("invalid end shard: {}", e))?;
+        .map_err(|e| format!("invalid end shard: {e}"))?;
 
     Ok((start_shard, end_shard))
 }

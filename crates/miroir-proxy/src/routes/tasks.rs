@@ -402,8 +402,8 @@ fn task_to_response(task: MiroirTask) -> TaskResponse {
     };
 
     let enqueued_at = format_millis_timestamp(task.created_at);
-    let started_at = task.started_at.map(|t| format_millis_timestamp(t));
-    let finished_at = task.finished_at.map(|t| format_millis_timestamp(t));
+    let started_at = task.started_at.map(format_millis_timestamp);
+    let finished_at = task.finished_at.map(format_millis_timestamp);
 
     let error = if task.status == TaskStatus::Failed {
         Some(TaskError {

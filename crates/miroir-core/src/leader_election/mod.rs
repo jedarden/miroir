@@ -325,7 +325,7 @@ impl LeaderElection {
         let current = self.task_store.get_leader_lease(scope)?;
         let held = current
             .as_ref()
-            .map(|l| &l.holder == &self.pod_id && l.expires_at > now_ms)
+            .map(|l| l.holder == self.pod_id && l.expires_at > now_ms)
             .unwrap_or(false);
 
         if held {

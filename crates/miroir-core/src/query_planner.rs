@@ -136,7 +136,7 @@ impl QueryPlanner {
                 let shard_id = shard_for_key(&literal, shard_count);
                 QueryPlan {
                     narrowed: true,
-                    reason: format!("PK equality: {} = {}", pk_field, literal),
+                    reason: format!("PK equality: {pk_field} = {literal}"),
                     target_shards: vec![shard_id],
                     warnings: vec![],
                     filter: Some(filter.clone()),
@@ -176,7 +176,7 @@ impl QueryPlanner {
             }
             Err(e) => QueryPlan {
                 narrowed: false,
-                reason: format!("filter not narrowable: {}", e),
+                reason: format!("filter not narrowable: {e}"),
                 target_shards: vec![],
                 warnings: vec![],
                 filter: Some(filter.clone()),
@@ -201,8 +201,8 @@ impl QueryPlanner {
             ));
         }
 
-        if filter.contains(&format!("{} != ", pk_field))
-            || filter.contains(&format!("{}<>", pk_field))
+        if filter.contains(&format!("{pk_field} != "))
+            || filter.contains(&format!("{pk_field}<>"))
         {
             return Err(MiroirError::InvalidState(
                 "PK negation is not narrowable".to_string(),
@@ -210,8 +210,8 @@ impl QueryPlanner {
         }
 
         // Try equality: pk = "literal"
-        let eq_pattern = format!(r#"{}\s*=\s*["']([^"']+)["']"#, pk_field);
-        if let Some(re) = regex::Regex::new(&eq_pattern).ok() {
+        let eq_pattern = format!(r#"{pk_field}\s*=\s*["']([^"']+)["']"#);
+        if let Ok(re) = regex::Regex::new(&eq_pattern) {
             if let Some(caps) = re.captures(filter) {
                 if let Some(literal) = caps.get(1) {
                     return Ok(PkConstraint::Eq(literal.as_str().to_string()));
@@ -220,8 +220,8 @@ impl QueryPlanner {
         }
 
         // Try IN list: pk IN ["literal1", "literal2", ...]
-        let in_pattern = format!(r#"{}\s+IN\s+\[(.+)\]"#, pk_field);
-        if let Some(re) = regex::Regex::new(&in_pattern).ok() {
+        let in_pattern = format!(r#"{pk_field}\s+IN\s+\[(.+)\]"#);
+        if let Ok(re) = regex::Regex::new(&in_pattern) {
             if let Some(caps) = re.captures(filter) {
                 if let Some(list) = caps.get(1) {
                     let literals = self.parse_string_list(list.as_str())?;

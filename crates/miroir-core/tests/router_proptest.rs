@@ -22,7 +22,7 @@ proptest! {
         rf in 1usize..4,
     ) {
         let nodes: Vec<NodeId> = (0..node_count)
-            .map(|i| NodeId::new(format!("node-{}", i)))
+            .map(|i| NodeId::new(format!("node-{i}")))
             .collect();
 
         let rf = rf.min(node_count);
@@ -43,7 +43,7 @@ proptest! {
         rf in 1usize..4,
     ) {
         let nodes: Vec<NodeId> = (0..node_count)
-            .map(|i| NodeId::new(format!("node-{}", i)))
+            .map(|i| NodeId::new(format!("node-{i}")))
             .collect();
 
         let rf = rf.min(node_count);
@@ -93,7 +93,7 @@ proptest! {
         rf in 1usize..3,
     ) {
         let nodes_old: Vec<NodeId> = (0..node_count)
-            .map(|i| NodeId::new(format!("node-{}", i)))
+            .map(|i| NodeId::new(format!("node-{i}")))
             .collect();
 
         let mut nodes_new = nodes_old.clone();
@@ -146,7 +146,7 @@ proptest! {
         rf in 1usize..3,
     ) {
         let nodes_all: Vec<NodeId> = (0..node_count)
-            .map(|i| NodeId::new(format!("node-{}", i)))
+            .map(|i| NodeId::new(format!("node-{i}")))
             .collect();
 
         let nodes_removed: Vec<NodeId> = nodes_all[..node_count - 1].to_vec();
@@ -199,7 +199,7 @@ proptest! {
         rf in 1usize..3,
     ) {
         let nodes: Vec<NodeId> = (0..node_count)
-            .map(|i| NodeId::new(format!("node-{}", i)))
+            .map(|i| NodeId::new(format!("node-{i}")))
             .collect();
 
         let rf = rf.min(node_count);
@@ -241,7 +241,7 @@ proptest! {
         rf in 1usize..5,
     ) {
         let nodes: Vec<NodeId> = (0..node_count)
-            .map(|i| NodeId::new(format!("node-{}", i)))
+            .map(|i| NodeId::new(format!("node-{i}")))
             .collect();
 
         let rf = rf.min(node_count);
@@ -260,7 +260,7 @@ proptest! {
         rf in 1usize..5,
     ) {
         let nodes: Vec<NodeId> = (0..node_count)
-            .map(|i| NodeId::new(format!("node-{}", i)))
+            .map(|i| NodeId::new(format!("node-{i}")))
             .collect();
 
         let rf = rf.min(node_count);
@@ -286,7 +286,7 @@ proptest! {
         rf in 1usize..5,
     ) {
         let nodes: Vec<NodeId> = (0..node_count)
-            .map(|i| NodeId::new(format!("node-{}", i)))
+            .map(|i| NodeId::new(format!("node-{i}")))
             .collect();
 
         let rf = rf.min(node_count);
@@ -334,8 +334,7 @@ mod regression_tests {
             let actual = shard_for_key(key, shard_count);
             assert_eq!(
                 actual, expected,
-                "shard_for_key({:?}, {})",
-                key, shard_count
+                "shard_for_key({key:?}, {shard_count})"
             );
         }
     }

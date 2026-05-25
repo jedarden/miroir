@@ -41,7 +41,7 @@ fn bench_shard_for_key_batch(c: &mut Criterion) {
 /// Benchmark: assign_shard_in_group for a single shard.
 fn bench_assign_shard_single(c: &mut Criterion) {
     let nodes: Vec<NodeId> = (0..TARGET_NODES)
-        .map(|i| NodeId::new(format!("node-{}", i)))
+        .map(|i| NodeId::new(format!("node-{i}")))
         .collect();
 
     c.bench_function("assign_shard_in_group_single", |b| {
@@ -58,7 +58,7 @@ fn bench_assign_shard_single(c: &mut Criterion) {
 /// Benchmark: assign_shard_in_group for all shards.
 fn bench_assign_shard_all(c: &mut Criterion) {
     let nodes: Vec<NodeId> = (0..TARGET_NODES)
-        .map(|i| NodeId::new(format!("node-{}", i)))
+        .map(|i| NodeId::new(format!("node-{i}")))
         .collect();
 
     c.bench_function("assign_shard_in_group_64_shards", |b| {
@@ -86,7 +86,7 @@ fn bench_full_routing_pipeline(c: &mut Criterion) {
         .collect();
 
     let nodes: Vec<NodeId> = (0..TARGET_NODES)
-        .map(|i| NodeId::new(format!("node-{}", i)))
+        .map(|i| NodeId::new(format!("node-{i}")))
         .collect();
 
     // Pre-compute shard assignments
@@ -110,7 +110,7 @@ fn bench_full_routing_pipeline(c: &mut Criterion) {
 /// Benchmark: Varying shard counts.
 fn bench_varying_shard_count(c: &mut Criterion) {
     let nodes: Vec<NodeId> = (0..TARGET_NODES)
-        .map(|i| NodeId::new(format!("node-{}", i)))
+        .map(|i| NodeId::new(format!("node-{i}")))
         .collect();
 
     let mut group = c.benchmark_group("varying_shard_count");
@@ -141,7 +141,7 @@ fn bench_varying_node_count(c: &mut Criterion) {
     let mut group = c.benchmark_group("varying_node_count");
     for node_count in [2, 3, 4, 5, 8, 10].iter() {
         let nodes: Vec<NodeId> = (0..*node_count)
-            .map(|i| NodeId::new(format!("node-{}", i)))
+            .map(|i| NodeId::new(format!("node-{i}")))
             .collect();
 
         group.bench_with_input(
@@ -168,7 +168,7 @@ fn bench_varying_node_count(c: &mut Criterion) {
 /// Benchmark: Varying replication factors.
 fn bench_varying_rf(c: &mut Criterion) {
     let nodes: Vec<NodeId> = (0..10)
-        .map(|i| NodeId::new(format!("node-{}", i)))
+        .map(|i| NodeId::new(format!("node-{i}")))
         .collect();
 
     let mut group = c.benchmark_group("varying_rf");

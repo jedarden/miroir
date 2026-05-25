@@ -292,7 +292,7 @@ mod tests {
     fn too_short_cookie_fails() {
         let key = test_key();
         // Only 10 bytes — shorter than nonce + tag
-        let short = URL_SAFE_NO_PAD.encode(&[0u8; 10]);
+        let short = URL_SAFE_NO_PAD.encode([0u8; 10]);
         assert_eq!(
             unseal_session(&short, &key).unwrap_err(),
             SealError::MalformedCookie

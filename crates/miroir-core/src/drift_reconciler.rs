@@ -96,7 +96,7 @@ impl DriftReconciler {
                 }
                 _ = leader_election_interval.tick() => {
                     // Renew leader lease
-                    let _ = self.renew_leader_lease();
+                    self.renew_leader_lease();
                 }
             }
         }
@@ -208,7 +208,7 @@ impl DriftReconciler {
             )
             .send()
             .await
-            .map_err(|e| MiroirError::Task(format!("failed to list indexes: {}", e)))?;
+            .map_err(|e| MiroirError::Task(format!("failed to list indexes: {e}")))?;
 
         if !response.status().is_success() {
             return Err(MiroirError::Task(format!(
@@ -220,7 +220,7 @@ impl DriftReconciler {
         let json: Value = response
             .json()
             .await
-            .map_err(|e| MiroirError::Task(format!("failed to parse indexes: {}", e)))?;
+            .map_err(|e| MiroirError::Task(format!("failed to parse indexes: {e}")))?;
 
         let results = json
             .get("results")
@@ -272,8 +272,7 @@ impl DriftReconciler {
                 }
                 Err(e) => {
                     return Ok(DriftCheckResult::Error(MiroirError::Task(format!(
-                        "node {} request failed: {}",
-                        node_id, e
+                        "node {node_id} request failed: {e}"
                     ))));
                 }
             }
@@ -337,7 +336,7 @@ impl DriftReconciler {
             .send()
             .await
             .map_err(|e| {
-                MiroirError::Task(format!("failed to fetch settings for repair: {}", e))
+                MiroirError::Task(format!("failed to fetch settings for repair: {e}"))
             })?;
 
         if !response.status().is_success() {
@@ -348,7 +347,7 @@ impl DriftReconciler {
         }
 
         let correct_settings: Value = response.json().await.map_err(|e| {
-            MiroirError::Task(format!("failed to parse settings for repair: {}", e))
+            MiroirError::Task(format!("failed to parse settings for repair: {e}"))
         })?;
 
         // PATCH the drifted node with correct settings
@@ -367,7 +366,7 @@ impl DriftReconciler {
             .json(&correct_settings)
             .send()
             .await
-            .map_err(|e| MiroirError::Task(format!("failed to repair settings: {}", e)))?;
+            .map_err(|e| MiroirError::Task(format!("failed to repair settings: {e}")))?;
 
         if !patch_response.status().is_success() {
             return Err(MiroirError::Task(format!(
@@ -390,7 +389,7 @@ impl DriftReconciler {
             .node_addresses
             .iter()
             .enumerate()
-            .map(|(i, addr)| (format!("node-{}", i), addr.clone()))
+            .map(|(i, addr)| (format!("node-{i}"), addr.clone()))
             .collect()
     }
 }
