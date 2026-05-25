@@ -332,10 +332,7 @@ mod regression_tests {
 
         for (key, shard_count, expected) in cases {
             let actual = shard_for_key(key, shard_count);
-            assert_eq!(
-                actual, expected,
-                "shard_for_key({key:?}, {shard_count})"
-            );
+            assert_eq!(actual, expected, "shard_for_key({key:?}, {shard_count})");
         }
     }
 }

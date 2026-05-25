@@ -314,11 +314,9 @@ impl<C: NodeClient> ReshardExecutor<C> {
 
         // Get a healthy node from topology for verification
         let topology = self.topology.read().await;
-        let node = topology
-            .nodes().find(|n| n.is_healthy())
-            .ok_or_else(|| {
-                MiroirError::Topology("No healthy nodes available for verification".to_string())
-            })?;
+        let node = topology.nodes().find(|n| n.is_healthy()).ok_or_else(|| {
+            MiroirError::Topology("No healthy nodes available for verification".to_string())
+        })?;
         let node_id = node.id.clone();
         let address = node.address.clone();
         drop(topology);

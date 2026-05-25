@@ -1648,9 +1648,7 @@ async fn two_phase_broadcast_settings(
         match result {
             Ok((address, hash)) => {
                 if hash != expected_fingerprint {
-                    return Err(format!(
-                        "Phase 2 verify failed: hash mismatch on {address}"
-                    ));
+                    return Err(format!("Phase 2 verify failed: hash mismatch on {address}"));
                 }
                 node_hashes.insert(address, hash);
             }

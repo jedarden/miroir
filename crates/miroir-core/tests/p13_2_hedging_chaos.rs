@@ -66,7 +66,6 @@ struct DelayedMockNodeClient {
     delays: HashMap<NodeId, Duration>,
 }
 
-
 impl NodeClient for DelayedMockNodeClient {
     async fn search_node(
         &self,
@@ -439,9 +438,7 @@ async fn run_searches_with_latency(
         latencies.push(elapsed);
     }
 
-    println!(
-        "Total hedges issued: {total_hedges} out of {count} queries"
-    );
+    println!("Total hedges issued: {total_hedges} out of {count} queries");
 
     latencies
 }

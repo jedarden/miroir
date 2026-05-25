@@ -201,8 +201,7 @@ impl QueryPlanner {
             ));
         }
 
-        if filter.contains(&format!("{pk_field} != "))
-            || filter.contains(&format!("{pk_field}<>"))
+        if filter.contains(&format!("{pk_field} != ")) || filter.contains(&format!("{pk_field}<>"))
         {
             return Err(MiroirError::InvalidState(
                 "PK negation is not narrowable".to_string(),

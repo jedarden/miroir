@@ -697,9 +697,7 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let index_uid = index_uid.to_string();
         let node_id = node_id.to_string();
-        let key = format!(
-            "{key_prefix}:node_settings_version:{index_uid}:{node_id}"
-        );
+        let key = format!("{key_prefix}:node_settings_version:{index_uid}:{node_id}");
         let index_key = format!("{key_prefix}:node_settings_version:_index");
 
         self.block_on(async move {
@@ -732,9 +730,7 @@ impl TaskStore for RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let index_uid = index_uid.to_string();
         let node_id = node_id.to_string();
-        let key = format!(
-            "{key_prefix}:node_settings_version:{index_uid}:{node_id}"
-        );
+        let key = format!("{key_prefix}:node_settings_version:{index_uid}:{node_id}");
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -3005,9 +3001,7 @@ impl RedisTaskStore {
         let key_prefix = self.key_prefix.clone();
         let pod_id = pod_id.to_string();
         let index_uid = index_uid.to_string();
-        let key = format!(
-            "{key_prefix}:search_ui_scoped_key_observed:{pod_id}:{index_uid}"
-        );
+        let key = format!("{key_prefix}:search_ui_scoped_key_observed:{pod_id}:{index_uid}");
 
         self.block_on(async move {
             let mut pipe = pipe();
@@ -3037,9 +3031,8 @@ impl RedisTaskStore {
             let mut conn = manager.lock().await;
 
             for pod_id in &live_pods {
-                let key = format!(
-                    "{key_prefix}:search_ui_scoped_key_observed:{pod_id}:{index_uid}"
-                );
+                let key =
+                    format!("{key_prefix}:search_ui_scoped_key_observed:{pod_id}:{index_uid}");
                 let fields: HashMap<String, Value> = conn
                     .hgetall(&key)
                     .await

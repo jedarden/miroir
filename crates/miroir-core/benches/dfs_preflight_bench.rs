@@ -99,7 +99,13 @@ fn bench_preflight_phase(c: &mut Criterion) {
 
     for shard_count in [3, 5, 10, 20].iter() {
         let topo = make_test_topology(*shard_count, 2, 2);
-        let plan = rt.block_on(plan_search_scatter(&topo, 0, 2, *shard_count, None::<&ReplicaSelector>));
+        let plan = rt.block_on(plan_search_scatter(
+            &topo,
+            0,
+            2,
+            *shard_count,
+            None::<&ReplicaSelector>,
+        ));
 
         // Create mock client with preflight responses
         let mut client = MockNodeClient::default();
@@ -146,7 +152,13 @@ fn bench_preflight_phase(c: &mut Criterion) {
 fn bench_dfs_vs_standard_scatter(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let topo = make_test_topology(64, 2, 2);
-    let plan = rt.block_on(plan_search_scatter(&topo, 0, 2, 64, None::<&ReplicaSelector>));
+    let plan = rt.block_on(plan_search_scatter(
+        &topo,
+        0,
+        2,
+        64,
+        None::<&ReplicaSelector>,
+    ));
 
     // Create mock client with search responses
     let mut client = MockNodeClient::default();

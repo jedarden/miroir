@@ -412,9 +412,7 @@ where
         StatusCode::OK,
         [(
             "Set-Cookie",
-            format!(
-                "{COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0"
-            ),
+            format!("{COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0"),
         )],
         Json(serde_json::json!({
             "success": true

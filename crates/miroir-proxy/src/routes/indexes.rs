@@ -359,9 +359,8 @@ async fn create_index_handler(
             Ok((status, text)) => {
                 // Rollback: delete index on all previously created nodes
                 rollback_delete_index(&client, uid, &created_on).await;
-                let msg = format!(
-                    "index creation failed on node {address}: HTTP {status} — {text}"
-                );
+                let msg =
+                    format!("index creation failed on node {address}: HTTP {status} — {text}");
                 return Err(forward_or_miroir(status, &text, &msg));
             }
             Err(e) => {
@@ -566,9 +565,7 @@ async fn update_index_handler(
             }
             Ok((status, text)) => {
                 rollback_index_update(&client, &path, &snapshots, &applied).await;
-                let msg = format!(
-                    "index update failed on {address}: HTTP {status} — {text}"
-                );
+                let msg = format!("index update failed on {address}: HTTP {status} — {text}");
                 return Err(forward_or_miroir(status, &text, &msg));
             }
             Err(e) => {
@@ -746,10 +743,7 @@ pub async fn global_stats_handler(
         .get_raw(first_address, "/indexes")
         .await
         .map_err(|e| {
-            MeilisearchError::new(
-                MiroirCode::NoQuorum,
-                format!("failed to list indexes: {e}"),
-            )
+            MeilisearchError::new(MiroirCode::NoQuorum, format!("failed to list indexes: {e}"))
         })?;
 
     if !(200..300).contains(&status) {
@@ -776,12 +770,10 @@ pub async fn global_stats_handler(
                     if let Some(n) = stats.get("numberOfDocuments").and_then(|v| v.as_u64()) {
                         total_docs += n;
                     }
-                    if let Some(fd) = stats.get("fieldDistribution").and_then(|v| v.as_object())
-                    {
+                    if let Some(fd) = stats.get("fieldDistribution").and_then(|v| v.as_object()) {
                         for (field, count) in fd {
                             if let Some(c) = count.as_u64() {
-                                *total_field_distribution.entry(field.clone()).or_insert(0) +=
-                                    c;
+                                *total_field_distribution.entry(field.clone()).or_insert(0) += c;
                             }
                         }
                     }
@@ -1173,9 +1165,7 @@ async fn update_settings_broadcast_legacy(
                 return Err(forward_or_miroir(
                     status,
                     &text,
-                    &format!(
-                        "failed to snapshot settings on {address}: HTTP {status}"
-                    ),
+                    &format!("failed to snapshot settings on {address}: HTTP {status}"),
                 ));
             }
             Err(e) => {
@@ -1202,9 +1192,7 @@ async fn update_settings_broadcast_legacy(
             Ok((status, text)) => {
                 // Rollback all previously applied nodes
                 rollback_settings(&client, &full_path, &snapshots, &applied).await;
-                let msg = format!(
-                    "settings update failed on {address}: HTTP {status} — {text}"
-                );
+                let msg = format!("settings update failed on {address}: HTTP {status} — {text}");
                 return Err(forward_or_miroir(status, &text, &msg));
             }
             Err(e) => {

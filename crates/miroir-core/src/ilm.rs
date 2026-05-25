@@ -174,13 +174,11 @@ struct NodeIndexStats {
     pub stats: Option<NodeStatsDetail>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 struct NodeStatsDetail {
     #[serde(rename = "databaseSize", default)]
     pub database_size: u64,
 }
-
 
 /// Aggregated index stats across all nodes.
 #[derive(Debug, Clone)]
@@ -629,10 +627,8 @@ impl IlmWorker {
                             Err(e) => {
                                 error!("ILM: rollover failed for policy '{}': {}", policy.name, e);
                                 // Mark the rollover as failed in the coordinator
-                                let _ = self
-                                    .coordinator
-                                    .fail(format!("rollover failed: {e}"))
-                                    .await;
+                                let _ =
+                                    self.coordinator.fail(format!("rollover failed: {e}")).await;
                             }
                         }
                     } else {
@@ -690,9 +686,7 @@ impl IlmWorker {
 
         let mut fired_triggers = Vec::new();
         if age_triggered {
-            fired_triggers.push(format!(
-                "max_age ({age_seconds}s >= {max_age_seconds}s)"
-            ));
+            fired_triggers.push(format!("max_age ({age_seconds}s >= {max_age_seconds}s)"));
         }
         if docs_triggered {
             fired_triggers.push(format!(
@@ -905,9 +899,7 @@ impl IlmWorker {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| {
-                    IlmError::RolloverFailed(format!("request to {url} failed: {e}"))
-                })?;
+                .map_err(|e| IlmError::RolloverFailed(format!("request to {url} failed: {e}")))?;
 
             let status = response.status();
             let body_text = response

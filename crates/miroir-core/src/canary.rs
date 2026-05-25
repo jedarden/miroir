@@ -254,9 +254,7 @@ impl CanaryRunner {
 
         // Parse assertions
         let assertions: Vec<CanaryAssertion> = serde_json::from_str(&canary.assertions_json)
-            .map_err(|e| {
-                MiroirError::InvalidRequest(format!("Invalid canary assertions: {e}"))
-            })?;
+            .map_err(|e| MiroirError::InvalidRequest(format!("Invalid canary assertions: {e}")))?;
 
         // Execute the search query against the index
         // Note: This would need to be wired to the actual search client
@@ -497,9 +495,8 @@ pub fn create_canary(
         name,
         index_uid,
         interval_s,
-        query_json: serde_json::to_string(&query).map_err(|e| {
-            MiroirError::InvalidRequest(format!("Failed to serialize query: {e}"))
-        })?,
+        query_json: serde_json::to_string(&query)
+            .map_err(|e| MiroirError::InvalidRequest(format!("Failed to serialize query: {e}")))?,
         assertions_json: serde_json::to_string(&assertions).map_err(|e| {
             MiroirError::InvalidRequest(format!("Failed to serialize assertions: {e}"))
         })?,

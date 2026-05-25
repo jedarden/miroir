@@ -306,9 +306,7 @@ async fn check_unfilterable_attributes(
         if !filterable_attrs.contains(&attr) {
             warnings.push(Warning::UnfilterableAttribute {
                 attribute: attr.clone(),
-                suggestion: format!(
-                    "add '{attr}' to filterableAttributes or remove from filter"
-                ),
+                suggestion: format!("add '{attr}' to filterableAttributes or remove from filter"),
             });
         }
     }
@@ -333,9 +331,7 @@ fn extract_attributes_from_filter(filter: &str) -> Vec<String> {
     let known_attrs = vec!["id", "sku", "category", "price", "status", "tenant"];
 
     for attr in known_attrs {
-        if filter_lower.contains(&attr.to_string())
-            || filter_lower.contains(&attr.to_string())
-        {
+        if filter_lower.contains(&attr.to_string()) || filter_lower.contains(&attr.to_string()) {
             attrs.push(attr.to_string());
         }
     }

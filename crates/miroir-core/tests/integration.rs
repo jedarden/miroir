@@ -262,7 +262,11 @@ async fn facet_aggregation() -> Result<(), Box<dyn std::error::Error>> {
     // Facet counts must sum to 100
     use meilisearch_sdk::search::Selectors;
     let facets = ["color"];
-    let results: SearchResults<Value> = index.search().with_facets(Selectors::Some(&facets[..])).execute().await?;
+    let results: SearchResults<Value> = index
+        .search()
+        .with_facets(Selectors::Some(&facets[..]))
+        .execute()
+        .await?;
     let facet_dist = results
         .facet_distribution
         .as_ref()
@@ -317,7 +321,11 @@ async fn offset_limit_paging() -> Result<(), Box<dyn std::error::Error>> {
     let single_ids: HashSet<String> = single_page
         .hits
         .iter()
-        .filter_map(|v| v.result.get("id").and_then(|id| id.as_str().map(|s| s.to_string())))
+        .filter_map(|v| {
+            v.result
+                .get("id")
+                .and_then(|id| id.as_str().map(|s| s.to_string()))
+        })
         .collect();
 
     // Get 5 pages of 10
@@ -352,7 +360,11 @@ async fn offset_limit_paging() -> Result<(), Box<dyn std::error::Error>> {
     let single_order: Vec<String> = single_page
         .hits
         .iter()
-        .filter_map(|v| v.result.get("id").and_then(|id| id.as_str().map(|s| s.to_string())))
+        .filter_map(|v| {
+            v.result
+                .get("id")
+                .and_then(|id| id.as_str().map(|s| s.to_string()))
+        })
         .collect();
 
     let mut paged_order = Vec::new();
@@ -430,7 +442,10 @@ async fn settings_broadcast() -> Result<(), Box<dyn std::error::Error>> {
         .with_query("bluetooth headphones")
         .execute()
         .await?;
-    assert!(results.hits.len() >= 1, "Synonym search returned no results");
+    assert!(
+        results.hits.len() >= 1,
+        "Synonym search returned no results"
+    );
 
     delete_index(&client, index_name).await?;
 

@@ -146,7 +146,8 @@ async fn ac3_assertion_failure_includes_actual_value() {
     assert_eq!(failure["actual"], 2);
 
     // Test multiple assertion types
-    let failures = [serde_json::json!({
+    let failures = [
+        serde_json::json!({
             "assertion_type": "top_hit_id",
             "expected": "product-123",
             "actual": "product-456",
@@ -157,7 +158,8 @@ async fn ac3_assertion_failure_includes_actual_value() {
             "expected": 200,
             "actual": 350,
             "message": "Latency exceeded threshold"
-        })];
+        }),
+    ];
 
     assert_eq!(failures.len(), 2);
     assert_eq!(failures[0]["assertion_type"], "top_hit_id");

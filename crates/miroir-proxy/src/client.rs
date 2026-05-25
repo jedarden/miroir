@@ -214,9 +214,8 @@ impl NodeClient for HttpClient {
         }
 
         // Parse successful response
-        let json: Value = serde_json::from_str(&body_text).map_err(|e| {
-            NodeError::NetworkError(format!("Failed to parse JSON response: {e}"))
-        })?;
+        let json: Value = serde_json::from_str(&body_text)
+            .map_err(|e| NodeError::NetworkError(format!("Failed to parse JSON response: {e}")))?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
         tracing::debug!(
@@ -309,9 +308,8 @@ impl NodeClient for HttpClient {
         }
 
         // Parse successful response
-        let json: Value = serde_json::from_str(&body_text).map_err(|e| {
-            NodeError::NetworkError(format!("Failed to parse JSON response: {e}"))
-        })?;
+        let json: Value = serde_json::from_str(&body_text)
+            .map_err(|e| NodeError::NetworkError(format!("Failed to parse JSON response: {e}")))?;
 
         Ok(DeleteResponse {
             success: true,
@@ -397,9 +395,8 @@ impl NodeClient for HttpClient {
         }
 
         // Parse successful response
-        let json: Value = serde_json::from_str(&body_text).map_err(|e| {
-            NodeError::NetworkError(format!("Failed to parse JSON response: {e}"))
-        })?;
+        let json: Value = serde_json::from_str(&body_text)
+            .map_err(|e| NodeError::NetworkError(format!("Failed to parse JSON response: {e}")))?;
 
         Ok(DeleteResponse {
             success: true,

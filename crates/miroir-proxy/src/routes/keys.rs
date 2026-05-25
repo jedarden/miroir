@@ -70,9 +70,7 @@ async fn create_key_handler(
             Ok((status, text)) => {
                 // Rollback: delete key on all previously created nodes
                 rollback_delete_key(&client, &body, &created_on).await;
-                let msg = format!(
-                    "key creation failed on {address}: HTTP {status} — {text}"
-                );
+                let msg = format!("key creation failed on {address}: HTTP {status} — {text}");
                 return Err(forward_or_miroir(status, &text, &msg));
             }
             Err(e) => {
@@ -167,9 +165,7 @@ async fn update_key_handler(
             }
             Ok((status, text)) => {
                 rollback_key_update(&client, &path, &snapshots, &applied).await;
-                let msg = format!(
-                    "key update failed on {address}: HTTP {status} — {text}"
-                );
+                let msg = format!("key update failed on {address}: HTTP {status} — {text}");
                 return Err(forward_or_miroir(status, &text, &msg));
             }
             Err(e) => {

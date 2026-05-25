@@ -401,8 +401,7 @@ async fn write_documents_impl(
     };
 
     // 1. Extract primary key from first document if not provided
-    let primary_key =
-        primary_key.or_else(|| documents.first().and_then(extract_primary_key));
+    let primary_key = primary_key.or_else(|| documents.first().and_then(extract_primary_key));
 
     let primary_key = primary_key.ok_or_else(|| {
         MeilisearchError::new(
@@ -450,9 +449,7 @@ async fn write_documents_impl(
         if doc.get(&primary_key).is_none() {
             return Err(MeilisearchError::new(
                 MiroirCode::PrimaryKeyRequired,
-                format!(
-                    "document at index {i} missing primary key field `{primary_key}`"
-                ),
+                format!("document at index {i} missing primary key field `{primary_key}`"),
             ));
         }
     }
@@ -1215,10 +1212,7 @@ fn build_response_with_degraded_header(
 
     // Add X-Miroir-Degraded header if any groups were degraded
     if degraded_groups > 0 {
-        builder = builder.header(
-            HEADER_MIROIR_DEGRADED,
-            format!("groups={degraded_groups}"),
-        );
+        builder = builder.header(HEADER_MIROIR_DEGRADED, format!("groups={degraded_groups}"));
     }
 
     builder.body(axum::body::Body::from(body)).map_err(|e| {
@@ -1320,9 +1314,7 @@ mod tests {
         let field = "_miroir_expires_at";
         let err = MeilisearchError::new(
             MiroirCode::ReservedField,
-            format!(
-                "document contains reserved field `{field}` (reserved when ttl.enabled: true)"
-            ),
+            format!("document contains reserved field `{field}` (reserved when ttl.enabled: true)"),
         );
         assert_eq!(err.code, "miroir_reserved_field");
         assert_eq!(err.http_status(), 400);
