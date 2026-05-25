@@ -1573,18 +1573,16 @@ impl RebalancerWorker {
         let shard = ShardId(shard_id);
         let mut coordinator = self.migration_coordinator.write().await;
 
-        // Collect the migrations that affect this shard first
-        let migrations_to_cutover: Vec<_> = coordinator
+        // Find the first migration that affects this shard
+        let mid_to_cutover = coordinator
             .get_all_migrations()
             .iter()
-            .filter(|(_, migration_state)| migration_state.affected_shards.contains_key(&shard))
-            .map(|(mid, _)| *mid)
-            .collect();
+            .find(|(_, migration_state)| migration_state.affected_shards.contains_key(&shard))
+            .map(|(mid, _)| *mid);
 
         // Now perform the cutover
-        for mid in migrations_to_cutover {
+        if let Some(mid) = mid_to_cutover {
             coordinator.begin_cutover(mid).map_err(|e| e.to_string())?;
-            break; // Only need to cutover one migration per shard
         }
 
         Ok(())
@@ -1597,21 +1595,19 @@ impl RebalancerWorker {
         let shard = ShardId(shard_id);
         let mut coordinator = self.migration_coordinator.write().await;
 
-        // Collect the migrations that affect this shard first
-        let migrations_to_complete: Vec<_> = coordinator
+        // Find the first migration that affects this shard
+        let mid_to_complete = coordinator
             .get_all_migrations()
             .iter()
-            .filter(|(_, migration_state)| migration_state.affected_shards.contains_key(&shard))
-            .map(|(mid, _)| *mid)
-            .collect();
+            .find(|(_, migration_state)| migration_state.affected_shards.contains_key(&shard))
+            .map(|(mid, _)| *mid);
 
         // Now complete the cleanup
-        for mid in migrations_to_complete {
+        if let Some(mid) = mid_to_complete {
             coordinator.complete_drain(mid).map_err(|e| e.to_string())?;
             coordinator
                 .complete_cleanup(mid)
                 .map_err(|e| e.to_string())?;
-            break; // Only need to complete one migration per shard
         }
 
         Ok(())
