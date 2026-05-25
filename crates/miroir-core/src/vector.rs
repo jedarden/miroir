@@ -334,9 +334,9 @@ mod tests {
 
         // Should deduplicate doc1, keeping the highest combined score
         assert_eq!(result.len(), 3);
-        assert_eq!(result[0].pk, "doc3"); // (0.9 + 0.5) / 2 = 0.7
-        assert_eq!(result[1].pk, "doc2"); // (0.7 + 0.9) / 2 = 0.8
-        assert_eq!(result[2].pk, "doc1"); // Should keep shard 0's version (0.8+0.6)/2=0.7 > (0.75+0.65)/2=0.7
+        assert_eq!(result[0].pk, "doc2"); // (0.7 + 0.9) / 2 = 0.8 (highest)
+        assert_eq!(result[1].pk, "doc1"); // (0.8 + 0.6) / 2 = 0.7, kept over shard 1's 0.7
+        assert_eq!(result[2].pk, "doc3"); // (0.9 + 0.5) / 2 = 0.7
     }
 
     #[test]
@@ -360,8 +360,9 @@ mod tests {
         // doc2 appears in both shards, gets summed RRF scores
         assert!(result.iter().any(|h| h.pk == "doc2"));
         let doc2 = result.iter().find(|h| h.pk == "doc2").unwrap();
-        // Rank 1 in shard 0: 1/61, rank 1 in shard 1: 1/61
-        assert!((doc2.combined_score - 2.0 / 61.0).abs() < 0.0001);
+        // Rank 1 in shard 0 (after doc1): 1/61, rank 0 in shard 1: 1/60
+        let expected = 1.0 / 61.0 + 1.0 / 60.0;
+        assert!((doc2.combined_score - expected).abs() < 0.0001);
     }
 
     #[test]
