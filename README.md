@@ -124,6 +124,54 @@ docker compose -f examples/docker-compose-dev.yml down -v
 
 See [`examples/README.md`](examples/README.md) for more details on the development stack, configuration options, and troubleshooting.
 
+## SDK Configuration
+
+Migrating your existing Meilisearch SDK code to Miroir requires only changing the endpoint URL. All other SDK code (index operations, document CRUD, search queries) remains unchanged.
+
+### Python
+
+```python
+# Before — single-node Meilisearch
+client = meilisearch.Client('https://old-meili.example.com', 'api-key')
+
+# After — Miroir
+client = meilisearch.Client('https://search.example.com', 'miroir-master-key')
+```
+
+### TypeScript / JavaScript
+
+```typescript
+// Before — single-node Meilisearch
+const client = new MeiliSearch({
+  host: 'https://old-meili.example.com',
+  apiKey: 'api-key'
+})
+
+// After — Miroir
+const client = new MeiliSearch({
+  host: 'https://search.example.com',
+  apiKey: 'miroir-master-key'
+})
+```
+
+### Go
+
+```go
+// Before — single-node Meilisearch
+client := meilisearch.NewClient(meilisearch.ClientConfig{
+    Host:   "https://old-meili.example.com",
+    APIKey: "api-key",
+})
+
+// After — Miroir
+client := meilisearch.NewClient(meilisearch.ClientConfig{
+    Host:   "https://search.example.com",
+    APIKey: "miroir-master-key",
+})
+```
+
+That's it — no other code changes required. Miroir presents the same Meilisearch-compatible API surface to all official SDKs.
+
 ## Production deployment
 
 For production deployments, see the [Deployment Sizing Guide](docs/horizontal-scaling/sizing.md) to determine orchestrator pod count and task store configuration based on your corpus size and query throughput.
