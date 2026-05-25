@@ -922,3 +922,19 @@ impl Default for TracingConfig {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Conversions
+// ---------------------------------------------------------------------------
+
+impl From<VectorSearchConfig> for crate::vector::VectorSearchConfig {
+    fn from(config: VectorSearchConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            over_fetch_factor: config.over_fetch_factor,
+            merge_strategy: config.merge_strategy,
+            hybrid_alpha_default: config.hybrid_alpha_default,
+            rrf_k: config.rrf_k,
+        }
+    }
+}
