@@ -4844,6 +4844,59 @@ mod tests {
         // Note: proptest doesn't support async tests directly.
         // The SQLite backend has comprehensive proptest coverage for all operations.
         // The Redis integration tests below verify the async operations work correctly.
+
+        // --- Table 15: search_ui_beacon (plan §13.21) ---
+
+        #[tokio::test]
+        async fn redis_beacon_idempotency_check() {
+            let (store, _url) = setup_redis_store().await;
+
+            // First call should return true (new event)
+            let is_new = store
+                .check_and_mark_beacon_event("test-index", "event-123")
+                .unwrap();
+            assert!(is_new, "First call should return true for new event");
+
+            // Second call should return false (duplicate)
+            let is_new = store
+                .check_and_mark_beacon_event("test-index", "event-123")
+                .unwrap();
+            assert!(
+                !is_new,
+                "Second call should return false for duplicate event"
+            );
+
+            // Different event_id should return true
+            let is_new = store
+                .check_and_mark_beacon_event("test-index", "event-456")
+                .unwrap();
+            assert!(is_new, "Different event_id should return true");
+
+            // Different index with same event_id should return true
+            let is_new = store
+                .check_and_mark_beacon_event("other-index", "event-123")
+                .unwrap();
+            assert!(
+                is_new,
+                "Same event_id for different index should return true"
+            );
+        }
+
+        #[tokio::test]
+        async fn redis_beacon_ttl_cleanup() {
+            let (store, _url) = setup_redis_store().await;
+
+            // Insert an event
+            store
+                .check_and_mark_beacon_event("test-index", "event-ttl")
+                .unwrap();
+
+            // Verify duplicate is rejected immediately
+            let is_new = store
+                .check_and_mark_beacon_event("test-index", "event-ttl")
+                .unwrap();
+            assert!(!is_new, "Duplicate should be rejected");
+        }
     }
 
     // --- Unit tests that don't require testcontainers ---
@@ -4958,67 +5011,5 @@ mod tests {
         assert_eq!(canary.index_uid, "logs");
         assert_eq!(canary.interval_s, 60);
         assert!(canary.enabled);
-    }
-
-    // --- Table 15: search_ui_beacon (plan §13.21) ---
-
-    #[tokio::test]
-    async fn redis_beacon_idempotency_check() {
-        let store = test_store().await;
-
-        // First call should return true (new event)
-        let is_new = store
-            .check_and_mark_beacon_event("test-index", "event-123")
-            .await
-            .unwrap();
-        assert!(is_new, "First call should return true for new event");
-
-        // Second call should return false (duplicate)
-        let is_new = store
-            .check_and_mark_beacon_event("test-index", "event-123")
-            .await
-            .unwrap();
-        assert!(
-            !is_new,
-            "Second call should return false for duplicate event"
-        );
-
-        // Different event_id should return true
-        let is_new = store
-            .check_and_mark_beacon_event("test-index", "event-456")
-            .await
-            .unwrap();
-        assert!(is_new, "Different event_id should return true");
-
-        // Different index with same event_id should return true
-        let is_new = store
-            .check_and_mark_beacon_event("other-index", "event-123")
-            .await
-            .unwrap();
-        assert!(
-            is_new,
-            "Same event_id for different index should return true"
-        );
-    }
-
-    #[tokio::test]
-    async fn redis_beacon_ttl_cleanup() {
-        let store = test_store().await;
-
-        // Insert an event
-        store
-            .check_and_mark_beacon_event("test-index", "event-ttl")
-            .await
-            .unwrap();
-
-        // Verify duplicate is rejected immediately
-        let is_new = store
-            .check_and_mark_beacon_event("test-index", "event-ttl")
-            .await
-            .unwrap();
-        assert!(!is_new, "Duplicate should be rejected");
-
-        // Note: We can't easily test TTL expiration in unit tests without
-        // waiting 24 hours. The integration tests verify Redis TTL behavior.
     }
 }
