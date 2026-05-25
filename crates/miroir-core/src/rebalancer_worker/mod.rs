@@ -9,7 +9,7 @@
 //! - Progress persistence via jobs table for resumability
 
 mod anti_entropy_worker;
-mod drift_reconciler;
+pub mod drift_reconciler;
 
 #[cfg(test)]
 mod acceptance_tests;
