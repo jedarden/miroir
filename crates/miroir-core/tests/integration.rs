@@ -56,7 +56,7 @@ async fn wait_for_task(client: &Client, task_uid: u32) -> Result<Task, Box<dyn s
     let start = std::time::Instant::now();
 
     loop {
-        let task = client.get_task(task_uid).await?;
+        let task = client.get_task(&task_uid).await?;
         // Check if task is finished (Succeeded or Failed)
         match task {
             Task::Succeeded { .. } | Task::Failed { .. } => return Ok(task),

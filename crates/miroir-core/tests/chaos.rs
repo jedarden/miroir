@@ -11,9 +11,9 @@
 //!
 //! See runbook comments in each test for operator documentation.
 
-use meilisearch_sdk::{client::Client, indexes::Indexes, task::Task};
+use meilisearch_sdk::{client::Client, indexes::Index, search::SearchResults, tasks::Task};
 use reqwest::StatusCode;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -350,21 +350,27 @@ impl Drop for TestCluster {
 /// Helper: Get Miroir client
 fn miroir_client(port: u16) -> Client {
     let url = format!("http://localhost:{}", port);
-    Client::new(url, Some(MASTER_KEY.to_string()))
+    Client::new(url, Some(MASTER_KEY.to_string())).expect("Failed to create Meilisearch client")
 }
 
 /// Helper: Wait for a task to complete
-async fn wait_for_task(client: &Client, task_uid: u32) -> Result<Task, Box<dyn std::error::Error>> {
+async fn wait_for_task(
+    client: &Client,
+    task_info: meilisearch_sdk::task_info::TaskInfo,
+) -> Result<Task, Box<dyn std::error::Error>> {
     let timeout = Duration::from_secs(30);
     let start = std::time::Instant::now();
+    let task_uid = task_info.task_uid;
 
     loop {
-        let task = client.get_task(task_uid).await?;
-        if task.is_finished() {
-            if !task.is_succeeded() {
-                return Err(format!("Task {} failed: {:?}", task_uid, task).into());
+        let task = client.get_task(&task_info).await?;
+        // Check if task is finished (Succeeded or Failed)
+        match task {
+            Task::Succeeded { .. } => return Ok(task),
+            Task::Failed { .. } => {
+                return Err(format!("Task {} failed: {:?}", task_uid, task).into())
             }
-            return Ok(task);
+            _ => {}
         }
 
         if start.elapsed() > timeout {
@@ -383,15 +389,12 @@ async fn setup_test_data(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = miroir_client(cluster.miroir_port());
 
-    // Create index
-    let indexes = client.clone();
-    match indexes.get_index(index_name).await {
-        Ok(_) => {}
-        Err(_) => {
-            let task = indexes.create_index(index_name, Some("id")).await?;
-            wait_for_task(&indexes, task).await?;
-        }
-    }
+    // Create index if it doesn't exist
+    let task_info = match client.get_index(index_name).await {
+        Ok(_) => return Ok(()), // Index already exists, assume it has data
+        Err(_) => client.create_index(index_name, Some("id")).await?,
+    };
+    wait_for_task(&client, task_info).await?;
 
     // Add documents
     let mut docs = Vec::new();
@@ -404,8 +407,8 @@ async fn setup_test_data(
     }
 
     let index = client.index(index_name);
-    let task = index.add_documents(&docs, None).await?;
-    wait_for_task(&client, task).await?;
+    let task_info = index.add_documents(&docs, None).await?;
+    wait_for_task(&client, task_info).await?;
 
     // Wait for documents to be searchable
     sleep(Duration::from_secs(2)).await;
@@ -467,7 +470,7 @@ async fn chaos_scenario_1_kill_one_node_rf2() -> Result<(), Box<dyn std::error::
     let client = miroir_client(cluster.miroir_port());
 
     // Searches should still work (RF=2 means surviving replicas cover all shards)
-    let results: serde_json::Value = client
+    let results: SearchResults<Value> = client
         .index(index_name)
         .search()
         .with_query("content")
@@ -475,9 +478,8 @@ async fn chaos_scenario_1_kill_one_node_rf2() -> Result<(), Box<dyn std::error::
         .execute()
         .await?;
 
-    let hits = results["hits"].as_array().unwrap();
     assert_eq!(
-        hits.len(),
+        results.hits.len(),
         500,
         "Search should return all 500 results after node loss"
     );
@@ -503,14 +505,14 @@ async fn chaos_scenario_1_kill_one_node_rf2() -> Result<(), Box<dyn std::error::
     );
 
     // Writes should succeed
-    let task = client
+    let task_info = client
         .index(index_name)
         .add_documents(
             &[json!({"id": "new-doc", "title": "New", "content": "During failure"})],
             None,
         )
         .await?;
-    let _ = wait_for_task(&client, task).await?;
+    let _ = wait_for_task(&client, task_info).await?;
 
     cluster.down().await?;
     Ok(())
@@ -648,7 +650,7 @@ async fn chaos_scenario_3_kill_miroir_replica() -> Result<(), Box<dyn std::error
     cluster.restart_miroir().await?;
 
     // Searches should work immediately after recovery
-    let results: serde_json::Value = client
+    let results: SearchResults<Value> = client
         .index(index_name)
         .search()
         .with_query("content")
@@ -656,9 +658,8 @@ async fn chaos_scenario_3_kill_miroir_replica() -> Result<(), Box<dyn std::error
         .execute()
         .await?;
 
-    let hits = results["hits"].as_array().unwrap();
     assert_eq!(
-        hits.len(),
+        results.hits.len(),
         500,
         "Search should return all results after Miroir restart"
     );
@@ -718,7 +719,7 @@ async fn chaos_scenario_4_netem_delay() -> Result<(), Box<dyn std::error::Error>
 
     // Measure search latency with delay
     let start = std::time::Instant::now();
-    let results: serde_json::Value = client
+    let results: SearchResults<Value> = client
         .index(index_name)
         .search()
         .with_query("content")
@@ -727,9 +728,8 @@ async fn chaos_scenario_4_netem_delay() -> Result<(), Box<dyn std::error::Error>
         .await?;
     let delayed_latency = start.elapsed();
 
-    let hits = results["hits"].as_array().unwrap();
     assert_eq!(
-        hits.len(),
+        results.hits.len(),
         100,
         "Search should return all results with netem delay"
     );
@@ -739,7 +739,7 @@ async fn chaos_scenario_4_netem_delay() -> Result<(), Box<dyn std::error::Error>
 
     // Measure baseline latency
     let start = std::time::Instant::now();
-    let results: serde_json::Value = client
+    let results: SearchResults<Value> = client
         .index(index_name)
         .search()
         .with_query("content")
@@ -748,8 +748,7 @@ async fn chaos_scenario_4_netem_delay() -> Result<(), Box<dyn std::error::Error>
         .await?;
     let baseline_latency = start.elapsed();
 
-    let baseline_hits = results["hits"].as_array().unwrap();
-    assert_eq!(baseline_hits.len(), 100);
+    assert_eq!(results.hits.len(), 100);
 
     // Delayed search should be slower but still succeed
     assert!(
@@ -826,7 +825,7 @@ async fn chaos_scenario_5_restart_node() -> Result<(), Box<dyn std::error::Error
     cluster.kill_meili(1).await?;
 
     // Searches still work with RF=2
-    let results: serde_json::Value = client
+    let results: SearchResults<Value> = client
         .index(index_name)
         .search()
         .with_query("content")
@@ -834,8 +833,7 @@ async fn chaos_scenario_5_restart_node() -> Result<(), Box<dyn std::error::Error
         .execute()
         .await?;
 
-    let hits = results["hits"].as_array().unwrap();
-    assert_eq!(hits.len(), 500);
+    assert_eq!(results.hits.len(), 500);
 
     // Restart node-1
     cluster.restart_meili(1).await?;
@@ -844,7 +842,7 @@ async fn chaos_scenario_5_restart_node() -> Result<(), Box<dyn std::error::Error
     sleep(Duration::from_secs(5)).await;
 
     // Searches should still work
-    let results: serde_json::Value = client
+    let results: SearchResults<Value> = client
         .index(index_name)
         .search()
         .with_query("content")
@@ -852,34 +850,32 @@ async fn chaos_scenario_5_restart_node() -> Result<(), Box<dyn std::error::Error
         .execute()
         .await?;
 
-    let hits = results["hits"].as_array().unwrap();
     assert_eq!(
-        hits.len(),
+        results.hits.len(),
         500,
         "Search should return all results after node recovery"
     );
 
     // Verify node is routing again by adding a new document
-    let task = client
+    let task_info = client
         .index(index_name)
         .add_documents(
             &[json!({"id": "after-recovery", "title": "After", "content": "Recovery test"})],
             None,
         )
         .await?;
-    let _ = wait_for_task(&client, task).await?;
+    let _ = wait_for_task(&client, task_info).await?;
 
     // Search for the new document
-    let results: serde_json::Value = client
+    let results: SearchResults<Value> = client
         .index(index_name)
         .search()
         .with_query("Recovery test")
         .execute()
         .await?;
 
-    let hits = results["hits"].as_array().unwrap();
     assert_eq!(
-        hits.len(),
+        results.hits.len(),
         1,
         "Should find document added after node recovery"
     );
@@ -939,12 +935,11 @@ async fn chaos_scenario_6_kill_mid_rebalance() -> Result<(), Box<dyn std::error:
     let index_name = "chaos_s6";
 
     // Create index
-    let indexes = client.clone();
-    match indexes.get_index(index_name).await {
+    match client.get_index(index_name).await {
         Ok(_) => {}
         Err(_) => {
-            let task = indexes.create_index(index_name, Some("id")).await?;
-            wait_for_task(&indexes, task).await?;
+            let task_info = client.create_index(index_name, Some("id")).await?;
+            wait_for_task(&client, task_info).await?;
         }
     }
 
@@ -960,13 +955,13 @@ async fn chaos_scenario_6_kill_mid_rebalance() -> Result<(), Box<dyn std::error:
 
     // Add documents - this will be our "rebalance" simulation
     let index = client.index(index_name);
-    let task = index.add_documents(&docs, None).await?;
+    let task_info = index.add_documents(&docs, None).await?;
 
     // Kill node-1 mid-operation
     cluster.kill_meili(1).await?;
 
     // Wait for task to complete (should succeed or fail gracefully)
-    let _ = wait_for_task(&client, task).await;
+    let _ = wait_for_task(&client, task_info).await;
 
     // Restart node-1
     cluster.restart_meili(1).await?;
@@ -975,7 +970,7 @@ async fn chaos_scenario_6_kill_mid_rebalance() -> Result<(), Box<dyn std::error:
     sleep(Duration::from_secs(5)).await;
 
     // Verify data integrity - all documents should be present
-    let results: serde_json::Value = client
+    let results: SearchResults<Value> = client
         .index(index_name)
         .search()
         .with_query("content")
@@ -983,13 +978,11 @@ async fn chaos_scenario_6_kill_mid_rebalance() -> Result<(), Box<dyn std::error:
         .execute()
         .await?;
 
-    let hits = results["hits"].as_array().unwrap();
-
     // Should have all or most documents (some may be lost if task failed)
     assert!(
-        hits.len() >= 900,
+        results.hits.len() >= 900,
         "Should have most documents after mid-rebalance failure, got {}",
-        hits.len()
+        results.hits.len()
     );
 
     cluster.down().await?;
