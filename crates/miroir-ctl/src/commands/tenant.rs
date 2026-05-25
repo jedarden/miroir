@@ -1,6 +1,7 @@
 use clap::Subcommand;
 
 #[derive(Subcommand, Debug)]
+#[command(about = "Manage multi-tenancy", after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/tenant.md\n\nSee `miroir-ctl help` for a list of all subcommands.")]
 pub enum TenantSubcommand {
     /// Create a new tenant
     Create,

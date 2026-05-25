@@ -2,6 +2,7 @@ use clap::Subcommand;
 use reqwest::Client;
 
 #[derive(Subcommand, Debug)]
+#[command(about = "Dump and inspect data", after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/dump.md\n\nSee `miroir-ctl help` for a list of all subcommands.")]
 pub enum DumpSubcommand {
     /// Import a Meilisearch dump file into Miroir
     ///

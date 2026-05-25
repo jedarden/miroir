@@ -1,6 +1,7 @@
 use clap::Subcommand;
 
 #[derive(Subcommand, Debug)]
+#[command(about = "Manage TTL policies", after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/ttl.md\n\nSee `miroir-ctl help` for a list of all subcommands.")]
 pub enum TtlSubcommand {
     /// Set a TTL policy
     Set,
