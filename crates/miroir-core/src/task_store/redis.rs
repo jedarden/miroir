@@ -2639,6 +2639,50 @@ impl TaskStore for RedisTaskStore {
             Ok(deleted)
         })
     }
+
+    // --- Table 15: search_ui_beacon (plan §13.21) ---
+
+    /// Check if a beacon event_id has already been processed (idempotency).
+    /// Returns true if the event_id is new (not yet processed), false if duplicate.
+    /// If new, marks it as processed with a 24-hour TTL.
+    fn check_and_mark_beacon_event(&self, index_uid: &str, event_id: &str) -> Result<bool> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+        let index_uid = index_uid.to_string();
+        let event_id = event_id.to_string();
+        let key = format!("{}:search_ui_beacon:{}", key_prefix, index_uid);
+        let field = event_id.clone();
+
+        self.block_on(async move {
+            let mut conn = manager.lock().await;
+
+            // Check if event_id exists in the hash set
+            let exists: bool = conn
+                .hexists(&key, &field)
+                .await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            if exists {
+                // Duplicate event - return false
+                Ok(false)
+            } else {
+                // New event - mark it with a 24-hour TTL
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let _: () = conn
+                    .hset(&key, &field, now)
+                    .await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
+                let _: () = conn
+                    .expire(&key, 24 * 3600)
+                    .await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
+                Ok(true)
+            }
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4914,5 +4958,67 @@ mod tests {
         assert_eq!(canary.index_uid, "logs");
         assert_eq!(canary.interval_s, 60);
         assert!(canary.enabled);
+    }
+
+    // --- Table 15: search_ui_beacon (plan §13.21) ---
+
+    #[tokio::test]
+    async fn redis_beacon_idempotency_check() {
+        let store = test_store().await;
+
+        // First call should return true (new event)
+        let is_new = store
+            .check_and_mark_beacon_event("test-index", "event-123")
+            .await
+            .unwrap();
+        assert!(is_new, "First call should return true for new event");
+
+        // Second call should return false (duplicate)
+        let is_new = store
+            .check_and_mark_beacon_event("test-index", "event-123")
+            .await
+            .unwrap();
+        assert!(
+            !is_new,
+            "Second call should return false for duplicate event"
+        );
+
+        // Different event_id should return true
+        let is_new = store
+            .check_and_mark_beacon_event("test-index", "event-456")
+            .await
+            .unwrap();
+        assert!(is_new, "Different event_id should return true");
+
+        // Different index with same event_id should return true
+        let is_new = store
+            .check_and_mark_beacon_event("other-index", "event-123")
+            .await
+            .unwrap();
+        assert!(
+            is_new,
+            "Same event_id for different index should return true"
+        );
+    }
+
+    #[tokio::test]
+    async fn redis_beacon_ttl_cleanup() {
+        let store = test_store().await;
+
+        // Insert an event
+        store
+            .check_and_mark_beacon_event("test-index", "event-ttl")
+            .await
+            .unwrap();
+
+        // Verify duplicate is rejected immediately
+        let is_new = store
+            .check_and_mark_beacon_event("test-index", "event-ttl")
+            .await
+            .unwrap();
+        assert!(!is_new, "Duplicate should be rejected");
+
+        // Note: We can't easily test TTL expiration in unit tests without
+        // waiting 24 hours. The integration tests verify Redis TTL behavior.
     }
 }

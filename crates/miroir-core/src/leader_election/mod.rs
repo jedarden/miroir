@@ -23,14 +23,14 @@
 //! committed phase.
 
 use crate::config::LeaderElectionConfig;
-use crate::task_store::{LeaderLeaseRow, TaskStore};
+use crate::task_store::TaskStore;
 use crate::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Callback type for recording leader election metrics.
 ///

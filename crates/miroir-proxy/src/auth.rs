@@ -110,7 +110,10 @@ pub fn jwt_encode(header: &JwtHeader, claims: &JwtClaims, secret: &[u8]) -> Resu
 }
 
 /// Decode and verify a JWT with the given secret. Returns (header, claims).
-fn jwt_decode(token: &str, secret: &[u8]) -> Result<(JwtHeader, JwtClaims), JwtValidationError> {
+pub fn jwt_decode(
+    token: &str,
+    secret: &[u8],
+) -> Result<(JwtHeader, JwtClaims), JwtValidationError> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
         return Err(JwtValidationError::Malformed);
@@ -156,6 +159,35 @@ fn jwt_decode(token: &str, secret: &[u8]) -> Result<(JwtHeader, JwtClaims), JwtV
     }
 
     Ok((header, claims))
+}
+
+/// Decode and verify a JWT, trying both primary and previous secrets.
+///
+/// First tries the primary secret from the given environment variable name.
+/// If that fails, tries the previous secret from the previous_env name.
+/// Returns the claims on success, or the first error if both fail.
+pub fn jwt_decode_with_fallback(
+    token: &str,
+    primary_env: &str,
+    previous_env: &str,
+) -> Result<JwtClaims, JwtValidationError> {
+    // Try primary secret
+    if let Ok(primary_secret) = std::env::var(primary_env) {
+        if let Ok((_, claims)) = jwt_decode(token, primary_secret.as_bytes()) {
+            return Ok(claims);
+        }
+    }
+
+    // Try previous secret
+    if let Ok(previous_secret) = std::env::var(previous_env) {
+        if let Ok((_, claims)) = jwt_decode(token, previous_secret.as_bytes()) {
+            return Ok(claims);
+        }
+    }
+
+    // Both failed - return error from primary attempt
+    let primary_secret = std::env::var(primary_env).unwrap_or_default();
+    jwt_decode(token, primary_secret.as_bytes()).map(|(_, claims)| claims)
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +305,20 @@ pub enum JwtValidationError {
     /// Token scope does not permit this (method, path) or idx claim mismatch.
     ScopeDenied,
 }
+
+impl std::fmt::Display for JwtValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JwtValidationError::Malformed => write!(f, "malformed JWT token"),
+            JwtValidationError::InvalidSignature => write!(f, "invalid JWT signature"),
+            JwtValidationError::Expired => write!(f, "JWT token expired"),
+            JwtValidationError::PreviousSecretEmpty => write!(f, "previous JWT secret is empty"),
+            JwtValidationError::ScopeDenied => write!(f, "JWT scope denied"),
+        }
+    }
+}
+
+impl std::error::Error for JwtValidationError {}
 
 // ---------------------------------------------------------------------------
 // CSRF token generation (plan §9)

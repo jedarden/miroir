@@ -13,17 +13,21 @@ use axum::{
     Router,
 };
 use miroir_core::{
+    cdc::AnalyticsEvent,
     config::advanced::{SearchUiAuthConfig, SearchUiConfig},
     task_store::{SearchUiScopedKey, TaskStore},
 };
+use sha2::{Digest, Sha256};
 
+use crate::auth::{
+    build_csp_header, jwt_decode_with_fallback, jwt_encode, JwtClaims, JwtHeader, KID_PRIMARY,
+};
 use crate::error_response::ErrorResponse;
 use rust_embed::RustEmbed as Embed;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-use crate::auth::{build_csp_header, jwt_encode, JwtClaims, JwtHeader, KID_PRIMARY};
 use crate::routes::indexes::MeilisearchClient;
 use crate::scoped_key_rotation::mint_scoped_key;
 
@@ -458,25 +462,96 @@ pub async fn update_config(
 /// Analytics beacon endpoint (plan §13.21).
 ///
 /// Idempotent via client-generated event_id. Duplicate events are ignored.
+/// Falls back to server-side event_id generation for old browsers.
 pub async fn beacon(
     Path(index_uid): Path<String>,
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(mut beacon): Json<BeaconRequest>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-    let _ = &state.config;
+    let config = &state.config;
 
-    // Validate event_id is present
+    // Extract JWT to get session_id (plan §13.21)
+    let session_id = if let Some(auth_header) = headers.get("authorization") {
+        let auth_str = auth_header.to_str().unwrap_or("");
+        if let Some(token) = auth_str.strip_prefix("Bearer ") {
+            // Decode JWT to extract session_id (sub claim)
+            match jwt_decode_with_fallback(
+                token,
+                config.search_ui.auth.jwt_secret_env.as_str(),
+                config.search_ui.auth.jwt_secret_previous_env.as_str(),
+            ) {
+                Ok(claims) => claims.sub.clone(),
+                Err(e) => {
+                    debug!(
+                        error = %e,
+                        "failed to decode JWT for beacon, using fallback session_id"
+                    );
+                    // Fallback: generate a session_id from the token itself
+                    let hash = Sha256::digest(token.as_bytes());
+                    let hash_hex = hex::encode(&hash[..16]);
+                    format!("anon:{}", hash_hex)
+                }
+            }
+        } else {
+            "anonymous".to_string()
+        }
+    } else {
+        "anonymous".to_string()
+    };
+
+    // Server-side event_id generation fallback for old browsers (plan §13.21)
+    // If client didn't provide event_id, generate deterministic hash
     if beacon.event_id.is_empty() {
-        return Err(ErrorResponse::invalid_request(
-            "event_id is required".to_string(),
-        ));
+        let mut hasher = Sha256::new();
+        hasher.update(session_id.as_bytes());
+        if let Some(ref query) = beacon.query {
+            hasher.update(query.as_bytes());
+        }
+        if let Some(ref result_id) = beacon.document_id {
+            hasher.update(result_id.as_bytes());
+        }
+        if let Some(ref position) = beacon.position {
+            hasher.update(position.to_be_bytes());
+        }
+        // Add minute bucket for latency events
+        if beacon.event_type == "latency" {
+            if let Some(ref latency_ms) = beacon.latency_ms {
+                let minute_bucket = latency_ms / 60000; // 60 second buckets
+                hasher.update(minute_bucket.to_be_bytes());
+            }
+        }
+        let hash = hasher.finalize();
+        beacon.event_id = hex::encode(&hash[..16]);
+        debug!(
+            index = %index_uid,
+            event_type = %beacon.event_type,
+            generated_event_id = %beacon.event_id,
+            "generated server-side event_id for old browser"
+        );
+    } else {
+        // Normalize event_id
+        beacon.event_id = beacon.event_id.trim().to_string();
     }
 
-    // Normalize event_id
-    beacon.event_id = beacon.event_id.trim().to_string();
+    // Idempotency check: skip if event_id was already processed (plan §13.21)
+    if let Some(redis_store) = &state.redis_store {
+        let is_new = redis_store
+            .check_and_mark_beacon_event(&index_uid, &beacon.event_id)
+            .map_err(|e| {
+                ErrorResponse::internal_error(format!("beacon idempotency check failed: {e}"))
+            })?;
 
-    // TODO: Implement idempotency check via Redis
-    // TODO: Publish to CDC sink if analytics enabled
+        if !is_new {
+            debug!(
+                index = %index_uid,
+                event_type = %beacon.event_type,
+                event_id = %beacon.event_id,
+                "duplicate beacon event ignored"
+            );
+            return Ok(StatusCode::ACCEPTED);
+        }
+    }
 
     debug!(
         index = %index_uid,
@@ -484,6 +559,51 @@ pub async fn beacon(
         event_id = %beacon.event_id,
         "received analytics beacon"
     );
+
+    // Publish to CDC if analytics is enabled (plan §13.21)
+    if config.search_ui.analytics.enabled {
+        if let Some(cdc_manager) = &state.cdc_manager {
+            let event = AnalyticsEvent {
+                event_type: beacon.event_type.clone(),
+                event_id: beacon.event_id.clone(),
+                session_id: session_id.clone(),
+                index: index_uid.clone(),
+                query: beacon.query.clone(),
+                result_id: beacon.document_id.clone(),
+                result_position: beacon.position,
+                latency_ms: beacon.latency_ms,
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+            };
+
+            // Latency events are subject to cdc.emit_internal_writes (plan §13.21)
+            let is_latency = beacon.event_type == "latency" || beacon.event_type == "search";
+            let should_emit = if is_latency {
+                config.cdc.emit_internal_writes
+            } else {
+                true // Click-through events are always emitted
+            };
+
+            if should_emit {
+                cdc_manager.publish_analytics(event).await;
+                debug!(
+                    index = %index_uid,
+                    event_type = %beacon.event_type,
+                    event_id = %beacon.event_id,
+                    "published analytics event to CDC"
+                );
+            } else {
+                debug!(
+                    index = %index_uid,
+                    event_type = %beacon.event_type,
+                    event_id = %beacon.event_id,
+                    "skipped latency event (emit_internal_writes=false)"
+                );
+            }
+        }
+    }
 
     Ok(StatusCode::ACCEPTED)
 }

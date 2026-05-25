@@ -264,6 +264,13 @@ pub trait TaskStore: Send + Sync {
 
     /// Delete old completed Mode B operations.
     fn prune_mode_b_operations(&self, cutoff_ms: i64, batch_size: u32) -> Result<usize>;
+
+    // --- Table 15: search_ui_beacon (plan §13.21) ---
+
+    /// Check if a beacon event_id has already been processed (idempotency).
+    /// Returns true if the event_id is new (not yet processed), false if duplicate.
+    /// If new, marks it as processed with a 24-hour TTL.
+    fn check_and_mark_beacon_event(&self, index_uid: &str, event_id: &str) -> Result<bool>;
 }
 
 // --- Row types ---

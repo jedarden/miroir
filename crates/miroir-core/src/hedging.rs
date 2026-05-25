@@ -3,7 +3,6 @@
 //! Issues duplicate requests to alternate replicas when a primary request
 //! exceeds the p95 latency threshold.
 
-use crate::error::{MiroirError, Result};
 use crate::router::assign_shard_in_group;
 use crate::topology::{NodeId, Topology};
 use serde::{Deserialize, Serialize};
@@ -11,7 +10,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tokio::time::{sleep, Instant};
 
 /// Hedging configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
