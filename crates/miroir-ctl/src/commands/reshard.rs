@@ -4,7 +4,10 @@ use clap::Subcommand;
 use miroir_core::reshard::{check_window_now, ReshardingConfig, WindowGuardResult};
 
 #[derive(Subcommand, Debug)]
-#[command(about = "Manage resharding operations", after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/reshard.md\n\nSee `miroir-ctl help` for a list of all subcommands.")]
+#[command(
+    about = "Manage resharding operations",
+    after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/reshard.md\n\nSee `miroir-ctl help` for a list of all subcommands."
+)]
 pub enum ReshardSubcommand {
     /// Start an online resharding operation (plan §13.1).
     ///

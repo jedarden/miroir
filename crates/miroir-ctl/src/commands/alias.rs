@@ -1,7 +1,10 @@
 use clap::Subcommand;
 
 #[derive(Subcommand, Debug)]
-#[command(about = "Manage index aliases", after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/alias.md\n\nSee `miroir-ctl help` for a list of all subcommands.")]
+#[command(
+    about = "Manage index aliases",
+    after_help = "Runbooks: https://github.com/jedarden/miroir/blob/main/docs/ctl/alias.md\n\nSee `miroir-ctl help` for a list of all subcommands."
+)]
 pub enum AliasSubcommand {
     /// Create a new alias
     Create,

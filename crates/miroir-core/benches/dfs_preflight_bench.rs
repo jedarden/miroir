@@ -10,8 +10,8 @@
 //! - Varying shard counts: measure how preflight scales with cluster size
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use miroir_core::config::UnavailableShardPolicy;
 use miroir_core::merger::ScoreMergeStrategy;
+use miroir_core::replica_selection::ReplicaSelector;
 use miroir_core::scatter::{
     dfs_query_then_fetch_search, execute_preflight, plan_search_scatter, GlobalIdf, MockNodeClient,
     PreflightRequest, PreflightResponse, SearchRequest, TermStats,
