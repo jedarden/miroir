@@ -24,7 +24,7 @@ if [[ -n "$EXPECTED" && "$CARGO_VERSION" != "$EXPECTED" ]]; then
 fi
 
 CHART_VERSION=$(grep '^version: ' "$REPO_ROOT/charts/miroir/Chart.yaml" | sed 's/version: //')
-APP_VERSION=$(grep '^appVersion: '  "$REPO_ROOT/charts/miroir/Chart.yaml" | sed 's/appVersion: //')
+APP_VERSION=$(grep '^appVersion: '  "$REPO_ROOT/charts/miroir/Chart.yaml" | sed 's/appVersion: //' | tr -d '"')
 
 if [[ "$CARGO_VERSION" != "$CHART_VERSION" ]]; then
     echo "FAIL: Cargo.toml version ($CARGO_VERSION) != Chart.yaml version ($CHART_VERSION)" >&2
