@@ -126,6 +126,7 @@ impl VectorHit {
 }
 
 /// Vector search merger — combines over-fetched results from multiple shards.
+#[derive(Debug, Clone)]
 pub struct VectorMerger {
     /// Merge strategy.
     strategy: MergeStrategy,
@@ -138,8 +139,8 @@ pub struct VectorMerger {
 impl VectorMerger {
     /// Create a new vector merger.
     pub fn new(config: &VectorSearchConfig) -> Self {
-        let strategy = MergeStrategy::from_str(&config.merge_strategy)
-            .unwrap_or(MergeStrategy::Convex);
+        let strategy =
+            MergeStrategy::from_str(&config.merge_strategy).unwrap_or(MergeStrategy::Convex);
         Self {
             strategy,
             alpha: config.hybrid_alpha_default,
@@ -179,7 +180,7 @@ impl VectorMerger {
                 .entry(hit.pk.clone())
                 .and_modify(|e: &mut VectorHit| {
                     if hit.combined_score > e.combined_score {
-                        *e = hit;
+                        *e = hit.clone();
                     }
                 })
                 .or_insert(hit);
@@ -206,10 +207,7 @@ impl VectorMerger {
         // First, sort each shard's hits by their original ranking score
         let mut per_shard: HashMap<u32, Vec<VectorHit>> = HashMap::new();
         for (shard_id, hit) in shard_hits {
-            per_shard
-                .entry(shard_id)
-                .or_insert_with(Vec::new)
-                .push(hit);
+            per_shard.entry(shard_id).or_insert_with(Vec::new).push(hit);
         }
 
         // Compute RRF scores
@@ -278,7 +276,10 @@ mod tests {
 
     #[test]
     fn test_merge_strategy_from_str() {
-        assert_eq!(MergeStrategy::from_str("convex"), Some(MergeStrategy::Convex));
+        assert_eq!(
+            MergeStrategy::from_str("convex"),
+            Some(MergeStrategy::Convex)
+        );
         assert_eq!(MergeStrategy::from_str("rrf"), Some(MergeStrategy::Rrf));
         assert_eq!(MergeStrategy::from_str("unknown"), None);
     }

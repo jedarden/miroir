@@ -56,6 +56,7 @@ pub mod task_store;
 pub mod tenant;
 pub mod topology;
 pub mod ttl;
+pub mod vector;
 
 // Raft prototype temporarily disabled (openraft 0.9.22 fails on Rust 1.87)
 // #[cfg(feature = "raft-proto")]

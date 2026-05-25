@@ -347,6 +347,14 @@ pub enum VectorMode {
     Hybrid,
 }
 
+impl Default for VectorMode {
+    fn default() -> Self {
+        Self::KeywordOnly
+    }
+}
+
+use crate::vector::VectorSearchConfig;
+
 #[derive(Debug, Clone)]
 pub struct SearchRequest {
     pub index_uid: String,
@@ -364,6 +372,8 @@ pub struct SearchRequest {
     pub over_fetch_factor: u32,
     /// Vector search mode (keyword-only, vector-only, or hybrid).
     pub vector_mode: VectorMode,
+    /// Vector search configuration (for merge strategy).
+    pub vector_config: Option<VectorSearchConfig>,
 }
 
 impl SearchRequest {
@@ -1097,6 +1107,8 @@ pub async fn scatter_gather_search<C: NodeClient>(
         client_requested_score: req.ranking_score,
         facets: req.facets.clone(),
         failed_shards,
+        vector_mode: req.vector_mode,
+        vector_config: req.vector_config.clone(),
     };
 
     // Span for the merge operation
@@ -1517,6 +1529,7 @@ mod tests {
             global_idf: None,
             over_fetch_factor: 1,
             vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         }
     }
 
@@ -2014,6 +2027,7 @@ mod tests {
             global_idf: None,
             over_fetch_factor: 1,
             vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let body = req.to_node_body();
@@ -2061,6 +2075,7 @@ mod tests {
             global_idf: None,
             over_fetch_factor: 1,
             vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let body = req.to_node_body();
@@ -2090,6 +2105,7 @@ mod tests {
             global_idf: None,
             over_fetch_factor: 1,
             vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let body = req.to_node_body();
@@ -2154,6 +2170,7 @@ mod tests {
             global_idf: None,
             over_fetch_factor: 3,
             vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
         let body = req.to_node_body();
         assert_eq!(body.get("limit"), Some(&serde_json::json!(10)));
