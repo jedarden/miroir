@@ -2546,6 +2546,7 @@ dependencies = [
  "testcontainers",
  "testcontainers-modules",
  "tokio 1.52.3",
+ "toml",
  "tower 0.5.3",
  "tracing",
  "tracing-opentelemetry",
