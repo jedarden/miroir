@@ -388,7 +388,7 @@ fn test_global_idf_single_shard() {
         },
     };
 
-    let global_idf = GlobalIdf::from_preflight_responses(&vec![response]);
+    let global_idf = GlobalIdf::from_preflight_responses(&[response]);
 
     assert_eq!(global_idf.total_docs, 1000);
     assert_eq!(global_idf.terms.get("test").unwrap().df, 50);

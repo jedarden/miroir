@@ -9,10 +9,8 @@ use miroir_core::{
     config::UnavailableShardPolicy,
     merger::{MergeStrategy, ScoreMergeStrategy},
     multi_search::{MultiSearchExecutor, MultiSearchResponse, SearchResultData},
-    query_planner::QueryPlanner,
     scatter::{
         dfs_query_then_fetch_search, plan_search_scatter_with_narrowing, NodeClient, SearchRequest,
-        VectorMode,
     },
     shadow::ShadowOperation,
     topology::Topology,
@@ -22,9 +20,8 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
-use tracing::{debug, info, instrument};
+use tracing::{debug, instrument};
 
-use crate::routes::admin_endpoints::AppState;
 
 /// Multi-search state.
 #[derive(Clone)]
@@ -299,7 +296,7 @@ where
             let topology = topology.clone();
             let node_client = node_client.clone();
             let config = config_for_executor.clone();
-            let strategy = strategy.clone();
+            let strategy = strategy;
             let policy = policy;
             let replica_selector = replica_selector_for_executor.clone();
             let query_planner = query_planner_for_executor.clone();

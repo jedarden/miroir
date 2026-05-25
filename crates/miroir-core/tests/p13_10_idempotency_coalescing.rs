@@ -138,8 +138,7 @@ async fn p5_10_a3_hot_query_coalesces_scatters() {
     // At least 90% should have coalesced (they all hit within the window)
     assert!(
         coalesced_count >= 900,
-        "expected at least 900 coalesced queries, got {}",
-        coalesced_count
+        "expected at least 900 coalesced queries, got {coalesced_count}"
     );
 }
 
@@ -159,7 +158,7 @@ async fn p5_10_a3_multiple_scatters_across_windows() {
 
         // First query in window: should miss and register
         let rx = coalescer.try_coalesce(fp.clone()).await;
-        assert!(rx.is_none(), "first query in window {} should miss", window);
+        assert!(rx.is_none(), "first query in window {window} should miss");
 
         let tx = coalescer.register(fp.clone()).await.unwrap();
         scatter_count += 1;
@@ -169,8 +168,7 @@ async fn p5_10_a3_multiple_scatters_across_windows() {
             let rx = coalescer.try_coalesce(fp.clone()).await;
             assert!(
                 rx.is_some(),
-                "subsequent queries in window {} should coalesce",
-                window
+                "subsequent queries in window {window} should coalesce"
             );
         }
 
@@ -185,8 +183,7 @@ async fn p5_10_a3_multiple_scatters_across_windows() {
     // We expect exactly 5 scatters (one per window)
     assert_eq!(
         scatter_count, 5,
-        "expected 5 scatters across 5 windows, got {}",
-        scatter_count
+        "expected 5 scatters across 5 windows, got {scatter_count}"
     );
 }
 
@@ -304,10 +301,10 @@ async fn p5_10_a5_idempotency_cache_max_entries_enforcement() {
 
     // Insert 3 entries (at capacity)
     for i in 0..3 {
-        let key = format!("key-{}", i);
+        let key = format!("key-{i}");
         let body = json!({"id": i});
         let body_hash = compute_hash(&body);
-        cache.insert(key, body_hash, format!("mtask-{}", i)).await;
+        cache.insert(key, body_hash, format!("mtask-{i}")).await;
     }
 
     assert_eq!(cache.size().await, 3, "cache should have 3 entries");

@@ -5,18 +5,12 @@
 //! - `GET /_miroir/dumps/import/{id}/status` — get import status
 
 use axum::extract::{Extension, FromRef, Path};
-use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use miroir_core::api_error::{MeilisearchError, MiroirCode};
-use miroir_core::config::Config;
 use miroir_core::dump_import::{DumpImportManager, DumpImportPhase, DumpImportStatus};
-use miroir_core::topology::Topology;
-use serde_json::Value;
-use std::sync::Arc;
 
 use crate::client::HttpClient;
-use crate::middleware::Metrics;
 
 /// Request body for starting a dump import.
 #[derive(serde::Deserialize)]
@@ -91,7 +85,7 @@ where
             Err(e) => {
                 return Err(MeilisearchError::new(
                     MiroirCode::InvalidRequest,
-                    format!("invalid base64 dump_data: {}", e),
+                    format!("invalid base64 dump_data: {e}"),
                 ))
             }
         }
@@ -124,7 +118,7 @@ where
         .map_err(|e| {
             MeilisearchError::new(
                 MiroirCode::InternalError,
-                format!("failed to start import: {}", e),
+                format!("failed to start import: {e}"),
             )
         })?;
 
@@ -143,7 +137,7 @@ where
         bytes_read
     );
 
-    let status_url = format!("/_miroir/dumps/import/{}/status", import_id);
+    let status_url = format!("/_miroir/dumps/import/{import_id}/status");
 
     Ok(Json(DumpImportResponse {
         miroir_task_id: import_id,
@@ -175,7 +169,7 @@ where
     let status = manager.get_status(&id).await.ok_or_else(|| {
         MeilisearchError::new(
             MiroirCode::NotFound,
-            format!("import task not found: {}", id),
+            format!("import task not found: {id}"),
         )
     })?;
 
@@ -222,7 +216,7 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD
         .decode(s)
-        .map_err(|e| format!("base64 decode failed: {}", e))
+        .map_err(|e| format!("base64 decode failed: {e}"))
 }
 
 /// Get current UNIX timestamp in milliseconds.

@@ -1887,15 +1887,15 @@ mod tests {
     #[tokio::test]
     async fn test_compute_affected_shards_for_add() {
         let topo = Arc::new(RwLock::new(test_topology()));
-        let config = RebalancerWorkerConfig::default();
+        let _config = RebalancerWorkerConfig::default();
 
         // Create a mock task store (in-memory for testing)
         // Note: This would need a proper mock TaskStore implementation
         // For now, we'll skip the full integration test
 
         // Test that adding a node to group 0 affects some shards
-        let new_node_id = "node-new";
-        let replica_group = 0;
+        let _new_node_id = "node-new";
+        let _replica_group = 0;
 
         // We'd need to instantiate the worker with a proper mock task store
         // This is a placeholder for the actual test

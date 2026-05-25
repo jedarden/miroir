@@ -1,12 +1,11 @@
 //! Query explain API endpoint (plan §13.20).
 
 use axum::{
-    extract::{Extension, FromRef, Path, Query},
+    extract::{Extension, Path, Query},
     http::{HeaderMap, StatusCode},
     Json,
 };
 use miroir_core::{
-    api_error::{MeilisearchError, MiroirCode},
     config::MiroirConfig,
     explainer::{BroadcastPending, Explainer, SearchQueryExplanation, Warning},
     query_planner::QueryPlanner,
@@ -15,7 +14,6 @@ use miroir_core::{
     topology::Topology,
 };
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -55,7 +53,7 @@ pub async fn explain_search<S>(
     Query(params): Query<ExplainParams>,
     Extension(state): Extension<Arc<AppState>>,
     headers: HeaderMap,
-    Json(mut query): Json<SearchQuery>,
+    Json(query): Json<SearchQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode>
 where
     S: Clone + Send + Sync + 'static,
@@ -309,8 +307,7 @@ async fn check_unfilterable_attributes(
             warnings.push(Warning::UnfilterableAttribute {
                 attribute: attr.clone(),
                 suggestion: format!(
-                    "add '{}' to filterableAttributes or remove from filter",
-                    attr
+                    "add '{attr}' to filterableAttributes or remove from filter"
                 ),
             });
         }
@@ -336,8 +333,8 @@ fn extract_attributes_from_filter(filter: &str) -> Vec<String> {
     let known_attrs = vec!["id", "sku", "category", "price", "status", "tenant"];
 
     for attr in known_attrs {
-        if filter_lower.contains(&format!(r#"{}"#, attr))
-            || filter_lower.contains(&format!(r#"{}"#, attr))
+        if filter_lower.contains(&attr.to_string())
+            || filter_lower.contains(&attr.to_string())
         {
             attrs.push(attr.to_string());
         }

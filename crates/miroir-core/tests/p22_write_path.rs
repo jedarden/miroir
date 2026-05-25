@@ -41,7 +41,7 @@ fn test_document_distribution_uniformity() {
     // Simulate 1000 documents and track which shard each goes to
     let mut shard_counts: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
     for i in 0..1000 {
-        let key = format!("doc:{}", i);
+        let key = format!("doc:{i}");
         let shard_id = shard_for_key(&key, shard_count);
         *shard_counts.entry(shard_id).or_insert(0) += 1;
     }
@@ -53,11 +53,10 @@ fn test_document_distribution_uniformity() {
     let max_docs_per_node = 1000 * 26 / 64; // ~406 docs
 
     // Check that no shard has unreasonable count
-    for (_shard, count) in &shard_counts {
+    for count in shard_counts.values() {
         assert!(
             *count >= 5 && *count <= 30,
-            "Shard has unusual count: {}",
-            count
+            "Shard has unusual count: {count}"
         );
     }
 }
@@ -270,11 +269,10 @@ fn test_shard_distribution_rf1() {
     assert_eq!(node_shard_counts.len(), 3, "All 3 nodes should have shards");
 
     // With 64 shards and 3 nodes, each should have ~21 shards (17-26 range per plan §8)
-    for (_node, count) in &node_shard_counts {
+    for count in node_shard_counts.values() {
         assert!(
             (17..=26).contains(count),
-            "Node has {} shards, expected 17-26",
-            count
+            "Node has {count} shards, expected 17-26"
         );
     }
 }

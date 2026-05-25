@@ -140,15 +140,15 @@ impl PeerDiscovery {
             // Use system resolver config from /etc/resolv.conf (plan §14.5)
             let resolver = Resolver::new(ResolverConfig::default(), ResolverOpts::default())
                 .map_err(|e| {
-                    MiroirError::Discovery(format!("failed to create DNS resolver: {}", e))
+                    MiroirError::Discovery(format!("failed to create DNS resolver: {e}"))
                 })?;
 
             resolver.srv_lookup(&srv_name).map_err(|e| {
-                MiroirError::Discovery(format!("SRV lookup failed for {}: {}", srv_name, e))
+                MiroirError::Discovery(format!("SRV lookup failed for {srv_name}: {e}"))
             })
         })
         .await
-        .map_err(|e| MiroirError::Discovery(format!("SRV lookup task failed: {}", e)))??;
+        .map_err(|e| MiroirError::Discovery(format!("SRV lookup task failed: {e}")))??;
 
         // Extract pod names from SRV targets
         // Each SRV record has a target like "miroir-miroir-0.miroir-headless.default.svc.cluster.local"

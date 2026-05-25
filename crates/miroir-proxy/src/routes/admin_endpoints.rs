@@ -8,21 +8,20 @@ use axum::{
 };
 use miroir_core::{
     config::MiroirConfig,
-    group_addition::{GroupAdditionCoordinator, GroupAdditionId},
+    group_addition::GroupAdditionCoordinator,
     group_sync_worker::GroupSyncWorker,
     leader_election::{LeaderElection, LeaderElectionMetricsCallback},
     migration::{MigrationConfig, MigrationCoordinator},
     mode_a_coordinator::ModeACoordinator,
     mode_c_worker::{ModeCWorker, ModeCWorkerConfig},
     peer_discovery::PeerDiscovery,
-    rebalancer::{MigrationExecutor, Rebalancer, RebalancerConfig, RebalancerMetrics},
+    rebalancer::{Rebalancer, RebalancerConfig, RebalancerMetrics},
     rebalancer_worker::{
         RebalancerMetricsCallback, RebalancerWorker, RebalancerWorkerConfig, TopologyChangeEvent,
     },
     replica_selection::{ReplicaSelector, SelectionObserver},
     reshard::ReshardingRegistry,
     router,
-    scatter::{DeleteByFilterRequest, FetchDocumentsRequest, WriteRequest},
     task_registry::TaskRegistryImpl,
     task_store::{NewAdminSession, RedisTaskStore, TaskStore},
     topology::{Node, NodeId, Topology},
@@ -114,9 +113,9 @@ impl VersionState {
         {
             let cache = self.version_cache.read().await;
             let last_update = self.last_cache_update.read().await;
-            if let (Some(ref cached), Some(last)) = (cache.as_ref(), last_update.as_ref()) {
+            if let (Some(cached), Some(last)) = (cache.as_ref(), last_update.as_ref()) {
                 if last.elapsed().as_secs() < self.cache_ttl_secs {
-                    return Ok((**cached).clone());
+                    return Ok((*cached).clone());
                 }
             }
         }
@@ -967,7 +966,7 @@ impl AppState {
         // For each replica group, check if we have enough healthy nodes
         for group in topo.groups() {
             let healthy = group.healthy_nodes(&node_map);
-            let required = (topo.rf() + 1) / 2; // Simple majority for quorum
+            let required = topo.rf().div_ceil(2); // Simple majority for quorum
             if healthy.len() < required {
                 return false;
             }
@@ -1227,8 +1226,7 @@ pub fn parse_rate_limit(s: &str) -> Result<(u64, u64), String> {
     let parts: Vec<&str> = s.split('/').collect();
     if parts.len() != 2 {
         return Err(format!(
-            "invalid rate limit format: '{}', expected 'N/UNIT'",
-            s
+            "invalid rate limit format: '{s}', expected 'N/UNIT'"
         ));
     }
     let limit: u64 = parts[0]
@@ -1241,8 +1239,7 @@ pub fn parse_rate_limit(s: &str) -> Result<(u64, u64), String> {
         "day" | "d" => 86400,
         unit => {
             return Err(format!(
-                "invalid time unit: '{}', expected second/minute/hour/day",
-                unit
+                "invalid time unit: '{unit}', expected second/minute/hour/day"
             ))
         }
     };
@@ -1253,7 +1250,7 @@ pub fn parse_rate_limit(s: &str) -> Result<(u64, u64), String> {
 fn generate_session_id() -> String {
     let mut bytes = [0u8; 24];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
-    hex::encode(&bytes)
+    hex::encode(bytes)
 }
 
 /// POST /_miroir/admin/login — admin login with rate limiting and exponential backoff.
@@ -1330,8 +1327,7 @@ where
                                 Json(AdminLoginResponse {
                                     success: false,
                                     message: Some(format!(
-                                        "Too many failed login attempts. Try again in {} seconds.",
-                                        ws
+                                        "Too many failed login attempts. Try again in {ws} seconds."
                                     )),
                                     csrf_token: None,
                                 }),
@@ -1381,8 +1377,7 @@ where
                     success: false,
                     message: if let Some(ws) = wait_seconds {
                         Some(format!(
-                            "Too many failed login attempts. Try again in {} seconds.",
-                            ws
+                            "Too many failed login attempts. Try again in {ws} seconds."
                         ))
                     } else {
                         Some("Too many login attempts. Please try again later.".into())
@@ -1572,8 +1567,7 @@ where
                     [(
                         "Set-Cookie",
                         format!(
-                            "{}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
-                            COOKIE_NAME
+                            "{COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0"
                         ),
                     )],
                     Json(AdminLogoutResponse {
@@ -1591,8 +1585,7 @@ where
             [(
                 "Set-Cookie",
                 format!(
-                    "{}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
-                    COOKIE_NAME
+                    "{COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0"
                 ),
             )],
             Json(AdminLogoutResponse {
@@ -1641,8 +1634,7 @@ where
         [(
             "Set-Cookie",
             format!(
-                "{}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
-                COOKIE_NAME
+                "{COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0"
             ),
         )],
         Json(AdminLogoutResponse {
@@ -1722,7 +1714,7 @@ where
         if topo.node(&node_id).is_some() {
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("Node {} already exists", id),
+                format!("Node {id} already exists"),
             ));
         }
         // Check if replica group exists
@@ -1730,7 +1722,7 @@ where
         if replica_group >= group_count {
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("Replica group {} does not exist", replica_group),
+                format!("Replica group {replica_group} does not exist"),
             ));
         }
         let node = Node::new(node_id, address, replica_group);
@@ -1749,7 +1741,7 @@ where
             error!(error = %e, node_id = %id, "failed to send NodeAdded event to rebalancer worker");
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to queue rebalancing: {}", e),
+                format!("Failed to queue rebalancing: {e}"),
             ));
         }
     }
@@ -1803,7 +1795,7 @@ where
         let topo = app_state.topology.read().await;
         let node = topo
             .node(&node_id_obj)
-            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Node {} not found", node_id)))?;
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Node {node_id} not found")))?;
 
         // Check if this is the last node in the group
         let group = topo
@@ -1830,10 +1822,8 @@ where
         return Err((
             StatusCode::BAD_REQUEST,
             format!(
-                "Node {} is not in draining state (current: {:?}), use force=true to bypass",
-                node_id, node_status
-            )
-            .into(),
+                "Node {node_id} is not in draining state (current: {node_status:?}), use force=true to bypass"
+            ),
         ));
     }
 
@@ -1890,7 +1880,7 @@ where
         let node_id_obj = NodeId::new(node_id.clone());
         let node = topo
             .node(&node_id_obj)
-            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Node {} not found", node_id)))?;
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Node {node_id} not found")))?;
 
         // Check if this is the last node in the group
         let group = topo
@@ -1932,7 +1922,7 @@ where
         error!(error = %e, node_id = %node_id, "failed to send NodeDraining event to rebalancer worker");
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to queue drain: {}", e),
+            format!("Failed to queue drain: {e}"),
         ));
     }
 
@@ -1981,7 +1971,7 @@ where
         let node_id_obj = NodeId::new(node_id.clone());
         let node = topo
             .node(&node_id_obj)
-            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Node {} not found", node_id)))?;
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Node {node_id} not found")))?;
 
         let replica_group = node.replica_group;
 
@@ -2004,7 +1994,7 @@ where
         error!(error = %e, node_id = %node_id, "failed to send NodeFailed event to rebalancer worker");
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to queue node failure: {}", e),
+            format!("Failed to queue node failure: {e}"),
         ));
     }
 
@@ -2043,7 +2033,7 @@ where
         let node_id_obj = NodeId::new(node_id.clone());
         let node = topo
             .node(&node_id_obj)
-            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Node {} not found", node_id)))?;
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Node {node_id} not found")))?;
 
         let replica_group = node.replica_group;
 
@@ -2066,7 +2056,7 @@ where
         error!(error = %e, node_id = %node_id, "failed to send NodeRecovered event to rebalancer worker");
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to queue node recovery: {}", e),
+            format!("Failed to queue node recovery: {e}"),
         ));
     }
 
@@ -2181,7 +2171,7 @@ where
         );
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to trigger rebalance: {}", e),
+            format!("Failed to trigger rebalance: {e}"),
         ));
     }
 
@@ -2259,7 +2249,7 @@ where
         }
 
         for (&shard_id, shard_state) in job.shards.iter() {
-            let pct_complete = if job.shards.len() > 0 {
+            let pct_complete = if !job.shards.is_empty() {
                 let completed = job
                     .shards
                     .values()
@@ -2434,7 +2424,7 @@ where
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to start group addition: {}", e),
+                format!("Failed to start group addition: {e}"),
             )
         })?;
 
@@ -2442,7 +2432,7 @@ where
     coord.begin_sync(addition_id).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to start sync: {}", e),
+            format!("Failed to start sync: {e}"),
         )
     })?;
 
@@ -2488,7 +2478,7 @@ where
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
-                format!("No active addition for group {}", group_id),
+                format!("No active addition for group {group_id}"),
             )
         })?;
 
@@ -2521,7 +2511,7 @@ where
             "complete": complete,
             "failed": failed,
         },
-        "started_at": addition.started_at.map(|t| format!("{:?}", t)),
+        "started_at": addition.started_at.map(|t| format!("{t:?}")),
     })))
 }
 
@@ -2566,8 +2556,7 @@ where
                 (
                     StatusCode::PRECONDITION_FAILED,
                     format!(
-                        "Group {} is not ready for activation (sync not complete)",
-                        group_id
+                        "Group {group_id} is not ready for activation (sync not complete)"
                     ),
                 )
             })?;
@@ -2588,13 +2577,13 @@ where
         let source_group = topo.group(source_group_id).ok_or_else(|| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Source group {} not found", source_group_id),
+                format!("Source group {source_group_id} not found"),
             )
         })?;
         let new_group = topo.group(group_id).ok_or_else(|| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("New group {} not found", group_id),
+                format!("New group {group_id} not found"),
             )
         })?;
 
@@ -2606,13 +2595,13 @@ where
         if source_nodes.is_empty() {
             return Err((
                 StatusCode::PRECONDITION_FAILED,
-                format!("No healthy nodes in source group {}", source_group_id),
+                format!("No healthy nodes in source group {source_group_id}"),
             ));
         }
         if new_nodes.is_empty() {
             return Err((
                 StatusCode::PRECONDITION_FAILED,
-                format!("No healthy nodes in new group {}", group_id),
+                format!("No healthy nodes in new group {group_id}"),
             ));
         }
 
@@ -2631,7 +2620,7 @@ where
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed to create HTTP client: {}", e),
+                    format!("Failed to create HTTP client: {e}"),
                 )
             })?;
 
@@ -2660,7 +2649,7 @@ where
                 tracing::error!(error = %e, "Failed to fetch stats from source node");
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
-                    format!("Failed to fetch stats from source node: {}", e),
+                    format!("Failed to fetch stats from source node: {e}"),
                 )
             })?
             .json()
@@ -2669,7 +2658,7 @@ where
                 tracing::error!(error = %e, "Failed to parse stats from source node");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed to parse stats from source node: {}", e),
+                    format!("Failed to parse stats from source node: {e}"),
                 )
             })?;
 
@@ -2686,7 +2675,7 @@ where
                 tracing::error!(error = %e, "Failed to fetch stats from new group node");
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
-                    format!("Failed to fetch stats from new group node: {}", e),
+                    format!("Failed to fetch stats from new group node: {e}"),
                 )
             })?
             .json()
@@ -2695,7 +2684,7 @@ where
                 tracing::error!(error = %e, "Failed to parse stats from new group node");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed to parse stats from new group node: {}", e),
+                    format!("Failed to parse stats from new group node: {e}"),
                 )
             })?;
 
@@ -2711,11 +2700,7 @@ where
 
         // Calculate variance percentage (allowing for writes during sync)
         let variance = if source_count > 0 {
-            let diff = if source_count > new_count {
-                source_count - new_count
-            } else {
-                new_count - source_count
-            };
+            let diff = source_count.abs_diff(new_count);
             (diff as f64 / source_count as f64) * 100.0
         } else {
             0.0
@@ -2727,8 +2712,7 @@ where
             return Err((
                 StatusCode::PRECONDITION_FAILED,
                 format!(
-                    "Verification failed: new group has {} docs, source has {} docs (variance: {:.3}%) - must be within {:.1}%",
-                    new_count, source_count, variance, MAX_VARIANCE_PERCENT
+                    "Verification failed: new group has {new_count} docs, source has {source_count} docs (variance: {variance:.3}%) - must be within {MAX_VARIANCE_PERCENT:.1}%"
                 ),
             ));
         }
@@ -2748,7 +2732,7 @@ where
         coord.mark_group_active(addition_id).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to activate group: {}", e),
+                format!("Failed to activate group: {e}"),
             )
         })?;
     }
@@ -2926,10 +2910,7 @@ where
 
     let mut filtered = diffs;
     if let Some(target) = &params.target {
-        filtered = filtered
-            .into_iter()
-            .filter(|d| &d.target == target)
-            .collect();
+        filtered.retain(|d| &d.target == target);
     }
 
     Ok(Json(serde_json::json!({
@@ -3049,16 +3030,15 @@ where
         for key in obj.keys() {
             let requires_restart = RESTART_REQUIRED_FIELDS
                 .iter()
-                .any(|field| key.starts_with(&format!("{}.", field)) || key == *field);
+                .any(|field| key.starts_with(&format!("{field}.")) || key == *field);
 
             if requires_restart {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     format!(
-                        "Cannot modify '{}' at runtime. \
+                        "Cannot modify '{key}' at runtime. \
                          This setting requires a pod restart to take effect. \
-                         Please update the configuration file and restart the pod.",
-                        key
+                         Please update the configuration file and restart the pod."
                     ),
                 ));
             }
@@ -3070,7 +3050,7 @@ where
     let merged_json = serde_json::to_value(&config).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to serialize current config: {}", e),
+            format!("Failed to serialize current config: {e}"),
         )
     })?;
 
@@ -3078,7 +3058,7 @@ where
     let updated_config: MiroirConfig = serde_json::from_value(merged_json).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
-            format!("Invalid configuration: {}", e),
+            format!("Invalid configuration: {e}"),
         )
     })?;
 
@@ -3086,7 +3066,7 @@ where
     if let Err(e) = updated_config.validate() {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Configuration validation failed: {}", e),
+            format!("Configuration validation failed: {e}"),
         ));
     }
 
@@ -3396,7 +3376,7 @@ where
             });
 
             Ok(Json(ReshardResponse {
-                operation_id: format!("reshard-{}-{}", index_uid, now),
+                operation_id: format!("reshard-{index_uid}-{now}"),
                 index_uid,
                 old_shards,
                 new_shards: req.new_shards,

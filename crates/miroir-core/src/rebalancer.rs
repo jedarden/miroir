@@ -586,7 +586,7 @@ impl Rebalancer {
         for op in ops.values() {
             for &mid in &op.migrations {
                 if let Some(state) = coordinator.get_state(mid) {
-                    let key = format!("{}", mid);
+                    let key = format!("{mid}");
                     let status = MigrationStatus {
                         id: mid.0,
                         new_node: state.new_node.to_string(),
@@ -746,8 +746,7 @@ impl Rebalancer {
         Ok(TopologyOperationResult {
             id: op_id,
             message: format!(
-                "Node {} addition started with {} shard migrations",
-                node_id_for_result, migrations_count
+                "Node {node_id_for_result} addition started with {migrations_count} shard migrations"
             ),
             migrations_count,
         })
@@ -772,7 +771,7 @@ impl Rebalancer {
             let group = topo
                 .groups()
                 .find(|g| g.id == node.replica_group)
-                .ok_or_else(|| RebalancerError::GroupNotFound(node.replica_group))?;
+                .ok_or(RebalancerError::GroupNotFound(node.replica_group))?;
 
             if group.nodes().len() <= 1 {
                 return Err(RebalancerError::CannotRemoveLastNode);
@@ -914,7 +913,7 @@ impl Rebalancer {
             let group = topo
                 .groups()
                 .find(|g| g.id == node.replica_group)
-                .ok_or_else(|| RebalancerError::GroupNotFound(node.replica_group))?;
+                .ok_or(RebalancerError::GroupNotFound(node.replica_group))?;
 
             if group.nodes().len() <= 1 {
                 return Err(RebalancerError::CannotRemoveLastNode);
@@ -1211,7 +1210,7 @@ impl Rebalancer {
 
         Ok(TopologyOperationResult {
             id: op_id,
-            message: format!("Node {} marked as failed", node_id),
+            message: format!("Node {node_id} marked as failed"),
             migrations_count: 0,
         })
     }
@@ -1243,7 +1242,7 @@ impl Rebalancer {
 
             // Check if RF needs to be restored (other healthy nodes exist in group)
             let group = topo.groups().find(|g| g.id == replica_group);
-            let has_other_healthy = group.map_or(false, |g| {
+            let has_other_healthy = group.is_some_and(|g| {
                 g.nodes().iter().any(|nid| {
                     nid != &node_id_obj && topo.node(nid).map(|n| n.is_healthy()).unwrap_or(false)
                 })
@@ -1263,8 +1262,7 @@ impl Rebalancer {
             return Ok(TopologyOperationResult {
                 id: 0,
                 message: format!(
-                    "Node {} recovered (no RF restore needed - no other healthy nodes in group)",
-                    node_id
+                    "Node {node_id} recovered (no RF restore needed - no other healthy nodes in group)"
                 ),
                 migrations_count: 0,
             });
@@ -1371,8 +1369,7 @@ impl Rebalancer {
             Ok(TopologyOperationResult {
                 id: op_id,
                 message: format!(
-                    "Node {} recovered with RF restore ({} shards)",
-                    node_id, migrations_count
+                    "Node {node_id} recovered with RF restore ({migrations_count} shards)"
                 ),
                 migrations_count,
             })
@@ -1397,7 +1394,7 @@ impl Rebalancer {
 
             Ok(TopologyOperationResult {
                 id: op_id,
-                message: format!("Node {} recovered (no shards needed restoration)", node_id),
+                message: format!("Node {node_id} recovered (no shards needed restoration)"),
                 migrations_count: 0,
             })
         }
@@ -1417,7 +1414,7 @@ impl Rebalancer {
         let group = topo
             .groups()
             .find(|g| g.id == replica_group)
-            .ok_or_else(|| RebalancerError::GroupNotFound(replica_group))?;
+            .ok_or(RebalancerError::GroupNotFound(replica_group))?;
 
         let mut shards_to_restore = Vec::new();
 
@@ -1447,7 +1444,7 @@ impl Rebalancer {
         let group = topo
             .groups()
             .find(|g| g.id == replica_group)
-            .ok_or_else(|| RebalancerError::GroupNotFound(replica_group))?;
+            .ok_or(RebalancerError::GroupNotFound(replica_group))?;
 
         let assignment = assign_shard_in_group(shard.0, group.nodes(), topo.rf());
 
@@ -1488,9 +1485,9 @@ impl Rebalancer {
         let group = topo
             .groups()
             .find(|g| g.id == replica_group)
-            .ok_or_else(|| RebalancerError::GroupNotFound(replica_group))?;
+            .ok_or(RebalancerError::GroupNotFound(replica_group))?;
 
-        let existing_nodes: Vec<_> = group.nodes().iter().cloned().collect();
+        let existing_nodes: Vec<_> = group.nodes().to_vec();
         let mut affected_shards = Vec::new();
 
         // For each shard, check if the new node is in the new assignment
@@ -1563,7 +1560,7 @@ impl Rebalancer {
         let group = topo
             .groups()
             .find(|g| g.id == replica_group)
-            .ok_or_else(|| RebalancerError::GroupNotFound(replica_group))?;
+            .ok_or(RebalancerError::GroupNotFound(replica_group))?;
 
         let other_nodes: Vec<_> = group
             .nodes()
@@ -1763,7 +1760,7 @@ async fn run_migration_task(
                         offset,
                     )
                     .await
-                    .map_err(|e| RebalancerError::InvalidState(format!("fetch failed: {}", e)))?;
+                    .map_err(|e| RebalancerError::InvalidState(format!("fetch failed: {e}")))?;
 
                 if docs.is_empty() {
                     break; // No more documents
@@ -1772,7 +1769,7 @@ async fn run_migration_task(
                 // Write documents to target
                 exec.write_documents(&new_node, &new_node_address, &index_uid, docs.clone())
                     .await
-                    .map_err(|e| RebalancerError::InvalidState(format!("write failed: {}", e)))?;
+                    .map_err(|e| RebalancerError::InvalidState(format!("write failed: {e}")))?;
 
                 total_docs_copied += docs.len() as u64;
                 offset += limit;
@@ -1828,14 +1825,14 @@ async fn run_migration_task(
                     0,
                 )
                 .await
-                .map_err(|e| RebalancerError::InvalidState(format!("delta fetch failed: {}", e)))?;
+                .map_err(|e| RebalancerError::InvalidState(format!("delta fetch failed: {e}")))?;
 
             if !docs.is_empty() {
                 // Write any stragglers to target
                 exec.write_documents(&new_node, &new_node_address, &index_uid, docs)
                     .await
                     .map_err(|e| {
-                        RebalancerError::InvalidState(format!("delta write failed: {}", e))
+                        RebalancerError::InvalidState(format!("delta write failed: {e}"))
                     })?;
             }
 
@@ -2023,7 +2020,7 @@ async fn run_drain_task(
         };
 
         // For each shard being drained
-        for (shard_id, _old_node) in &old_owners {
+        for shard_id in old_owners.keys() {
             info!(
                 migration_id = %mid,
                 shard_id = shard_id.0,
@@ -2049,7 +2046,7 @@ async fn run_drain_task(
                         offset,
                     )
                     .await
-                    .map_err(|e| RebalancerError::InvalidState(format!("fetch failed: {}", e)))?;
+                    .map_err(|e| RebalancerError::InvalidState(format!("fetch failed: {e}")))?;
 
                 if docs.is_empty() {
                     break; // No more documents
@@ -2058,7 +2055,7 @@ async fn run_drain_task(
                 // Write documents to new node
                 exec.write_documents(&new_node, &new_node_address, &index_uid, docs.clone())
                     .await
-                    .map_err(|e| RebalancerError::InvalidState(format!("write failed: {}", e)))?;
+                    .map_err(|e| RebalancerError::InvalidState(format!("write failed: {e}")))?;
 
                 total_docs_copied += docs.len() as u64;
                 offset += limit;
@@ -2092,7 +2089,7 @@ async fn run_drain_task(
         }
 
         // Delta pass: re-read from draining node to catch stragglers
-        for (shard_id, _old_node) in &old_owners {
+        for shard_id in old_owners.keys() {
             let (docs, _) = exec
                 .fetch_documents(
                     &drain_node_id,
@@ -2103,14 +2100,14 @@ async fn run_drain_task(
                     0,
                 )
                 .await
-                .map_err(|e| RebalancerError::InvalidState(format!("delta fetch failed: {}", e)))?;
+                .map_err(|e| RebalancerError::InvalidState(format!("delta fetch failed: {e}")))?;
 
             if !docs.is_empty() {
                 // Write any stragglers to new node
                 exec.write_documents(&new_node, &new_node_address, &index_uid, docs)
                     .await
                     .map_err(|e| {
-                        RebalancerError::InvalidState(format!("delta write failed: {}", e))
+                        RebalancerError::InvalidState(format!("delta write failed: {e}"))
                     })?;
             }
 
@@ -2127,7 +2124,7 @@ async fn run_drain_task(
         }
 
         // Delete drained shards from the draining node
-        for (shard_id, _old_node) in &old_owners {
+        for shard_id in old_owners.keys() {
             if let Err(e) = exec
                 .delete_shard(&drain_node_id, &drain_node_address, &index_uid, shard_id.0)
                 .await
@@ -2214,7 +2211,7 @@ impl HttpMigrationExecutor {
 
     /// Build the filter string for fetching documents by shard.
     fn shard_filter(&self, shard_id: u32) -> String {
-        format!("_miroir_shard = {}", shard_id)
+        format!("_miroir_shard = {shard_id}")
     }
 
     /// Make an authenticated GET request to a node.
@@ -2238,7 +2235,7 @@ impl HttpMigrationExecutor {
             .header("Authorization", format!("Bearer {}", self.node_master_key))
             .send()
             .await
-            .map_err(|e| format!("GET {} failed: {}", url, e))
+            .map_err(|e| format!("GET {url} failed: {e}"))
     }
 
     /// Make an authenticated POST request to a node.
@@ -2264,7 +2261,7 @@ impl HttpMigrationExecutor {
             .json(&body)
             .send()
             .await
-            .map_err(|e| format!("POST {} failed: {}", url, e))
+            .map_err(|e| format!("POST {url} failed: {e}"))
     }
 }
 
@@ -2301,15 +2298,14 @@ impl MigrationExecutor for HttpMigrationExecutor {
                 .await
                 .unwrap_or_else(|_| "unable to read error".to_string());
             return Err(format!(
-                "Failed to fetch documents from {}: HTTP {} - {}",
-                source_address, status, error_text
+                "Failed to fetch documents from {source_address}: HTTP {status} - {error_text}"
             ));
         }
 
         let json_body: serde_json::Value = response
             .json()
             .await
-            .map_err(|e| format!("Failed to parse response from {}: {}", source_address, e))?;
+            .map_err(|e| format!("Failed to parse response from {source_address}: {e}"))?;
 
         // Meilisearch returns { results: [...], total: 123, limit: 20, offset: 0 }
         let results = json_body
@@ -2317,8 +2313,7 @@ impl MigrationExecutor for HttpMigrationExecutor {
             .and_then(|v| v.as_array())
             .ok_or_else(|| {
                 format!(
-                    "Invalid response from {}: missing 'results' field",
-                    source_address
+                    "Invalid response from {source_address}: missing 'results' field"
                 )
             })?;
 
@@ -2342,7 +2337,7 @@ impl MigrationExecutor for HttpMigrationExecutor {
             return Ok(());
         }
 
-        let path = format!("indexes/{}/documents", index_uid);
+        let path = format!("indexes/{index_uid}/documents");
 
         let response = self
             .post_node(target_address, &path, serde_json::json!(documents))
@@ -2380,7 +2375,7 @@ impl MigrationExecutor for HttpMigrationExecutor {
         shard_id: u32,
     ) -> std::result::Result<(), String> {
         let filter = self.shard_filter(shard_id);
-        let path = format!("indexes/{}/documents/delete", index_uid);
+        let path = format!("indexes/{index_uid}/documents/delete");
 
         let body = serde_json::json!({
             "filter": filter
@@ -2395,8 +2390,7 @@ impl MigrationExecutor for HttpMigrationExecutor {
                 .await
                 .unwrap_or_else(|_| "unable to read error".to_string());
             return Err(format!(
-                "Failed to delete shard {} from {}: HTTP {} - {}",
-                shard_id, node_address, status, error_text
+                "Failed to delete shard {shard_id} from {node_address}: HTTP {status} - {error_text}"
             ));
         }
 

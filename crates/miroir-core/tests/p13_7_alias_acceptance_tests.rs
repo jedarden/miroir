@@ -132,7 +132,7 @@ async fn flip_alias_history_retention() {
 
     // Perform 12 flips with history_retention=10
     for i in 1..=12 {
-        let new_target = format!("products_v{}", i);
+        let new_target = format!("products_v{i}");
         store.flip_alias("products", &new_target, 10).unwrap();
     }
 
@@ -146,7 +146,7 @@ async fn flip_alias_history_retention() {
     // Verify history contains the most recent 10 targets
     // After 12 flips from v0, we should have v2..v11 (10 entries)
     // v1 was evicted
-    let expected: Vec<String> = (2..=11).map(|i| format!("products_v{}", i)).collect();
+    let expected: Vec<String> = (2..=11).map(|i| format!("products_v{i}")).collect();
     let actual: Vec<String> = alias.history.iter().map(|h| h.uid.clone()).collect();
     assert_eq!(actual, expected);
 }
@@ -371,9 +371,9 @@ async fn list_aliases() {
     // Create multiple aliases
     for i in 1..=3 {
         let new_alias = NewAlias {
-            name: format!("alias{}", i),
+            name: format!("alias{i}"),
             kind: "single".to_string(),
-            current_uid: Some(format!("target_v{}", i)),
+            current_uid: Some(format!("target_v{i}")),
             target_uids: None,
             version: 1,
             created_at: 1000 + (i as i64),
@@ -463,9 +463,9 @@ async fn registry_sync_from_store() {
     // Create aliases directly in the store
     for i in 1..=3 {
         let new_alias = NewAlias {
-            name: format!("sync{}", i),
+            name: format!("sync{i}"),
             kind: "single".to_string(),
-            current_uid: Some(format!("target_v{}", i)),
+            current_uid: Some(format!("target_v{i}")),
             target_uids: None,
             version: 1,
             created_at: 1000 + (i as i64),

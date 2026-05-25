@@ -29,8 +29,7 @@ fn print_actual_hash_values() {
         let hash = hash_for_key(key);
         let shard = shard_for_key(key, shard_count);
         println!(
-            "(\"{}\", {}, {}),  // hash={}",
-            key, shard_count, shard, hash
+            "(\"{key}\", {shard_count}, {shard}),  // hash={hash}"
         );
     }
     println!("========================\n");

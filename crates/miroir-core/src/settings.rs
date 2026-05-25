@@ -140,8 +140,7 @@ impl SettingsBroadcast {
 
         if in_flight.contains_key(&index) {
             return Err(MiroirError::InvalidState(format!(
-                "settings broadcast already in flight for index '{}'",
-                index
+                "settings broadcast already in flight for index '{index}'"
             )));
         }
 
@@ -176,7 +175,7 @@ impl SettingsBroadcast {
         let mut in_flight = self.in_flight.write().await;
         let status = in_flight
             .get_mut(index)
-            .ok_or_else(|| MiroirError::NotFound(format!("index '{}'", index)))?;
+            .ok_or_else(|| MiroirError::NotFound(format!("index '{index}'")))?;
 
         if status.phase != BroadcastPhase::Propose {
             return Err(MiroirError::InvalidState("expected Propose phase".into()));
@@ -200,7 +199,7 @@ impl SettingsBroadcast {
         let mut in_flight = self.in_flight.write().await;
         let status = in_flight
             .get_mut(index)
-            .ok_or_else(|| MiroirError::NotFound(format!("index '{}'", index)))?;
+            .ok_or_else(|| MiroirError::NotFound(format!("index '{index}'")))?;
 
         if status.phase != BroadcastPhase::Verify {
             return Err(MiroirError::InvalidState("expected Verify phase".into()));
@@ -212,8 +211,7 @@ impl SettingsBroadcast {
         for (node, hash) in &node_hashes {
             if hash != expected_fingerprint {
                 status.error = Some(format!(
-                    "node '{}' hash mismatch: expected {}, got {}",
-                    node, expected_fingerprint, hash
+                    "node '{node}' hash mismatch: expected {expected_fingerprint}, got {hash}"
                 ));
                 status.verify_ok = false;
                 return Err(MiroirError::SettingsDivergence);
@@ -231,7 +229,7 @@ impl SettingsBroadcast {
         let mut in_flight = self.in_flight.write().await;
         let status = in_flight
             .get_mut(index)
-            .ok_or_else(|| MiroirError::NotFound(format!("index '{}'", index)))?;
+            .ok_or_else(|| MiroirError::NotFound(format!("index '{index}'")))?;
 
         if status.phase != BroadcastPhase::Verify {
             return Err(MiroirError::InvalidState("expected Verify phase".into()));
@@ -271,7 +269,7 @@ impl SettingsBroadcast {
         let mut in_flight = self.in_flight.write().await;
         in_flight
             .remove(index)
-            .ok_or_else(|| MiroirError::NotFound(format!("index '{}'", index)))?;
+            .ok_or_else(|| MiroirError::NotFound(format!("index '{index}'")))?;
         Ok(())
     }
 
@@ -283,7 +281,7 @@ impl SettingsBroadcast {
         }
         in_flight
             .remove(index)
-            .ok_or_else(|| MiroirError::NotFound(format!("index '{}'", index)))?;
+            .ok_or_else(|| MiroirError::NotFound(format!("index '{index}'")))?;
         Ok(())
     }
 
@@ -336,7 +334,7 @@ impl SettingsBroadcastCoordinator {
         index_uid: String,
         pod_id: String,
     ) -> Self {
-        let scope = format!("settings_broadcast:{}", index_uid);
+        let scope = format!("settings_broadcast:{index_uid}");
 
         let extra_state = SettingsBroadcastExtraState {
             index_uid,
@@ -396,7 +394,7 @@ impl SettingsBroadcastCoordinator {
     /// Should be called after each phase boundary so that a new leader can
     /// resume from the last committed phase.
     pub async fn advance_phase(&mut self, new_phase: BroadcastPhase) -> Result<()> {
-        let phase_name = format!("{:?}", new_phase);
+        let phase_name = format!("{new_phase:?}");
         self.leader.persist_phase(phase_name.to_lowercase()).await
     }
 

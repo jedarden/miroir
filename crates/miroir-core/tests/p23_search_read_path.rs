@@ -230,8 +230,8 @@ async fn test_paging_no_dupes_or_gaps() {
     for i in 0..3 {
         // Only 3 nodes to ensure simple routing
         topo.add_node(Node::new(
-            NodeId::new(format!("node-{}", i)),
-            format!("http://node-{}:7700", i),
+            NodeId::new(format!("node-{i}")),
+            format!("http://node-{i}:7700"),
             0,
         ));
     }
@@ -254,7 +254,7 @@ async fn test_paging_no_dupes_or_gaps() {
         }
 
         client.responses.insert(
-            NodeId::new(format!("node-{}", i)),
+            NodeId::new(format!("node-{i}")),
             json!({
                 "hits": hits,
                 "estimatedTotalHits": 17,
@@ -295,7 +295,7 @@ async fn test_paging_no_dupes_or_gaps() {
         .await
         .unwrap();
 
-        assert_eq!(result.hits.len(), 10, "Page {} should have 10 hits", page);
+        assert_eq!(result.hits.len(), 10, "Page {page} should have 10 hits");
         for hit in &result.hits {
             let id = hit.get("id").unwrap().as_str().unwrap().to_string();
             all_ids.push(id);
@@ -313,8 +313,8 @@ async fn test_paging_no_dupes_or_gaps() {
 
     // Verify all docs from doc-000 to doc-049 are present
     for i in 0..50 {
-        let expected = format!("doc-{:03}", i);
-        assert!(all_ids.contains(&expected), "Missing document {}", expected);
+        let expected = format!("doc-{i:03}");
+        assert!(all_ids.contains(&expected), "Missing document {expected}");
     }
 }
 
@@ -664,9 +664,7 @@ async fn test_search_read_path_integration() {
             .unwrap();
         assert!(
             score_i >= score_j,
-            "Hits should be sorted by score descending: {} >= {}",
-            score_i,
-            score_j
+            "Hits should be sorted by score descending: {score_i} >= {score_j}"
         );
     }
 }

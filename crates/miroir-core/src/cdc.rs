@@ -420,7 +420,7 @@ impl CdcInternalQueue {
 
         // Convert analytics event to a CdcEvent for storage
         let cdc_event = CdcEvent {
-            mtask_id: format!("analytics:{}", event_id),
+            mtask_id: format!("analytics:{event_id}"),
             index: index.clone(),
             operation: if event_type == "click_through" {
                 CdcOperation::ClickThrough

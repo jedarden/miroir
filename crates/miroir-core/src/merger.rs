@@ -8,7 +8,7 @@ use crate::vector::{VectorHit, VectorMerger, VectorSearchConfig};
 use crate::Result;
 use serde_json::{Map, Value};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 /// Input to the merge operation.
 #[derive(Debug, Clone)]

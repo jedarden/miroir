@@ -10,7 +10,7 @@
 
 pub mod executor;
 
-use crate::mode_b_coordinator::{ModeBOpLeader, PhaseState};
+use crate::mode_b_coordinator::ModeBOpLeader;
 use crate::router::{assign_shard_in_group, shard_for_key};
 use crate::topology::{Group, NodeId};
 use serde::{Deserialize, Serialize};
@@ -778,7 +778,7 @@ impl ReshardOperation {
     /// Create a new resharding operation.
     pub fn new(index_uid: String, old_shards: u32, target_shards: u32) -> Self {
         let id = format!("reshard-{}-{}", index_uid, uuid::Uuid::new_v4());
-        let shadow_index = format!("{}__reshard_{}", index_uid, target_shards);
+        let shadow_index = format!("{index_uid}__reshard_{target_shards}");
         let now = millis_now();
         Self {
             id,
@@ -897,8 +897,7 @@ impl ReshardingRegistry {
     ) -> Result<(), String> {
         if self.active_operations.contains_key(&index_uid) {
             return Err(format!(
-                "Resharding already in progress for index '{}'",
-                index_uid
+                "Resharding already in progress for index '{index_uid}'"
             ));
         }
         tracing::info!(
@@ -923,7 +922,7 @@ impl ReshardingRegistry {
         let op = self
             .active_operations
             .get_mut(index_uid)
-            .ok_or_else(|| format!("No resharding operation for index '{}'", index_uid))?;
+            .ok_or_else(|| format!("No resharding operation for index '{index_uid}'"))?;
         op.phase = new_phase;
         tracing::info!(
             index_uid = %index_uid,
@@ -936,7 +935,7 @@ impl ReshardingRegistry {
     /// Remove a completed resharding operation.
     pub fn remove(&mut self, index_uid: &str) -> Result<(), String> {
         if self.active_operations.remove(index_uid).is_none() {
-            return Err(format!("No resharding operation for index '{}'", index_uid));
+            return Err(format!("No resharding operation for index '{index_uid}'"));
         }
         tracing::info!(
             index_uid = %index_uid,
@@ -1023,8 +1022,8 @@ impl<E> ReshardCoordinator<E> {
         target_shards: u32,
         pod_id: String,
     ) -> Self {
-        let scope = format!("reshard:{}", index_uid);
-        let shadow_index = format!("{}__reshard_{}", index_uid, target_shards);
+        let scope = format!("reshard:{index_uid}");
+        let shadow_index = format!("{index_uid}__reshard_{target_shards}");
 
         let extra_state = ReshardExtraState {
             index_uid,
@@ -1222,9 +1221,9 @@ impl ReshardRegistry {
         let op = self
             .operations
             .get(id)
-            .ok_or_else(|| format!("Operation '{}' not found", id))?;
+            .ok_or_else(|| format!("Operation '{id}' not found"))?;
         if !op.is_terminal() {
-            return Err(format!("Operation '{}' is not in a terminal state", id));
+            return Err(format!("Operation '{id}' is not in a terminal state"));
         }
         self.index_ops.remove(&op.index_uid);
         Ok(())
@@ -1312,7 +1311,7 @@ pub async fn shadow_create_phase(
     master_key: &str,
     primary_key: Option<String>,
 ) -> Result<ShadowCreateResult, ShadowCreateError> {
-    let shadow_index = format!("{}__reshard_{}", live_index_uid, target_shards);
+    let shadow_index = format!("{live_index_uid}__reshard_{target_shards}");
 
     tracing::info!(
         live_index = %live_index_uid,
@@ -1327,7 +1326,7 @@ pub async fn shadow_create_phase(
         .build()
         .map_err(|e| ShadowCreateError::NodeCreationFailed {
             node: "client".to_string(),
-            error: format!("failed to create HTTP client: {}", e),
+            error: format!("failed to create HTTP client: {e}"),
         })?;
 
     // Step 1: Create shadow index on every node sequentially
@@ -1358,8 +1357,7 @@ pub async fn shadow_create_phase(
                 return Err(match e {
                     ShadowCreateError::IndexAlreadyExists(_) => e,
                     other => ShadowCreateError::RollbackRequired(format!(
-                        "creation failed on {}: {}",
-                        address, other
+                        "creation failed on {address}: {other}"
                     )),
                 });
             }
@@ -1387,8 +1385,7 @@ pub async fn shadow_create_phase(
             Err(e) => {
                 rollback_shadow_index(&client, &shadow_index, &created_on, master_key).await;
                 return Err(ShadowCreateError::SettingsBroadcastFailed(format!(
-                    "failed to fetch live index settings: {}",
-                    e
+                    "failed to fetch live index settings: {e}"
                 )));
             }
         };
@@ -1419,8 +1416,7 @@ pub async fn shadow_create_phase(
             // Settings broadcast failed - rollback shadow index creation
             rollback_shadow_index(&client, &shadow_index, &created_on, master_key).await;
             return Err(ShadowCreateError::SettingsBroadcastFailed(format!(
-                "two-phase broadcast failed: {}",
-                e
+                "two-phase broadcast failed: {e}"
             )));
         }
     };
@@ -1444,13 +1440,13 @@ async fn create_index_on_node(
 ) -> Result<Option<u64>, ShadowCreateError> {
     let response = client
         .post(url)
-        .header("Authorization", format!("Bearer {}", master_key))
+        .header("Authorization", format!("Bearer {master_key}"))
         .json(body)
         .send()
         .await
         .map_err(|e| ShadowCreateError::NodeCreationFailed {
             node: address.to_string(),
-            error: format!("request failed: {}", e),
+            error: format!("request failed: {e}"),
         })?;
 
     let status = response.status();
@@ -1459,7 +1455,7 @@ async fn create_index_on_node(
         .await
         .map_err(|e| ShadowCreateError::NodeCreationFailed {
             node: address.to_string(),
-            error: format!("failed to read response: {}", e),
+            error: format!("failed to read response: {e}"),
         })?;
 
     if status.as_u16() == 409 {
@@ -1497,22 +1493,22 @@ async fn fetch_index_settings(
 
     let response = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", master_key))
+        .header("Authorization", format!("Bearer {master_key}"))
         .send()
         .await
-        .map_err(|e| format!("request failed: {}", e))?;
+        .map_err(|e| format!("request failed: {e}"))?;
 
     let status = response.status();
     let body_text = response
         .text()
         .await
-        .map_err(|e| format!("failed to read response: {}", e))?;
+        .map_err(|e| format!("failed to read response: {e}"))?;
 
     if !status.is_success() {
         return Err(format!("HTTP {}: {}", status.as_u16(), body_text));
     }
 
-    serde_json::from_str(&body_text).map_err(|e| format!("failed to parse settings JSON: {}", e))
+    serde_json::from_str(&body_text).map_err(|e| format!("failed to parse settings JSON: {e}"))
 }
 
 /// Ensure `_miroir_shard` is in filterableAttributes.
@@ -1560,7 +1556,7 @@ async fn two_phase_broadcast_settings(
                 );
                 let result = client
                     .patch(&url)
-                    .header("Authorization", format!("Bearer {}", key))
+                    .header("Authorization", format!("Bearer {key}"))
                     .json(&settings)
                     .send()
                     .await;
@@ -1578,7 +1574,7 @@ async fn two_phase_broadcast_settings(
                         let _text = resp.text().await.unwrap_or_default();
                         Err(format!("{}: HTTP {}", address, status.as_u16()))
                     }
-                    Err(e) => Err(format!("{}: {}", address, e)),
+                    Err(e) => Err(format!("{address}: {e}")),
                 }
             }
         })
@@ -1598,7 +1594,7 @@ async fn two_phase_broadcast_settings(
                 node_task_uids.push((address, 0));
             }
             Err(e) => {
-                return Err(format!("Phase 1 propose failed: {}", e));
+                return Err(format!("Phase 1 propose failed: {e}"));
             }
         }
     }
@@ -1619,7 +1615,7 @@ async fn two_phase_broadcast_settings(
                 );
                 let result = client
                     .get(&url)
-                    .header("Authorization", format!("Bearer {}", key))
+                    .header("Authorization", format!("Bearer {key}"))
                     .send()
                     .await;
 
@@ -1630,11 +1626,11 @@ async fn two_phase_broadcast_settings(
                             let hash = crate::settings::fingerprint_settings(&settings);
                             Ok((address, hash))
                         } else {
-                            Err(format!("{}: failed to parse settings", address))
+                            Err(format!("{address}: failed to parse settings"))
                         }
                     }
                     Ok(resp) => Err(format!("{}: HTTP {}", address, resp.status().as_u16())),
-                    Err(e) => Err(format!("{}: {}", address, e)),
+                    Err(e) => Err(format!("{address}: {e}")),
                 }
             }
         })
@@ -1653,14 +1649,13 @@ async fn two_phase_broadcast_settings(
             Ok((address, hash)) => {
                 if hash != expected_fingerprint {
                     return Err(format!(
-                        "Phase 2 verify failed: hash mismatch on {}",
-                        address
+                        "Phase 2 verify failed: hash mismatch on {address}"
                     ));
                 }
                 node_hashes.insert(address, hash);
             }
             Err(e) => {
-                return Err(format!("Phase 2 verify failed: {}", e));
+                return Err(format!("Phase 2 verify failed: {e}"));
             }
         }
     }
@@ -1689,7 +1684,7 @@ async fn rollback_shadow_index(
 
         match client
             .delete(&url)
-            .header("Authorization", format!("Bearer {}", master_key))
+            .header("Authorization", format!("Bearer {master_key}"))
             .send()
             .await
         {
@@ -2557,7 +2552,7 @@ pub async fn verify_phase(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| VerifyPhaseError::NodeFetchFailed(format!("HTTP client: {}", e)))?;
+        .map_err(|e| VerifyPhaseError::NodeFetchFailed(format!("HTTP client: {e}")))?;
 
     // Use the same node for all scans (first in list) - documents are identical
     // across replicas within the same shard due to RF replication
@@ -2770,16 +2765,16 @@ async fn scan_shard_to_pk_buckets(
 
         let response = client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", master_key))
+            .header("Authorization", format!("Bearer {master_key}"))
             .send()
             .await
-            .map_err(|e| format!("request failed: {}", e))?;
+            .map_err(|e| format!("request failed: {e}"))?;
 
         let status = response.status();
         let body_text = response
             .text()
             .await
-            .map_err(|e| format!("failed to read response: {}", e))?;
+            .map_err(|e| format!("failed to read response: {e}"))?;
 
         if !status.is_success() {
             return Err(format!("HTTP {}: {}", status.as_u16(), body_text));
@@ -2787,12 +2782,12 @@ async fn scan_shard_to_pk_buckets(
 
         // Parse response
         let docs_json: serde_json::Value =
-            serde_json::from_str(&body_text).map_err(|e| format!("JSON parse: {}", e))?;
+            serde_json::from_str(&body_text).map_err(|e| format!("JSON parse: {e}"))?;
 
         let results = docs_json
             .get("results")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| format!("missing results array"))?;
+            .ok_or_else(|| "missing results array".to_string())?;
 
         if results.is_empty() {
             break; // No more documents
@@ -2803,7 +2798,7 @@ async fn scan_shard_to_pk_buckets(
             let pk_value = doc.get(primary_key).or(doc.get("id")).or(doc.get("_id"));
             let primary_key = pk_value
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| format!("document missing primary key field"))?;
+                .ok_or_else(|| "document missing primary key field".to_string())?;
 
             // Compute content hash (reuse anti-entropy logic)
             let content_hash = compute_content_hash_for_verify(doc)?;
@@ -2838,9 +2833,9 @@ fn compute_content_hash_for_verify(document: &serde_json::Value) -> Result<u64, 
     // Serialize with sorted keys for deterministic output
     let canonical_json = if let Some(obj) = canonical.as_object() {
         let sorted: BTreeMap<_, _> = obj.iter().collect();
-        serde_json::to_string(&sorted).map_err(|e| format!("JSON serialize: {}", e))?
+        serde_json::to_string(&sorted).map_err(|e| format!("JSON serialize: {e}"))?
     } else {
-        serde_json::to_string(&canonical).map_err(|e| format!("JSON serialize: {}", e))?
+        serde_json::to_string(&canonical).map_err(|e| format!("JSON serialize: {e}"))?
     };
 
     // Hash using xxh3
@@ -2923,7 +2918,7 @@ pub async fn alias_swap_phase(
     // Step 1: Get the current alias state to capture old_target for rollback info
     let existing = task_store
         .get_alias(alias_name)
-        .map_err(|e| AliasSwapError::LookupFailed(format!("{}", e)))?
+        .map_err(|e| AliasSwapError::LookupFailed(format!("{e}")))?
         .ok_or_else(|| AliasSwapError::AliasNotFound(alias_name.to_string()))?;
 
     if existing.kind != "single" {
@@ -2944,7 +2939,7 @@ pub async fn alias_swap_phase(
     // Step 2: Perform the atomic alias flip via task store
     let flipped = task_store
         .flip_alias(alias_name, new_target_uid, history_retention)
-        .map_err(|e| AliasSwapError::FlipFailed(format!("{}", e)))?;
+        .map_err(|e| AliasSwapError::FlipFailed(format!("{e}")))?;
 
     if !flipped {
         return Err(AliasSwapError::FlipFailed(
@@ -2955,7 +2950,7 @@ pub async fn alias_swap_phase(
     // Step 3: Get the updated alias to capture new version
     let updated = task_store
         .get_alias(alias_name)
-        .map_err(|e| AliasSwapError::LookupFailed(format!("{}", e)))?
+        .map_err(|e| AliasSwapError::LookupFailed(format!("{e}")))?
         .ok_or_else(|| AliasSwapError::LookupFailed("alias disappeared after flip".to_string()))?;
 
     let flipped_at = SystemTime::now()
@@ -3291,7 +3286,7 @@ pub async fn backfill_phase(
     batch_size: usize,
     progress_callback: Option<BackfillProgressCallback>,
 ) -> Result<BackfillResult, BackfillError> {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::SystemTime;
 
     let start_time = SystemTime::now();
     tracing::info!(
@@ -3306,7 +3301,7 @@ pub async fn backfill_phase(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| BackfillError::NodeFetchFailed(format!("HTTP client: {}", e)))?;
+        .map_err(|e| BackfillError::NodeFetchFailed(format!("HTTP client: {e}")))?;
 
     // Use the first node for all operations (documents are identical across replicas)
     let target_node = node_addresses
@@ -3442,16 +3437,16 @@ async fn backfill_single_shard(
 
         let response = client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", master_key))
+            .header("Authorization", format!("Bearer {master_key}"))
             .send()
             .await
-            .map_err(|e| format!("fetch failed: {}", e))?;
+            .map_err(|e| format!("fetch failed: {e}"))?;
 
         let status = response.status();
         let body_text = response
             .text()
             .await
-            .map_err(|e| format!("failed to read response: {}", e))?;
+            .map_err(|e| format!("failed to read response: {e}"))?;
 
         if !status.is_success() {
             return Err(format!("HTTP {}: {}", status.as_u16(), body_text));
@@ -3459,12 +3454,12 @@ async fn backfill_single_shard(
 
         // Parse response
         let docs_json: serde_json::Value =
-            serde_json::from_str(&body_text).map_err(|e| format!("JSON parse: {}", e))?;
+            serde_json::from_str(&body_text).map_err(|e| format!("JSON parse: {e}"))?;
 
         let results = docs_json
             .get("results")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| format!("missing results array"))?;
+            .ok_or_else(|| "missing results array".to_string())?;
 
         if results.is_empty() {
             break; // No more documents
@@ -3479,7 +3474,7 @@ async fn backfill_single_shard(
                 .or(doc.get("id"))
                 .or(doc.get("_id"))
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| format!("document missing primary key field: {}", primary_key))?;
+                .ok_or_else(|| format!("document missing primary key field: {primary_key}"))?;
 
             // Compute new shard assignment for shadow index
             let new_shard_id = crate::router::shard_for_key(pk_value, new_shards);
@@ -3525,11 +3520,11 @@ async fn write_backfill_batch(
 
     let response = client
         .post(&url)
-        .header("Authorization", format!("Bearer {}", master_key))
+        .header("Authorization", format!("Bearer {master_key}"))
         .json(documents)
         .send()
         .await
-        .map_err(|e| format!("request failed: {}", e))?;
+        .map_err(|e| format!("request failed: {e}"))?;
 
     let status = response.status();
     let body_text = response.text().await.unwrap_or_default();
@@ -3625,8 +3620,7 @@ pub async fn cleanup_phase(
                 "retention period not yet reached, skipping cleanup"
             );
             return Err(CleanupError::CleanupAborted(format!(
-                "retention period not reached: {} hours remaining",
-                remaining_hours
+                "retention period not reached: {remaining_hours} hours remaining"
             )));
         }
     } else {
@@ -3643,7 +3637,7 @@ pub async fn cleanup_phase(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| CleanupError::CleanupAborted(format!("HTTP client: {}", e)))?;
+        .map_err(|e| CleanupError::CleanupAborted(format!("HTTP client: {e}")))?;
 
     let mut nodes_deleted_from = Vec::new();
     let mut errors = Vec::new();
@@ -3657,7 +3651,7 @@ pub async fn cleanup_phase(
 
         match client
             .delete(&url)
-            .header("Authorization", format!("Bearer {}", master_key))
+            .header("Authorization", format!("Bearer {master_key}"))
             .send()
             .await
         {
@@ -3869,7 +3863,7 @@ pub struct ReshardOrchestratorResult {
 pub async fn execute_reshard(
     config: ReshardOrchestratorConfig,
 ) -> Result<ReshardOrchestratorResult, String> {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::SystemTime;
 
     let start_time = SystemTime::now();
     let old_shards = config.target_shards / 2; // Assume doubling for now
@@ -3901,7 +3895,7 @@ pub async fn execute_reshard(
     .await
     .map_err(|e| {
         // Phase 1 already handles rollback internally
-        format!("Phase 1 shadow create failed: {}", e)
+        format!("Phase 1 shadow create failed: {e}")
     })?;
 
     tracing::info!(
@@ -3932,7 +3926,7 @@ pub async fn execute_reshard(
         // Rollback: delete shadow index
         tracing::error!(error = %e, "Phase 3 backfill failed, rolling back");
         let _ = rollback_shadow_orchestrator(&shadow_index, &config);
-        format!("Phase 3 backfill failed: {}", e)
+        format!("Phase 3 backfill failed: {e}")
     })?;
 
     emit_phase(
@@ -3963,7 +3957,7 @@ pub async fn execute_reshard(
         // Rollback: delete shadow index
         tracing::error!(error = %e, "Phase 4 verify failed, rolling back");
         let _ = rollback_shadow_orchestrator(&shadow_index, &config);
-        format!("Phase 4 verify failed: {}", e)
+        format!("Phase 4 verify failed: {e}")
     })?;
 
     if !verify_result.passed {
@@ -3991,7 +3985,7 @@ pub async fn execute_reshard(
             config.alias_history_retention,
         )
         .await
-        .map_err(|e| format!("Phase 5 alias swap failed: {}", e))?
+        .map_err(|e| format!("Phase 5 alias swap failed: {e}"))?
     } else {
         // No task store - skip alias swap (for testing)
         tracing::warn!("no task store, skipping alias swap");
@@ -4051,7 +4045,7 @@ async fn rollback_shadow_orchestrator(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| format!("HTTP client: {}", e))?;
+        .map_err(|e| format!("HTTP client: {e}"))?;
 
     for address in &config.node_addresses {
         let url = format!("{}/indexes/{}", address.trim_end_matches('/'), shadow_index);

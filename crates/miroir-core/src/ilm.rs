@@ -175,16 +175,12 @@ struct NodeIndexStats {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[derive(Default)]
 struct NodeStatsDetail {
     #[serde(rename = "databaseSize", default)]
     pub database_size: u64,
 }
 
-impl Default for NodeStatsDetail {
-    fn default() -> Self {
-        Self { database_size: 0 }
-    }
-}
 
 /// Aggregated index stats across all nodes.
 #[derive(Debug, Clone)]
@@ -293,7 +289,7 @@ impl IlmManager {
 
         let policy_rows = task_store
             .list_rollover_policies()
-            .map_err(|e| IlmError::CoordinatorError(format!("failed to load policies: {}", e)))?;
+            .map_err(|e| IlmError::CoordinatorError(format!("failed to load policies: {e}")))?;
 
         let policies: Vec<RolloverPolicy> = policy_rows
             .into_iter()
@@ -314,13 +310,13 @@ impl IlmManager {
     /// Convert a task store row to a RolloverPolicy.
     fn row_to_policy(row: RolloverPolicyRow) -> std::result::Result<RolloverPolicy, IlmError> {
         let triggers: RolloverTriggers = serde_json::from_str(&row.triggers_json)
-            .map_err(|e| IlmError::CoordinatorError(format!("invalid triggers JSON: {}", e)))?;
+            .map_err(|e| IlmError::CoordinatorError(format!("invalid triggers JSON: {e}")))?;
 
         let retention: RetentionPolicy = serde_json::from_str(&row.retention_json)
-            .map_err(|e| IlmError::CoordinatorError(format!("invalid retention JSON: {}", e)))?;
+            .map_err(|e| IlmError::CoordinatorError(format!("invalid retention JSON: {e}")))?;
 
         let template: IndexTemplate = serde_json::from_str(&row.template_json)
-            .map_err(|e| IlmError::CoordinatorError(format!("invalid template JSON: {}", e)))?;
+            .map_err(|e| IlmError::CoordinatorError(format!("invalid template JSON: {e}")))?;
 
         Ok(RolloverPolicy {
             name: row.name,
@@ -439,7 +435,7 @@ impl IlmManager {
                 .iter()
                 .take(config.max_rollovers_per_check as usize)
             {
-                if let Err(e) = Self::evaluate_policy(&state, &policy, &config).await {
+                if let Err(e) = Self::evaluate_policy(&state, policy, &config).await {
                     error!("ILM: error evaluating policy '{}': {}", policy.name, e);
                 }
             }
@@ -590,7 +586,7 @@ impl IlmWorker {
         let policy_rows = self
             .task_store
             .list_rollover_policies()
-            .map_err(|e| IlmError::CoordinatorError(format!("failed to list policies: {}", e)))?;
+            .map_err(|e| IlmError::CoordinatorError(format!("failed to list policies: {e}")))?;
 
         let mut rollover_count = 0;
 
@@ -635,7 +631,7 @@ impl IlmWorker {
                                 // Mark the rollover as failed in the coordinator
                                 let _ = self
                                     .coordinator
-                                    .fail(format!("rollover failed: {}", e))
+                                    .fail(format!("rollover failed: {e}"))
                                     .await;
                             }
                         }
@@ -695,8 +691,7 @@ impl IlmWorker {
         let mut fired_triggers = Vec::new();
         if age_triggered {
             fired_triggers.push(format!(
-                "max_age ({}s >= {}s)",
-                age_seconds, max_age_seconds
+                "max_age ({age_seconds}s >= {max_age_seconds}s)"
             ));
         }
         if docs_triggered {
@@ -794,13 +789,13 @@ impl IlmWorker {
             .header("Authorization", format!("Bearer {}", &*self.master_key))
             .send()
             .await
-            .map_err(|e| IlmError::CoordinatorError(format!("request failed: {}", e)))?;
+            .map_err(|e| IlmError::CoordinatorError(format!("request failed: {e}")))?;
 
         let status = response.status();
         let body_text = response
             .text()
             .await
-            .map_err(|e| IlmError::CoordinatorError(format!("failed to read response: {}", e)))?;
+            .map_err(|e| IlmError::CoordinatorError(format!("failed to read response: {e}")))?;
 
         if status.as_u16() == 404 {
             // Index doesn't exist on this node
@@ -819,7 +814,7 @@ impl IlmWorker {
         }
 
         serde_json::from_str(&body_text)
-            .map_err(|e| IlmError::CoordinatorError(format!("failed to parse stats: {}", e)))
+            .map_err(|e| IlmError::CoordinatorError(format!("failed to parse stats: {e}")))
     }
 
     /// Execute a rollover operation for a policy.
@@ -911,14 +906,14 @@ impl IlmWorker {
                 .send()
                 .await
                 .map_err(|e| {
-                    IlmError::RolloverFailed(format!("request to {} failed: {}", url, e))
+                    IlmError::RolloverFailed(format!("request to {url} failed: {e}"))
                 })?;
 
             let status = response.status();
             let body_text = response
                 .text()
                 .await
-                .map_err(|e| IlmError::RolloverFailed(format!("failed to read response: {}", e)))?;
+                .map_err(|e| IlmError::RolloverFailed(format!("failed to read response: {e}")))?;
 
             if status.as_u16() == 409 {
                 // Index already exists - this is ok for ILM (might have been partially created)
@@ -956,12 +951,12 @@ impl IlmWorker {
             .flip(alias_name, new_index.to_string())
             .await
             .map_err(|e| {
-                IlmError::AliasError(format!("failed to flip alias '{}': {}", alias_name, e))
+                IlmError::AliasError(format!("failed to flip alias '{alias_name}': {e}"))
             })?;
 
         // Persist to task store
         let alias = self.alias_registry.get(alias_name).await.ok_or_else(|| {
-            IlmError::AliasError(format!("alias '{}' not found in registry", alias_name))
+            IlmError::AliasError(format!("alias '{alias_name}' not found in registry"))
         })?;
 
         // Update task store
@@ -977,7 +972,7 @@ impl IlmWorker {
 
         self.task_store
             .create_alias(&new_alias)
-            .map_err(|e| IlmError::AliasError(format!("failed to persist alias flip: {}", e)))?;
+            .map_err(|e| IlmError::AliasError(format!("failed to persist alias flip: {e}")))?;
 
         info!(
             "ILM: flipped write alias '{}' to '{}'",
@@ -1019,14 +1014,13 @@ impl IlmWorker {
             .await
             .map_err(|e| {
                 IlmError::AliasError(format!(
-                    "failed to update multi-target alias '{}': {}",
-                    alias_name, e
+                    "failed to update multi-target alias '{alias_name}': {e}"
                 ))
             })?;
 
         // Persist to task store
         let alias = self.alias_registry.get(alias_name).await.ok_or_else(|| {
-            IlmError::AliasError(format!("alias '{}' not found in registry", alias_name))
+            IlmError::AliasError(format!("alias '{alias_name}' not found in registry"))
         })?;
 
         let new_alias = crate::task_store::NewAlias {
@@ -1040,7 +1034,7 @@ impl IlmWorker {
         };
 
         self.task_store.create_alias(&new_alias).map_err(|e| {
-            IlmError::AliasError(format!("failed to persist read alias update: {}", e))
+            IlmError::AliasError(format!("failed to persist read alias update: {e}"))
         })?;
 
         info!(
@@ -1140,7 +1134,7 @@ impl IlmWorker {
                 .header("Authorization", format!("Bearer {}", &*self.master_key))
                 .send()
                 .await
-                .map_err(|e| IlmError::RolloverFailed(format!("delete request failed: {}", e)))?;
+                .map_err(|e| IlmError::RolloverFailed(format!("delete request failed: {e}")))?;
 
             let status = response.status();
 
@@ -1179,7 +1173,7 @@ fn parse_index_date(date_str: &str) -> std::result::Result<u64, IlmError> {
     use chrono::NaiveDate;
 
     let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
-        .map_err(|_| IlmError::CoordinatorError(format!("invalid date format: {}", date_str)))?;
+        .map_err(|_| IlmError::CoordinatorError(format!("invalid date format: {date_str}")))?;
 
     let datetime = date
         .and_hms_opt(0, 0, 0)
@@ -1196,23 +1190,23 @@ fn parse_duration(duration: &str) -> std::result::Result<u64, IlmError> {
     if duration.ends_with('d') {
         let days = duration[..duration.len() - 1]
             .parse::<u64>()
-            .map_err(|_| IlmError::CoordinatorError(format!("invalid duration: {}", duration)))?;
+            .map_err(|_| IlmError::CoordinatorError(format!("invalid duration: {duration}")))?;
         Ok(days * 86400)
     } else if duration.ends_with('h') {
         let hours = duration[..duration.len() - 1]
             .parse::<u64>()
-            .map_err(|_| IlmError::CoordinatorError(format!("invalid duration: {}", duration)))?;
+            .map_err(|_| IlmError::CoordinatorError(format!("invalid duration: {duration}")))?;
         Ok(hours * 3600)
     } else if duration.ends_with('m') {
         let minutes = duration[..duration.len() - 1]
             .parse::<u64>()
-            .map_err(|_| IlmError::CoordinatorError(format!("invalid duration: {}", duration)))?;
+            .map_err(|_| IlmError::CoordinatorError(format!("invalid duration: {duration}")))?;
         Ok(minutes * 60)
     } else {
         // Assume seconds if no unit
         duration
             .parse::<u64>()
-            .map_err(|_| IlmError::CoordinatorError(format!("invalid duration: {}", duration)))
+            .map_err(|_| IlmError::CoordinatorError(format!("invalid duration: {duration}")))
     }
 }
 

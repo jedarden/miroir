@@ -156,8 +156,7 @@ where
                             return Err((
                                 StatusCode::TOO_MANY_REQUESTS,
                                 format!(
-                                    "Too many failed login attempts. Try again in {} seconds.",
-                                    ws
+                                    "Too many failed login attempts. Try again in {ws} seconds."
                                 ),
                             ));
                         } else {
@@ -414,8 +413,7 @@ where
         [(
             "Set-Cookie",
             format!(
-                "{}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
-                COOKIE_NAME
+                "{COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0"
             ),
         )],
         Json(serde_json::json!({

@@ -236,7 +236,7 @@ impl<C: NodeClient + Send + Sync + 'static> DumpImportManager<C> {
 
         // Parse NDJSON and route documents
         let data_str = std::str::from_utf8(&dump_data)
-            .map_err(|e| MiroirError::InvalidRequest(format!("invalid UTF-8 in dump: {}", e)))?;
+            .map_err(|e| MiroirError::InvalidRequest(format!("invalid UTF-8 in dump: {e}")))?;
 
         // Per-target buffers: (node_id, shard_id) -> Vec<documents>
         let mut per_target_buffers: HashMap<(NodeId, u32), Vec<Value>> = HashMap::new();
@@ -252,7 +252,7 @@ impl<C: NodeClient + Send + Sync + 'static> DumpImportManager<C> {
                 continue;
             }
             let mut doc: Value = serde_json::from_str(line)
-                .map_err(|e| MiroirError::InvalidRequest(format!("invalid JSON in dump: {}", e)))?;
+                .map_err(|e| MiroirError::InvalidRequest(format!("invalid JSON in dump: {e}")))?;
 
             // Extract primary key value
             let pk_value = doc
@@ -260,8 +260,7 @@ impl<C: NodeClient + Send + Sync + 'static> DumpImportManager<C> {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
                     MiroirError::InvalidRequest(format!(
-                        "missing or invalid primary key field: {}",
-                        primary_key
+                        "missing or invalid primary key field: {primary_key}"
                     ))
                 })?;
 
@@ -279,8 +278,7 @@ impl<C: NodeClient + Send + Sync + 'static> DumpImportManager<C> {
 
             if target_nodes.is_empty() {
                 return Err(MiroirError::Topology(format!(
-                    "no nodes for shard {}",
-                    shard_id
+                    "no nodes for shard {shard_id}"
                 )));
             }
 
@@ -288,7 +286,7 @@ impl<C: NodeClient + Send + Sync + 'static> DumpImportManager<C> {
             for node in &target_nodes {
                 per_target_buffers
                     .entry((node.clone(), shard_id))
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(doc.clone());
             }
 

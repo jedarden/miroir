@@ -59,7 +59,7 @@ pub fn split_dump_into_chunks(data: &[u8], chunk_size_bytes: u64) -> Vec<DumpChu
     let reader = BufReader::new(cursor);
 
     // Track line boundaries for chunking
-    let mut line_start = 0u64;
+    let line_start = 0u64;
     let mut last_line_end = 0u64;
 
     for line_result in reader.lines() {

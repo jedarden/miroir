@@ -246,7 +246,7 @@ async fn p13_4_a10_result_parity_narrowed_vs_full_fanout() {
     for pk in test_pks {
         let shard = shard_for_key(pk, 64);
         let plan = planner
-            .plan("products", &Some(format!("product_id = \"{}\"", pk)), 64)
+            .plan("products", &Some(format!("product_id = \"{pk}\"")), 64)
             .await;
 
         assert!(plan.narrowed, "Plan should be narrowed for each PK");

@@ -61,7 +61,7 @@ async fn create_key_handler(
 
     for address in &nodes {
         match client.post_raw(address, "/keys", &body).await {
-            Ok((status, text)) if status >= 200 && status < 300 => {
+            Ok((status, text)) if (200..300).contains(&status) => {
                 if first_response.is_none() {
                     first_response = serde_json::from_str(&text).ok();
                 }
@@ -71,8 +71,7 @@ async fn create_key_handler(
                 // Rollback: delete key on all previously created nodes
                 rollback_delete_key(&client, &body, &created_on).await;
                 let msg = format!(
-                    "key creation failed on {}: HTTP {} — {}",
-                    address, status, text
+                    "key creation failed on {address}: HTTP {status} — {text}"
                 );
                 return Err(forward_or_miroir(status, &text, &msg));
             }
@@ -80,7 +79,7 @@ async fn create_key_handler(
                 rollback_delete_key(&client, &body, &created_on).await;
                 return Err(MeilisearchError::new(
                     MiroirCode::NoQuorum,
-                    format!("key creation failed on {}: {}", address, e),
+                    format!("key creation failed on {address}: {e}"),
                 ));
             }
         }
@@ -107,7 +106,7 @@ async fn rollback_delete_key(client: &MeilisearchClient, body: &Value, nodes: &[
     }
 
     for address in nodes {
-        let path = format!("/keys/{}", key_or_name);
+        let path = format!("/keys/{key_or_name}");
         match client.delete_raw(address, &path).await {
             Ok(_) => tracing::info!(node = %address, "key rollback: deleted key"),
             Err(e) => {
@@ -128,13 +127,13 @@ async fn update_key_handler(
 ) -> Result<Json<Value>, MeilisearchError> {
     let client = MeilisearchClient::new(config.node_master_key.clone());
     let nodes = all_node_addresses(&config);
-    let path = format!("/keys/{}", key);
+    let path = format!("/keys/{key}");
 
     // Snapshot current key state from all nodes
     let mut snapshots: Vec<(String, Value)> = Vec::new();
     for address in &nodes {
         match client.get_raw(address, &path).await {
-            Ok((status, text)) if status >= 200 && status < 300 => {
+            Ok((status, text)) if (200..300).contains(&status) => {
                 let snapshot: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
                 snapshots.push((address.clone(), snapshot));
             }
@@ -142,13 +141,13 @@ async fn update_key_handler(
                 return Err(forward_or_miroir(
                     status,
                     &text,
-                    &format!("failed to snapshot key on {}: HTTP {}", address, status),
+                    &format!("failed to snapshot key on {address}: HTTP {status}"),
                 ));
             }
             Err(e) => {
                 return Err(MeilisearchError::new(
                     MiroirCode::NoQuorum,
-                    format!("failed to snapshot key on {}: {}", address, e),
+                    format!("failed to snapshot key on {address}: {e}"),
                 ));
             }
         }
@@ -160,7 +159,7 @@ async fn update_key_handler(
 
     for (address, _snapshot) in &snapshots {
         match client.patch_raw(address, &path, &body).await {
-            Ok((status, text)) if status >= 200 && status < 300 => {
+            Ok((status, text)) if (200..300).contains(&status) => {
                 if first_response.is_none() {
                     first_response = serde_json::from_str(&text).ok();
                 }
@@ -169,8 +168,7 @@ async fn update_key_handler(
             Ok((status, text)) => {
                 rollback_key_update(&client, &path, &snapshots, &applied).await;
                 let msg = format!(
-                    "key update failed on {}: HTTP {} — {}",
-                    address, status, text
+                    "key update failed on {address}: HTTP {status} — {text}"
                 );
                 return Err(forward_or_miroir(status, &text, &msg));
             }
@@ -178,7 +176,7 @@ async fn update_key_handler(
                 rollback_key_update(&client, &path, &snapshots, &applied).await;
                 return Err(MeilisearchError::new(
                     MiroirCode::NoQuorum,
-                    format!("key update failed on {}: {}", address, e),
+                    format!("key update failed on {address}: {e}"),
                 ));
             }
         }
@@ -199,7 +197,7 @@ async fn rollback_key_update(
     for address in applied {
         if let Some((_, snapshot)) = snapshots.iter().find(|(a, _)| a == address) {
             match client.patch_raw(address, path, snapshot).await {
-                Ok((_status, _text)) if _status >= 200 && _status < 300 => {
+                Ok((_status, _text)) if (200..300).contains(&_status) => {
                     tracing::info!(node = %address, "key rollback succeeded");
                 }
                 Ok((status, _text)) => {
@@ -223,22 +221,22 @@ async fn delete_key_handler(
 ) -> Result<Json<Value>, MeilisearchError> {
     let client = MeilisearchClient::new(config.node_master_key.clone());
     let nodes = all_node_addresses(&config);
-    let path = format!("/keys/{}", key);
+    let path = format!("/keys/{key}");
     let mut first_response: Option<Value> = None;
     let mut errors: Vec<String> = Vec::new();
 
     for address in &nodes {
         match client.delete_raw(address, &path).await {
-            Ok((status, text)) if status >= 200 && status < 300 => {
+            Ok((status, text)) if (200..300).contains(&status) => {
                 if first_response.is_none() {
                     first_response = serde_json::from_str(&text).ok();
                 }
             }
             Ok((status, text)) => {
-                errors.push(format!("{}: HTTP {} — {}", address, status, text));
+                errors.push(format!("{address}: HTTP {status} — {text}"));
             }
             Err(e) => {
-                errors.push(format!("{}: {}", address, e));
+                errors.push(format!("{address}: {e}"));
             }
         }
     }
@@ -285,7 +283,7 @@ async fn list_keys_handler(
             tracing::error!(error = %e, "list keys failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    if status >= 200 && status < 300 {
+    if (200..300).contains(&status) {
         Ok(Json(serde_json::from_str(&text).unwrap_or(Value::Null)))
     } else {
         Err(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
@@ -305,12 +303,12 @@ async fn get_key_handler(
         .nodes
         .first()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let path = format!("/keys/{}", key);
+    let path = format!("/keys/{key}");
     let (status, text) = client.get_raw(&address.address, &path).await.map_err(|e| {
         tracing::error!(error = %e, "get key failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    if status >= 200 && status < 300 {
+    if (200..300).contains(&status) {
         Ok(Json(serde_json::from_str(&text).unwrap_or(Value::Null)))
     } else {
         Err(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))

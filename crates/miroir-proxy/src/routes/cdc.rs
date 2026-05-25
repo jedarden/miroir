@@ -8,9 +8,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use miroir_core::cdc::CdcManager;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 /// Query parameters for GET /_miroir/changes.
 #[derive(Debug, Deserialize)]
@@ -103,7 +101,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miroir_core::cdc::{CdcConfig, CdcEvent, CdcOperation};
+    
 
     #[test]
     fn test_changes_query_params_default_limit() {

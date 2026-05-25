@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::time::{sleep, Duration};
+use tokio::time::Duration;
 use tracing::{info_span, instrument, Instrument};
 
 /// Scatter plan: the exact shard→node mapping for a search query.

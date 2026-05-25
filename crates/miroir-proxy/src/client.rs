@@ -91,7 +91,7 @@ impl NodeClient for HttpClient {
 
         if let Some(global_idf) = &request.global_idf {
             body["_miroir_global_idf"] = serde_json::to_value(global_idf).map_err(|e| {
-                NodeError::NetworkError(format!("Failed to serialize global_idf: {}", e))
+                NodeError::NetworkError(format!("Failed to serialize global_idf: {e}"))
             })?;
         }
 
@@ -109,14 +109,14 @@ impl NodeClient for HttpClient {
                     error = %e,
                     "node call failed"
                 );
-                NodeError::NetworkError(format!("Request failed: {}", e))
+                NodeError::NetworkError(format!("Request failed: {e}"))
             })?;
 
         let status = response.status();
         let body_text = response
             .text()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {e}")))?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -140,7 +140,7 @@ impl NodeClient for HttpClient {
         );
 
         serde_json::from_str(&body_text)
-            .map_err(|e| NodeError::NetworkError(format!("Failed to parse JSON response: {}", e)))
+            .map_err(|e| NodeError::NetworkError(format!("Failed to parse JSON response: {e}")))
     }
 
     async fn write_documents(
@@ -179,13 +179,13 @@ impl NodeClient for HttpClient {
         let response = req_builder
             .send()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("Request failed: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("Request failed: {e}")))?;
 
         let status = response.status();
         let body_text = response
             .text()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {e}")))?;
 
         if !status.is_success() {
             // Try to parse as Meilisearch error
@@ -215,7 +215,7 @@ impl NodeClient for HttpClient {
 
         // Parse successful response
         let json: Value = serde_json::from_str(&body_text).map_err(|e| {
-            NodeError::NetworkError(format!("Failed to parse JSON response: {}", e))
+            NodeError::NetworkError(format!("Failed to parse JSON response: {e}"))
         })?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -263,13 +263,13 @@ impl NodeClient for HttpClient {
             .json(&request.ids)
             .send()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("Request failed: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("Request failed: {e}")))?;
 
         let status = response.status();
         let body_text = response
             .text()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {e}")))?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
         tracing::debug!(
@@ -310,7 +310,7 @@ impl NodeClient for HttpClient {
 
         // Parse successful response
         let json: Value = serde_json::from_str(&body_text).map_err(|e| {
-            NodeError::NetworkError(format!("Failed to parse JSON response: {}", e))
+            NodeError::NetworkError(format!("Failed to parse JSON response: {e}"))
         })?;
 
         Ok(DeleteResponse {
@@ -351,13 +351,13 @@ impl NodeClient for HttpClient {
             .json(&request.filter)
             .send()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("Request failed: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("Request failed: {e}")))?;
 
         let status = response.status();
         let body_text = response
             .text()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {e}")))?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
         tracing::debug!(
@@ -398,7 +398,7 @@ impl NodeClient for HttpClient {
 
         // Parse successful response
         let json: Value = serde_json::from_str(&body_text).map_err(|e| {
-            NodeError::NetworkError(format!("Failed to parse JSON response: {}", e))
+            NodeError::NetworkError(format!("Failed to parse JSON response: {e}"))
         })?;
 
         Ok(DeleteResponse {
@@ -437,7 +437,7 @@ impl NodeClient for HttpClient {
             .header("Authorization", format!("Bearer {}", self.master_key))
             .send()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("Stats request failed: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("Stats request failed: {e}")))?;
 
         if !stats_resp.status().is_success() {
             // Index not found or node unreachable — return empty stats
@@ -451,7 +451,7 @@ impl NodeClient for HttpClient {
         let stats_body: Value = stats_resp
             .json()
             .await
-            .map_err(|e| NodeError::NetworkError(format!("Failed to parse stats: {}", e)))?;
+            .map_err(|e| NodeError::NetworkError(format!("Failed to parse stats: {e}")))?;
 
         let total_docs = stats_body
             .get("numberOfDocuments")
@@ -471,11 +471,11 @@ impl NodeClient for HttpClient {
                 .json(&search_body)
                 .send()
                 .await
-                .map_err(|e| NodeError::NetworkError(format!("DF search failed: {}", e)))?;
+                .map_err(|e| NodeError::NetworkError(format!("DF search failed: {e}")))?;
 
             if search_resp.status().is_success() {
                 let body: Value = search_resp.json().await.map_err(|e| {
-                    NodeError::NetworkError(format!("Failed to parse DF response: {}", e))
+                    NodeError::NetworkError(format!("Failed to parse DF response: {e}"))
                 })?;
                 let df = body
                     .get("estimatedTotalHits")
@@ -522,16 +522,16 @@ impl NodeClient for HttpClient {
         async move {
             let response = client
                 .get(&url)
-                .header("Authorization", format!("Bearer {}", master_key))
+                .header("Authorization", format!("Bearer {master_key}"))
                 .send()
                 .await
-                .map_err(|e| NodeError::NetworkError(format!("Request failed: {}", e)))?;
+                .map_err(|e| NodeError::NetworkError(format!("Request failed: {e}")))?;
 
             let status = response.status();
             let body_text = response
                 .text()
                 .await
-                .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {}", e)))?;
+                .map_err(|e| NodeError::NetworkError(format!("Failed to read response: {e}")))?;
 
             if !status.is_success() {
                 return Err(NodeError::HttpError {
@@ -542,7 +542,7 @@ impl NodeClient for HttpClient {
 
             // Parse successful response
             let json: Value = serde_json::from_str(&body_text).map_err(|e| {
-                NodeError::NetworkError(format!("Failed to parse JSON response: {}", e))
+                NodeError::NetworkError(format!("Failed to parse JSON response: {e}"))
             })?;
 
             Ok(TaskStatusResponse {
@@ -576,7 +576,7 @@ impl miroir_core::group_sync_worker::SyncNodeClient for HttpClient {
     ) -> std::result::Result<serde_json::Value, String> {
         let url = self.documents_url(address, &request.index_uid);
         let filter_json = serde_json::to_string(&request.filter)
-            .map_err(|e| format!("Failed to serialize filter: {}", e))?;
+            .map_err(|e| format!("Failed to serialize filter: {e}"))?;
 
         let response = self
             .client
@@ -589,19 +589,19 @@ impl miroir_core::group_sync_worker::SyncNodeClient for HttpClient {
             ])
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(|e| format!("Request failed: {e}"))?;
 
         let status = response.status();
         let body_text = response
             .text()
             .await
-            .map_err(|e| format!("Failed to read response: {}", e))?;
+            .map_err(|e| format!("Failed to read response: {e}"))?;
 
         if !status.is_success() {
             return Err(format!("HTTP {}: {}", status.as_u16(), body_text));
         }
 
-        serde_json::from_str(&body_text).map_err(|e| format!("Failed to parse JSON: {}", e))
+        serde_json::from_str(&body_text).map_err(|e| format!("Failed to parse JSON: {e}"))
     }
 
     async fn write_documents(
@@ -620,13 +620,13 @@ impl miroir_core::group_sync_worker::SyncNodeClient for HttpClient {
             .json(&documents)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(|e| format!("Request failed: {e}"))?;
 
         let status = response.status();
         let body_text = response
             .text()
             .await
-            .map_err(|e| format!("Failed to read response: {}", e))?;
+            .map_err(|e| format!("Failed to read response: {e}"))?;
 
         if !status.is_success() {
             return Err(format!("HTTP {}: {}", status.as_u16(), body_text));

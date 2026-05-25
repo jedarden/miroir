@@ -14,7 +14,7 @@ use axum::{
 };
 use miroir_core::{
     cdc::AnalyticsEvent,
-    config::advanced::{SearchUiAuthConfig, SearchUiConfig},
+    config::advanced::SearchUiConfig,
     task_store::{SearchUiScopedKey, TaskStore},
 };
 use sha2::{Digest, Sha256};
@@ -25,8 +25,7 @@ use crate::auth::{
 use crate::error_response::ErrorResponse;
 use rust_embed::RustEmbed as Embed;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::routes::indexes::MeilisearchClient;
 use crate::scoped_key_rotation::mint_scoped_key;
@@ -224,7 +223,7 @@ pub async fn mint_session(
     let now = chrono::Utc::now().timestamp() as u64;
     let exp = now + auth_config.session_ttl_s;
 
-    let mut scope = vec![
+    let scope = vec![
         "search".to_string(),
         "multi_search".to_string(),
         "beacon".to_string(),
@@ -286,7 +285,7 @@ pub async fn mint_session(
     };
 
     let token = jwt_encode(&header, &claims, secret.as_bytes())
-        .map_err(|e| ErrorResponse::internal_error(format!("JWT encoding failed: {}", e)))?;
+        .map_err(|e| ErrorResponse::internal_error(format!("JWT encoding failed: {e}")))?;
 
     info!(
         index = %index_uid,
@@ -343,7 +342,7 @@ async fn get_or_create_scoped_key(
     let client = MeilisearchClient::new(state.config.node_master_key.clone());
     let (new_key, new_uid) = mint_scoped_key(&client, &state.config, index_uid)
         .await
-        .map_err(|e| ErrorResponse::internal_error(format!("failed to mint scoped key: {}", e)))?;
+        .map_err(|e| ErrorResponse::internal_error(format!("failed to mint scoped key: {e}")))?;
 
     let now_ms = chrono::Utc::now().timestamp_millis();
     let scoped_key = SearchUiScopedKey {
@@ -359,7 +358,7 @@ async fn get_or_create_scoped_key(
     // Store in Redis
     redis_store
         .set_search_ui_scoped_key(&scoped_key)
-        .map_err(|e| ErrorResponse::internal_error(format!("failed to store scoped key: {}", e)))?;
+        .map_err(|e| ErrorResponse::internal_error(format!("failed to store scoped key: {e}")))?;
 
     info!(
         index = %index_uid,
@@ -385,7 +384,7 @@ pub async fn get_config(
     if let Some(row) = task_store.get_search_ui_config(&index_uid)? {
         // Parse the config JSON
         let config: SearchUiIndexConfig = serde_json::from_str(&row.config_json)
-            .map_err(|e| ErrorResponse::internal_error(format!("failed to parse config: {}", e)))?;
+            .map_err(|e| ErrorResponse::internal_error(format!("failed to parse config: {e}")))?;
 
         return Ok(Json(config));
     }
@@ -416,7 +415,7 @@ pub async fn update_config(
 
     // Serialize config to JSON for storage
     let config_json = serde_json::to_string(&config)
-        .map_err(|e| ErrorResponse::internal_error(format!("failed to serialize config: {}", e)))?;
+        .map_err(|e| ErrorResponse::internal_error(format!("failed to serialize config: {e}")))?;
 
     // Validate custom template if present (plan §13.21)
     if let Some(template) = &config.result_template {
@@ -490,7 +489,7 @@ pub async fn beacon(
                     // Fallback: generate a session_id from the token itself
                     let hash = Sha256::digest(token.as_bytes());
                     let hash_hex = hex::encode(&hash[..16]);
-                    format!("anon:{}", hash_hex)
+                    format!("anon:{hash_hex}")
                 }
             }
         } else {
@@ -701,13 +700,12 @@ fn validate_template(template: &str) -> Result<(), ErrorResponse> {
                 if_stack.push("if");
             }
             // Check for {{/if}} closing
-            else if tag.starts_with("/if") {
-                if if_stack.pop() != Some("if") {
+            else if tag.starts_with("/if")
+                && if_stack.pop() != Some("if") {
                     return Err(ErrorResponse::invalid_request(
                         "unmatched {{/if}} tag in template".to_string(),
                     ));
                 }
-            }
 
             pos += end + 2;
         } else {
@@ -718,9 +716,7 @@ fn validate_template(template: &str) -> Result<(), ErrorResponse> {
     }
 
     if !if_stack.is_empty() {
-        return Err(ErrorResponse::invalid_request(format!(
-            "unclosed {{#if}} tag in template"
-        )));
+        return Err(ErrorResponse::invalid_request("unclosed {#if} tag in template".to_string()));
     }
 
     Ok(())
@@ -780,7 +776,7 @@ pub fn render_custom_template(template: &str, data: &serde_json::Value) -> Strin
     // Process simple {{field}} tags
     let mut rendered = result;
     for (key, value) in obj {
-        let tag = format!("{{{{{}}}}}", key);
+        let tag = format!("{{{{{key}}}}}");
         let value_str = match value {
             serde_json::Value::String(s) => s.clone(),
             serde_json::Value::Number(n) => n.to_string(),

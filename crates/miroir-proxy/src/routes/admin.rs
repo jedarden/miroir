@@ -6,7 +6,7 @@ use super::{admin_endpoints, aliases, canary, cdc, dumps, explain, session};
 use crate::admin_ui;
 use axum::{
     extract::FromRef,
-    routing::{delete, get, patch, post, put},
+    routing::{delete, get, post, put},
     Router,
 };
 

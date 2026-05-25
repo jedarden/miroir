@@ -79,18 +79,15 @@ async fn p5_3_a1_degraded_node_receives_less_traffic() {
     let _expected = 200 / 3;
     assert!(
         (20..=90).contains(&count0),
-        "node-0 baseline count {} out of expected range 20-90",
-        count0
+        "node-0 baseline count {count0} out of expected range 20-90"
     );
     assert!(
         (20..=90).contains(&count1),
-        "node-1 baseline count {} out of expected range 20-90",
-        count1
+        "node-1 baseline count {count1} out of expected range 20-90"
     );
     assert!(
         (20..=90).contains(&count2),
-        "node-2 baseline count {} out of expected range 20-90",
-        count2
+        "node-2 baseline count {count2} out of expected range 20-90"
     );
 
     // Induce degradation on node-1: 200ms latency
@@ -113,20 +110,17 @@ async fn p5_3_a1_degraded_node_receives_less_traffic() {
     // Expect node-1 to get <15% of traffic
     assert!(
         degraded_count1 < 30,
-        "degraded node-1 still receiving too much traffic: {}",
-        degraded_count1
+        "degraded node-1 still receiving too much traffic: {degraded_count1}"
     );
 
     // Healthy nodes should receive more traffic
     assert!(
         degraded_count0 > 50,
-        "healthy node-0 not receiving enough traffic: {}",
-        degraded_count0
+        "healthy node-0 not receiving enough traffic: {degraded_count0}"
     );
     assert!(
         degraded_count2 > 50,
-        "healthy node-2 not receiving enough traffic: {}",
-        degraded_count2
+        "healthy node-2 not receiving enough traffic: {degraded_count2}"
     );
 }
 
@@ -161,8 +155,7 @@ async fn p5_3_a2_degraded_node_recovers() {
     let degraded_count1 = *degraded_dist.get("node-1").unwrap_or(&0);
     assert!(
         degraded_count1 < 20,
-        "node-1 should be degraded, got {} selections",
-        degraded_count1
+        "node-1 should be degraded, got {degraded_count1} selections"
     );
 
     // Clear latency: record good responses for node-1
@@ -186,24 +179,15 @@ async fn p5_3_a2_degraded_node_recovers() {
 
     assert!(
         (recovered_count1 as isize - expected as isize).abs() <= tolerance as isize,
-        "node-1 recovered count {} not close to expected {} (tolerance {})",
-        recovered_count1,
-        expected,
-        tolerance
+        "node-1 recovered count {recovered_count1} not close to expected {expected} (tolerance {tolerance})"
     );
     assert!(
         (recovered_count0 as isize - expected as isize).abs() <= tolerance as isize,
-        "node-0 count {} not close to expected {} (tolerance {})",
-        recovered_count0,
-        expected,
-        tolerance
+        "node-0 count {recovered_count0} not close to expected {expected} (tolerance {tolerance})"
     );
     assert!(
         (recovered_count2 as isize - expected as isize).abs() <= tolerance as isize,
-        "node-2 count {} not close to expected {} (tolerance {})",
-        recovered_count2,
-        expected,
-        tolerance
+        "node-2 count {recovered_count2} not close to expected {expected} (tolerance {tolerance})"
     );
 }
 
@@ -246,8 +230,7 @@ async fn p5_3_a3_exploration_samples_degraded_node() {
     let count2 = *dist.get("node-2").unwrap_or(&0);
 
     println!(
-        "Distribution: node-0={}, node-1={}, node-2={}",
-        count0, count1, count2
+        "Distribution: node-0={count0}, node-1={count1}, node-2={count2}"
     );
 
     // Node-2 is severely degraded but should still get some traffic via exploration
@@ -257,16 +240,14 @@ async fn p5_3_a3_exploration_samples_degraded_node() {
     // Allow range 5-30 for statistical variance (3 sigma)
     assert!(
         (5..=30).contains(&count2),
-        "exploration not working: degraded node-2 got {} selections, expected ~17 (range 5-30)",
-        count2
+        "exploration not working: degraded node-2 got {count2} selections, expected ~17 (range 5-30)"
     );
 
     // Healthy nodes should split the remaining ~95%
     let healthy_total = count0 + count1;
     assert!(
         healthy_total >= 900,
-        "healthy nodes didn't get enough traffic: {}",
-        healthy_total
+        "healthy nodes didn't get enough traffic: {healthy_total}"
     );
 
     // Each healthy node should get roughly half of remaining
@@ -274,15 +255,11 @@ async fn p5_3_a3_exploration_samples_degraded_node() {
     let tolerance = 100;
     assert!(
         (count0 as isize - expected_healthy).abs() <= tolerance,
-        "node-0 count {} not close to expected {}",
-        count0,
-        expected_healthy
+        "node-0 count {count0} not close to expected {expected_healthy}"
     );
     assert!(
         (count1 as isize - expected_healthy).abs() <= tolerance,
-        "node-1 count {} not close to expected {}",
-        count1,
-        expected_healthy
+        "node-1 count {count1} not close to expected {expected_healthy}"
     );
 }
 
@@ -308,10 +285,10 @@ async fn p5_3_a4_round_robin_fallback() {
     let fourth = selector.select(&candidates, 0).await;
 
     // Should cycle through candidates in order
-    assert_eq!(first, candidates.get(0).cloned());
+    assert_eq!(first, candidates.first().cloned());
     assert_eq!(second, candidates.get(1).cloned());
     assert_eq!(third, candidates.get(2).cloned());
-    assert_eq!(fourth, candidates.get(0).cloned()); // Wrap around
+    assert_eq!(fourth, candidates.first().cloned()); // Wrap around
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -376,9 +353,7 @@ async fn in_flight_count_affects_score() {
 
     assert!(
         score0 > score1,
-        "node-0 with in-flight requests should have higher score: {} > {}",
-        score0,
-        score1
+        "node-0 with in-flight requests should have higher score: {score0} > {score1}"
     );
 }
 
@@ -412,9 +387,7 @@ async fn error_rate_affects_score() {
 
     assert!(
         score0 > score1,
-        "node-0 with errors should have higher score: {} > {}",
-        score0,
-        score1
+        "node-0 with errors should have higher score: {score0} > {score1}"
     );
 
     // Verify error_rate is set
@@ -479,10 +452,7 @@ async fn test_random_strategy() {
         let diff = (*count as isize - expected as isize).abs();
         assert!(
             diff <= 100, // Allow 10% variance
-            "{}: got {} selections, expected ~{}",
-            node,
-            count,
-            expected
+            "{node}: got {count} selections, expected ~{expected}"
         );
     }
 }

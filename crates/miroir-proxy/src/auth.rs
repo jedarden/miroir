@@ -10,7 +10,7 @@
 //!   the rotation overlap window. Validation accepts either secret.
 
 use axum::{
-    extract::{FromRef, Request, State},
+    extract::{Request, State},
     http::{HeaderMap, Method},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -99,14 +99,14 @@ pub fn jwt_encode(header: &JwtHeader, claims: &JwtClaims, secret: &[u8]) -> Resu
     let header_b64 = URL_SAFE_NO_PAD.encode(header_json.as_bytes());
     let payload_b64 = URL_SAFE_NO_PAD.encode(claims_json.as_bytes());
 
-    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    let signing_input = format!("{header_b64}.{payload_b64}");
 
-    let mut mac = HmacSha256::new_from_slice(secret).map_err(|e| format!("HMAC init: {}", e))?;
+    let mut mac = HmacSha256::new_from_slice(secret).map_err(|e| format!("HMAC init: {e}"))?;
     mac.update(signing_input.as_bytes());
     let sig = mac.finalize().into_bytes();
     let sig_b64 = URL_SAFE_NO_PAD.encode(sig);
 
-    Ok(format!("{}.{}.{}", header_b64, payload_b64, sig_b64))
+    Ok(format!("{header_b64}.{payload_b64}.{sig_b64}"))
 }
 
 /// Decode and verify a JWT with the given secret. Returns (header, claims).
@@ -329,7 +329,7 @@ impl std::error::Error for JwtValidationError {}
 pub fn generate_csrf_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(&bytes)
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// Extract the CSRF token from the `X-CSRF-Token` header.
@@ -420,7 +420,7 @@ pub fn validate_origin(
         if allowed == "same-origin" {
             if let Some(host) = headers.get("host").and_then(|h| h.to_str().ok()) {
                 // Construct origin from scheme (https) and host
-                let same_origin = format!("https://{}", host);
+                let same_origin = format!("https://{host}");
                 if provided_origin == same_origin || provided_origin == host {
                     return OriginVerdict::Allowed;
                 }
@@ -1072,7 +1072,7 @@ fn epoch_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::StatusCode;
+    
 
     fn test_key() -> SealKey {
         SealKey::from_bytes([42u8; 32])
@@ -1893,10 +1893,7 @@ mod tests {
         let ratio = all_wrong_duration.as_secs_f64() / one_wrong_duration.as_secs_f64();
         assert!(
             ratio > 0.5 && ratio < 2.0,
-            "Timing ratio {} suggests non-constant-time comparison: all_wrong={:?}, one_wrong={:?}",
-            ratio,
-            all_wrong_duration,
-            one_wrong_duration,
+            "Timing ratio {ratio} suggests non-constant-time comparison: all_wrong={all_wrong_duration:?}, one_wrong={one_wrong_duration:?}",
         );
     }
 
@@ -1989,9 +1986,7 @@ mod tests {
         for (method, path) in cases {
             assert!(
                 is_dispatch_exempt(&method, path),
-                "Expected ({}, {}) to be dispatch-exempt",
-                method,
-                path,
+                "Expected ({method}, {path}) to be dispatch-exempt",
             );
         }
     }

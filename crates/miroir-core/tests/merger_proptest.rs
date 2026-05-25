@@ -54,7 +54,7 @@ proptest! {
                     .map(|i| {
                         let id = shard_id * hits_per_shard + i;
                         let score = (hits_per_shard as f64 - i as f64) / hits_per_shard as f64;
-                        make_hit(&format!("doc-{}", id), score)
+                        make_hit(&format!("doc-{id}"), score)
                     })
                     .collect();
                 make_shard_response(hits, hits_per_shard as u64, 15)
@@ -94,7 +94,7 @@ proptest! {
                     .map(|i| {
                         let id = shard_id * hits_per_shard + i;
                         let score = (hits_per_shard as f64 - i as f64) / hits_per_shard as f64;
-                        make_hit(&format!("doc-{}", id), score)
+                        make_hit(&format!("doc-{id}"), score)
                     })
                     .collect();
                 make_shard_response(hits, hits_per_shard as u64, 15)
@@ -135,7 +135,7 @@ proptest! {
                     .map(|i| {
                         let id = shard_id * hits_per_shard + i;
                         let score = (hits_per_shard as f64 - i as f64) / hits_per_shard as f64;
-                        make_hit(&format!("doc-{}", id), score)
+                        make_hit(&format!("doc-{id}"), score)
                     })
                     .collect();
                 make_shard_response(hits, hits_per_shard as u64, 15)
@@ -179,7 +179,7 @@ proptest! {
                     .map(|i| {
                         let id = shard_id * hits_per_shard + i;
                         let score = (hits_per_shard as f64 - i as f64) / hits_per_shard as f64;
-                        make_hit(&format!("doc-{}", id), score)
+                        make_hit(&format!("doc-{id}"), score)
                     })
                     .collect();
                 make_shard_response(hits, hits_per_shard as u64, 15)
@@ -232,7 +232,7 @@ proptest! {
                     .map(|i| {
                         let id = shard_id * hits_per_shard + i;
                         let score = (hits_per_shard as f64 - i as f64) / hits_per_shard as f64;
-                        make_hit(&format!("doc-{}", id), score)
+                        make_hit(&format!("doc-{id}"), score)
                     })
                     .collect();
                 make_shard_response(hits, hits_per_shard as u64, 15)
@@ -300,7 +300,7 @@ proptest! {
                     .map(|i| {
                         let id = shard_id * hits_per_shard + i;
                         let score = (hits_per_shard as f64 - i as f64) / hits_per_shard as f64;
-                        make_hit(&format!("doc-{}", id), score)
+                        make_hit(&format!("doc-{id}"), score)
                     })
                     .collect();
                 make_shard_response(hits, hits_per_shard as u64, 15)
@@ -358,7 +358,7 @@ proptest! {
                     .map(|i| {
                         let id = shard_id * hits_per_shard + i;
                         let score = (hits_per_shard as f64 - i as f64) / hits_per_shard as f64;
-                        make_hit(&format!("doc-{}", id), score)
+                        make_hit(&format!("doc-{id}"), score)
                     })
                     .collect();
                 make_shard_response(hits, hits_per_shard as u64, 15)
@@ -469,7 +469,7 @@ proptest! {
                     .map(|i| {
                         let id = shard_id * hits_per_shard + i;
                         let score = (hits_per_shard as f64 - i as f64) / hits_per_shard as f64;
-                        make_hit(&format!("doc-{}", id), score)
+                        make_hit(&format!("doc-{id}"), score)
                     })
                     .collect();
                 make_shard_response(hits, hits_per_shard as u64, 15)
@@ -517,7 +517,7 @@ proptest! {
                         let id = shard_id * hits_per_shard + i;
                         // Use varying scores - RRF should sort by rank, not score
                         let score = rand::random::<f64>() * 0.5 + 0.5;
-                        make_hit(&format!("doc-{}", id), score)
+                        make_hit(&format!("doc-{id}"), score)
                     })
                     .collect();
                 make_shard_response(hits, hits_per_shard as u64, 15)

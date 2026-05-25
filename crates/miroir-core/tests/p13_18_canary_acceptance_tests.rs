@@ -8,7 +8,7 @@
 //! - Canary CRUD operations
 
 use miroir_core::{
-    canary::{CanaryAssertion, CanaryStatus, QueryCapture, SearchQuery, SearchResponse},
+    canary::{CanaryAssertion, QueryCapture, SearchQuery, SearchResponse},
     task_store::{NewCanary, TaskStore},
 };
 use std::collections::HashMap;
@@ -146,8 +146,7 @@ async fn ac3_assertion_failure_includes_actual_value() {
     assert_eq!(failure["actual"], 2);
 
     // Test multiple assertion types
-    let failures = vec![
-        serde_json::json!({
+    let failures = [serde_json::json!({
             "assertion_type": "top_hit_id",
             "expected": "product-123",
             "actual": "product-456",
@@ -158,8 +157,7 @@ async fn ac3_assertion_failure_includes_actual_value() {
             "expected": 200,
             "actual": 350,
             "message": "Latency exceeded threshold"
-        }),
-    ];
+        })];
 
     assert_eq!(failures.len(), 2);
     assert_eq!(failures[0]["assertion_type"], "top_hit_id");
@@ -185,7 +183,7 @@ async fn ac4_capture_flow_records_queries() {
                     hits: vec![],
                     estimated_total_hits: 0,
                     processing_time_ms: 50,
-                    query: format!("query {}", i),
+                    query: format!("query {i}"),
                 },
             )
             .await;
@@ -199,7 +197,7 @@ async fn ac4_capture_flow_records_queries() {
     for (i, query) in captured.iter().enumerate() {
         assert_eq!(query.index_uid, "products");
         let q = query.query.params.get("q").and_then(|v| v.as_str());
-        assert_eq!(q, Some(format!("query {}", i).as_str()));
+        assert_eq!(q, Some(format!("query {i}").as_str()));
     }
 
     // Clear and verify
@@ -362,8 +360,8 @@ async fn ac8_canary_list_can_be_retrieved() {
     // Create multiple canaries
     for i in 0..3 {
         let canary = NewCanary {
-            id: format!("list-test-{}", i),
-            name: format!("List Test Canary {}", i),
+            id: format!("list-test-{i}"),
+            name: format!("List Test Canary {i}"),
             index_uid: "products".to_string(),
             interval_s: 60,
             query_json: serde_json::to_string(&SearchQuery {

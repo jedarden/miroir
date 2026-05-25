@@ -9,7 +9,7 @@ use std::sync::Mutex;
 fn registry() -> &'static MigrationRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<MigrationRegistry> = OnceLock::new();
-    REGISTRY.get_or_init(|| build_registry())
+    REGISTRY.get_or_init(build_registry)
 }
 
 pub struct SqliteTaskStore {
@@ -304,7 +304,7 @@ impl TaskStore for SqliteTaskStore {
         let target_uids_json = alias
             .target_uids
             .as_ref()
-            .map(|uids| serde_json::to_string(uids))
+            .map(serde_json::to_string)
             .transpose()?;
         let history_json = serde_json::to_string(&alias.history)?;
         conn.execute(
@@ -796,7 +796,7 @@ impl TaskStore for SqliteTaskStore {
         let mut total_deleted = 0;
         for miroir_id in miroir_ids {
             let delete_sql = "DELETE FROM tasks WHERE miroir_id = ?1";
-            let rows = conn.execute(delete_sql, [&*miroir_id])?;
+            let rows = conn.execute(delete_sql, [miroir_id])?;
             total_deleted += rows;
         }
         Ok(total_deleted)
@@ -1394,10 +1394,10 @@ impl TaskStore for SqliteTaskStore {
         query.push_str(" ORDER BY updated_at DESC");
 
         if let Some(limit) = filter.limit {
-            query.push_str(&format!(" LIMIT {}", limit));
+            query.push_str(&format!(" LIMIT {limit}"));
         }
         if let Some(offset) = filter.offset {
-            query.push_str(&format!(" OFFSET {}", offset));
+            query.push_str(&format!(" OFFSET {offset}"));
         }
 
         let mut stmt = conn.prepare(&query)?;

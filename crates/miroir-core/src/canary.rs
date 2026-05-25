@@ -250,12 +250,12 @@ impl CanaryRunner {
 
         // Parse query
         let query: SearchQuery = serde_json::from_str(&canary.query_json)
-            .map_err(|e| MiroirError::InvalidRequest(format!("Invalid canary query: {}", e)))?;
+            .map_err(|e| MiroirError::InvalidRequest(format!("Invalid canary query: {e}")))?;
 
         // Parse assertions
         let assertions: Vec<CanaryAssertion> = serde_json::from_str(&canary.assertions_json)
             .map_err(|e| {
-                MiroirError::InvalidRequest(format!("Invalid canary assertions: {}", e))
+                MiroirError::InvalidRequest(format!("Invalid canary assertions: {e}"))
             })?;
 
         // Execute the search query against the index
@@ -269,7 +269,7 @@ impl CanaryRunner {
         let mut failed_assertions = Vec::new();
         for assertion in &assertions {
             if let Some(failure) =
-                self.evaluate_assertion(&assertion, &search_response, latency_ms, &canary.index_uid)
+                self.evaluate_assertion(assertion, &search_response, latency_ms, &canary.index_uid)
             {
                 failed_assertions.push(failure);
             }
@@ -346,7 +346,7 @@ impl CanaryRunner {
                         assertion_type: "top_hit_id".to_string(),
                         expected: serde_json::json!(value),
                         actual: serde_json::json!(actual),
-                        message: format!("Top hit ID mismatch: expected {}, got {}", value, actual),
+                        message: format!("Top hit ID mismatch: expected {value}, got {actual}"),
                     });
                 }
             }
@@ -369,7 +369,7 @@ impl CanaryRunner {
                         assertion_type: "top_k_contains".to_string(),
                         expected: serde_json::json!(ids),
                         actual: serde_json::json!(top_k_ids),
-                        message: format!("Top {} missing IDs: {:?}", k, missing),
+                        message: format!("Top {k} missing IDs: {missing:?}"),
                     });
                 }
             }
@@ -393,7 +393,7 @@ impl CanaryRunner {
                         assertion_type: "max_p95_ms".to_string(),
                         expected: serde_json::json!(value),
                         actual: serde_json::json!(latency_ms),
-                        message: format!("Latency exceeded p95: {}ms > {}ms", latency_ms, value),
+                        message: format!("Latency exceeded p95: {latency_ms}ms > {value}ms"),
                     });
                 }
             }
@@ -407,8 +407,7 @@ impl CanaryRunner {
                         expected: serde_json::json!(value),
                         actual: serde_json::json!(current_version),
                         message: format!(
-                            "Settings version below minimum: {} < {}",
-                            current_version, value
+                            "Settings version below minimum: {current_version} < {value}"
                         ),
                     });
                 }
@@ -427,7 +426,7 @@ impl CanaryRunner {
                         assertion_type: "must_not_contain_id".to_string(),
                         expected: serde_json::json!(null),
                         actual: serde_json::json!(id),
-                        message: format!("Results contain forbidden ID: {}", id),
+                        message: format!("Results contain forbidden ID: {id}"),
                     });
                 }
             }
@@ -499,10 +498,10 @@ pub fn create_canary(
         index_uid,
         interval_s,
         query_json: serde_json::to_string(&query).map_err(|e| {
-            MiroirError::InvalidRequest(format!("Failed to serialize query: {}", e))
+            MiroirError::InvalidRequest(format!("Failed to serialize query: {e}"))
         })?,
         assertions_json: serde_json::to_string(&assertions).map_err(|e| {
-            MiroirError::InvalidRequest(format!("Failed to serialize assertions: {}", e))
+            MiroirError::InvalidRequest(format!("Failed to serialize assertions: {e}"))
         })?,
         enabled: true,
         created_at: now,

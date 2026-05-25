@@ -82,7 +82,7 @@ proptest! {
 
         let mut inserted_tasks = Vec::new();
         for i in 0..count {
-            let miroir_id = format!("task-{}", i);
+            let miroir_id = format!("task-{i}");
             let mut task = new_test_task(miroir_id.clone());
             task.created_at = 1714500000000 + (i as i64 * 1000);
 
