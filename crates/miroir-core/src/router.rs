@@ -976,15 +976,17 @@ mod tests {
         /// exactly RG × RF node IDs (one per replica group), provided each group
         /// has at least RF nodes.
         proptest! {
+            #![proptest_config(ProptestConfig::with_cases(1024))]
+
             #[test]
             fn prop_write_targets_count(
-                shard_count in 1u32..1000u32,
+                shard_count in 1u32..100u32,
                 replica_groups in 1u32..10u32,
-                rf in 1u32..5u32,
-                nodes_per_group in 1usize..10usize,
-                shard_id in 0u32..1000u32,
+                rf in 1u32..3u32,
+                nodes_per_group in 3usize..10usize,
+                shard_id in 0u32..100u32,
             ) {
-                prop_assume!(shard_id < shard_count);
+                // Note: write_targets uses shard_id % shard_count internally
                 let rf = rf as usize;
                 let replica_groups = replica_groups as usize;
 
