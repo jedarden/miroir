@@ -385,6 +385,7 @@ async fn execute_search(
         global_idf: None,
         over_fetch_factor: 1,
         vector_mode: VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     // Get topology and plan scatter

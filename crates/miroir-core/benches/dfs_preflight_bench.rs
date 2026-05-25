@@ -174,6 +174,7 @@ fn bench_dfs_vs_standard_scatter(c: &mut Criterion) {
         global_idf: None,
         over_fetch_factor: 1,
         vector_mode: miroir_core::scatter::VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     let strategy = ScoreMergeStrategy::new();

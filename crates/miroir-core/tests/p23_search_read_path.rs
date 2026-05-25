@@ -101,6 +101,7 @@ async fn test_unique_keyword_returns_exactly_one_hit() {
         global_idf: None,
         over_fetch_factor: 1,
         vector_mode: miroir_core::scatter::VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     // Use RRF strategy which deduplicates by primary key
@@ -195,6 +196,9 @@ async fn test_facet_counts_sum_correctly() {
         ranking_score: false,
         body: json!({}),
         global_idf: None,
+        over_fetch_factor: 1,
+        vector_mode: miroir_core::scatter::VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     let result = miroir_core::scatter::scatter_gather_search(
@@ -275,6 +279,9 @@ async fn test_paging_no_dupes_or_gaps() {
             ranking_score: false,
             body: json!({}),
             global_idf: None,
+            over_fetch_factor: 1,
+            vector_mode: miroir_core::scatter::VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         let result = miroir_core::scatter::scatter_gather_search(

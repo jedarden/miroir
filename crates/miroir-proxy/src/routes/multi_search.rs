@@ -379,6 +379,7 @@ where
                     global_idf: None,
                     over_fetch_factor: 1, // TODO: support over-fetch in multi-search
                     vector_mode,
+                    vector_config: None,
                 };
 
                 // Execute DFS query-then-fetch
