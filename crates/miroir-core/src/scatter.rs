@@ -1245,7 +1245,11 @@ pub async fn execute_hedged_request<C: NodeClient>(
             tracing::debug!("Hedge deadline for {:?}: {:?}", primary_node, deadline);
             deadline
         } else {
-            tracing::debug!("Hedge budget exhausted: {} >= {}", *hedge_count, manager.config().max_hedges_per_query);
+            tracing::debug!(
+                "Hedge budget exhausted: {} >= {}",
+                *hedge_count,
+                manager.config().max_hedges_per_query
+            );
             None
         }
     } else {
@@ -1308,8 +1312,9 @@ pub async fn execute_hedged_request<C: NodeClient>(
 
                             if let Some(node) = topology.node(&alternate_node) {
                                 let hedge_start = Instant::now();
-                                let hedge_result =
-                                    client.search_node(&alternate_node, &node.address, req).await;
+                                let hedge_result = client
+                                    .search_node(&alternate_node, &node.address, req)
+                                    .await;
                                 let elapsed = start.elapsed();
 
                                 // Record latency for primary (it timed out)
@@ -1334,18 +1339,15 @@ pub async fn execute_hedged_request<C: NodeClient>(
                                     }
                                 }
 
-                                return (
-                                    hedge_result,
-                                    Some(HedgeOutcome::HedgeWon),
-                                    elapsed,
-                                );
+                                return (hedge_result, Some(HedgeOutcome::HedgeWon), elapsed);
                             }
                         }
                     }
 
                     // No alternate available - wait for primary to complete
                     tracing::debug!("No alternate available, waiting for primary");
-                    let primary_result = client.search_node(primary_node, primary_address, req).await;
+                    let primary_result =
+                        client.search_node(primary_node, primary_address, req).await;
                     let elapsed = start.elapsed();
 
                     if let Some(manager) = hedging_manager {
