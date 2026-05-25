@@ -700,12 +700,11 @@ fn validate_template(template: &str) -> Result<(), ErrorResponse> {
                 if_stack.push("if");
             }
             // Check for {{/if}} closing
-            else if tag.starts_with("/if")
-                && if_stack.pop() != Some("if") {
-                    return Err(ErrorResponse::invalid_request(
-                        "unmatched {{/if}} tag in template".to_string(),
-                    ));
-                }
+            else if tag.starts_with("/if") && if_stack.pop() != Some("if") {
+                return Err(ErrorResponse::invalid_request(
+                    "unmatched {{/if}} tag in template".to_string(),
+                ));
+            }
 
             pos += end + 2;
         } else {
@@ -716,7 +715,9 @@ fn validate_template(template: &str) -> Result<(), ErrorResponse> {
     }
 
     if !if_stack.is_empty() {
-        return Err(ErrorResponse::invalid_request("unclosed {#if} tag in template".to_string()));
+        return Err(ErrorResponse::invalid_request(
+            "unclosed {#if} tag in template".to_string(),
+        ));
     }
 
     Ok(())
