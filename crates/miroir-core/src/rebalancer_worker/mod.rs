@@ -1736,8 +1736,6 @@ impl RebalancerWorker {
     }
 
     /// Pause an in-progress rebalance.
-
-    /// Pause an in-progress rebalance.
     pub async fn pause_rebalance(&self, index_uid: &str) -> Result<(), String> {
         let job_id = RebalanceJobId::new(index_uid);
         let mut jobs = self.jobs.write().await;

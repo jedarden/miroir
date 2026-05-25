@@ -6,7 +6,6 @@
 //! - Tracks progress via GroupAdditionCoordinator
 //! - Pauses/resumes per Phase 6 Mode C
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -186,9 +185,7 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
         };
 
         let target = topology.group(target_group_id).ok_or_else(|| {
-            crate::error::MiroirError::Topology(format!(
-                "target group {target_group_id} not found"
-            ))
+            crate::error::MiroirError::Topology(format!("target group {target_group_id} not found"))
         })?;
 
         // Find healthy nodes in source and target groups
@@ -342,8 +339,8 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
                     );
 
                     let mut coord = self.coordinator.write().await;
-                    let _ = coord
-                        .fail_addition(addition_id, format!("sync timeout after {timeout:?}"));
+                    let _ =
+                        coord.fail_addition(addition_id, format!("sync timeout after {timeout:?}"));
                 }
             }
         }
@@ -375,8 +372,8 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
 mod tests {
     use super::*;
     use crate::group_addition::{GroupAdditionConfig, GroupAdditionCoordinator};
-    use crate::scatter::FetchDocumentsResponse;
     use crate::topology::Node;
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     // Mock node client for testing

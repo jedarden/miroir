@@ -9,12 +9,11 @@
 
 use crate::config::LeaderElectionConfig;
 use crate::leader_election::LeaderElection;
-use crate::mode_b_coordinator::{ModeBOpLeader, PhaseState};
+use crate::mode_b_coordinator::ModeBOpLeader;
 use crate::task_store::{mode_b_type, SqliteTaskStore, TaskStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::RwLock;
 
 /// Test extra state for reshard operations.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

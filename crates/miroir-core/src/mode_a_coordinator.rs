@@ -396,8 +396,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_no_peers_error() {
-        use tokio::sync::RwLock;
-
         // Create a coordinator with an empty peer set
         let peer_discovery = Arc::new(PeerDiscovery::new(
             "test-pod".to_string(),
@@ -514,8 +512,6 @@ mod tests {
     }
 
     fn test_coordinator() -> ModeACoordinator {
-        use std::net::{Ipv4Addr, SocketAddr};
-
         // Create a mock peer discovery with our pod
         let peer_discovery = Arc::new(PeerDiscovery::new(
             "test-pod".to_string(),

@@ -233,13 +233,15 @@ mod tests {
 
     #[test]
     fn test_validate_too_many_queries() {
-        let mut config = MultiSearchConfig::default();
-        config.max_queries_per_batch = 10;
+        let config = MultiSearchConfig {
+            max_queries_per_batch: 10,
+            ..Default::default()
+        };
         let executor = MultiSearchExecutor::new(config);
 
         let queries: Vec<SearchQuery> = (0..20)
             .map(|i| SearchQuery {
-                index_uid: format!("index-{}", i),
+                index_uid: format!("index-{i}"),
                 q: Some("test".into()),
                 filter: None,
                 limit: Some(10),
@@ -337,8 +339,8 @@ mod tests {
 
         let queries: Vec<SearchQuery> = (0..5)
             .map(|i| SearchQuery {
-                index_uid: format!("index-{}", i),
-                q: Some(format!("query-{}", i)),
+                index_uid: format!("index-{i}"),
+                q: Some(format!("query-{i}")),
                 filter: None,
                 limit: Some(10),
                 offset: Some(0),
@@ -365,16 +367,18 @@ mod tests {
 
         assert_eq!(response.results.len(), 5);
         for (i, result) in response.results.iter().enumerate() {
-            assert!(result.is_success(), "Query {} should succeed", i);
-            assert!(result.body.is_some(), "Query {} should have body", i);
+            assert!(result.is_success(), "Query {i} should succeed");
+            assert!(result.body.is_some(), "Query {i} should have body");
         }
     }
 
     /// P5.11-A2: Slow query doesn't block fast queries (parallel execution).
     #[tokio::test]
     async fn test_slow_query_doesnt_block_fast_queries() {
-        let mut config = MultiSearchConfig::default();
-        config.per_query_timeout_ms = 5000;
+        let config = MultiSearchConfig {
+            per_query_timeout_ms: 5000,
+            ..Default::default()
+        };
         let executor = MultiSearchExecutor::new(config);
 
         let request = MultiSearchRequest {
@@ -581,7 +585,7 @@ mod tests {
         };
 
         let response = executor
-            .execute(request, |query| async move {
+            .execute(request, |_query| async move {
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 Ok(SearchResultData {
                     body: serde_json::json!({"hits": []}),
@@ -602,16 +606,18 @@ mod tests {
     /// P5.11-A6: 100-query batch completes under total timeout.
     #[tokio::test]
     async fn test_large_batch_completes() {
-        let mut config = MultiSearchConfig::default();
-        config.max_queries_per_batch = 100;
-        config.total_timeout_ms = 30000;
-        config.per_query_timeout_ms = 5000;
+        let config = MultiSearchConfig {
+            max_queries_per_batch: 100,
+            total_timeout_ms: 30000,
+            per_query_timeout_ms: 5000,
+            ..Default::default()
+        };
         let executor = MultiSearchExecutor::new(config);
 
         let queries: Vec<SearchQuery> = (0..100)
             .map(|i| SearchQuery {
                 index_uid: format!("index-{}", i % 10),
-                q: Some(format!("query-{}", i)),
+                q: Some(format!("query-{i}")),
                 filter: None,
                 limit: Some(10),
                 offset: Some(0),

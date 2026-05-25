@@ -467,8 +467,10 @@ pub struct CdcManager {
     /// Optional callback to increment suppression metric.
     suppressed_metric_callback: Option<CdcSuppressedMetricCallback>,
     /// Per-sink tiered buffers.
+    #[allow(dead_code)]
     buffers: HashMap<String, Arc<CdcBuffer>>,
     /// Optional callback to increment dropped events metric.
+    #[allow(dead_code)]
     dropped_metric_callback: Option<CdcDroppedMetricCallback>,
     /// Internal queue for GET /_miroir/changes endpoint.
     internal_queue: Arc<CdcInternalQueue>,
@@ -519,7 +521,8 @@ pub enum CdcBufferType {
 
 impl CdcBufferType {
     /// Parse a buffer type from a string (for config deserialization).
-    pub fn from_str(s: &str) -> Option<Self> {
+    #[allow(dead_code)]
+    pub fn parse_from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "memory" => Some(CdcBufferType::Memory),
             "redis" => Some(CdcBufferType::Redis),
@@ -551,6 +554,7 @@ pub struct CdcBuffer {
     /// Overflow backend.
     overflow: Arc<dyn CdcOverflowBackend + Send + Sync>,
     /// Metric callback for dropped events.
+    #[allow(dead_code)]
     dropped_metric_callback: Option<CdcDroppedMetricCallback>,
 }
 
@@ -599,6 +603,7 @@ impl CdcMemoryBuffer {
     }
 
     /// Release space after event is processed.
+    #[allow(dead_code)]
     fn release(&self, size: u64) {
         let old = self
             .current_bytes
@@ -632,12 +637,16 @@ pub struct CdcRedisOverflow {
     #[cfg(feature = "redis-store")]
     pool: Option<crate::task_store::RedisPool>,
     /// Sink name for key prefix.
+    #[allow(dead_code)]
     sink_name: String,
     /// Max bytes in Redis overflow.
+    #[allow(dead_code)]
     max_bytes: u64,
     /// Key for overflow list.
+    #[allow(dead_code)]
     list_key: String,
     /// Key for byte counter.
+    #[allow(dead_code)]
     bytes_key: String,
 }
 
@@ -763,6 +772,7 @@ impl CdcRedisOverflow {
 
 #[async_trait::async_trait]
 impl CdcOverflowBackend for CdcRedisOverflow {
+    #[allow(unused_variables)]
     async fn push(&self, event: CdcEvent) -> Result<(), CdcError> {
         #[cfg(feature = "redis-store")]
         return self.push_inner(event).await;
@@ -1007,7 +1017,7 @@ impl CdcBuffer {
     ) -> Result<Self, CdcError> {
         let primary = Arc::new(CdcMemoryBuffer::new(config.memory_bytes));
 
-        let overflow: Arc<dyn CdcOverflowBackend + Send + Sync> = match CdcBufferType::from_str(
+        let overflow: Arc<dyn CdcOverflowBackend + Send + Sync> = match CdcBufferType::parse_from_str(
             config.overflow.as_str(),
         ) {
             Some(CdcBufferType::Redis) => {
@@ -2106,17 +2116,17 @@ mod tests {
     #[test]
     fn test_cdc_buffer_type_from_str() {
         assert_eq!(
-            CdcBufferType::from_str("memory"),
+            CdcBufferType::parse_from_str("memory"),
             Some(CdcBufferType::Memory)
         );
         assert_eq!(
-            CdcBufferType::from_str("MEMORY"),
+            CdcBufferType::parse_from_str("MEMORY"),
             Some(CdcBufferType::Memory)
         );
-        assert_eq!(CdcBufferType::from_str("redis"), Some(CdcBufferType::Redis));
-        assert_eq!(CdcBufferType::from_str("pvc"), Some(CdcBufferType::Pvc));
-        assert_eq!(CdcBufferType::from_str("drop"), Some(CdcBufferType::Drop));
-        assert_eq!(CdcBufferType::from_str("unknown"), None);
+        assert_eq!(CdcBufferType::parse_from_str("redis"), Some(CdcBufferType::Redis));
+        assert_eq!(CdcBufferType::parse_from_str("pvc"), Some(CdcBufferType::Pvc));
+        assert_eq!(CdcBufferType::parse_from_str("drop"), Some(CdcBufferType::Drop));
+        assert_eq!(CdcBufferType::parse_from_str("unknown"), None);
     }
 
     #[tokio::test]

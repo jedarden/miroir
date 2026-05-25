@@ -14,7 +14,7 @@
 
 use crate::error::{MiroirError, Result};
 use crate::leader_election::LeaderElection;
-use crate::task_store::{mode_b_status, mode_b_type, ModeBOperation, TaskStore};
+use crate::task_store::{mode_b_status, ModeBOperation, TaskStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -357,7 +357,7 @@ fn millis_now() -> i64 {
 mod tests {
     use super::*;
     use crate::config::LeaderElectionConfig;
-    use crate::task_store::SqliteTaskStore;
+    use crate::task_store::{mode_b_type, SqliteTaskStore};
 
     #[derive(Debug, Clone, Serialize, Deserialize, Default)]
     struct TestExtraState {

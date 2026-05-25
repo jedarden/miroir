@@ -10,7 +10,6 @@ use crate::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 use tokio::time::Duration;
 use tracing::{info_span, instrument, Instrument};
@@ -1547,6 +1546,7 @@ impl NodeClient for MockNodeClient {
 mod tests {
     use super::*;
     use crate::topology::{Node, NodeId};
+    use std::sync::Arc;
 
     fn make_test_topology() -> Topology {
         let mut topo = Topology::new(64, 2, 2);
