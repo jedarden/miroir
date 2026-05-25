@@ -80,7 +80,7 @@ async fn chaos_add_node_mid_indexing() {
     assert!(add_result.migrations_count > 0, "Should have migrations");
 
     // Verify node was added in Joining state
-    let topo_read = &topology;
+    let topo_read = topology.read().await;
     let new_node = topo_read.node(&node_id("node-3"));
     assert!(new_node.is_some(), "New node should exist");
     assert_eq!(
@@ -93,7 +93,7 @@ async fn chaos_add_node_mid_indexing() {
     // Verify all original docs are still accounted for
     // In a real implementation, we would query each node
     // For this test, we verify the topology state is consistent
-    let topo_read = &topology;
+    let topo_read = topology.read().await;
     let node_count = topo_read.nodes().count();
     assert_eq!(node_count, 4, "Should have 4 nodes after addition");
     drop(topo_read);
@@ -149,7 +149,7 @@ async fn chaos_drain_node_while_querying() {
     assert!(drain_result.migrations_count > 0, "Should have migrations");
 
     // Verify node was marked as draining
-    let topo_read = &topology;
+    let topo_read = topology.read().await;
     let drained_node = topo_read.node(&node_id("node-3"));
     assert!(drained_node.is_some(), "Drained node should exist");
     assert_eq!(
@@ -160,7 +160,7 @@ async fn chaos_drain_node_while_querying() {
     drop(topo_read);
 
     // Simulate queries during drain - all shards should still be covered
-    let topo_read = &topology;
+    let topo_read = topology.read().await;
     let group = topo_read.groups().next().unwrap();
     let nodes: Vec<_> = group.nodes().iter().cloned().collect();
 
@@ -221,7 +221,7 @@ async fn chaos_add_replica_group_while_querying() {
     assert!(result.is_ok(), "Replica group addition should succeed");
 
     // Verify new group exists
-    let topo_read = &topology;
+    let topo_read = topology.read().await;
     let group_count = topo_read.groups().count();
     assert_eq!(group_count, 2, "Should have 2 replica groups");
 
@@ -237,7 +237,7 @@ async fn chaos_add_replica_group_while_querying() {
     drop(topo_read);
 
     // Original group should still be functional for queries
-    let topo_read = &topology;
+    let topo_read = topology.read().await;
     let original_group = topo_read.groups().find(|g| g.id == 0).unwrap();
     let nodes: Vec<_> = original_group.nodes().iter().cloned().collect();
     assert_eq!(nodes.len(), 2, "Original group should have 2 nodes");
@@ -267,7 +267,7 @@ async fn chaos_rebalance_optimal_movement() {
     let rebalancer = Rebalancer::new(rebalancer_config, topology.clone(), migration_config);
 
     // Track initial shard assignment
-    let topo_read = &topology;
+    let topo_read = topology.read().await;
     let group = topo_read.groups().next().unwrap();
     let initial_nodes: Vec<_> = group.nodes().iter().cloned().collect();
     drop(topo_read);
@@ -355,7 +355,7 @@ async fn chaos_restart_node_mid_rebalance() {
     assert!(failure_result.is_ok(), "Node failure should be recorded");
 
     // Verify node is marked as failed
-    let topo_read = &topology;
+    let topo_read = topology.read().await;
     let failed_node = topo_read.node(&node_id("node-3"));
     assert!(failed_node.is_some(), "Failed node should exist");
     assert_eq!(
@@ -367,14 +367,14 @@ async fn chaos_restart_node_mid_rebalance() {
 
     // Simulate node recovery - mark back to active
     {
-        let mut topo_write = &mut topology;
+        let mut topo_write = topology.write().await;
         if let Some(node) = topo_write.node_mut(&node_id("node-3")) {
             node.status = NodeStatus::Active;
         }
     }
 
     // Verify node recovered
-    let topo_read = &topology;
+    let topo_read = topology.read().await;
     let recovered_node = topo_read.node(&node_id("node-3"));
     assert!(recovered_node.is_some(), "Recovered node should exist");
     assert_eq!(
@@ -541,7 +541,7 @@ async fn p45_group_removal_drains_first() {
     );
 
     // Verify group is marked as draining
-    let topo_read = &topology;
+    let topo_read = topology.read().await;
     let group = topo_read.group(1);
     assert!(group.is_some(), "Group should still exist");
     assert!(
@@ -560,7 +560,7 @@ async fn p45_group_removal_drains_first() {
     assert!(result.is_ok(), "Group removal with force should succeed");
 
     // Verify group is removed
-    let topo_read = &topology;
+    let topo_read = topology.read().await;
     let group = topo_read.group(1);
     assert!(group.is_none(), "Group should be removed");
     let remaining_groups = topo_read.groups().count();
@@ -583,6 +583,13 @@ async fn p45_rf2_with_one_failed_node_succeeds() {
     topology.add_node(Node::new(node_id("node-1"), "http://node-1:7700".into(), 0));
     topology.add_node(Node::new(node_id("node-2"), "http://node-2:7700".into(), 0));
 
+    // Mark nodes as Active (simulating successful join)
+    for node_id_str in ["node-0", "node-1", "node-2"] {
+        if let Some(node) = topology.node_mut(&node_id(node_id_str)) {
+            node.status = NodeStatus::Active;
+        }
+    }
+
     // Mark node-2 as failed
     {
         let node = topology.node_mut(&node_id("node-2")).unwrap();
@@ -590,9 +597,8 @@ async fn p45_rf2_with_one_failed_node_succeeds() {
     }
 
     // Verify that for each shard, there's still at least one healthy replica
-    let topo_read = &topology;
-    let group = topo_read.group(0).unwrap();
-    let node_map = topo_read.node_map();
+    let group = topology.group(0).unwrap();
+    let node_map = topology.node_map();
     let healthy_nodes = group.healthy_nodes(&node_map);
 
     assert_eq!(healthy_nodes.len(), 2, "Should have 2 healthy nodes");
@@ -611,7 +617,7 @@ async fn p45_rf2_with_one_failed_node_succeeds() {
         // At least one should be healthy
         let healthy_count = assigned
             .iter()
-            .filter(|n| topo_read.node(n).map(|nn| nn.is_healthy()).unwrap_or(false))
+            .filter(|n| topology.node(n).map(|nn| nn.is_healthy()).unwrap_or(false))
             .count();
 
         assert!(
@@ -639,18 +645,23 @@ async fn p45_rf1_with_failed_node_has_cross_group_fallback() {
     topology.add_node(Node::new(node_id("node-2"), "http://node-2:7700".into(), 1));
     topology.add_node(Node::new(node_id("node-3"), "http://node-3:7700".into(), 1));
 
+    // Mark all nodes as Active (simulating successful join)
+    for node_id_str in ["node-0", "node-1", "node-2", "node-3"] {
+        if let Some(node) = topology.node_mut(&node_id(node_id_str)) {
+            node.status = NodeStatus::Active;
+        }
+    }
+
     // Mark node-0 as failed (RF=1, so no intra-group replica for its shards)
     {
-        let mut topo_write = &mut topology;
-        let node = topo_write.node_mut(&node_id("node-0")).unwrap();
+        let node = topology.node_mut(&node_id("node-0")).unwrap();
         node.status = NodeStatus::Failed;
     }
 
     // Verify that other groups exist and are healthy
-    let topo_read = &topology;
-    let group_0 = topo_read.group(0).unwrap();
-    let group_1 = topo_read.group(1).unwrap();
-    let node_map = topo_read.node_map();
+    let group_0 = topology.group(0).unwrap();
+    let group_1 = topology.group(1).unwrap();
+    let node_map = topology.node_map();
 
     let group_0_healthy = group_0.healthy_nodes(&node_map);
     let group_1_healthy = group_1.healthy_nodes(&node_map);
@@ -677,7 +688,7 @@ async fn p45_rf1_with_failed_node_has_cross_group_fallback() {
         // If group 0's node is failed, group 1's node should be healthy (fallback target)
         if g0_assigned[0].as_str() == "node-0" {
             assert!(
-                topo_read.node(&g1_assigned[0]).unwrap().is_healthy(),
+                topology.node(&g1_assigned[0]).unwrap().is_healthy(),
                 "Fallback node for shard {} should be healthy",
                 shard_id
             );
@@ -712,13 +723,13 @@ async fn p45_node_recovery_can_restore_rf() {
 
     // Mark node-2 as failed
     {
-        let mut topo_write = &mut topology;
+        let mut topo_write = topology.write().await;
         let node = topo_write.node_mut(&node_id("node-2")).unwrap();
         node.status = NodeStatus::Failed;
     }
 
     // Verify node-2 is failed
-    let topo_read = &topology;
+    let topo_read = topology.read().await;
     let node_2 = topo_read.node(&node_id("node-2")).unwrap();
     assert_eq!(node_2.status, NodeStatus::Failed);
     drop(topo_read);
@@ -728,7 +739,7 @@ async fn p45_node_recovery_can_restore_rf() {
     assert!(recovery_result.is_ok(), "Node recovery should succeed");
 
     // Verify node-2 is marked as active again
-    let topo_read = &topology;
+    let topo_read = topology.read().await;
     let node_2 = topo_read.node(&node_id("node-2")).unwrap();
     assert_eq!(
         node_2.status,
