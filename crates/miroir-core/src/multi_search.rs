@@ -23,9 +23,11 @@ pub struct MultiSearchRequest {
 
 /// Individual search query in a batch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 pub struct SearchQuery {
     /// Index UID.
-    pub indexUid: String,
+    #[serde(rename = "indexUid")]
+    pub index_uid: String,
     /// Query string.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub q: Option<String>,
@@ -238,7 +240,7 @@ mod tests {
 
         let queries: Vec<SearchQuery> = (0..20)
             .map(|i| SearchQuery {
-                indexUid: format!("index-{}", i),
+                index_uid: format!("index-{}", i),
                 q: Some("test".into()),
                 filter: None,
                 limit: Some(10),
@@ -256,7 +258,7 @@ mod tests {
         let executor = MultiSearchExecutor::default();
         let request = MultiSearchRequest {
             queries: vec![SearchQuery {
-                indexUid: "products".into(),
+                index_uid: "products".into(),
                 q: Some("laptop".into()),
                 filter: None,
                 limit: Some(20),
@@ -270,7 +272,7 @@ mod tests {
     #[test]
     fn test_search_query_serialization() {
         let query = SearchQuery {
-            indexUid: "products".into(),
+            index_uid: "products".into(),
             q: Some("laptop".into()),
             filter: Some("category = \"electronics\"".into()),
             limit: Some(20),
@@ -290,7 +292,7 @@ mod tests {
         let request = MultiSearchRequest {
             queries: vec![
                 SearchQuery {
-                    indexUid: "products".into(),
+                    index_uid: "products".into(),
                     q: Some("laptop".into()),
                     filter: None,
                     limit: Some(20),
@@ -298,7 +300,7 @@ mod tests {
                     other: HashMap::new(),
                 },
                 SearchQuery {
-                    indexUid: "users".into(),
+                    index_uid: "users".into(),
                     q: Some("john".into()),
                     filter: None,
                     limit: Some(10),
@@ -336,7 +338,7 @@ mod tests {
 
         let queries: Vec<SearchQuery> = (0..5)
             .map(|i| SearchQuery {
-                indexUid: format!("index-{}", i),
+                index_uid: format!("index-{}", i),
                 q: Some(format!("query-{}", i)),
                 filter: None,
                 limit: Some(10),
@@ -380,7 +382,7 @@ mod tests {
             queries: vec![
                 // Fast query
                 SearchQuery {
-                    indexUid: "fast".into(),
+                    index_uid: "fast".into(),
                     q: Some("quick".into()),
                     filter: None,
                     limit: Some(10),
@@ -389,7 +391,7 @@ mod tests {
                 },
                 // Slow query
                 SearchQuery {
-                    indexUid: "slow".into(),
+                    index_uid: "slow".into(),
                     q: Some("delayed".into()),
                     filter: None,
                     limit: Some(10),
@@ -403,7 +405,7 @@ mod tests {
 
         let response = executor
             .execute(request, |query| async move {
-                if query.indexUid == "slow" {
+                if query.index_uid == "slow" {
                     tokio::time::sleep(Duration::from_millis(200)).await;
                 } else {
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -441,7 +443,7 @@ mod tests {
         let request = MultiSearchRequest {
             queries: vec![
                 SearchQuery {
-                    indexUid: "ok1".into(),
+                    index_uid: "ok1".into(),
                     q: Some("good".into()),
                     filter: None,
                     limit: Some(10),
@@ -449,7 +451,7 @@ mod tests {
                     other: HashMap::new(),
                 },
                 SearchQuery {
-                    indexUid: "fail".into(),
+                    index_uid: "fail".into(),
                     q: Some("bad".into()),
                     filter: None,
                     limit: Some(10),
@@ -457,7 +459,7 @@ mod tests {
                     other: HashMap::new(),
                 },
                 SearchQuery {
-                    indexUid: "ok2".into(),
+                    index_uid: "ok2".into(),
                     q: Some("good".into()),
                     filter: None,
                     limit: Some(10),
@@ -469,7 +471,7 @@ mod tests {
 
         let response = executor
             .execute(request, |query| async move {
-                if query.indexUid == "fail" {
+                if query.index_uid == "fail" {
                     Err(MiroirError::InvalidRequest("simulated error".into()))
                 } else {
                     Ok(SearchResultData {
@@ -510,7 +512,7 @@ mod tests {
         let request = MultiSearchRequest {
             queries: vec![
                 SearchQuery {
-                    indexUid: "fast".into(),
+                    index_uid: "fast".into(),
                     q: Some("quick".into()),
                     filter: None,
                     limit: Some(10),
@@ -518,7 +520,7 @@ mod tests {
                     other: HashMap::new(),
                 },
                 SearchQuery {
-                    indexUid: "slow".into(),
+                    index_uid: "slow".into(),
                     q: Some("timeout".into()),
                     filter: None,
                     limit: Some(10),
@@ -530,7 +532,7 @@ mod tests {
 
         let response = executor
             .execute(request, |query| async move {
-                if query.indexUid == "slow" {
+                if query.index_uid == "slow" {
                     tokio::time::sleep(Duration::from_millis(200)).await;
                 }
                 Ok(SearchResultData {
@@ -561,7 +563,7 @@ mod tests {
         let request = MultiSearchRequest {
             queries: vec![
                 SearchQuery {
-                    indexUid: "index1".into(),
+                    index_uid: "index1".into(),
                     q: Some("query1".into()),
                     filter: None,
                     limit: Some(10),
@@ -569,7 +571,7 @@ mod tests {
                     other: HashMap::new(),
                 },
                 SearchQuery {
-                    indexUid: "index2".into(),
+                    index_uid: "index2".into(),
                     q: Some("query2".into()),
                     filter: None,
                     limit: Some(10),
@@ -609,7 +611,7 @@ mod tests {
 
         let queries: Vec<SearchQuery> = (0..100)
             .map(|i| SearchQuery {
-                indexUid: format!("index-{}", i % 10),
+                index_uid: format!("index-{}", i % 10),
                 q: Some(format!("query-{}", i)),
                 filter: None,
                 limit: Some(10),
@@ -629,7 +631,7 @@ mod tests {
                     body: serde_json::json!({
                         "hits": [],
                         "estimatedTotalHits": 0,
-                        "index": query.indexUid,
+                        "index": query.index_uid,
                     }),
                 })
             })

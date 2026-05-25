@@ -164,10 +164,11 @@ pub struct TriggerEvaluation {
 
 /// Index stats for a single node.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(non_snake_case)]
 struct NodeIndexStats {
     #[serde(default)]
-    #[allow(non_snake_case)]
-    pub numberOfDocuments: u64,
+    #[serde(rename = "numberOfDocuments")]
+    pub number_of_documents: u64,
     /// Size in bytes (may not be present in all Meilisearch versions).
     #[serde(rename = "stats", default)]
     pub stats: Option<NodeStatsDetail>,
@@ -761,7 +762,7 @@ impl IlmWorker {
 
             match self.fetch_node_stats(&url).await {
                 Ok(node_stats) => {
-                    total_documents = total_documents.max(node_stats.numberOfDocuments);
+                    total_documents = total_documents.max(node_stats.number_of_documents);
                     if let Some(ref stats) = node_stats.stats {
                         total_size_bytes += stats.database_size;
                     }
@@ -804,7 +805,7 @@ impl IlmWorker {
         if status.as_u16() == 404 {
             // Index doesn't exist on this node
             return Ok(NodeIndexStats {
-                numberOfDocuments: 0,
+                number_of_documents: 0,
                 stats: None,
             });
         }

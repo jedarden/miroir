@@ -5,6 +5,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use miroir_core::merger::{merge, MergeInput, ShardHitPage};
+use miroir_core::VectorMode;
 use serde_json::json;
 
 const TARGET_HITS: usize = 1000;
@@ -68,6 +69,8 @@ fn bench_merge_1000_hits_3_shards(c: &mut Criterion) {
         client_requested_score: false,
         facets: None,
         failed_shards: Vec::new(),
+        vector_mode: VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     c.bench_function("merge_1000_hits_3_shards", |b| {
@@ -104,6 +107,8 @@ fn bench_varying_hit_count(c: &mut Criterion) {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         group.bench_with_input(BenchmarkId::from_parameter(hit_count), hit_count, |b, _| {
@@ -143,6 +148,8 @@ fn bench_varying_shard_count(c: &mut Criterion) {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         group.bench_with_input(
@@ -194,6 +201,8 @@ fn bench_pagination(c: &mut Criterion) {
             client_requested_score: false,
             facets: None,
             failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
         };
 
         group.bench_function(name, |b| {
@@ -247,6 +256,8 @@ fn bench_with_facets(c: &mut Criterion) {
         client_requested_score: false,
         facets: Some(vec!["category".to_string(), "brand".to_string()]),
         failed_shards: Vec::new(),
+        vector_mode: VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     c.bench_function("merge_with_facets", |b| {
@@ -280,6 +291,8 @@ fn bench_with_score_preservation(c: &mut Criterion) {
         client_requested_score: true,
         facets: None,
         failed_shards: Vec::new(),
+        vector_mode: VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     c.bench_function("merge_with_score", |b| {
@@ -336,6 +349,8 @@ fn bench_degraded_response(c: &mut Criterion) {
         client_requested_score: false,
         facets: None,
         failed_shards: Vec::new(),
+        vector_mode: VectorMode::KeywordOnly,
+        vector_config: None,
     };
 
     c.bench_function("merge_degraded", |b| {
