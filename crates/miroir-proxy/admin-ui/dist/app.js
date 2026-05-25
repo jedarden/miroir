@@ -1569,31 +1569,104 @@
         });
     }
 
-    function previewSettingsChanges() {
+    async function previewSettingsChanges() {
+        const indexUid = state.currentSettingsIndex;
         const editor = document.getElementById('settingsEditor');
         const newSettings = JSON.parse(editor.value);
-        const currentJson = document.getElementById('currentSettingsJson').textContent;
-        const currentSettings = JSON.parse(currentJson || '{}');
 
-        // Compute fingerprint of new settings
-        const newFingerprint = computeFingerprint(newSettings);
-        document.getElementById('newFingerprint').textContent = newFingerprint;
+        try {
+            // Call the 2PC preview endpoint
+            const preview = await fetchAPI(`/indexes/${indexUid}/settings`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newSettings)
+            });
 
-        // Compute diff
-        const diffSummary = document.getElementById('diffSummary');
-        const diff = computeDiff(currentSettings, newSettings);
+            // Display fingerprint info
+            document.getElementById('newFingerprint').textContent = preview.proposedFingerprint || 'N/A';
+            const currentFingerprint = preview.currentFingerprint || 'N/A';
+            document.getElementById('currentFingerprint').textContent = currentFingerprint;
 
-        if (diff.length === 0) {
-            diffSummary.innerHTML = '<p class="info">No changes detected.</p>';
-        } else {
-            diffSummary.innerHTML = diff.map(line =>
-                `<div class="diff-line ${line.type}">${escapeHtml(line.text)}</div>`
-            ).join('');
+            // Display version info
+            const versionInfo = document.getElementById('settingsVersionInfo');
+            if (versionInfo) {
+                versionInfo.innerHTML = `
+                    <div>Current Version: <strong>${preview.currentVersion}</strong></div>
+                    <div>Expected Version: <strong>${preview.expectedVersion}</strong></div>
+                `;
+            }
+
+            // Display node targets
+            const nodeTargetsInfo = document.getElementById('nodeTargetsInfo');
+            if (nodeTargetsInfo) {
+                nodeTargetsInfo.innerHTML = `
+                    <div>Target Nodes: <strong>${preview.nodeCount}</strong></div>
+                    <div class="node-list">
+                        ${preview.nodeTargets.map(n => `<span class="node-tag">${escapeHtml(n.id || n.address)}</span>`).join('')}
+                    </div>
+                `;
+            }
+
+            // Display 2PC flow info
+            const flowInfo = document.getElementById('twoPhaseFlowInfo');
+            if (flowInfo && preview.twoPhaseFlow) {
+                const flow = preview.twoPhaseFlow;
+                flowInfo.innerHTML = `
+                    <div class="flow-step">
+                        <strong>Phase 1: ${escapeHtml(flow.phase1.name)}</strong>
+                        <div>${escapeHtml(flow.phase1.description)}</div>
+                    </div>
+                    <div class="flow-step">
+                        <strong>Phase 2: ${escapeHtml(flow.phase2.name)}</strong>
+                        <div>${escapeHtml(flow.phase2.description)}</div>
+                        <div>Expected Fingerprint: <code class="code">${escapeHtml(flow.phase2.expectedFingerprint || '').substring(0, 16)}...</code></div>
+                    </div>
+                    <div class="flow-step">
+                        <strong>Phase 3: ${escapeHtml(flow.phase3.name)}</strong>
+                        <div>${escapeHtml(flow.phase3.description)}</div>
+                        <div>New Version: <strong>${flow.phase3.newVersion}</strong></div>
+                    </div>
+                `;
+            }
+
+            // Display diff summary
+            const diffSummary = document.getElementById('diffSummary');
+            const diff = preview.diff || [];
+
+            if (diff.length === 0) {
+                diffSummary.innerHTML = '<p class="info">No changes detected.</p>';
+            } else {
+                diffSummary.innerHTML = diff.map(change => {
+                    let text = '';
+                    let className = '';
+
+                    switch (change.type) {
+                        case 'added':
+                            text = `+ ${change.key}: ${JSON.stringify(change.value)}`;
+                            className = 'added';
+                            break;
+                        case 'removed':
+                            text = `- ${change.key}: ${JSON.stringify(change.oldValue)}`;
+                            className = 'removed';
+                            break;
+                        case 'modified':
+                            text = `~ ${change.key}: ${JSON.stringify(change.old)} → ${JSON.stringify(change.new)}`;
+                            className = 'modified';
+                            break;
+                    }
+
+                    return `<div class="diff-line ${className}">${escapeHtml(text)}</div>`;
+                }).join('');
+            }
+
+            document.getElementById('settingsDiff').style.display = 'block';
+            document.getElementById('settingsPreviewBtn').style.display = 'none';
+            document.getElementById('settingsApplyBtn').style.display = 'inline-flex';
+
+        } catch (error) {
+            console.error('Failed to preview settings:', error);
+            alert('Failed to preview settings. Please try again.');
         }
-
-        document.getElementById('settingsDiff').style.display = 'block';
-        document.getElementById('settingsPreviewBtn').style.display = 'none';
-        document.getElementById('settingsApplyBtn').style.display = 'inline-flex';
     }
 
     async function applySettingsChanges() {
