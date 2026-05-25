@@ -1053,15 +1053,38 @@ where
     };
 
     // Build node info list
+    // First compute shard counts per node using rendezvous assignment
+    use std::collections::HashMap;
+    let mut shard_counts: HashMap<String, u32> = HashMap::new();
+
+    for shard_id in 0..topo.shards {
+        for group in topo.groups() {
+            let assigned = router::assign_shard_in_group(shard_id, group.nodes(), topo.rf());
+            for node_id in assigned {
+                *shard_counts
+                    .entry(node_id.as_str().to_string())
+                    .or_insert(0) += 1;
+            }
+        }
+    }
+
     let nodes: Vec<NodeInfo> = topo
         .nodes()
-        .map(|n| NodeInfo {
-            id: n.id.as_str().to_string(),
-            address: n.address.clone(),
-            status: format!("{:?}", n.status).to_lowercase(),
-            shard_count: 0,  // TODO: compute from routing table
-            last_seen_ms: 0, // TODO: track last health check time
-            error: None,     // TODO: populate from last health check error
+        .map(|n| {
+            // Compute last_seen_ms from node.last_seen
+            let last_seen_ms = n
+                .last_seen
+                .map(|i| i.elapsed().as_millis() as u64)
+                .unwrap_or(0);
+
+            NodeInfo {
+                id: n.id.as_str().to_string(),
+                address: n.address.clone(),
+                status: format!("{:?}", n.status).to_lowercase(),
+                shard_count: shard_counts.get(n.id.as_str()).copied().unwrap_or(0),
+                last_seen_ms,
+                error: n.last_error.clone(),
+            }
         })
         .collect();
 
