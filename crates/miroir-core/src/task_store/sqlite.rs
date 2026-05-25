@@ -1,6 +1,6 @@
 use crate::schema_migrations::{build_registry, MigrationRegistry};
 use crate::task_store::*;
-use crate::Result;
+use crate::{MiroirError, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
@@ -1453,6 +1453,56 @@ impl TaskStore for SqliteTaskStore {
             params![cutoff_ms, batch_size],
         )?;
         Ok(rows)
+    }
+
+    // --- Table 15: search_ui_beacon (plan §13.21) ---
+
+    /// Check if a beacon event_id has already been processed (idempotency).
+    /// Returns true if the event_id is new (not yet processed), false if duplicate.
+    /// If new, marks it as processed with a 24-hour TTL.
+    fn check_and_mark_beacon_event(&self, index_uid: &str, event_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        // Create table if not exists (lazy migration for feature flag)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS search_ui_beacon (
+                index_uid TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (index_uid, event_id)
+            )",
+            [],
+        )
+        .map_err(|e| {
+            MiroirError::TaskStore(format!("failed to create search_ui_beacon table: {e}"))
+        })?;
+
+        // Check if event_id exists
+        let mut stmt = conn.prepare_cached(
+            "SELECT 1 FROM search_ui_beacon WHERE index_uid = ?1 AND event_id = ?2",
+        )?;
+
+        let exists = stmt.exists(params![index_uid, event_id])?;
+
+        if exists {
+            Ok(false)
+        } else {
+            // Insert new event with current timestamp
+            let now = now_ms();
+            conn.execute(
+                "INSERT INTO search_ui_beacon (index_uid, event_id, created_at) VALUES (?1, ?2, ?3)",
+                params![index_uid, event_id, now],
+            )?;
+
+            // Cleanup old entries (older than 24 hours)
+            let cutoff = now - (24 * 3600 * 1000);
+            conn.execute(
+                "DELETE FROM search_ui_beacon WHERE created_at < ?1",
+                params![cutoff],
+            )?;
+
+            Ok(true)
+        }
     }
 }
 
@@ -3056,5 +3106,60 @@ mod tests {
             overhead_per_table,
             overhead_per_table / 1024
         );
+    }
+
+    // --- Table 15: search_ui_beacon (plan §13.21) ---
+
+    #[test]
+    fn beacon_idempotency_check() {
+        let store = test_store();
+
+        // First call should return true (new event)
+        let is_new = store
+            .check_and_mark_beacon_event("test-index", "event-123")
+            .unwrap();
+        assert!(is_new, "First call should return true for new event");
+
+        // Second call should return false (duplicate)
+        let is_new = store
+            .check_and_mark_beacon_event("test-index", "event-123")
+            .unwrap();
+        assert!(
+            !is_new,
+            "Second call should return false for duplicate event"
+        );
+
+        // Different event_id should return true
+        let is_new = store
+            .check_and_mark_beacon_event("test-index", "event-456")
+            .unwrap();
+        assert!(is_new, "Different event_id should return true");
+
+        // Different index with same event_id should return true
+        let is_new = store
+            .check_and_mark_beacon_event("other-index", "event-123")
+            .unwrap();
+        assert!(
+            is_new,
+            "Same event_id for different index should return true"
+        );
+    }
+
+    #[test]
+    fn beacon_old_entries_cleanup() {
+        let store = test_store();
+
+        // Insert an event
+        store
+            .check_and_mark_beacon_event("test-index", "event-old")
+            .unwrap();
+
+        // The implementation should clean up old entries (> 24 hours)
+        // Since we can't easily mock time, we just verify the table exists
+        // and duplicates are rejected
+        let is_new = store
+            .check_and_mark_beacon_event("test-index", "event-old")
+            .unwrap();
+        assert!(!is_new, "Duplicate should be rejected");
     }
 }

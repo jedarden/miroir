@@ -3,8 +3,7 @@
 //! Replaces round-robin with latency-aware selection using EWMA-smoothed
 //! metrics: latency p95, in-flight request count, and error rate.
 
-use crate::error::{MiroirError, Result};
-use crate::topology::{Group, NodeId};
+use crate::topology::NodeId;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
