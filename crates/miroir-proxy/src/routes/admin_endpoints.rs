@@ -22,9 +22,9 @@ use miroir_core::{
     replica_selection::{ReplicaSelector, SelectionObserver},
     reshard::ReshardingRegistry,
     router,
-    scatter::{DeleteByFilterRequest, FetchDocumentsRequest, FetchDocumentsResponse, WriteRequest},
+    scatter::{DeleteByFilterRequest, FetchDocumentsRequest, WriteRequest},
     task_registry::TaskRegistryImpl,
-    task_store::{RedisTaskStore, TaskStore},
+    task_store::{NewAdminSession, RedisTaskStore, TaskStore},
     topology::{Node, NodeId, Topology},
 };
 use rand::RngCore;
@@ -37,7 +37,8 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::{
-    admin_session::{seal_session, SealKey, COOKIE_NAME},
+    admin_session::{seal_session, unseal_session, SealKey, COOKIE_NAME},
+    auth::generate_csrf_token,
     client::HttpClient,
     scoped_key_rotation::{
         self, RotateScopedKeyRequest, RotateScopedKeyResponse, ScopedKeyRotationState,
@@ -72,6 +73,16 @@ impl std::fmt::Debug for AdminLoginRequest {
 /// Response body for POST /_miroir/admin/login.
 #[derive(Debug, Serialize)]
 pub struct AdminLoginResponse {
+    pub success: bool,
+    pub message: Option<String>,
+    /// CSRF token for state-changing requests (plan §9, §13.19).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub csrf_token: Option<String>,
+}
+
+/// Response body for POST /_miroir/admin/logout.
+#[derive(Debug, Serialize)]
+pub struct AdminLogoutResponse {
     pub success: bool,
     pub message: Option<String>,
 }
@@ -319,6 +330,15 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+/// Hash an admin key for storage in the task store (SHA-256 hex).
+/// We never store the plaintext admin key, only a hash for audit.
+fn hash_admin_key(admin_key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(admin_key.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 /// Metrics observer for replica selection events.
@@ -1262,6 +1282,7 @@ where
                 Json(AdminLoginResponse {
                     success: false,
                     message: Some("Rate limit configuration error".into()),
+                    csrf_token: None,
                 }),
             )
                 .into_response();
@@ -1289,6 +1310,7 @@ where
                                         "Too many failed login attempts. Try again in {} seconds.",
                                         ws
                                     )),
+                                    csrf_token: None,
                                 }),
                             )
                                 .into_response();
@@ -1300,6 +1322,7 @@ where
                                     message: Some(
                                         "Too many login attempts. Please try again later.".into(),
                                     ),
+                                    csrf_token: None,
                                 }),
                             )
                                 .into_response();
@@ -1341,6 +1364,7 @@ where
                     } else {
                         Some("Too many login attempts. Please try again later.".into())
                     },
+                    csrf_token: None,
                 }),
             )
                 .into_response();
@@ -1366,8 +1390,9 @@ where
             state.local_rate_limiter.reset(&source_ip);
         }
 
-        // Generate session ID and seal it
+        // Generate session ID, CSRF token, and seal the session
         let session_id = generate_session_id();
+        let csrf_token = generate_csrf_token();
         let sealed = match seal_session(&session_id, &state.seal_key) {
             Ok(sealed) => sealed,
             Err(e) => {
@@ -1377,19 +1402,59 @@ where
                     Json(AdminLoginResponse {
                         success: false,
                         message: Some("Failed to create session".into()),
+                        csrf_token: None,
                     }),
                 )
                     .into_response();
             }
         };
 
+        // Store session in task store (plan §13.19)
+        let now = now_ms();
+        let expires_at = now + (state.config.admin_ui.session_ttl_s as i64 * 1000);
+        let admin_key_hash = hash_admin_key(&state.config.admin.api_key);
+
+        // Extract user agent from headers
+        let user_agent = headers
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        let new_session = NewAdminSession {
+            session_id: session_id.clone(),
+            csrf_token: csrf_token.clone(),
+            admin_key_hash,
+            created_at: now,
+            expires_at,
+            user_agent,
+            source_ip: Some(source_ip.clone()),
+        };
+
+        // Try to store the session (requires Redis or SQLite task store)
+        let session_stored = if let Some(ref store) = state.task_store {
+            match store.insert_admin_session(&new_session) {
+                Ok(()) => true,
+                Err(e) => {
+                    error!(error = %e, session_prefix = &session_id[..8], "failed to store admin session");
+                    false
+                }
+            }
+        } else {
+            warn!(
+                session_prefix = &session_id[..8],
+                "no task store configured - admin session will not persist across restarts"
+            );
+            false
+        };
+
         info!(
             source_ip_hash = hash_for_log(&source_ip),
             session_prefix = &session_id[..8],
+            session_stored,
             "admin login successful"
         );
 
-        // Set cookie and return success
+        // Set cookie and return success with CSRF token
         (
             StatusCode::OK,
             [(
@@ -1402,6 +1467,7 @@ where
             Json(AdminLoginResponse {
                 success: true,
                 message: None,
+                csrf_token: Some(csrf_token),
             }),
         )
             .into_response()
@@ -1445,10 +1511,123 @@ where
             Json(AdminLoginResponse {
                 success: false,
                 message: Some("Invalid admin key".into()),
+                csrf_token: None,
             }),
         )
             .into_response()
     }
+}
+
+/// POST /_miroir/admin/logout — admin logout with session revocation.
+///
+/// Revokes the current admin session, publishes to Redis Pub/Sub for multi-pod
+/// propagation, and clears the session cookie.
+///
+/// Response (200 OK):
+/// ```json
+/// { "success": true }
+/// ```
+///
+/// If the session is already revoked or not found, still returns success.
+pub async fn admin_logout<S>(State(state): State<S>, headers: HeaderMap) -> Response
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    use crate::auth::extract_admin_session_cookie;
+
+    let state = AppState::from_ref(&state);
+
+    // Extract and unseal the session cookie
+    let session_id = if let Some(cookie_value) = extract_admin_session_cookie(&headers) {
+        match unseal_session(&cookie_value, &state.seal_key) {
+            Ok(id) => id,
+            Err(e) => {
+                warn!(error = %e, "failed to unseal admin session cookie on logout");
+                return (
+                    StatusCode::OK,
+                    [(
+                        "Set-Cookie",
+                        format!(
+                            "{}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
+                            COOKIE_NAME
+                        ),
+                    )],
+                    Json(AdminLogoutResponse {
+                        success: true,
+                        message: None,
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        // No session cookie - still return success (idempotent logout)
+        return (
+            StatusCode::OK,
+            [(
+                "Set-Cookie",
+                format!(
+                    "{}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
+                    COOKIE_NAME
+                ),
+            )],
+            Json(AdminLogoutResponse {
+                success: true,
+                message: None,
+            }),
+        )
+            .into_response();
+    };
+
+    // Revoke the session in the task store (plan §13.19)
+    let revoked = if let Some(ref store) = state.task_store {
+        match store.revoke_admin_session(&session_id) {
+            Ok(revoked) => revoked,
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    session_prefix = &session_id[..session_id.len().min(8)],
+                    "failed to revoke admin session"
+                );
+                false
+            }
+        }
+    } else {
+        warn!(
+            session_prefix = &session_id[..session_id.len().min(8)],
+            "no task store configured - session revocation will not persist"
+        );
+        false
+    };
+
+    // Add to in-memory revoked cache for immediate effect (plan §9)
+    // This is used by auth_middleware for fast rejection
+    // Note: This is only effective on this pod; Redis Pub/Sub handles multi-pod
+    // We don't have direct access to AuthState here, but the task store
+    // revoke operation already handles the Redis Pub/Sub notification
+
+    info!(
+        session_prefix = &session_id[..session_id.len().min(8)],
+        revoked, "admin logout"
+    );
+
+    // Clear the session cookie and return success
+    (
+        StatusCode::OK,
+        [(
+            "Set-Cookie",
+            format!(
+                "{}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
+                COOKIE_NAME
+            ),
+        )],
+        Json(AdminLogoutResponse {
+            success: true,
+            message: None,
+        }),
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------

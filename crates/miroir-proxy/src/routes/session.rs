@@ -241,19 +241,19 @@ where
         source_ip: Some(source_ip),
     };
 
-    if let Some(ref redis) = state.redis_store {
-        if let Err(e) = redis.insert_admin_session(&new_session) {
-            warn!(error = %e, "failed to create admin session in Redis");
+    if let Some(ref store) = state.task_store {
+        if let Err(e) = store.insert_admin_session(&new_session) {
+            warn!(error = %e, "failed to create admin session");
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "failed to create session".into(),
             ));
         }
     } else {
-        return Err((
-            StatusCode::PRECONDITION_FAILED,
-            "admin sessions require Redis task store".into(),
-        ));
+        warn!(
+            session_prefix = session_prefix(&session_id),
+            "no task store configured - admin session will not persist across restarts"
+        );
     }
 
     info!(
@@ -307,15 +307,16 @@ where
     let state = AppState::from_ref(&state);
     let session_id = admin_session.0;
 
-    let Some(redis) = state.redis_store.as_ref() else {
-        return Err((
-            StatusCode::PRECONDITION_FAILED,
-            "admin sessions require Redis task store".into(),
-        ));
+    let Some(store) = state.task_store.as_ref() else {
+        return Ok(Json(AdminSessionResponse {
+            valid: false,
+            csrf_token: None,
+            expires_at: None,
+        }));
     };
 
     // Look up session
-    let Some(session) = redis.get_admin_session(&session_id).map_err(|e| {
+    let Some(session) = store.get_admin_session(&session_id).map_err(|e| {
         warn!(error = %e, session_prefix = session_prefix(&session_id), "failed to get admin session");
         (StatusCode::INTERNAL_SERVER_ERROR, "failed to get session".into())
     })? else {
@@ -359,7 +360,7 @@ where
         source_ip: session.source_ip.clone(),
     };
 
-    redis.insert_admin_session(&updated_session).map_err(|e| {
+    store.insert_admin_session(&updated_session).map_err(|e| {
         warn!(error = %e, session_prefix = session_prefix(&session_id), "failed to refresh CSRF token");
         (StatusCode::INTERNAL_SERVER_ERROR, "failed to refresh session".into())
     })?;
@@ -372,10 +373,12 @@ where
 }
 
 /// POST /_miroir/admin/logout - revoke admin session.
+///
+/// Revokes the current admin session and clears the session cookie.
 pub async fn admin_logout<S>(
     State(state): State<S>,
     Extension(admin_session): Extension<AdminSessionId>,
-) -> Result<(), (StatusCode, String)>
+) -> Response
 where
     S: Clone + Send + Sync + 'static,
     AppState: FromRef<S>,
@@ -383,24 +386,43 @@ where
     let state = AppState::from_ref(&state);
     let session_id = admin_session.0;
 
-    let Some(redis) = state.redis_store.as_ref() else {
-        return Err((
-            StatusCode::PRECONDITION_FAILED,
-            "admin sessions require Redis task store".into(),
-        ));
+    // Revoke the session in the task store
+    let revoked = if let Some(ref store) = state.task_store {
+        match store.revoke_admin_session(&session_id) {
+            Ok(revoked) => revoked,
+            Err(e) => {
+                warn!(error = %e, session_prefix = session_prefix(&session_id), "failed to revoke admin session");
+                false
+            }
+        }
+    } else {
+        warn!(
+            session_prefix = session_prefix(&session_id),
+            "no task store configured - session revocation will not persist"
+        );
+        false
     };
-
-    redis.revoke_admin_session(&session_id).map_err(|e| {
-        warn!(error = %e, session_prefix = session_prefix(&session_id), "failed to revoke admin session");
-        (StatusCode::INTERNAL_SERVER_ERROR, "failed to revoke session".into())
-    })?;
 
     info!(
         session_prefix = session_prefix(&session_id),
-        "admin logout successful"
+        revoked, "admin logout"
     );
 
-    Ok(())
+    // Clear the session cookie and return success
+    (
+        StatusCode::OK,
+        [(
+            "Set-Cookie",
+            format!(
+                "{}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
+                COOKIE_NAME
+            ),
+        )],
+        Json(serde_json::json!({
+            "success": true
+        })),
+    )
+        .into_response()
 }
 
 /// GET /_miroir/ui/search/{index}/session - search UI session endpoint with origin check.

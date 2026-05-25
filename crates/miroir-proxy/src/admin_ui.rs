@@ -225,10 +225,7 @@ mod tests {
         assert!(result.is_ok());
 
         let response = result.unwrap();
-        assert_eq!(
-            response.headers().get("Content-Type").unwrap(),
-            "text/html"
-        );
+        assert_eq!(response.headers().get("Content-Type").unwrap(), "text/html");
         assert_eq!(
             response.headers().get("Cache-Control").unwrap(),
             "no-cache, no-store, must-revalidate"
