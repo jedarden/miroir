@@ -4,5 +4,6 @@ pub mod auth;
 pub mod client;
 pub mod error_response;
 pub mod middleware;
+pub mod otel;
 pub mod routes;
 pub mod scoped_key_rotation;
