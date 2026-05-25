@@ -392,6 +392,10 @@ impl TaskStore for MockTaskStore {
     fn delete_tasks_batch(&self, _miroir_ids: &[&str]) -> Result<usize> {
         Ok(0)
     }
+
+    fn check_and_mark_beacon_event(&self, _index_uid: &str, _event_id: &str) -> Result<bool> {
+        Ok(true) // Always return new for mock
+    }
 }
 
 /// P4.1-A1: Advisory lock ensures only one pod runs the rebalancer at a time.

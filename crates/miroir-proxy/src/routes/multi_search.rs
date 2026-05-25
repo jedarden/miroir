@@ -252,7 +252,7 @@ where
             .into_iter()
             .map(|(q, filter_str, _resolved_targets)| {
                 miroir_core::multi_search::SearchQuery {
-                    indexUid: q.index_uid,
+                    index_uid: q.index_uid,
                     q: q.q,
                     filter: filter_str,
                     limit: q.limit,
@@ -319,7 +319,7 @@ where
                 // Use query planner to narrow target shards (plan §13.4)
                 let filter_str = query.filter.as_ref().filter(|s| !s.is_empty()).cloned();
                 let query_plan = query_planner
-                    .plan(&query.indexUid, &filter_str, config.shards)
+                    .plan(&query.index_uid, &filter_str, config.shards)
                     .await;
 
                 // Record query planner metrics
@@ -361,7 +361,7 @@ where
                     SearchRequest::detect_vector_mode(&serde_json::json!(query.other));
 
                 let search_req = SearchRequest {
-                    index_uid: query.indexUid.clone(),
+                    index_uid: query.index_uid.clone(),
                     query: query.q.clone(),
                     offset: query.offset.unwrap_or(0),
                     limit: query.limit.unwrap_or(20),
@@ -422,7 +422,7 @@ where
                         };
 
                         debug!(
-                            index = %query.indexUid,
+                            index = %query.index_uid,
                             duration_ms = start.elapsed().as_millis(),
                             hits = search_response.hits.len(),
                             "multi-search query completed"
@@ -434,7 +434,7 @@ where
                     }
                     Err(e) => {
                         debug!(
-                            index = %query.indexUid,
+                            index = %query.index_uid,
                             error = %e,
                             "multi-search query failed"
                         );

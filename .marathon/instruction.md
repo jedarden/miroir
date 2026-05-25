@@ -40,6 +40,27 @@ phase epics depend on their leaf tasks and close LAST — work leaves first.
 If a bead was attempted before (check `git log` for its ID), continue from the prior
 work rather than starting over.
 
+#### If the ready queue is empty — audit the plan, don't go idle
+
+If `br ready --limit 5` returns **nothing eligible** (empty queue, or only beads you cannot
+progress — e.g. ones needing human/ADB access), do NOT exit idle. The seeded beads are not
+the whole job — **the plan is**. Run a plan-vs-artifacts gap audit and refill the queue:
+
+1. Walk `docs/plan/plan.md` section by section (the 13 phase epics, §13.x deliverables).
+2. For each planned item — crate, module, config field, CLI subcommand, phase deliverable
+   (§-ref), invariant, acceptance criterion — verify it actually exists *and works* in the
+   tree: grep for the symbol under `crates/`, read the module, run its test.
+3. For every planned-but-missing, stubbed, or incomplete item that is **not already an open
+   bead** (check `br list --status open | grep`), create one:
+   ```bash
+   br create --title "plan-gap: <plan §-ref> — <what's missing>" --type task --priority <0-3> \
+     --description "Plan: <§-ref/line range>. Gap evidence: <absent symbol / missing or failing test>. Acceptance: <what done looks like>."
+   ```
+   Use `br batch` `dep_add_blocker` to wire dependencies if the gap blocks/depends on existing beads.
+4. `br sync --flush-only`, then re-run `br ready --limit 5` and pick the highest-impact new bead.
+
+The work is truly done only when a **full** plan audit finds zero gaps — then say so and exit.
+
 ### 2. Claim
 
 ```bash
