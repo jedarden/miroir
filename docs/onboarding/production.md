@@ -156,6 +156,8 @@ Upgrade procedure:
 
 ## Troubleshooting
 
+For comprehensive troubleshooting of common issues, see the [Troubleshooting Guide](../troubleshooting.md) and [Diagnostic Playbook](../troubleshooting/diagnostics.md).
+
 ### Orchestrator pods stuck in CrashLoopBack
 
 Check task store connectivity:

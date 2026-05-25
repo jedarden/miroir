@@ -122,6 +122,8 @@ docker compose -f examples/docker-compose-dev.yml logs -f meili-0
 
 ## Troubleshooting
 
+For comprehensive troubleshooting of common issues, see the [Troubleshooting Guide](../docs/troubleshooting.md) and [Diagnostic Playbook](../docs/troubleshooting/diagnostics.md).
+
 ### Containers not starting
 
 ```bash
