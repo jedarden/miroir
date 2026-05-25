@@ -12,7 +12,7 @@
 // Run:
 //   cargo test --test integration -- --test-threads=1
 
-use meilisearch_sdk::{client::Client, indexes::Index, tasks::Task};
+use meilisearch_sdk::{client::Client, indexes::Index, search::SearchResults, tasks::Task};
 use reqwest::StatusCode;
 use serde_json::json;
 use serde_json::Value;
@@ -41,25 +41,32 @@ struct TestDoc {
 /// Helper: Get Miroir client
 fn miroir_client() -> Client {
     let url = format!("http://localhost:{}", MIROIR_PORT);
-    Client::new(url, Some(MASTER_KEY.to_string()))
+    Client::new(url, Some(MASTER_KEY.to_string())).expect("Failed to create Miroir client")
 }
 
 /// Helper: Get direct client to a Meilisearch node
 fn node_client(port: u16) -> Client {
     let url = format!("http://localhost:{}", port);
-    Client::new(url, Some(NODE_KEY.to_string()))
+    Client::new(url, Some(NODE_KEY.to_string())).expect("Failed to create Meilisearch node client")
 }
 
 /// Helper: Wait for a task to complete
-async fn wait_for_task(client: &Client, task_uid: u32) -> Result<Task, Box<dyn std::error::Error>> {
+async fn wait_for_task(
+    client: &Client,
+    task_info: meilisearch_sdk::task_info::TaskInfo,
+) -> Result<Task, Box<dyn std::error::Error>> {
     let timeout = Duration::from_secs(30);
     let start = std::time::Instant::now();
+    let task_uid = task_info.task_uid;
 
     loop {
-        let task = client.get_task(&task_uid).await?;
+        let task = client.get_task(&task_info).await?;
         // Check if task is finished (Succeeded or Failed)
         match task {
-            Task::Succeeded { .. } | Task::Failed { .. } => return Ok(task),
+            Task::Succeeded { .. } => return Ok(task),
+            Task::Failed { .. } => {
+                return Err(format!("Task {} failed: {:?}", task_uid, task).into())
+            }
             _ => {}
         }
 
@@ -73,23 +80,21 @@ async fn wait_for_task(client: &Client, task_uid: u32) -> Result<Task, Box<dyn s
 
 /// Helper: Create or get index with primary key
 async fn get_index(client: &Client, name: &str) -> Result<Index, Box<dyn std::error::Error>> {
-    let indexes = client.clone();
-    match indexes.get_index(name).await {
-        Ok(_) => Ok(indexes),
+    match client.get_index(name).await {
+        Ok(_) => Ok(client.index(name)),
         Err(_) => {
-            let task = indexes.create_index(name, Some("id")).await?;
-            wait_for_task(&indexes, task).await?;
-            Ok(indexes)
+            let task_info = client.create_index(name, Some("id")).await?;
+            wait_for_task(client, task_info).await?;
+            Ok(client.index(name))
         }
     }
 }
 
 /// Helper: Delete index if exists
 async fn delete_index(client: &Client, name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let indexes = client.clone();
-    if indexes.get_index(name).await.is_ok() {
-        let task = indexes.delete_index(name).await?;
-        let _ = wait_for_task(&indexes, task).await;
+    if client.get_index(name).await.is_ok() {
+        let task_info = client.delete_index(name).await?;
+        let _ = wait_for_task(client, task_info).await;
     }
     Ok(())
 }
@@ -150,7 +155,7 @@ async fn document_round_trip() -> Result<(), Box<dyn std::error::Error>> {
         let node = node_client(port);
         if let Ok(idx) = node.get_index(index_name).await {
             let stats = idx.get_stats().await?;
-            let count = stats.number_of_documents.unwrap_or(0);
+            let count = stats.number_of_documents;
             node_doc_counts.insert(port, count);
         }
     }
@@ -164,7 +169,7 @@ async fn document_round_trip() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Total across nodes equals 1000
-    let total: u64 = node_doc_counts.values().sum();
+    let total: usize = node_doc_counts.values().sum();
     assert_eq!(
         total, 1000,
         "Total documents mismatch: {:?}",
@@ -206,8 +211,8 @@ async fn search_covers_all_shards() -> Result<(), Box<dyn std::error::Error>> {
     // Search for each unique keyword — every search must return exactly 1 hit
     for i in 0..100 {
         let keyword = format!("unique_keyword_{}", i);
-        let results: Value = index.search().with_query(&keyword).execute().await?;
-        let hits = results["hits"].as_array().unwrap();
+        let results: SearchResults<Value> = index.search().with_query(&keyword).execute().await?;
+        let hits = results.hits;
         assert_eq!(
             hits.len(),
             1,
@@ -255,15 +260,18 @@ async fn facet_aggregation() -> Result<(), Box<dyn std::error::Error>> {
     wait_for_task(&client, task).await?;
 
     // Facet counts must sum to 100
-    let results: Value = index.search().with_facet(["color"]).execute().await?;
-    let facet_dist = results["facetDistribution"]["color"].as_object().unwrap();
+    use meilisearch_sdk::search::Selectors;
+    let facets = ["color"];
+    let results: SearchResults<Value> = index.search().with_facets(Selectors::Some(&facets[..])).execute().await?;
+    let facet_dist = results
+        .facet_distribution
+        .as_ref()
+        .and_then(|f| f.get("color"))
+        .unwrap();
 
-    let red_count = facet_dist.get("red").and_then(|v| v.as_u64()).unwrap_or(0);
-    let green_count = facet_dist
-        .get("green")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let blue_count = facet_dist.get("blue").and_then(|v| v.as_u64()).unwrap_or(0);
+    let red_count = *facet_dist.get("red").unwrap_or(&0);
+    let green_count = *facet_dist.get("green").unwrap_or(&0);
+    let blue_count = *facet_dist.get("blue").unwrap_or(&0);
 
     let total = red_count + green_count + blue_count;
     assert_eq!(total, 100, "Facet counts sum to {}, expected 100", total);
@@ -305,27 +313,24 @@ async fn offset_limit_paging() -> Result<(), Box<dyn std::error::Error>> {
     wait_for_task(&client, task).await?;
 
     // Get single query with limit=50
-    let single_page: Value = index.search().with_limit(50).execute().await?;
-    let single_ids: HashSet<String> = single_page["hits"]
-        .as_array()
-        .unwrap()
+    let single_page: SearchResults<Value> = index.search().with_limit(50).execute().await?;
+    let single_ids: HashSet<String> = single_page
+        .hits
         .iter()
-        .filter_map(|v| v["id"].as_str())
-        .map(|s| s.to_string())
+        .filter_map(|v| v.result.get("id").and_then(|id| id.as_str().map(|s| s.to_string())))
         .collect();
 
     // Get 5 pages of 10
     let mut paged_ids = HashSet::new();
     for page in 0..5 {
-        let results: Value = index
+        let results: SearchResults<Value> = index
             .search()
             .with_limit(10)
             .with_offset(page * 10)
             .execute()
             .await?;
-        let hits = results["hits"].as_array().unwrap();
-        for hit in hits {
-            let id = hit["id"].as_str().unwrap();
+        for hit in results.hits {
+            let id = hit.result.get("id").and_then(|id| id.as_str()).unwrap();
             paged_ids.insert(id.to_string());
         }
     }
@@ -344,23 +349,23 @@ async fn offset_limit_paging() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Order is preserved (concatenated pages match single page order)
-    let single_order: Vec<_> = single_page["hits"]
-        .as_array()
-        .unwrap()
+    let single_order: Vec<String> = single_page
+        .hits
         .iter()
-        .filter_map(|v| v["id"].as_str())
+        .filter_map(|v| v.result.get("id").and_then(|id| id.as_str().map(|s| s.to_string())))
         .collect();
 
     let mut paged_order = Vec::new();
     for page in 0..5 {
-        let results: Value = index
+        let results: SearchResults<Value> = index
             .search()
             .with_limit(10)
             .with_offset(page * 10)
             .execute()
             .await?;
-        for hit in results["hits"].as_array().unwrap() {
-            paged_order.push(hit["id"].as_str().unwrap());
+        for hit in results.hits {
+            let id = hit.result.get("id").and_then(|id| id.as_str()).unwrap();
+            paged_order.push(id.to_string());
         }
     }
 
@@ -397,13 +402,12 @@ async fn settings_broadcast() -> Result<(), Box<dyn std::error::Error>> {
     wait_for_task(&client, task).await?;
 
     // Add synonyms via Miroir
-    let synonyms = json!({
-        "earbuds": ["headphones"],
-        "wireless": ["bluetooth"]
-    });
+    let mut synonyms = HashMap::new();
+    synonyms.insert("earbuds".to_string(), vec!["headphones".to_string()]);
+    synonyms.insert("wireless".to_string(), vec!["bluetooth".to_string()]);
 
-    let task = index.set_synonyms(&synonyms).await?;
-    wait_for_task(&client, task).await?;
+    let task_info = index.set_synonyms(&synonyms).await?;
+    wait_for_task(&client, task_info).await?;
 
     // Verify all 3 nodes have the synonyms
     for &port in &NODE_PORTS {
@@ -421,13 +425,12 @@ async fn settings_broadcast() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Search via synonym returns results
-    let results: Value = index
+    let results: SearchResults<Value> = index
         .search()
         .with_query("bluetooth headphones")
         .execute()
         .await?;
-    let hits = results["hits"].as_array().unwrap();
-    assert!(hits.len() >= 1, "Synonym search returned no results");
+    assert!(results.hits.len() >= 1, "Synonym search returned no results");
 
     delete_index(&client, index_name).await?;
 
@@ -475,18 +478,17 @@ async fn task_polling() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Search also returns all documents
-    let results: Value = index
+    let results: SearchResults<Value> = index
         .search()
         .with_query("content")
         .with_limit(500)
         .execute()
         .await?;
-    let hits = results["hits"].as_array().unwrap();
     assert_eq!(
-        hits.len(),
+        results.hits.len(),
         500,
         "Search returned {} hits, expected 500",
-        hits.len()
+        results.hits.len()
     );
 
     delete_index(&client, index_name).await?;
@@ -508,8 +510,9 @@ async fn node_failure_rf2() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(7700);
 
     let client_url = format!("http://localhost:{}", rf2_port);
-    let client = Client::new(client_url, Some(MASTER_KEY.to_string()));
     let index_name = "test_rf2_failure";
+    let client = Client::new(&client_url, Some(MASTER_KEY.to_string()))
+        .expect("Failed to create Meilisearch client");
 
     delete_index(&client, index_name).await?;
     let index = get_index(&client, index_name).await?;
@@ -529,18 +532,17 @@ async fn node_failure_rf2() -> Result<(), Box<dyn std::error::Error>> {
 
     // Simulate stopping one node (in real test, use docker-compose stop)
     // For now, we'll just verify the search returns all results
-    let results: Value = index
+    let results: SearchResults<Value> = index
         .search()
         .with_query("content")
         .with_limit(500)
         .execute()
         .await?;
-    let hits = results["hits"].as_array().unwrap();
     assert_eq!(
-        hits.len(),
+        results.hits.len(),
         500,
         "Search returned {} hits, expected 500",
-        hits.len()
+        results.hits.len()
     );
 
     // Check for X-Miroir-Degraded header (should not appear with RF=2 when one node fails)
