@@ -1,8 +1,8 @@
 # Miroir
 
-[![CI](https://img.shields.io/badge/CI-Argo%20Workflows-blue)](https://github.com/jedarden/miroir/actions)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![SemVer](https://img.shields.io/badge/SemVer-2.0.0-blue)](https://semver.org/spec/v2.0.0.html)
+[![Latest Release](https://img.shields.io/github/v/release/jedarden/miroir)](https://github.com/jedarden/miroir/releases)
 
 **Multi-node Index Replication Orchestrator, Integrated Rebalancing**
 
@@ -84,6 +84,7 @@ See [`docs/versioning-policy.md`](docs/versioning-policy.md) for the full versio
 
 - [Design Plan](docs/plan/plan.md) — Complete architecture, protocol, and capability specifications
 - [CHANGELOG.md](CHANGELOG.md) — Release notes and version history
+- [API Compatibility](docs/notes/api-compatibility.md) — Meilisearch API coverage and extensions
 - [Helm Chart](charts/miroir/) — Production deployment on Kubernetes
 - [Deployment Guides](docs/onboarding/) — Production setup, sizing, and operational considerations
 - [Migration Runbook](docs/migration_runbook.md) — Paths from single-node Meilisearch to Miroir
@@ -139,3 +140,13 @@ Additional production resources:
 - [Production Deployment Guide](docs/onboarding/production.md) — Operational considerations, monitoring, and troubleshooting
 - [Per-Feature Scaling Behavior](docs/horizontal-scaling/per-feature.md) — Which features need Redis, work queues, or nothing
 - [Versioning Policy](docs/versioning-policy.md) — Backward compatibility commitments and upgrade guidance
+
+## Community
+
+- [Issues](https://github.com/jedarden/miroir/issues) — Bug reports and feature requests
+- [Discussions](https://github.com/jedarden/miroir/discussions) — Q&A and design discussions
+- [Contributing](CONTRIBUTING.md) — Development workflow and code submission guidelines
+
+## License
+
+MIT License — see [LICENSE](LICENSE) for details.
