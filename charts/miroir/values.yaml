@@ -194,6 +194,10 @@ redis:
     repository: redis
     tag: 7-alpine
     pullPolicy: IfNotPresent
+  auth:
+    enabled: true
+    existingSecret: ""
+    # Password comes from K8s Secret `miroir-redis-secrets` / ESO
   resources:
     limits:
       cpu: 500m

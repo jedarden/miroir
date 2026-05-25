@@ -28,6 +28,18 @@ spec:
         - name: redis
           containerPort: 6379
           protocol: TCP
+        {{- if .Values.redis.auth.enabled }}
+        command:
+          - redis-server
+          - --requirepass
+          - $(REDIS_PASSWORD)
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "miroir.redisSecretName" . }}
+              key: redis-password
+        {{- end }}
         {{- with .Values.redis.resources }}
         resources:
           {{- toYaml . | nindent 10 }}
@@ -44,7 +56,6 @@ spec:
           claimName: {{ include "miroir.fullname" . }}-redis
       {{- end }}
 ---
-{{- if and (include "miroir.redisEnabled" .) .Values.redis.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -62,7 +73,6 @@ spec:
   selector:
     {{- include "miroir.selectorLabels" . | nindent 4 }}
     app: redis
-{{- end }}
 ---
 {{- if and (include "miroir.redisEnabled" .) .Values.redis.enabled .Values.redis.persistence.enabled }}
 apiVersion: v1
