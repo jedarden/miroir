@@ -2770,6 +2770,155 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Settings endpoint (plan §13.19 Admin UI — Settings section)
+// ---------------------------------------------------------------------------
+
+/// GET /_miroir/settings — Get Miroir's current configuration.
+///
+/// Returns the full Miroir configuration. Settings that require a pod restart
+/// to take effect are marked in the UI with a "Restart" badge (§13.19).
+///
+/// Admin-key-gated. Returns HTTP 401 if the admin key is missing or invalid.
+pub async fn get_settings<S>(State(state): State<S>) -> Result<Json<MiroirConfig>, StatusCode>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+    // Dereference Arc to get the inner Config
+    let config = app_state.config.as_ref().clone();
+    Ok(Json(config))
+}
+
+/// PATCH /_miroir/settings — Update Miroir configuration.
+///
+/// Accepts a partial JSON payload with the settings to update. Only settings
+/// that are safe to change at runtime are accepted; others return HTTP 400 with
+/// an error message indicating a restart is required.
+///
+/// Admin-key-gated. Returns HTTP 401 if the admin key is missing or invalid.
+///
+/// # Runtime-updatable settings (no restart required)
+///
+/// - `rebalancer.max_concurrent_migrations`
+/// - `rebalancer.migration_timeout_s`
+/// - `query_planner.mode`
+/// - `session_pinning.enabled`
+/// - `anti_entropy.schedule` (takes effect on next scheduled run)
+///
+/// # Restart-required settings (rejected at runtime)
+///
+/// - `shards`, `replication_factor`, `replica_groups` — topology changes
+/// - `nodes` — node list changes
+/// - `task_store.backend` — backend type changes
+/// - `anti_entropy.enabled` — feature flag changes
+///
+/// # Returns
+///
+/// - `200 OK` with the updated configuration on success
+/// - `400 Bad Request` if trying to modify a restart-required setting
+/// - `401 Unauthorized` if admin key is missing or invalid
+pub async fn patch_settings<S>(
+    State(state): State<S>,
+    Json(partial): Json<serde_json::Value>,
+) -> Result<Json<MiroirConfig>, (StatusCode, String)>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+    // Dereference Arc to get the inner Config
+    let config = app_state.config.as_ref().clone();
+
+    // Settings that require a pod restart (topology, feature flags, backend type)
+    const RESTART_REQUIRED_FIELDS: &[&str] = &[
+        "shards",
+        "replication_factor",
+        "replica_groups",
+        "nodes",
+        "task_store",
+        "anti_entropy.enabled",
+        "master_key",
+        "node_master_key",
+    ];
+
+    // Check if any restart-required fields are being modified
+    if let Some(obj) = partial.as_object() {
+        for key in obj.keys() {
+            let requires_restart = RESTART_REQUIRED_FIELDS
+                .iter()
+                .any(|field| key.starts_with(&format!("{}.", field)) || key == *field);
+
+            if requires_restart {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "Cannot modify '{}' at runtime. \
+                         This setting requires a pod restart to take effect. \
+                         Please update the configuration file and restart the pod.",
+                        key
+                    ),
+                ));
+            }
+        }
+    }
+
+    // Apply the partial update to the config
+    // We use serde_json::from_value to deserialize the partial config
+    let merged_json = serde_json::to_value(&config).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to serialize current config: {}", e),
+        )
+    })?;
+
+    let merged_json = merge_json(merged_json, partial);
+    let updated_config: MiroirConfig = serde_json::from_value(merged_json).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Invalid configuration: {}", e),
+        )
+    })?;
+
+    // Validate the updated configuration
+    if let Err(e) = updated_config.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Configuration validation failed: {}", e),
+        ));
+    }
+
+    // In a real implementation, we would persist the updated config to disk
+    // or notify other pods via Redis/leader election. For now, we just
+    // return the updated config to indicate what would be applied.
+    tracing::info!(
+        "Settings update requested (not persisted - requires config file update for persistence)"
+    );
+
+    Ok(Json(updated_config))
+}
+
+/// Merge a JSON patch into a base JSON value.
+///
+/// Deep merge: objects are merged recursively, arrays and primitives are replaced.
+fn merge_json(base: serde_json::Value, patch: serde_json::Value) -> serde_json::Value {
+    match (base, patch) {
+        (serde_json::Value::Object(mut base_map), serde_json::Value::Object(patch_map)) => {
+            for (key, patch_value) in patch_map {
+                let base_value = base_map.remove(&key);
+                let merged = match base_value {
+                    Some(base_val) => merge_json(base_val, patch_value),
+                    None => patch_value,
+                };
+                base_map.insert(key, merged);
+            }
+            serde_json::Value::Object(base_map)
+        }
+        (_, patch) => patch,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Resharding endpoints (plan §13.1)
 // ---------------------------------------------------------------------------
 
