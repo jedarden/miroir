@@ -9,7 +9,6 @@
 //! For real measurements, integration tests with live Meilisearch are required.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use miroir_core::router::{shard_for_key, write_targets};
 use miroir_core::topology::{Node, NodeId, Topology};
 use std::time::Duration;
 
@@ -26,7 +25,7 @@ fn simulate_single_node_search(query: &str) -> Duration {
 
 /// Simulated Miroir scatter-gather search latency.
 #[inline(never)]
-fn simulate_miroir_search(query: &str, topo: &Topology) -> Duration {
+fn simulate_miroir_search(query: &str, _topo: &Topology) -> Duration {
     // Miroir latency components:
     // - Scatter overhead: ~1ms
     // - Network to nodes: ~1ms each way (parallelized)
@@ -48,7 +47,7 @@ fn create_test_topology(node_count: u32, shards: u32, rf: usize, rg: u32) -> Top
     for g in 0..rg {
         for i in 0..node_count {
             topo.add_node(Node::new(
-                NodeId::new(format!("node-g{}-{}", g, i)),
+                NodeId::new(format!("node-g{g}-{i}")),
                 format!("http://localhost:{}", 7701 + (g * node_count + i) as u16),
                 g,
             ));
@@ -116,5 +115,10 @@ fn bench_latency_ratio(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_single_node_baseline, bench_miroir_scatter_gather, bench_latency_ratio);
+criterion_group!(
+    benches,
+    bench_single_node_baseline,
+    bench_miroir_scatter_gather,
+    bench_latency_ratio
+);
 criterion_main!(benches);
