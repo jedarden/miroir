@@ -112,4 +112,21 @@ where
             "/indexes/{uid}/reshard/status",
             get(admin_endpoints::get_reshard_status::<S>),
         )
+        // TTL policy endpoints (plan §13.14)
+        .route(
+            "/indexes/{uid}/ttl-policy",
+            post(admin_endpoints::post_ttl_policy::<S>),
+        )
+        .route(
+            "/indexes/{uid}/ttl-policy",
+            get(admin_endpoints::get_ttl_policy::<S>),
+        )
+        .route(
+            "/indexes/{uid}/ttl-policy",
+            delete(admin_endpoints::delete_ttl_policy::<S>),
+        )
+        .route(
+            "/ttl-policies",
+            get(admin_endpoints::list_ttl_policies::<S>),
+        )
 }

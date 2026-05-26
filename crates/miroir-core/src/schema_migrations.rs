@@ -102,6 +102,10 @@ pub fn build_registry() -> MigrationRegistry {
             version: 5,
             sql: include_str!("../migrations/005_jobs_chunking.sql"),
         },
+        Migration {
+            version: 6,
+            sql: include_str!("../migrations/006_ttl_policy.sql"),
+        },
     ])
 }
 

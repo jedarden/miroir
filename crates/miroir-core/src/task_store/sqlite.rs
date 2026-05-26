@@ -1192,6 +1192,80 @@ impl TaskStore for SqliteTaskStore {
         Ok(rows > 0)
     }
 
+    // --- Table 16: ttl_policy ---
+
+    fn upsert_ttl_policy(&self, policy: &NewTtlPolicy) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO ttl_policy (index_uid, sweep_interval_s, max_deletes_per_sweep, enabled, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(index_uid) DO UPDATE SET
+                sweep_interval_s = ?2,
+                max_deletes_per_sweep = ?3,
+                enabled = ?4,
+                updated_at = ?5",
+            params![
+                policy.index_uid,
+                policy.sweep_interval_s,
+                policy.max_deletes_per_sweep,
+                policy.enabled,
+                policy.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn get_ttl_policy(&self, index_uid: &str) -> Result<Option<TtlPolicyRow>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT index_uid, sweep_interval_s, max_deletes_per_sweep, enabled, updated_at
+                 FROM ttl_policy WHERE index_uid = ?1",
+                params![index_uid],
+                |row| {
+                    Ok(TtlPolicyRow {
+                        index_uid: row.get(0)?,
+                        sweep_interval_s: row.get(1)?,
+                        max_deletes_per_sweep: row.get(2)?,
+                        enabled: row.get(3)?,
+                        updated_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    fn delete_ttl_policy(&self, index_uid: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "DELETE FROM ttl_policy WHERE index_uid = ?1",
+            params![index_uid],
+        )?;
+        Ok(rows > 0)
+    }
+
+    fn list_ttl_policies(&self) -> Result<Vec<TtlPolicyRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT index_uid, sweep_interval_s, max_deletes_per_sweep, enabled, updated_at
+             FROM ttl_policy ORDER BY index_uid",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(TtlPolicyRow {
+                index_uid: row.get(0)?,
+                sweep_interval_s: row.get(1)?,
+                max_deletes_per_sweep: row.get(2)?,
+                enabled: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        })?;
+        let mut policies = Vec::new();
+        for row in rows {
+            policies.push(row?);
+        }
+        Ok(policies)
+    }
+
     // --- Table 14: admin_sessions ---
 
     fn insert_admin_session(&self, session: &NewAdminSession) -> Result<()> {
