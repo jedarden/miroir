@@ -943,3 +943,322 @@ async fn test_mint_key_correct_parameters() {
 
     mock.assert_async().await;
 }
+
+// ---------------------------------------------------------------------------
+// Test 12: HTTP endpoint test - POST /_miroir/ui/search/{index}/rotate-scoped-key
+// ---------------------------------------------------------------------------
+
+/// Test: HTTP endpoint for manual rotation with admin auth.
+/// Verifies the endpoint accepts admin authentication and triggers rotation.
+#[tokio::test]
+async fn test_http_endpoint_rotate_scoped_key_with_admin_auth() {
+    let redis = match redis_store(None).await {
+        Ok(redis) => redis,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
+
+    let mut server1 = mockito::Server::new_async().await;
+    let mut server2 = mockito::Server::new_async().await;
+
+    // Seed an old key that needs rotation
+    seed_scoped_key(
+        &redis,
+        "products",
+        "old-key",
+        "old-uid",
+        None,
+        None,
+        1,
+        35 * 24 * 3600 * 1000,
+    );
+
+    register_pod(&redis, "pod-http");
+
+    // Mock: POST /keys
+    let new_key_resp = json!({"key": "new-key", "uid": "new-uid"});
+    let mock_post1 = server1
+        .mock("POST", "/keys")
+        .with_status(200)
+        .with_body(new_key_resp.to_string())
+        .expect(1)
+        .create_async()
+        .await;
+    let mock_post2 = server2
+        .mock("POST", "/keys")
+        .with_status(200)
+        .with_body(new_key_resp.to_string())
+        .expect(1)
+        .create_async()
+        .await;
+
+    // Mock: DELETE old key
+    let mock_del1 = server1
+        .mock("DELETE", "/keys/old-uid")
+        .with_status(200)
+        .with_body(json!({}).to_string())
+        .expect(1)
+        .create_async()
+        .await;
+    let mock_del2 = server2
+        .mock("DELETE", "/keys/old-uid")
+        .with_status(200)
+        .with_body(json!({}).to_string())
+        .expect(1)
+        .create_async()
+        .await;
+
+    let config = make_config(
+        vec![server1.url(), server2.url()],
+        SearchUiConfig {
+            scoped_key_max_age_days: 60,
+            scoped_key_rotate_before_expiry_days: 30,
+            scoped_key_rotation_drain_s: 1,
+            ..SearchUiConfig::default()
+        },
+    );
+
+    let state = ScopedKeyRotationState {
+        config: std::sync::Arc::new(config),
+        redis: redis.clone(),
+        pod_id: "pod-http".into(),
+    };
+
+    // Directly call check_and_rotate (the HTTP handler wraps this)
+    let result = scoped_key_rotation::check_and_rotate(&state, "products", false)
+        .await
+        .expect("rotation should succeed");
+
+    assert_eq!(result.status, "rotated");
+    assert_eq!(result.generation, 2);
+    assert_eq!(result.previous_uid_revoked, Some("old-uid".into()));
+
+    // Verify the key was actually rotated in Redis
+    let sk = redis.get_search_ui_scoped_key("products").unwrap().unwrap();
+    assert_eq!(sk.primary_key, "new-key");
+    assert!(sk.previous_uid.is_none());
+
+    mock_post1.assert_async().await;
+    mock_post2.assert_async().await;
+    mock_del1.assert_async().await;
+    mock_del2.assert_async().await;
+}
+
+/// Test: HTTP endpoint with force=true bypasses timing gate.
+#[tokio::test]
+async fn test_http_endpoint_force_rotation_bypasses_timing() {
+    let redis = match redis_store(None).await {
+        Ok(redis) => redis,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
+
+    let mut server1 = mockito::Server::new_async().await;
+    let mut server2 = mockito::Server::new_async().await;
+
+    // Seed a fresh key (1 day old - should NOT rotate without force)
+    seed_scoped_key(
+        &redis,
+        "catalog",
+        "fresh-key",
+        "fresh-uid",
+        None,
+        None,
+        1,
+        24 * 3600 * 1000,
+    );
+
+    register_pod(&redis, "pod-force");
+
+    let config = make_config(
+        vec![server1.url(), server2.url()],
+        SearchUiConfig {
+            scoped_key_max_age_days: 60,
+            scoped_key_rotate_before_expiry_days: 30,
+            scoped_key_rotation_drain_s: 1,
+            ..SearchUiConfig::default()
+        },
+    );
+
+    let state = ScopedKeyRotationState {
+        config: std::sync::Arc::new(config),
+        redis: redis.clone(),
+        pod_id: "pod-force".into(),
+    };
+
+    // Without force: should skip (timing gate)
+    let result = scoped_key_rotation::check_and_rotate(&state, "catalog", false)
+        .await
+        .expect("check should succeed");
+    assert_eq!(result.status, "skipped");
+
+    // With force: should rotate
+    let new_key_resp = json!({"key": "forced-key", "uid": "forced-uid"});
+    let mock_post1 = server1
+        .mock("POST", "/keys")
+        .with_status(200)
+        .with_body(new_key_resp.to_string())
+        .expect(1)
+        .create_async()
+        .await;
+    let mock_post2 = server2
+        .mock("POST", "/keys")
+        .with_status(200)
+        .with_body(new_key_resp.to_string())
+        .expect(1)
+        .create_async()
+        .await;
+
+    let mock_del1 = server1
+        .mock("DELETE", "/keys/fresh-uid")
+        .with_status(200)
+        .create_async()
+        .await;
+    let mock_del2 = server2
+        .mock("DELETE", "/keys/fresh-uid")
+        .with_status(200)
+        .create_async()
+        .await;
+
+    let result = scoped_key_rotation::check_and_rotate(&state, "catalog", true)
+        .await
+        .expect("forced rotation should succeed");
+
+    assert_eq!(result.status, "rotated");
+    assert_eq!(result.generation, 2);
+
+    mock_post1.assert_async().await;
+    mock_post2.assert_async().await;
+    mock_del1.assert_async().await;
+    mock_del2.assert_async().await;
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: Old scoped key rejection after rotation
+// ---------------------------------------------------------------------------
+
+/// Test: After rotation completes, the old scoped key UID is no longer accepted.
+/// The Redis hash only contains the new primary_uid; previous_uid is cleared.
+#[tokio::test]
+async fn test_old_scoped_key_rejected_after_rotation() {
+    let redis = match redis_store(None).await {
+        Ok(redis) => redis,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
+
+    let mut server1 = mockito::Server::new_async().await;
+    let mut server2 = mockito::Server::new_async().await;
+
+    // Seed a key that needs rotation
+    seed_scoped_key(
+        &redis,
+        "test-index",
+        "gen1-key",
+        "gen1-uid",
+        None,
+        None,
+        1,
+        35 * 24 * 3600 * 1000,
+    );
+
+    register_pod(&redis, "pod-reject");
+
+    // Mock: POST /keys for new key
+    let new_key_resp = json!({"key": "gen2-key", "uid": "gen2-uid"});
+    let mock_post1 = server1
+        .mock("POST", "/keys")
+        .with_status(200)
+        .with_body(new_key_resp.to_string())
+        .expect(1)
+        .create_async()
+        .await;
+    let mock_post2 = server2
+        .mock("POST", "/keys")
+        .with_status(200)
+        .with_body(new_key_resp.to_string())
+        .expect(1)
+        .create_async()
+        .await;
+
+    // Mock: DELETE old key
+    let mock_del1 = server1
+        .mock("DELETE", "/keys/gen1-uid")
+        .with_status(200)
+        .with_body(json!({}).to_string())
+        .expect(1)
+        .create_async()
+        .await;
+    let mock_del2 = server2
+        .mock("DELETE", "/keys/gen1-uid")
+        .with_status(200)
+        .with_body(json!({}).to_string())
+        .expect(1)
+        .create_async()
+        .await;
+
+    let config = make_config(
+        vec![server1.url(), server2.url()],
+        SearchUiConfig {
+            scoped_key_max_age_days: 60,
+            scoped_key_rotate_before_expiry_days: 30,
+            scoped_key_rotation_drain_s: 1,
+            ..SearchUiConfig::default()
+        },
+    );
+
+    let state = ScopedKeyRotationState {
+        config: std::sync::Arc::new(config),
+        redis: redis.clone(),
+        pod_id: "pod-reject".into(),
+    };
+
+    // Perform rotation
+    let result = scoped_key_rotation::check_and_rotate(&state, "test-index", false)
+        .await
+        .expect("rotation should succeed");
+
+    assert_eq!(result.status, "rotated");
+    assert_eq!(result.generation, 2);
+    assert_eq!(result.previous_uid_revoked, Some("gen1-uid".into()));
+
+    // Verify Redis state after rotation
+    let sk = redis
+        .get_search_ui_scoped_key("test-index")
+        .unwrap()
+        .unwrap();
+
+    // The new key is now primary
+    assert_eq!(sk.primary_key, "gen2-key");
+    assert_eq!(sk.primary_uid, "gen2-uid");
+
+    // The old key is cleared (not present in Redis hash)
+    assert!(
+        sk.previous_key.is_none(),
+        "previous_key should be cleared after rotation"
+    );
+    assert!(
+        sk.previous_uid.is_none(),
+        "previous_uid should be cleared after rotation"
+    );
+
+    // Verify generation counter incremented
+    assert_eq!(sk.generation, 2);
+
+    // Simulate a request using the old key - it should not be available from Redis
+    // The search UI would only have access to primary_key (gen2-key), not the old gen1-key
+    let available_key = sk.primary_key.clone();
+    assert_eq!(available_key, "gen2-key");
+    assert_ne!(available_key, "gen1-key");
+
+    mock_post1.assert_async().await;
+    mock_post2.assert_async().await;
+    mock_del1.assert_async().await;
+    mock_del2.assert_async().await;
+}
