@@ -276,7 +276,6 @@ fn test_acceptance_two_concurrent_dumps_interleave() {
     // Now we should have 8 chunks from job1 + 6 chunks from job2
     assert_eq!(coord.queue_depth().unwrap(), 14);
 
-    //     // Verify that chunks from both jobs are interleaved
     // Verify chunks exist for both jobs
     let job1_chunks = coord.list_chunks(&job1_id).unwrap();
     let job2_chunks = coord.list_chunks(&job2_id).unwrap();
@@ -287,26 +286,6 @@ fn test_acceptance_two_concurrent_dumps_interleave() {
     // Neither job starves - both have chunks available
     assert!(!job1_chunks.is_empty());
     assert!(!job2_chunks.is_empty());
-    //     let mut job1_chunk_count = 0;
-    //     let mut job2_chunk_count = 0;
-    //
-    //     for job in queued_jobs {
-    //         if let Some(parent_id) = &job.parent_job_id {
-    //             if parent_id == &job1_id {
-    //                 job1_chunk_count += 1;
-    //             } else if parent_id == &job2_id {
-    //                 job2_chunk_count += 1;
-    //             }
-    //         }
-    //     }
-    //
-    //     assert_eq!(job1_chunk_count, 8);
-    //     assert_eq!(job2_chunk_count, 6);
-    //
-    // Neither job starves - both have chunks available
-    // TODO: Re-enable after chunking queue logic is implemented
-    // assert!(job1_chunk_count > 0);
-    // assert!(job2_chunk_count > 0);
 }
 
 #[test]
