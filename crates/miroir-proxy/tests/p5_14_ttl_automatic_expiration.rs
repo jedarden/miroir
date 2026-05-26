@@ -11,7 +11,7 @@ use miroir_core::cdc::{CdcConfig, CdcEvent, CdcManager, CdcOperation, ORIGIN_TTL
 use miroir_core::config::MiroirConfig;
 use miroir_core::scatter::MockNodeClient;
 use miroir_core::topology::{Node, NodeId, Topology};
-use miroir_core::ttl::{TtlConfig, TtlManager, TtlOverride};
+use miroir_core::ttl::{TtlConfig, TtlOverride};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -45,7 +45,21 @@ async fn test_expired_document_deleted_after_sweep() {
         per_index_overrides: HashMap::new(),
     };
 
-    let manager = TtlManager::new(ttl_config);
+    // Create test topology
+    let mut topo = Topology::new(64, 2, 2);
+    for i in 0u32..3 {
+        let mut node = Node::new(
+            NodeId::new(format!("node-{i}")),
+            format!("http://node-{i}:7700"),
+            i % 2,
+        );
+        node.status = miroir_core::topology::NodeStatus::Active;
+        topo.add_node(node);
+    }
+    let topology = Arc::new(RwLock::new(topo));
+    let client = Arc::new(MockNodeClient::default());
+
+    let manager = miroir_core::ttl::TtlManager::new(ttl_config, topology, client, 64, 0, 2);
 
     // Start the background sweeper
     manager.start().await;
@@ -330,10 +344,22 @@ async fn test_expires_at_added_to_filterable_attributes() {
 
 #[tokio::test]
 async fn test_ttl_metrics_integration() {
-    use miroir_core::ttl::TtlManager;
+    // Create test topology
+    let mut topo = Topology::new(64, 2, 2);
+    for i in 0u32..3 {
+        let mut node = Node::new(
+            NodeId::new(format!("node-{i}")),
+            format!("http://node-{i}:7700"),
+            i % 2,
+        );
+        node.status = miroir_core::topology::NodeStatus::Active;
+        topo.add_node(node);
+    }
+    let topology = Arc::new(RwLock::new(topo));
+    let client = Arc::new(MockNodeClient::default());
 
     let ttl_config = TtlConfig::default();
-    let manager = TtlManager::new(ttl_config);
+    let manager = miroir_core::ttl::TtlManager::new(ttl_config, topology, client, 64, 0, 2);
 
     // Verify manager was created
     let state = manager.state().await;
