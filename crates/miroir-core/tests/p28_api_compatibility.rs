@@ -168,6 +168,7 @@ fn test_error_with_custom_metadata_preserves_shape() {
     // Verify the error can be converted to axum Response if feature is enabled
     #[cfg(feature = "axum")]
     {
+        use axum::response::IntoResponse;
         let err = MeilisearchError::new(
             MiroirCode::ReservedField,
             "document contains reserved field `_miroir_shard`",
