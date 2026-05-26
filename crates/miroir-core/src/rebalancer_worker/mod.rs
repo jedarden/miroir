@@ -416,7 +416,7 @@ impl RebalancerWorker {
                                 let scope = scope.clone();
                                 let pod_id = self.pod_id.clone();
                                 move || {
-                                    task_store.renew_leader_lease(&scope, &pod_id, expires_at)
+                                    task_store.renew_leader_lease(&scope, &pod_id, expires_at, now_ms)
                                 }
                             })
                             .await

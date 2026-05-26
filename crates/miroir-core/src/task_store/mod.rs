@@ -157,7 +157,14 @@ pub trait TaskStore: Send + Sync {
     ) -> Result<bool>;
 
     /// Renew a leader lease we already hold.
-    fn renew_leader_lease(&self, scope: &str, holder: &str, expires_at: i64) -> Result<bool>;
+    /// `now_ms` is the current time for expiry comparison.
+    fn renew_leader_lease(
+        &self,
+        scope: &str,
+        holder: &str,
+        expires_at: i64,
+        now_ms: i64,
+    ) -> Result<bool>;
 
     /// Get current lease holder for a scope.
     fn get_leader_lease(&self, scope: &str) -> Result<Option<LeaderLeaseRow>>;

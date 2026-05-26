@@ -79,7 +79,9 @@ where
 
     // Release lock
     if acquired {
-        if let Err(e) = store.renew_leader_lease(LOCK_SCOPE, &holder, now) {
+        // Renew with a short TTL to release the lock quickly
+        let release_ttl = now + 1000; // 1 second
+        if let Err(e) = store.renew_leader_lease(LOCK_SCOPE, &holder, release_ttl, now) {
             warn!("pruner: failed to release lock: {e}");
         }
     }

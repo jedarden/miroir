@@ -215,7 +215,7 @@ async fn test_redis_leader_lease_renew() {
 
     // Renew lease
     let renewed = store
-        .renew_leader_lease(scope, holder, expires_at2)
+        .renew_leader_lease(scope, holder, expires_at2, now_ms)
         .unwrap();
 
     assert!(renewed);
@@ -273,14 +273,14 @@ async fn test_redis_leader_lease_holders_only_renew() {
 
     // Pod-2 tries to renew (should fail)
     let renewed = store
-        .renew_leader_lease(scope, holder2, expires_at + 10000)
+        .renew_leader_lease(scope, holder2, expires_at + 10000, now_ms)
         .unwrap();
 
     assert!(!renewed, "Non-holder should not renew lease");
 
     // Pod-1 renews (should succeed)
     let renewed = store
-        .renew_leader_lease(scope, holder1, expires_at + 10000)
+        .renew_leader_lease(scope, holder1, expires_at + 10000, now_ms)
         .unwrap();
 
     assert!(renewed, "Holder should renew lease");

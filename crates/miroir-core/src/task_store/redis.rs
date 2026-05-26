@@ -1553,13 +1553,19 @@ impl TaskStore for RedisTaskStore {
         })
     }
 
-    fn renew_leader_lease(&self, scope: &str, holder: &str, expires_at: i64) -> Result<bool> {
+    fn renew_leader_lease(
+        &self,
+        scope: &str,
+        holder: &str,
+        expires_at: i64,
+        now_ms: i64,
+    ) -> Result<bool> {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();
         let scope = scope.to_string();
         let holder = holder.to_string();
         let key = format!("{key_prefix}:lease:{scope}");
-        let ttl_seconds = ((expires_at - now_ms()) / 1000).max(1) as u64;
+        let ttl_seconds = ((expires_at - now_ms) / 1000).max(1) as u64;
 
         self.block_on(async move {
             let mut conn = manager.lock().await;
@@ -3489,8 +3495,9 @@ mod tests {
 
             // Renew lease
             let new_expires = now_ms() + 20000;
+            let now = now_ms();
             assert!(store
-                .renew_leader_lease(scope, holder, new_expires)
+                .renew_leader_lease(scope, holder, new_expires, now)
                 .expect("Renew should succeed"));
 
             // Another pod tries to acquire (should fail)
@@ -4796,11 +4803,12 @@ mod tests {
 
             // Test leader lease
             let scope = "trait-test-scope";
+            let now = now_ms();
             assert!(store
-                .try_acquire_leader_lease(scope, "pod-1", now_ms() + 10000, now_ms())
+                .try_acquire_leader_lease(scope, "pod-1", now_ms() + 10000, now)
                 .expect("try_acquire_leader_lease should work"));
             assert!(store
-                .renew_leader_lease(scope, "pod-1", now_ms() + 20000)
+                .renew_leader_lease(scope, "pod-1", now_ms() + 20000, now)
                 .expect("renew_leader_lease should work"));
 
             let lease = store

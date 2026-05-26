@@ -496,16 +496,14 @@ async fn main() -> anyhow::Result<()> {
 
                 // Create the ILM worker
                 match ilm_manager.create_worker(leader_election.clone(), pod_id.clone()) {
-                    Ok(mut worker) => {
-                        match worker.run().await {
-                            Ok(()) => {
-                                info!("ILM worker exited cleanly");
-                            }
-                            Err(e) => {
-                                error!(error = %e, "ILM worker exited with error");
-                            }
+                    Ok(mut worker) => match worker.run().await {
+                        Ok(()) => {
+                            info!("ILM worker exited cleanly");
                         }
-                    }
+                        Err(e) => {
+                            error!(error = %e, "ILM worker exited with error");
+                        }
+                    },
                     Err(e) => {
                         error!(error = %e, "ILM worker failed to start: {}", e);
                     }

@@ -498,10 +498,11 @@ async fn p6_4_a7_expired_lease_allows_acquisition() {
 
     // Manually set the lease expiration to the past to simulate expiry
     let expired_time = now_ms() - 1000; // 1 second ago
+    let now = now_ms();
     tokio::task::spawn_blocking({
         let store = store.clone();
         let scope = scope.to_string();
-        move || store.renew_leader_lease(&scope, "pod-1", expired_time)
+        move || store.renew_leader_lease(&scope, "pod-1", expired_time, now)
     })
     .await
     .unwrap()
