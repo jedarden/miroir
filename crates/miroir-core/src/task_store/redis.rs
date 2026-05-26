@@ -3375,29 +3375,66 @@ mod tests {
         use testcontainers_modules::redis::Redis;
 
         /// Helper to set up a Redis container and return the store.
-        async fn setup_redis_store() -> (RedisTaskStore, String) {
+        ///
+        /// Environment variables:
+        /// - `MIROIR_TEST_REDIS_URL`: If set, use this Redis URL instead of testcontainers
+        /// - `MIROIR_TEST_SKIP_DOCKER`: If set, skip tests that require Docker
+        ///
+        /// Falls back to testcontainers if no URL is provided. Requires Docker daemon
+        /// at /var/run/docker.sock or DOCKER_HOST environment variable.
+        async fn setup_redis_store() -> Result<(RedisTaskStore, String)> {
+            // Check for external Redis URL first
+            if let Ok(url) = std::env::var("MIROIR_TEST_REDIS_URL") {
+                let store = RedisTaskStore::open(&url).await?;
+                return Ok((store, url));
+            }
+
+            // Check if Docker tests are explicitly skipped
+            if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
+                return Err(MiroirError::Config(
+                    "Docker tests skipped via MIROIR_TEST_SKIP_DOCKER".to_string()
+                ));
+            }
+
+            // Try to use testcontainers (requires Docker)
             let redis = Redis::default();
-            let node = redis.start().await.expect("Failed to start Redis");
-            let port = node
-                .get_host_port_ipv4(6379)
-                .await
-                .expect("Failed to get Redis port");
+            let node = redis.start().await.map_err(|e| {
+                MiroirError::Config(format!(
+                    "Failed to start Redis container. Docker required but not available: {e}. \
+                     Set MIROIR_TEST_REDIS_URL=redis://localhost:6379 to use external Redis, \
+                     or MIROIR_TEST_SKIP_DOCKER=1 to skip these tests."
+                ))
+            })?;
+            let port = node.get_host_port_ipv4(6379).await.map_err(|e| {
+                MiroirError::Config(format!("Failed to get Redis port: {e}"))
+            })?;
             let url = format!("redis://localhost:{port}");
-            let store = RedisTaskStore::open(&url)
-                .await
-                .expect("Failed to open Redis store");
-            (store, url)
+            let store = RedisTaskStore::open(&url).await?;
+            Ok((store, url))
+        }
+
+        /// Macro to skip test if Redis/Docker is unavailable
+        macro_rules! skip_if_no_redis {
+            () => {
+                match setup_redis_store().await {
+                    Ok(store) => store,
+                    Err(e) => {
+                        eprintln!("Skipping test: {e}");
+                        return;
+                    }
+                }
+            };
         }
 
         #[tokio::test]
         async fn test_redis_migrate() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
         }
 
         #[tokio::test]
         async fn test_redis_tasks_crud() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             // Insert a task
@@ -3473,7 +3510,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_leader_lease() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             let scope = "test-scope";
@@ -3509,7 +3546,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_lease_race() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             // Simulate two pods racing for the same lease
@@ -3556,7 +3593,7 @@ mod tests {
         /// Target: ~100 bytes per task + overhead, 10k tasks < ~2 MB RSS.
         #[tokio::test]
         async fn test_redis_memory_budget() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             // Insert 10k tasks
@@ -3625,7 +3662,7 @@ mod tests {
         /// Pub/Sub test: verify session revocation via subscriber within 100ms.
         #[tokio::test]
         async fn test_redis_pubsub_session_invalidation() {
-            let (store, url) = setup_redis_store().await;
+            let (store, url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             let revoked = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
@@ -3690,7 +3727,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_rate_limit_searchui() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             let ip = "192.168.1.1";
@@ -3745,7 +3782,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_rate_limit_admin_login() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             let ip = "10.0.0.1";
@@ -3794,7 +3831,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_cdc_overflow() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             let sink = "test-sink";
@@ -3836,7 +3873,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_cdc_overflow_trim() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             let sink = "trim-sink";
@@ -3861,7 +3898,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_scoped_key_observation() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             let index_uid = "products";
@@ -3951,7 +3988,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_node_settings_version() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             // Insert
@@ -3986,7 +4023,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_aliases_single() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             // Create single alias
@@ -4045,7 +4082,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_aliases_multi() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             store
@@ -4076,7 +4113,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_sessions() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             let session = SessionRow {
@@ -4125,7 +4162,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_sessions_expire() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             // Create a session with a short TTL (1 second)
@@ -4181,7 +4218,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_idempotency() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             let sha = vec![0u8; 32];
@@ -4218,7 +4255,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_jobs() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             store
@@ -4305,7 +4342,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_canaries() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             // Insert a canary
@@ -4375,7 +4412,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_canary_runs() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             // Insert 5 runs with history limit of 3
@@ -4427,7 +4464,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_cdc_cursors() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             // Insert a cursor
@@ -4494,7 +4531,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_tenant_map() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             let api_key_hash = vec![1u8; 32];
@@ -4554,7 +4591,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_rollover_policies() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             // Insert
@@ -4620,7 +4657,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_search_ui_config() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             let config_json = r#"{"title": "Product Search", "facets": ["category", "price"], "sort": ["relevance", "price_asc"]}"#;
@@ -4673,7 +4710,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_admin_sessions() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             // Insert
@@ -4741,7 +4778,7 @@ mod tests {
         async fn test_redis_taskstore_trait_completeness() {
             // This test ensures all TaskStore trait methods are callable
             // and behave consistently with the SQLite implementation.
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
             store.migrate().expect("Migration should succeed");
 
             // Test tasks
@@ -4847,7 +4884,7 @@ mod tests {
 
         #[tokio::test]
         async fn redis_beacon_idempotency_check() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
 
             // First call should return true (new event)
             let is_new = store
@@ -4882,7 +4919,7 @@ mod tests {
 
         #[tokio::test]
         async fn redis_beacon_ttl_cleanup() {
-            let (store, _url) = setup_redis_store().await;
+            let (store, _url) = skip_if_no_redis!();
 
             // Insert an event
             store
