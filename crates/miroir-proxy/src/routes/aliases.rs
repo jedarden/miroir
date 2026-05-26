@@ -8,8 +8,57 @@ use axum::{
     Json,
 };
 use miroir_core::{alias::AliasKind, config::MiroirConfig, task_store::TaskStore};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Check if an index exists on all Meilisearch nodes.
+///
+/// Returns Ok(()) if the index exists on all nodes, or an error if any node
+/// does not have the index or is unreachable.
+async fn check_index_exists_on_all_nodes(
+    node_addresses: &[String],
+    master_key: &str,
+    index_uid: &str,
+) -> Result<(), String> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("failed to create HTTP client: {e}"))?;
+
+    // Check each node
+    for address in node_addresses {
+        let base = address.trim_end_matches('/');
+        let url = format!("{base}/indexes/{index_uid}");
+
+        let response = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {master_key}"))
+            .send()
+            .await
+            .map_err(|e| format!("node {address} unreachable: {e}"))?;
+
+        let status = response.status();
+        if status.as_u16() == 404 {
+            return Err(format!(
+                "index '{index_uid}' does not exist on node {address}"
+            ));
+        } else if !status.is_success() {
+            let body_text = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("(failed to read error body: {e})"));
+            return Err(format!(
+                "node {address} returned HTTP {} for index '{index_uid}': {}",
+                status.as_u16(),
+                body_text.trim()
+            ));
+        }
+    }
+
+    Ok(())
+}
 
 /// Alias management state.
 #[derive(Clone)]
@@ -131,8 +180,49 @@ where
 
     // Validate target existence if required
     if state.config.aliases.require_target_exists {
-        // TODO: Check if target index exists in Meilisearch
-        // This would require calling the index list endpoint on each node
+        let node_addresses: Vec<String> = state
+            .config
+            .nodes
+            .iter()
+            .map(|n| n.address.clone())
+            .collect();
+        let master_key = &state.config.node_master_key;
+
+        match &kind {
+            AliasKind::Single => {
+                if let Some(target) = &body.target {
+                    if let Err(e) =
+                        check_index_exists_on_all_nodes(&node_addresses, master_key, target).await
+                    {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse {
+                                code: "index_not_found".to_string(),
+                                message: e,
+                            }),
+                        ));
+                    }
+                }
+            }
+            AliasKind::Multi => {
+                if let Some(targets) = &body.targets {
+                    for target in targets {
+                        if let Err(e) =
+                            check_index_exists_on_all_nodes(&node_addresses, master_key, target)
+                                .await
+                        {
+                            return Err((
+                                StatusCode::BAD_REQUEST,
+                                Json(ErrorResponse {
+                                    code: "index_not_found".to_string(),
+                                    message: e,
+                                }),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     let now = std::time::SystemTime::now()
@@ -332,7 +422,25 @@ where
 
         // Validate target existence if required
         if state.config.aliases.require_target_exists {
-            // TODO: Check if target index exists in Meilisearch
+            let node_addresses: Vec<String> = state
+                .config
+                .nodes
+                .iter()
+                .map(|n| n.address.clone())
+                .collect();
+            let master_key = &state.config.node_master_key;
+
+            if let Err(e) =
+                check_index_exists_on_all_nodes(&node_addresses, master_key, &new_target).await
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        code: "index_not_found".to_string(),
+                        message: e,
+                    }),
+                ));
+            }
         }
 
         // Perform the atomic flip
