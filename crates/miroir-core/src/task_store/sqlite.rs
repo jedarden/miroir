@@ -1094,6 +1094,23 @@ impl TaskStore for SqliteTaskStore {
         Ok(rows > 0)
     }
 
+    fn list_tenant_mappings(&self) -> Result<Vec<TenantMapRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT api_key_hash, tenant_id, group_id FROM tenant_map")?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(TenantMapRow {
+                    api_key_hash: row.get(0)?,
+                    tenant_id: row.get(1)?,
+                    group_id: row.get(2)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(rows)
+    }
+
     // --- Table 12: rollover_policies ---
 
     fn upsert_rollover_policy(&self, policy: &NewRolloverPolicy) -> Result<()> {

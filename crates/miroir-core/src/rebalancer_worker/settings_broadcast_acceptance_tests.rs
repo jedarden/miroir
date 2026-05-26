@@ -262,6 +262,10 @@ impl TaskStore for MockTaskStore {
         Ok(true)
     }
 
+    fn list_tenant_mappings(&self) -> Result<Vec<TenantMapRow>> {
+        Ok(Vec::new())
+    }
+
     fn upsert_rollover_policy(&self, _policy: &NewRolloverPolicy) -> Result<()> {
         Ok(())
     }

@@ -216,6 +216,9 @@ pub trait TaskStore: Send + Sync {
     /// Delete a tenant mapping.
     fn delete_tenant_mapping(&self, api_key_hash: &[u8]) -> Result<bool>;
 
+    /// List all tenant mappings.
+    fn list_tenant_mappings(&self) -> Result<Vec<TenantMapRow>>;
+
     // --- Table 12: rollover_policies ---
 
     /// Create or update a rollover policy.

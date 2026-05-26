@@ -953,6 +953,10 @@ mod tests {
             Ok(false)
         }
 
+        fn list_tenant_mappings(&self) -> crate::Result<Vec<crate::task_store::TenantMapRow>> {
+            Ok(Vec::new())
+        }
+
         fn upsert_rollover_policy(
             &self,
             _policy: &crate::task_store::NewRolloverPolicy,
