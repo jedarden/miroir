@@ -108,11 +108,23 @@ impl ErrorResponse {
     pub fn internal_error(message: impl Into<String>) -> Self {
         Self::new(message, "internal_error")
     }
+
+    /// Create a rate limit error.
+    pub fn rate_limited(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: "miroir_rate_limited".to_string(),
+            error_type: "rate_limited".to_string(),
+            link: "https://docs.meilisearch.com/errors".to_string(),
+        }
+    }
 }
 
 impl IntoResponse for ErrorResponse {
     fn into_response(self) -> Response {
-        let status = if self.code == "miroir_no_quorum" || self.code == "miroir_shard_unavailable" {
+        let status = if self.code == "miroir_rate_limited" {
+            StatusCode::TOO_MANY_REQUESTS
+        } else if self.code == "miroir_no_quorum" || self.code == "miroir_shard_unavailable" {
             StatusCode::SERVICE_UNAVAILABLE
         } else if self.code.contains("not_found") {
             StatusCode::NOT_FOUND
