@@ -40,11 +40,16 @@ fn bench_merge_hits(c: &mut Criterion) {
         group.throughput(Throughput::Elements(total_hits as u64));
 
         group.bench_with_input(
-            BenchmarkId::new("merge_hits", format!("s{}_h{}", shard_count, hits_per_shard)),
+            BenchmarkId::new(
+                "merge_hits",
+                format!("s{}_h{}", shard_count, hits_per_shard),
+            ),
             &(shard_count, hits_per_shard),
             |b, &(shard_count, hits_per_shard)| {
                 let shard_hits: Vec<merger::ShardHitPage> = (0..shard_count)
-                    .map(|i| create_shard_hit_page(i as u32, hits_per_shard, 1.0 - (i as f64 * 0.01)))
+                    .map(|i| {
+                        create_shard_hit_page(i as u32, hits_per_shard, 1.0 - (i as f64 * 0.01))
+                    })
                     .collect();
 
                 let input = merger::MergeInput {
