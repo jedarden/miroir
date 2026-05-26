@@ -54,18 +54,56 @@ Tests will be skipped with a message indicating why.
 
 ## Docker Compose Integration Tests
 
-The `docker_compose_integration` tests require a full Meilisearch cluster.
+The `docker_compose_integration` tests run against a full Miroir + Meilisearch stack.
+
+### Option 1: Using Docker Compose
 
 **Requirements:**
 - Docker and docker-compose installed
-- Run `docker-compose up -d` in the project root first
+- Start the stack: `docker compose -f examples/docker-compose-dev.yml up -d`
 
 **Run tests:**
 ```bash
-cd docker-compose-env  # or whatever the compose directory is
-docker-compose up -d
-cd ..
+docker compose -f examples/docker-compose-dev.yml up -d
 cargo nextest run -E 'test(docker_compose_integration)'
+```
+
+### Option 2: Using External Miroir
+
+**Requirements:**
+- A running Miroir instance accessible via HTTP
+
+**Run tests:**
+```bash
+export MIROIR_TEST_MIROIR_URL=http://your-miroir-host:7700
+cargo nextest run -E 'test(docker_compose_integration)'
+```
+
+### Option 3: Skip Docker Tests
+
+If Docker is not available and you don't have an external Miroir instance, you can skip these tests:
+
+```bash
+export MIROIR_TEST_SKIP_DOCKER=1
+cargo nextest run -E 'test(docker_compose_integration)'
+```
+
+Tests will be skipped with a message indicating why.
+
+### Node Failure Test (RF=2)
+
+The `test_node_failure_rf2` test requires the RF=2 docker-compose stack:
+
+```bash
+docker compose -f examples/docker-compose-dev-rf2.yml up -d
+cargo nextest run -E 'test(node_failure_rf2)' --ignored
+```
+
+Or use an external RF=2 Miroir instance:
+
+```bash
+export MIROIR_TEST_MIROIR_URL=http://your-rf2-miroir:7710
+cargo nextest run -E 'test(node_failure_rf2)' --ignored
 ```
 
 ## Phase Acceptance Tests

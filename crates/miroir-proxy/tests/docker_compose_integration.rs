@@ -11,20 +11,64 @@
 //! - Node failure with RF=2
 //!
 //! Run with:
-//!   cargo test --test integration -- --test-threads=1
+//!   cargo nextest run -E 'test(docker_compose_integration)'
 //!
 //! Prerequisites:
-//!   docker compose -f examples/docker-compose-dev.yml up -d
+//!   Option 1: docker compose -f examples/docker-compose-dev.yml up -d
+//!   Option 2: Set MIROIR_TEST_MIROIR_URL to point to a running Miroir instance
+//!   Option 3: Set MIROIR_TEST_SKIP_DOCKER=1 to skip these tests
+//!
+//! Environment variables:
+//!   - `MIROIR_TEST_MIROIR_URL`: If set, use this URL instead of localhost:7700
+//!   - `MIROIR_TEST_SKIP_DOCKER`: If set, skip tests that require Docker/Miroir
+//!
+//! See docs/TESTING.md for more details.
 
 use serde_json::json;
 use std::collections::HashSet;
 use std::time::Duration;
 
-/// Base URL for Miroir API (from docker-compose)
-const MIROIR_BASE_URL: &str = "http://localhost:7700";
+/// Default base URL for Miroir API (from docker-compose)
+const DEFAULT_MIROIR_BASE_URL: &str = "http://localhost:7700";
 
 /// Master key for authentication (from dev-config.yaml)
 const MASTER_KEY: &str = "dev-key";
+
+/// Get the Miroir base URL from environment or default.
+///
+/// Environment variables:
+/// - `MIROIR_TEST_MIROIR_URL`: If set, use this URL instead of the default
+/// - `MIROIR_TEST_SKIP_DOCKER`: If set, return an error (test should skip)
+fn get_miroir_base_url() -> Result<String, String> {
+    // Check if Docker tests are explicitly skipped
+    if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
+        return Err("Docker tests skipped via MIROIR_TEST_SKIP_DOCKER. \
+             Set MIROIR_TEST_MIROIR_URL=http://your-miroir:7700 to test against external Miroir, \
+             or unset MIROIR_TEST_SKIP_DOCKER and ensure docker-compose is running."
+            .to_string());
+    }
+
+    // Use external URL if provided
+    if let Ok(url) = std::env::var("MIROIR_TEST_MIROIR_URL") {
+        return Ok(url);
+    }
+
+    // Default to localhost
+    Ok(DEFAULT_MIROIR_BASE_URL.to_string())
+}
+
+/// Macro to skip test if Miroir/Docker is unavailable
+macro_rules! skip_if_no_miroir {
+    () => {
+        match get_miroir_base_url() {
+            Ok(url) => url,
+            Err(e) => {
+                eprintln!("Skipping test: {e}");
+                return;
+            }
+        }
+    };
+}
 
 /// HTTP client for making requests
 #[derive(Clone)]
@@ -35,7 +79,7 @@ struct HttpClient {
 }
 
 impl HttpClient {
-    fn new() -> Self {
+    fn new(base_url: String) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(5))
@@ -44,7 +88,7 @@ impl HttpClient {
 
         Self {
             client,
-            base_url: MIROIR_BASE_URL.to_string(),
+            base_url,
             master_key: MASTER_KEY.to_string(),
         }
     }
@@ -177,7 +221,8 @@ fn generate_test_documents(count: usize) -> Vec<serde_json::Value> {
 /// Test 1: Document round-trip (1000 docs)
 #[tokio::test]
 async fn test_document_round_trip() {
-    let client = HttpClient::new();
+    let base_url = skip_if_no_miroir!();
+    let client = HttpClient::new(base_url);
 
     // Create index
     let create_body = json!({
@@ -242,7 +287,8 @@ async fn test_document_round_trip() {
 /// Test 2: Search covers all shards (unique-keyword test)
 #[tokio::test]
 async fn test_search_shard_coverage() {
-    let client = HttpClient::new();
+    let base_url = skip_if_no_miroir!();
+    let client = HttpClient::new(base_url);
 
     // Create index
     let create_body = json!({
@@ -353,7 +399,8 @@ async fn test_search_shard_coverage() {
 /// Test 3: Facet aggregation (3 colors, sum = 100)
 #[tokio::test]
 async fn test_facet_aggregation() {
-    let client = HttpClient::new();
+    let base_url = skip_if_no_miroir!();
+    let client = HttpClient::new(base_url);
 
     // Create index
     let create_body = json!({
@@ -488,7 +535,8 @@ async fn test_facet_aggregation() {
 /// Test 4: Offset/limit paging
 #[tokio::test]
 async fn test_offset_limit_paging() {
-    let client = HttpClient::new();
+    let base_url = skip_if_no_miroir!();
+    let client = HttpClient::new(base_url);
 
     // Create index
     let create_body = json!({
@@ -600,7 +648,8 @@ async fn test_offset_limit_paging() {
 /// Test 5: Settings broadcast
 #[tokio::test]
 async fn test_settings_broadcast() {
-    let client = HttpClient::new();
+    let base_url = skip_if_no_miroir!();
+    let client = HttpClient::new(base_url);
 
     // Create index
     let create_body = json!({
@@ -680,7 +729,8 @@ async fn test_settings_broadcast() {
 /// Test 6: Task polling
 #[tokio::test]
 async fn test_task_polling() {
-    let client = HttpClient::new();
+    let base_url = skip_if_no_miroir!();
+    let client = HttpClient::new(base_url);
 
     // Create index
     let create_body = json!({
@@ -757,7 +807,8 @@ async fn test_task_polling() {
 /// Test 7: Health check
 #[tokio::test]
 async fn test_health_check() {
-    let client = HttpClient::new();
+    let base_url = skip_if_no_miroir!();
+    let client = HttpClient::new(base_url);
 
     let (status, body) = client.get("/health").await.unwrap();
     assert_eq!(status, 200, "Health check failed: {body}");
@@ -772,7 +823,12 @@ async fn test_health_check() {
 /// Test 8: Direct Meilisearch node access (for debugging)
 #[tokio::test]
 async fn test_direct_meilisearch_access() {
-    // Access Meilisearch node 0 directly
+    // This test accesses Meilisearch node 0 directly (port 7701 by default)
+    // Skip if Docker tests are disabled
+    let _base_url = skip_if_no_miroir!();
+
+    // For direct Meilisearch access, we use the default port 7701
+    // This is independent of the Miroir URL but we use the same skip logic
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -793,22 +849,33 @@ async fn test_direct_meilisearch_access() {
 /// This test requires the RF=2 docker-compose stack:
 ///   docker compose -f examples/docker-compose-dev-rf2.yml up -d
 ///
+/// Or set MIROIR_TEST_MIROIR_URL=http://localhost:7710 to test against RF=2 stack
+///
 /// The test:
 /// 1. Indexes documents with RF=2 (each document replicated to both groups)
 /// 2. Stops a Meilisearch node mid-test (docker stop)
 /// 3. Verifies that searches still work using remaining replicas
 /// 4. Restarts the node and verifies recovery
 #[tokio::test]
-#[ignore] // Run with: cargo test --test integration test_node_failure_rf2 -- --ignored
+#[ignore] // Run with: cargo nextest run -E 'test(node_failure_rf2)' --ignored
 async fn test_node_failure_rf2() {
-    // Use port 7710 for RF=2 stack
+    // Use port 7710 for RF=2 stack, or allow override via environment
+    let base_url = std::env::var("MIROIR_TEST_MIROIR_URL")
+        .unwrap_or_else(|_| "http://localhost:7710".to_string());
+
+    // Check if Docker tests are skipped
+    if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
+        eprintln!("Skipping test: Docker tests skipped via MIROIR_TEST_SKIP_DOCKER");
+        return;
+    }
+
     let client = HttpClient {
         client: reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(5))
             .build()
             .expect("Failed to create HTTP client"),
-        base_url: "http://localhost:7710".to_string(),
+        base_url,
         master_key: MASTER_KEY.to_string(),
     };
 
