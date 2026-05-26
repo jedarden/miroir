@@ -460,8 +460,10 @@ impl IlmManager {
             }
         }
 
-        // Check triggers (placeholder - would query actual stats in production)
-        let should_rollover = false; // TODO: implement trigger checking
+        // NOTE: This method is not currently used. The actual ILM evaluation
+        // happens in IlmWorker::evaluate_policy_triggers() which does implement
+        // full trigger checking (max_docs, max_age, max_size_gb).
+        let should_rollover = false;
 
         if should_rollover {
             // Trigger rollover
