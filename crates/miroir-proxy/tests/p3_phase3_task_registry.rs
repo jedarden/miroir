@@ -13,8 +13,8 @@
 
 use miroir_core::task_store::{
     IdempotencyEntry, NewAdminSession, NewAlias, NewCanary, NewCanaryRun, NewCdcCursor, NewJob,
-    NewRolloverPolicy, NewSearchUiConfig, NewTask, NewTenantMapping, SessionRow, SqliteTaskStore, TaskFilter,
-    TaskStore,
+    NewRolloverPolicy, NewSearchUiConfig, NewTask, NewTenantMapping, SessionRow, SqliteTaskStore,
+    TaskFilter, TaskStore,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -875,7 +875,7 @@ fn test_prune_tasks_removes_old_terminal_tasks() {
     store
         .insert_task(&NewTask {
             miroir_id: "old-task".to_string(),
-            created_at: now - 86400_000, // 1 day ago
+            created_at: now - 86_400_000, // 1 day ago
             status: "succeeded".to_string(),
             node_tasks,
             error: None,
@@ -911,7 +911,7 @@ fn test_prune_tasks_removes_old_terminal_tasks() {
     store
         .insert_task(&NewTask {
             miroir_id: "active-task".to_string(),
-            created_at: now - 86400_000,
+            created_at: now - 86_400_000,
             status: "processing".to_string(),
             node_tasks,
             error: None,

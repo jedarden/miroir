@@ -413,7 +413,7 @@ impl MockTaskRegistry {
     }
 
     /// Add a task with a specific status.
-    async fn add_task(&self, mtask_id: String, status: TaskStatus) {
+    async fn _add_task(&self, mtask_id: String, status: TaskStatus) {
         let mut tasks = self.tasks.write().await;
         tasks.insert(
             mtask_id.clone(),
@@ -436,7 +436,7 @@ impl MockTaskRegistry {
     }
 
     /// Update a task's status.
-    async fn update_task(&self, mtask_id: &str, status: TaskStatus) {
+    async fn _update_task(&self, mtask_id: &str, status: TaskStatus) {
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.get_mut(mtask_id) {
             task.status = status;
@@ -810,5 +810,4 @@ async fn integration_session_pinning_metrics() {
     metrics.inc_session_wait_timeout("block");
 
     // If we got here without panicking, the metrics methods work
-    assert!(true);
 }

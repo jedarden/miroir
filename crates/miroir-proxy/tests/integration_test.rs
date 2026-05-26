@@ -13,6 +13,7 @@ use tokio::time::sleep;
 
 /// Test configuration helper.
 struct TestSetup {
+    #[allow(dead_code)]
     meilisearch_urls: Vec<String>,
     proxy_url: String,
     master_key: String,

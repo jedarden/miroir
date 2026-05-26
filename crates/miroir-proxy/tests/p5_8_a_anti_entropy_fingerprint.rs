@@ -119,8 +119,10 @@ async fn test_fingerprint_shard_pagination() {
         },
     );
 
-    let mut config = AntiEntropyConfig::default();
-    config.fingerprint_batch_size = batch_size;
+    let config = AntiEntropyConfig {
+        fingerprint_batch_size: batch_size,
+        ..Default::default()
+    };
 
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
     let reconciler = AntiEntropyReconciler::new(config, topology, Arc::new(mock_client));
@@ -148,7 +150,7 @@ async fn test_fingerprint_shard_content_hash_excludes_internal_fields() {
         "_rankingScore": 0.95,
     });
 
-    let doc2 = json!({
+    let _doc2 = json!({
         "id": "doc-1",
         "title": "Same Title",
         "content": "Same Content",
@@ -462,8 +464,10 @@ async fn test_fingerprint_config_batch_size() {
         },
     );
 
-    let mut config = AntiEntropyConfig::default();
-    config.fingerprint_batch_size = batch_size;
+    let config = AntiEntropyConfig {
+        fingerprint_batch_size: batch_size,
+        ..Default::default()
+    };
 
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
     let reconciler = AntiEntropyReconciler::new(config, topology, Arc::new(mock_client));
@@ -493,7 +497,7 @@ async fn test_compute_content_hash_unit() {
 
     // Create a dummy reconciler just to call the static method
     let topology = Arc::new(RwLock::new(Topology::new(1, 1, 1)));
-    let reconciler = AntiEntropyReconciler::<MockNodeClient>::new(
+    let _reconciler = AntiEntropyReconciler::<MockNodeClient>::new(
         AntiEntropyConfig::default(),
         topology,
         Arc::new(MockNodeClient::default()),

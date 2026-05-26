@@ -15,7 +15,7 @@ use miroir_proxy::middleware::Metrics;
 /// Helper to parse a metric line from Prometheus text format.
 ///
 /// Returns (metric_name, labels_map, value) or None if not a valid metric line.
-fn parse_metric_line(
+fn _parse_metric_line(
     line: &str,
 ) -> Option<(String, std::collections::HashMap<String, String>, f64)> {
     let line = line.trim();

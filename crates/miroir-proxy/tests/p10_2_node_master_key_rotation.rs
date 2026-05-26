@@ -128,10 +128,7 @@ async fn delete_key(
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "DELETE /keys/{key_uid} failed: HTTP {status} — {text}"
-        )
-        .into());
+        return Err(format!("DELETE /keys/{key_uid} failed: HTTP {status} — {text}").into());
     }
 
     Ok(())

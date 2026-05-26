@@ -13,7 +13,9 @@ use std::collections::HashSet;
 
 #[derive(Clone)]
 struct TestNode {
+    #[allow(dead_code)]
     id: String,
+    #[allow(dead_code)]
     base_url: String,
 }
 
@@ -25,6 +27,7 @@ impl TestNode {
         }
     }
 
+    #[allow(dead_code)]
     async fn get(&self, path: &str) -> reqwest::Response {
         let client = reqwest::Client::new();
         client
@@ -34,6 +37,7 @@ impl TestNode {
             .unwrap()
     }
 
+    #[allow(dead_code)]
     async fn post(&self, path: &str, body: serde_json::Value) -> reqwest::Response {
         let client = reqwest::Client::new();
         client
@@ -44,6 +48,7 @@ impl TestNode {
             .unwrap()
     }
 
+    #[allow(dead_code)]
     async fn delete(&self, path: &str) -> reqwest::Response {
         let client = reqwest::Client::new();
         client
@@ -56,6 +61,7 @@ impl TestNode {
 
 struct TestCluster {
     proxy_url: String,
+    #[allow(dead_code)]
     nodes: Vec<TestNode>,
 }
 

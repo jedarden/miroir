@@ -228,10 +228,7 @@ async fn test_document_round_trip() {
         assert_eq!(status, 200, "Failed to fetch document {i}: {body}");
 
         let doc: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(
-            doc.get("id").and_then(|v| v.as_i64()),
-            Some(i64::from(i))
-        );
+        assert_eq!(doc.get("id").and_then(|v| v.as_i64()), Some(i64::from(i)));
         assert_eq!(
             doc.get("title").and_then(|v| v.as_str()),
             Some(format!("Document {i}").as_str())
@@ -325,10 +322,7 @@ async fn test_search_shard_coverage() {
             .post("/indexes/shard_coverage_test/search", &search_body)
             .await
             .unwrap();
-        assert_eq!(
-            status, 200,
-            "Search failed for keyword {keyword}: {body}"
-        );
+        assert_eq!(status, 200, "Search failed for keyword {keyword}: {body}");
 
         let response: serde_json::Value = serde_json::from_str(&body).unwrap();
         let hits = response.get("hits").and_then(|v| v.as_array()).unwrap();

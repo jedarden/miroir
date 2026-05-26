@@ -11,9 +11,7 @@
 use miroir_core::config::{MiroirConfig, NodeConfig, SearchUiConfig};
 use miroir_core::task_store::{RedisTaskStore, SearchUiScopedKey, TaskStore};
 use miroir_proxy::routes::indexes::MeilisearchClient;
-use miroir_proxy::scoped_key_rotation::{
-    self, ScopedKeyRotationState,
-};
+use miroir_proxy::scoped_key_rotation::{self, ScopedKeyRotationState};
 use serde_json::json;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
@@ -55,6 +53,7 @@ async fn redis_store() -> RedisTaskStore {
 }
 
 /// Seed a scoped key into Redis (simulating a previous rotation).
+#[allow(clippy::too_many_arguments)]
 fn seed_scoped_key(
     redis: &RedisTaskStore,
     index: &str,

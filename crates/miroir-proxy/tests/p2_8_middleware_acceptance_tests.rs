@@ -48,8 +48,11 @@ fn contains_high_cardinality_id(s: &str) -> bool {
     false
 }
 
+/// Type alias for parsed Prometheus metric line
+type ParsedMetric = Option<(String, Vec<(String, String)>, f64)>;
+
 /// Helper: parse a Prometheus metric line and extract labels
-fn parse_metric_line(line: &str) -> Option<(String, Vec<(String, String)>, f64)> {
+fn parse_metric_line(line: &str) -> ParsedMetric {
     // Format: metric_name{label1="value1",label2="value2"} value
     let brace_start = line.find('{')?;
     let brace_end = line.find('}')?;

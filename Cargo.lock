@@ -2515,6 +2515,7 @@ dependencies = [
  "bytes 1.11.1",
  "chacha20poly1305",
  "chrono",
+ "clap",
  "config",
  "dashmap",
  "futures 0.3.32",

@@ -164,7 +164,6 @@ fn test_feature_flag_exists() {
     {
         // If we're compiled with the tracing feature, the otel module should exist
         // This is verified by the fact that this test compiles and links
-        assert!(true, "tracing feature is enabled");
     }
 
     #[cfg(not(feature = "tracing"))]
@@ -173,7 +172,6 @@ fn test_feature_flag_exists() {
         let config = MiroirConfig::default();
         let _ = miroir_proxy::otel::init_otel_layer(&config);
         miroir_proxy::otel::shutdown_otel();
-        assert!(true, "tracing feature is disabled, no-ops work");
     }
 }
 
@@ -186,7 +184,6 @@ fn test_shutdown_otel_is_safe_to_call() {
     // shutdown_otel should be safe to call regardless of feature flag
     // or whether tracing was initialized
     miroir_proxy::otel::shutdown_otel();
-    assert!(true, "shutdown_otel completed without panic");
 }
 
 #[test]
@@ -195,7 +192,6 @@ fn test_shutdown_multiple_times_is_safe() {
     miroir_proxy::otel::shutdown_otel();
     miroir_proxy::otel::shutdown_otel();
     miroir_proxy::otel::shutdown_otel();
-    assert!(true, "Multiple shutdown_otel calls completed without panic");
 }
 
 // ---------------------------------------------------------------------------
@@ -227,8 +223,6 @@ fn test_span_hierarchy_exists_in_code() {
     );
 
     let _ = tracing::info_span!("merge", shard_count = 3, offset = 0, limit = 20);
-
-    assert!(true, "All span macros compile successfully");
 }
 
 // ---------------------------------------------------------------------------
