@@ -504,8 +504,8 @@ fn test_migration_not_reapplied() {
             .query_row("SELECT COUNT(*) FROM schema_versions", [], |row| row.get(0))
             .unwrap();
 
-        // Should have exactly 3 migrations (001, 002, 003)
-        assert_eq!(count, 3);
+        // Should have exactly 5 migrations (001, 002, 003, 004, 005)
+        assert_eq!(count, 5);
     }
 }
 
