@@ -7,6 +7,18 @@
 //! 4. Verify session rejected on a second pod via Pub/Sub propagation
 //! 5. Verify session lookup in Redis returns revoked=true
 //! 6. Verify non-revoked sessions remain valid
+//!
+//! Run with:
+//!   cargo nextest run -E 'test(p10_admin_session_revocation)'
+//!
+//! Prerequisites:
+//!   Option 1: Docker available for testcontainers Redis
+//!   Option 2: Set MIROIR_TEST_REDIS_URL to point to a running Redis instance
+//!   Option 3: Set MIROIR_TEST_SKIP_DOCKER=1 to skip these tests
+//!
+//! Environment variables:
+//!   - `MIROIR_TEST_REDIS_URL`: If set, use this Redis URL instead of testcontainers
+//!   - `MIROIR_TEST_SKIP_DOCKER`: If set, skip tests that require Docker/Redis
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,18 +26,65 @@ use std::time::Duration;
 use dashmap::DashMap;
 
 use miroir_core::task_store::{NewAdminSession, RedisTaskStore, TaskStore};
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::redis::Redis;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-async fn redis_store() -> (RedisTaskStore, String) {
-    let node = Redis::default();
-    let container = node.start().await.expect("start redis");
-    let port = container.get_host_port_ipv4(6379).await.expect("get port");
-    let url = format!("redis://localhost:{port}");
+/// Check if Docker tests should skip and optionally get external Redis URL.
+///
+/// Environment variables:
+/// - `MIROIR_TEST_SKIP_DOCKER`: If set, return Err (test should skip)
+/// - `MIROIR_TEST_REDIS_URL`: If set, use this Redis URL instead of testcontainers
+fn check_docker_or_redis_url() -> Result<Option<String>, String> {
+    // Check if Docker tests are explicitly skipped
+    if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
+        return Err(
+            "Docker tests skipped via MIROIR_TEST_SKIP_DOCKER. \
+             Set MIROIR_TEST_REDIS_URL=redis://localhost:6379 to test against external Redis, \
+             or unset MIROIR_TEST_SKIP_DOCKER and ensure Docker is available."
+            .to_string(),
+        );
+    }
+
+    // Use external Redis URL if provided
+    if let Ok(url) = std::env::var("MIROIR_TEST_REDIS_URL") {
+        return Ok(Some(url));
+    }
+
+    // Default to testcontainers (requires Docker)
+    Ok(None)
+}
+
+/// Macro to get Redis URL or skip test if Docker/Redis is unavailable
+/// Returns the Redis URL to use (external URL or None for testcontainers)
+macro_rules! redis_url_or_skip {
+    () => {
+        match check_docker_or_redis_url() {
+            Ok(url) => url,
+            Err(e) => {
+                eprintln!("Skipping test: {e}");
+                return;
+            }
+        }
+    };
+}
+
+async fn redis_store(maybe_url: Option<String>) -> (RedisTaskStore, String) {
+    let url = match maybe_url {
+        Some(url) => url,
+        None => {
+            // Use testcontainers to spin up Redis
+            use testcontainers::runners::AsyncRunner;
+            use testcontainers_modules::redis::Redis;
+
+            let node = Redis::default();
+            let container = node.start().await.expect("start redis");
+            let port = container.get_host_port_ipv4(6379).await.expect("get port");
+            format!("redis://localhost:{port}")
+        }
+    };
+
     let store = RedisTaskStore::open(&url).await.expect("redis connect");
     (store, url)
 }
@@ -56,7 +115,8 @@ fn make_session(id: &str) -> NewAdminSession {
 /// Login → logout → replay: session must be rejected after revocation.
 #[tokio::test]
 async fn test_login_logout_replay_rejected() {
-    let (store, _url) = redis_store().await;
+    let redis_url = redis_url_or_skip!();
+    let (store, _url) = redis_store(redis_url).await;
 
     // Step 1: Login — insert admin session
     let session = make_session("sess-login-logout-test");
@@ -89,7 +149,8 @@ async fn test_login_logout_replay_rejected() {
 /// via Pub/Sub propagation within 200ms.
 #[tokio::test]
 async fn test_cross_pod_revocation_via_pubsub() {
-    let (store, redis_url) = redis_store().await;
+    let redis_url = redis_url_or_skip!();
+    let (store, redis_url) = redis_store(redis_url).await;
 
     // Simulate two pods, each with their own in-memory revocation cache
     let pod_a_revoked: Arc<DashMap<String, ()>> = Arc::new(DashMap::new());
@@ -191,7 +252,8 @@ async fn test_cross_pod_revocation_via_pubsub() {
 /// Multiple sessions: revoking one does not affect others.
 #[tokio::test]
 async fn test_revocation_is_per_session() {
-    let (store, _url) = redis_store().await;
+    let redis_url = redis_url_or_skip!();
+    let (store, _url) = redis_store(redis_url).await;
 
     let session_a = make_session("sess-per-a");
     let session_b = make_session("sess-per-b");
@@ -222,7 +284,8 @@ async fn test_revocation_is_per_session() {
 /// Revoking a non-existent session returns false but does not error.
 #[tokio::test]
 async fn test_revoke_nonexistent_session() {
-    let (store, _url) = redis_store().await;
+    let redis_url = redis_url_or_skip!();
+    let (store, _url) = redis_store(redis_url).await;
 
     let result = store
         .revoke_admin_session("sess-does-not-exist")
@@ -233,7 +296,8 @@ async fn test_revoke_nonexistent_session() {
 /// Expired session is invalid regardless of revocation status.
 #[tokio::test]
 async fn test_expired_session_is_invalid() {
-    let (store, _url) = redis_store().await;
+    let redis_url = redis_url_or_skip!();
+    let (store, _url) = redis_store(redis_url).await;
 
     let mut session = make_session("sess-expired");
     session.expires_at = now_ms() - 1000; // expired 1 second ago
@@ -260,7 +324,8 @@ async fn test_expired_session_is_invalid() {
 /// CSRF token rotation on session refresh does not affect revocation.
 #[tokio::test]
 async fn test_csrf_refresh_preserves_revocation() {
-    let (store, _url) = redis_store().await;
+    let redis_url = redis_url_or_skip!();
+    let (store, _url) = redis_store(redis_url).await;
 
     let session = make_session("sess-csrf-refresh");
     store.insert_admin_session(&session).expect("insert");
@@ -297,7 +362,8 @@ async fn test_csrf_refresh_preserves_revocation() {
 /// Pub/Sub delivers multiple revocations in order.
 #[tokio::test]
 async fn test_pubsub_multiple_revocations() {
-    let (store, redis_url) = redis_store().await;
+    let redis_url = redis_url_or_skip!();
+    let (store, redis_url) = redis_store(redis_url).await;
 
     let received: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let received_clone = received.clone();

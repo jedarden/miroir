@@ -3392,7 +3392,7 @@ mod tests {
             // Check if Docker tests are explicitly skipped
             if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
                 return Err(MiroirError::Config(
-                    "Docker tests skipped via MIROIR_TEST_SKIP_DOCKER".to_string()
+                    "Docker tests skipped via MIROIR_TEST_SKIP_DOCKER".to_string(),
                 ));
             }
 
@@ -3405,9 +3405,10 @@ mod tests {
                      or MIROIR_TEST_SKIP_DOCKER=1 to skip these tests."
                 ))
             })?;
-            let port = node.get_host_port_ipv4(6379).await.map_err(|e| {
-                MiroirError::Config(format!("Failed to get Redis port: {e}"))
-            })?;
+            let port = node
+                .get_host_port_ipv4(6379)
+                .await
+                .map_err(|e| MiroirError::Config(format!("Failed to get Redis port: {e}")))?;
             let url = format!("redis://localhost:{port}");
             let store = RedisTaskStore::open(&url).await?;
             Ok((store, url))
