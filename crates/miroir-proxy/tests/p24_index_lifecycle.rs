@@ -162,7 +162,7 @@ async fn test_create_index_rollback_on_failure() {
             Ok((status, _)) if (200..300).contains(&status) => {
                 created_on.push(address.clone());
             }
-            Ok((status, text)) => {
+            Ok((_status, _text)) => {
                 // Rollback
                 for addr in &created_on {
                     let _ = client.delete_raw(addr, "/indexes/test-idx").await;

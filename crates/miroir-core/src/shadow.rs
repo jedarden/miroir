@@ -521,7 +521,7 @@ mod tests {
         // With 5% sampling, we expect approximately 500 shadowed queries
         // Allow ±2% tolerance (300-700)
         assert!(
-            shadowed_count >= 300 && shadowed_count <= 700,
+            (300..=700).contains(&shadowed_count),
             "Expected ~500 shadowed queries (±2%), got {}",
             shadowed_count
         );

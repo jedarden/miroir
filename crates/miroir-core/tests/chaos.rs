@@ -561,7 +561,7 @@ async fn chaos_scenario_2_kill_two_nodes_rf2() -> Result<(), Box<dyn std::error:
     cluster.kill_meili(1).await?;
     cluster.kill_meili(2).await?;
 
-    let client = miroir_client(cluster.miroir_port());
+    let _client = miroir_client(cluster.miroir_port());
     let http_client = reqwest::Client::new();
     let search_url = format!(
         "http://localhost:{}/indexes/{}/search",

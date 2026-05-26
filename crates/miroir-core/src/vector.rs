@@ -65,7 +65,7 @@ pub enum MergeStrategy {
 
 impl MergeStrategy {
     /// Parse from string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_strategy(s: &str) -> Option<Self> {
         match s {
             "convex" => Some(MergeStrategy::Convex),
             "rrf" => Some(MergeStrategy::Rrf),
@@ -140,7 +140,7 @@ impl VectorMerger {
     /// Create a new vector merger.
     pub fn new(config: &VectorSearchConfig) -> Self {
         let strategy =
-            MergeStrategy::from_str(&config.merge_strategy).unwrap_or(MergeStrategy::Convex);
+            MergeStrategy::parse_strategy(&config.merge_strategy).unwrap_or(MergeStrategy::Convex);
         Self {
             strategy,
             alpha: config.hybrid_alpha_default,
@@ -277,11 +277,11 @@ mod tests {
     #[test]
     fn test_merge_strategy_from_str() {
         assert_eq!(
-            MergeStrategy::from_str("convex"),
+            MergeStrategy::parse_strategy("convex"),
             Some(MergeStrategy::Convex)
         );
-        assert_eq!(MergeStrategy::from_str("rrf"), Some(MergeStrategy::Rrf));
-        assert_eq!(MergeStrategy::from_str("unknown"), None);
+        assert_eq!(MergeStrategy::parse_strategy("rrf"), Some(MergeStrategy::Rrf));
+        assert_eq!(MergeStrategy::parse_strategy("unknown"), None);
     }
 
     #[test]

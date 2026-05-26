@@ -42,7 +42,7 @@ fn holder_id() -> String {
 /// * `store` - Task store
 /// * `cfg` - Task registry configuration
 /// * `mode_a_owner_fn` - Optional Mode A ownership function: `fn(miroir_id: &str) -> bool`
-///                      If provided, only prunes tasks where this returns true.
+///   If provided, only prunes tasks where this returns true.
 pub fn prune_once<F>(
     store: &dyn TaskStore,
     cfg: &TaskRegistryConfig,

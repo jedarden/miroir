@@ -36,7 +36,7 @@ fn test_shard_for_key_deterministic() {
 #[test]
 fn test_document_distribution_uniformity() {
     let shard_count = 64;
-    let node_count = 3;
+    let _node_count = 3;
 
     // Simulate 1000 documents and track which shard each goes to
     let mut shard_counts: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
@@ -49,8 +49,8 @@ fn test_document_distribution_uniformity() {
     // With RF=1 and 3 nodes, each node should get approximately equal shards
     // Expected: ~21-22 shards per node (64 / 3 ≈ 21.3)
     // Verified range: 17–26 per plan §8 DoD
-    let min_docs_per_node = 1000 * 17 / 64; // ~265 docs
-    let max_docs_per_node = 1000 * 26 / 64; // ~406 docs
+    let _min_docs_per_node = 1000 * 17 / 64; // ~265 docs
+    let _max_docs_per_node = 1000 * 26 / 64; // ~406 docs
 
     // Check that no shard has unreasonable count
     for count in shard_counts.values() {

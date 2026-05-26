@@ -170,7 +170,7 @@ fn test_docs_distribute_uniformly_across_nodes() {
 /// Acceptance 3: Batch with one missing primary key → 400 `miroir_primary_key_required`
 #[test]
 fn test_batch_missing_primary_key_returns_400() {
-    let docs = vec![
+    let docs = [
         json!({"id": "doc1", "title": "Doc 1"}),
         json!({"title": "Doc 2"}), // Missing id field
         json!({"id": "doc3", "title": "Doc 3"}),
@@ -459,8 +459,8 @@ fn test_primary_key_extraction_from_common_fields() {
     let doc_with_key = json!({"key": "test789", "name": "Test"});
     assert!(doc_with_key.get("key").is_some());
 
-    let doc_with__id = json!({"_id": "test000", "name": "Test"});
-    assert!(doc_with__id.get("_id").is_some());
+    let doc_with_id = json!({"_id": "test000", "name": "Test"});
+    assert!(doc_with_id.get("_id").is_some());
 
     let doc_without_pk = json!({"name": "Test", "value": 42});
     assert!(doc_without_pk.get("id").is_none());

@@ -204,6 +204,7 @@ pub struct CdcPublisherState {
 /// `GET /_miroir/changes` endpoint. Events are stored in memory with
 /// optional Redis persistence. Supports long-polling via broadcast
 /// notifications when new events arrive.
+#[allow(clippy::type_complexity)]
 pub struct CdcInternalQueue {
     /// Per-index event storage: index -> (sequence -> event)
     events: Arc<RwLock<HashMap<String, Vec<(u64, CdcEvent)>>>>,

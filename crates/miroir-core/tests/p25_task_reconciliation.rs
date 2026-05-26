@@ -12,6 +12,7 @@ use miroir_core::topology::{Node, NodeId, Topology};
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
 
+#[allow(dead_code)]
 /// Helper: create a test topology with 3 nodes in one replica group.
 fn test_topology_3_nodes() -> Topology {
     let mut topo = Topology::new(64, 1, 1); // 1 replica group, RF=1
@@ -33,6 +34,7 @@ fn test_topology_3_nodes() -> Topology {
     topo
 }
 
+#[allow(dead_code)]
 /// Helper: create a test topology with 2 replica groups, 2 nodes each.
 fn test_topology_2_groups() -> Topology {
     let mut topo = Topology::new(64, 2, 1); // 2 replica groups, RF=1

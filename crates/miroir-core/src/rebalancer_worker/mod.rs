@@ -248,6 +248,7 @@ impl RebalancerWorker {
     }
 
     /// Create a new rebalancer worker with metrics callback.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_metrics(
         config: RebalancerWorkerConfig,
         topology: Arc<RwLock<Topology>>,
@@ -1278,7 +1279,7 @@ impl RebalancerWorker {
         let index_uid = "default".to_string();
 
         // Drive migrations forward for each shard
-        let mut updated = false;
+        let mut _updated = false;
         let mut total_docs_migrated = 0u64;
 
         // Limit concurrent migrations to stay within memory budget
@@ -1294,7 +1295,7 @@ impl RebalancerWorker {
                 ShardMigrationPhase::Idle => {
                     // Already started dual-write in on_node_added/on_node_draining
                     shard_state.phase = ShardMigrationPhase::DualWriteStarted;
-                    updated = true;
+                    _updated = true;
                 }
                 ShardMigrationPhase::DualWriteStarted => {
                     // Start background migration
@@ -1322,14 +1323,14 @@ impl RebalancerWorker {
                             } else {
                                 shard_state.phase = ShardMigrationPhase::MigrationInProgress;
                                 active_count += 1;
-                                updated = true;
+                                _updated = true;
                             }
                         }
                     } else {
                         // No executor - skip directly to complete for testing
                         shard_state.docs_migrated = 1000; // Simulated
                         shard_state.phase = ShardMigrationPhase::MigrationComplete;
-                        updated = true;
+                        _updated = true;
                     }
                 }
                 ShardMigrationPhase::MigrationInProgress => {
@@ -1338,7 +1339,7 @@ impl RebalancerWorker {
                     if complete {
                         shard_state.phase = ShardMigrationPhase::MigrationComplete;
                         active_count -= 1; // One less active migration
-                        updated = true;
+                        _updated = true;
                     }
                 }
                 ShardMigrationPhase::MigrationComplete => {
@@ -1347,7 +1348,7 @@ impl RebalancerWorker {
                         error!(shard_id, error = %e, "failed to begin cutover");
                     } else {
                         shard_state.phase = ShardMigrationPhase::DualWriteStopped;
-                        updated = true;
+                        _updated = true;
                     }
                 }
                 ShardMigrationPhase::DualWriteStopped => {
@@ -1356,7 +1357,7 @@ impl RebalancerWorker {
                         error!(shard_id, error = %e, "failed to complete cutover");
                     } else {
                         shard_state.phase = ShardMigrationPhase::OldReplicaDeleted;
-                        updated = true;
+                        _updated = true;
                     }
                 }
                 ShardMigrationPhase::OldReplicaDeleted => {
@@ -1644,6 +1645,7 @@ impl RebalancerWorker {
     ///
     /// This performs the actual document migration from source to target node
     /// using pagination to stay within memory bounds.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_background_migration(
         &self,
         executor: &Arc<dyn MigrationExecutor>,
@@ -1833,8 +1835,6 @@ fn old_node_owners_for_shard(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::MiroirConfig;
-    use crate::migration::MigrationConfig;
     use crate::topology::Node;
     use std::sync::Arc;
 

@@ -369,7 +369,7 @@ async fn p5_2_a4_writes_never_hedge() {
 
     // Verify by inspection: the scatter.rs module maintains this invariant
     // by never calling execute_hedged_request for write operations.
-    assert!(true, "Architectural invariant: writes bypass hedging");
+    // Architectural invariant: writes bypass hedging.
 }
 
 /// Helper: Run multiple searches and return latencies.
@@ -404,11 +404,10 @@ async fn run_searches_with_latency(
     // (from before it degraded) so that hedging triggers quickly when it becomes slow.
 
     let primary_node = NodeId::new("node-0".to_string());
-    let mut hedge_count = 0;
     let mut total_hedges = 0;
 
     for i in 0..count {
-        hedge_count = 0; // Reset hedge count for each query
+        let mut hedge_count = 0; // Reset hedge count for each query
         let start = Instant::now();
 
         let (result, outcome, _) = execute_hedged_request(

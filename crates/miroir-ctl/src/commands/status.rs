@@ -18,6 +18,7 @@ pub struct StatusSubcommand {
 #[derive(Debug, Deserialize)]
 struct NodeInfo {
     id: String,
+    #[allow(dead_code)]
     address: String,
     status: String,
     shard_count: u32,

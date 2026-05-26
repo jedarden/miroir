@@ -35,25 +35,40 @@ pub enum RebalanceSubcommand {
 
 #[derive(Debug, Deserialize)]
 struct MigrationStatus {
+    #[allow(dead_code)]
     id: u64,
+    #[allow(dead_code)]
     new_node: String,
+    #[allow(dead_code)]
     replica_group: u32,
+    #[allow(dead_code)]
     phase: String,
+    #[allow(dead_code)]
     shards_count: usize,
+    #[allow(dead_code)]
     completed_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
 struct TopologyOperation {
+    #[allow(dead_code)]
     id: u64,
     #[serde(rename = "op_type")]
+    #[allow(dead_code)]
     op_type: String,
+    #[allow(dead_code)]
     status: String,
+    #[allow(dead_code)]
     target_node: Option<String>,
+    #[allow(dead_code)]
     target_group: Option<u32>,
+    #[allow(dead_code)]
     migrations: Vec<serde_json::Value>,
+    #[allow(dead_code)]
     started_at: Option<u64>,
+    #[allow(dead_code)]
     completed_at: Option<u64>,
+    #[allow(dead_code)]
     error: Option<String>,
 }
 
@@ -61,6 +76,7 @@ struct TopologyOperation {
 struct RebalanceStatusResponse {
     in_progress: bool,
     operations: Vec<TopologyOperation>,
+    #[allow(dead_code)]
     migrations: serde_json::Value,
 }
 

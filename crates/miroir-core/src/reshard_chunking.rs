@@ -164,8 +164,8 @@ mod tests {
         assert_eq!(chunks.len(), 5);
 
         // First 4 chunks should have 16 shards each
-        for i in 0..4 {
-            assert_eq!(chunks[i].shard_count, 16);
+        for chunk in chunks.iter().take(4) {
+            assert_eq!(chunk.shard_count, 16);
         }
 
         // Last chunk should have 1 shard

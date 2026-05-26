@@ -44,7 +44,7 @@ impl TestSetup {
             });
         }
 
-        let config = Config {
+        let _config = Config {
             shards: 16,
             replication_factor: 2,
             replica_groups: 2,

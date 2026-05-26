@@ -81,6 +81,7 @@ pub async fn run(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_start(
     index: String,
     new_shards: u32,

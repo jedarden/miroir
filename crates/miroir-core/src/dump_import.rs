@@ -93,7 +93,7 @@ impl DumpImportPhase {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_state(s: &str) -> Option<Self> {
         match s {
             "idle" => Some(Self::Idle),
             "reading" => Some(Self::Reading),
@@ -220,6 +220,7 @@ impl<C: NodeClient + Send + Sync + 'static> DumpImportManager<C> {
     }
 
     /// Run the import pipeline.
+    #[allow(clippy::too_many_arguments)]
     async fn run_import(
         import_id: &str,
         index_uid: String,
@@ -328,6 +329,7 @@ impl<C: NodeClient + Send + Sync + 'static> DumpImportManager<C> {
     }
 
     /// Flush buffered documents to target nodes.
+    #[allow(clippy::too_many_arguments)]
     async fn flush_buffers(
         index_uid: &str,
         buffers: &mut HashMap<(NodeId, u32), Vec<Value>>,
@@ -455,7 +457,7 @@ mod tests {
         let phase = DumpImportPhase::Routing;
         assert_eq!(phase.as_str(), "routing");
 
-        let deserialized = DumpImportPhase::from_str("routing").unwrap();
+        let deserialized = DumpImportPhase::parse_state("routing").unwrap();
         assert_eq!(deserialized, DumpImportPhase::Routing);
     }
 
@@ -470,7 +472,7 @@ mod tests {
             DumpImportPhase::Failed,
         ] {
             let s = phase.as_str();
-            let parsed = DumpImportPhase::from_str(s).unwrap();
+            let parsed = DumpImportPhase::parse_state(s).unwrap();
             assert_eq!(parsed, phase);
         }
     }

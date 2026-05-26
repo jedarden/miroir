@@ -114,7 +114,7 @@ async fn flip_alias_history_retention() {
     // Acceptance: History: 11th flip evicts the oldest
     let store = create_test_store();
     let store_ref: &dyn TaskStore = &store;
-    let registry = AliasRegistry::load_from_store(store_ref)
+    let _registry = AliasRegistry::load_from_store(store_ref)
         .await
         .expect("failed to load registry");
 

@@ -2138,7 +2138,7 @@ mod tests {
         let common: Vec<&str> = pos1
             .keys()
             .filter(|k| pos2.contains_key(*k))
-            .map(|k| *k)
+            .copied()
             .collect();
 
         if common.len() < 2 {

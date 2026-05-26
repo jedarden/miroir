@@ -19,6 +19,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+// Type alias to reduce complexity
+type WriteCallsVec = Vec<(String, String, Vec<serde_json::Value>)>;
+
 /// Helper: create a test topology with 1 replica group, 3 nodes.
 fn test_topology_1_group() -> Topology {
     let mut topo = Topology::new(16, 1, 2); // 16 shards, 1 replica group, RF=2
@@ -82,7 +85,7 @@ fn test_topology_2_groups() -> Topology {
 /// Mock sync node client for testing.
 struct MockSyncNodeClient {
     fetch_responses: Arc<RwLock<HashMap<(NodeId, String), serde_json::Value>>>,
-    write_calls: Arc<RwLock<Vec<(NodeId, String, Vec<serde_json::Value>)>>>,
+    write_calls: Arc<RwLock<WriteCallsVec>>,
     should_fail: Arc<RwLock<bool>>,
 }
 
@@ -117,7 +120,7 @@ impl MockSyncNodeClient {
     }
 
     /// Get the write calls made so far.
-    async fn get_write_calls(&self) -> Vec<(NodeId, String, Vec<serde_json::Value>)> {
+    async fn get_write_calls(&self) -> Vec<(String, String, Vec<serde_json::Value>)> {
         self.write_calls.read().await.clone()
     }
 
@@ -131,7 +134,7 @@ impl SyncNodeClient for MockSyncNodeClient {
     async fn fetch_documents(
         &self,
         node: &NodeId,
-        address: &str,
+        _address: &str,
         request: &FetchDocumentsRequest,
     ) -> std::result::Result<serde_json::Value, String> {
         if *self.should_fail.read().await {
@@ -156,12 +159,12 @@ impl SyncNodeClient for MockSyncNodeClient {
     async fn write_documents(
         &self,
         node: &NodeId,
-        address: &str,
+        _address: &str,
         index_uid: &str,
         documents: Vec<serde_json::Value>,
     ) -> std::result::Result<(), String> {
         let mut calls = self.write_calls.write().await;
-        calls.push((node.clone(), index_uid.to_string(), documents));
+        calls.push((node.as_str().to_string(), index_uid.to_string(), documents));
         Ok(())
     }
 }
@@ -324,7 +327,7 @@ async fn acceptance_3_mid_sync_writes_present_on_both_groups_after_sync() {
     };
 
     // Simulate 100 writes landing during sync (these should fan out to both groups)
-    let mid_sync_writes: Vec<serde_json::Value> = (0..100)
+    let _mid_sync_writes: Vec<serde_json::Value> = (0..100)
         .map(|i| json!({"id": format!("mid-sync-{}", i), "data": "mid-sync-value"}))
         .collect();
 
@@ -513,7 +516,7 @@ async fn test_round_robin_source_group_assignment() {
         .begin_addition(3, shard_count, &source_groups)
         .unwrap();
 
-    let state = coordinator.get_state(addition_id).unwrap();
+    let _state = coordinator.get_state(addition_id).unwrap();
 
     // Verify round-robin assignment: shard 0 → group 0, shard 1 → group 1, shard 2 → group 2, shard 3 → group 0, ...
     assert_eq!(

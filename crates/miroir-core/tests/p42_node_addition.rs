@@ -11,6 +11,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
+// Type aliases to reduce complexity
+type FetchCallsMap = HashMap<(String, u32, u32), usize>;
+type StoredDocsMap = HashMap<(String, u32), Vec<serde_json::Value>>;
+
 use miroir_core::{
     migration::MigrationConfig,
     rebalancer::{MigrationExecutor, Rebalancer, RebalancerConfig},
@@ -37,7 +41,7 @@ fn create_test_topology(shards: u32, node_count: usize) -> Topology {
 #[derive(Default)]
 struct MockMigrationExecutor {
     /// Track all fetch_documents calls: (node, shard_id, offset) -> count
-    fetch_calls: Arc<std::sync::Mutex<HashMap<(String, u32, u32), usize>>>,
+    fetch_calls: Arc<std::sync::Mutex<FetchCallsMap>>,
     /// Track fetch calls in sequence order: (node, shard_id, sequence_number)
     fetch_sequence: Arc<std::sync::Mutex<Vec<(String, u32, u64)>>>,
     /// Track all write_documents calls: (node,) -> doc_count
@@ -45,7 +49,7 @@ struct MockMigrationExecutor {
     /// Track all delete_shard calls: (node, shard_id) -> count
     delete_calls: Arc<std::sync::Mutex<HashMap<(String, u32), usize>>>,
     /// Documents stored per (node, shard)
-    stored_docs: Arc<std::sync::Mutex<HashMap<(String, u32), Vec<serde_json::Value>>>>,
+    stored_docs: Arc<std::sync::Mutex<StoredDocsMap>>,
     /// Write failure simulation: (node, shard_id) -> should_fail
     write_failures: Arc<std::sync::Mutex<HashMap<(String, u32), bool>>>,
     /// Counter for sequencing fetch calls
@@ -53,6 +57,7 @@ struct MockMigrationExecutor {
 }
 
 impl MockMigrationExecutor {
+    #[allow(dead_code)]
     fn add_write_failure(&self, node: &str, shard_id: u32) {
         self.write_failures
             .lock()
@@ -60,6 +65,7 @@ impl MockMigrationExecutor {
             .insert((node.to_string(), shard_id), true);
     }
 
+    #[allow(dead_code)]
     fn clear_write_failures(&self) {
         self.write_failures.lock().unwrap().clear();
     }
@@ -85,6 +91,7 @@ impl MockMigrationExecutor {
         self.fetch_counter.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    #[allow(dead_code)]
     fn total_fetched_docs(&self) -> usize {
         self.fetch_calls.lock().unwrap().len()
     }
@@ -93,6 +100,7 @@ impl MockMigrationExecutor {
         self.write_calls.lock().unwrap().values().sum()
     }
 
+    #[allow(dead_code)]
     fn total_deleted_shards(&self) -> usize {
         self.delete_calls.lock().unwrap().len()
     }
@@ -104,7 +112,7 @@ impl MigrationExecutor for MockMigrationExecutor {
         &self,
         source_node: &str,
         _source_address: &str,
-        index_uid: &str,
+        _index_uid: &str,
         shard_id: u32,
         limit: u32,
         offset: u32,
@@ -435,7 +443,7 @@ async fn p42_node_addition_3_to_4_migration_10k_docs() {
 async fn p42_chaos_writes_during_migration_dual_write() {
     let shards = 32;
     let docs_per_shard = 100;
-    let migration_writes_per_shard = 50; // Writes during migration
+    let _migration_writes_per_shard = 50; // Writes during migration
 
     let topo = create_test_topology(shards, 3);
     let executor = Arc::new(MockMigrationExecutor::default());
@@ -809,7 +817,7 @@ async fn p42_verify_dual_write_during_migration() {
     }
 
     // Track initial write counts
-    let initial_write_count = executor.total_written_docs();
+    let _initial_write_count = executor.total_written_docs();
 
     // Create rebalancer
     let topo_arc = Arc::new(RwLock::new(topo.clone()));

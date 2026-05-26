@@ -27,6 +27,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};
 
+// Type alias to reduce complexity
+type VerifyResultVec = Vec<(String, Result<(u16, String), String>)>;
+
 use crate::routes::{admin_endpoints::AppState, documents, explain};
 
 /// Convert MiroirError to MeilisearchError.
@@ -933,8 +936,7 @@ async fn two_phase_settings_broadcast(
                 })
                 .collect();
 
-            let results: Vec<(String, Result<(u16, String), String>)> =
-                join_all(verify_tasks).await;
+            let results: VerifyResultVec = join_all(verify_tasks).await;
 
             let mut node_hashes = HashMap::new();
             let mut verify_errors: Vec<String> = Vec::new();

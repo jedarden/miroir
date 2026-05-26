@@ -1605,6 +1605,7 @@ impl Rebalancer {
 }
 
 /// Background task to run migrations for a topology operation.
+#[allow(clippy::too_many_arguments)]
 async fn run_migration_task(
     topology: Arc<RwLock<Topology>>,
     coordinator: Arc<RwLock<MigrationCoordinator>>,
@@ -1901,6 +1902,7 @@ async fn run_migration_task(
 }
 
 /// Background task to run drain migrations for a node.
+#[allow(clippy::too_many_arguments)]
 async fn run_drain_task(
     topology: Arc<RwLock<Topology>>,
     coordinator: Arc<RwLock<MigrationCoordinator>>,

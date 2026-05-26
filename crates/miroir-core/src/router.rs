@@ -970,11 +970,6 @@ mod tests {
         use super::*;
         use proptest::prelude::*;
 
-        /// Property: |write_targets| == RG × RF (counting duplicates).
-        ///
-        /// For any topology and shard, the write_targets function returns
-        /// exactly RG × RF node IDs (one per replica group), provided each group
-        /// has at least RF nodes.
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(1024))]
 
@@ -1015,10 +1010,6 @@ mod tests {
             }
         }
 
-        /// Property: Every group has exactly RF entries in write_targets.
-        ///
-        /// The write_targets function must return exactly RF nodes from each
-        /// replica group (duplicates within a group are not allowed).
         proptest! {
             #[test]
             fn prop_write_targets_rf_per_group(
@@ -1063,10 +1054,6 @@ mod tests {
             }
         }
 
-        /// Property: covering_set unions to cover every shard in the chosen group.
-        ///
-        /// The covering_set must include at least one node for each shard,
-        /// ensuring all shards are covered in a search query.
         proptest! {
             #[test]
             fn prop_covering_set_covers_all_shards(
@@ -1101,11 +1088,6 @@ mod tests {
             }
         }
 
-        /// Property: Reshuffle on topology change is bounded.
-        ///
-        /// When adding a node to a group, the number of shard assignments that change
-        /// should be proportional to RF × S / Ng_new. The bound is relaxed by a factor
-        /// of 2 to account for hash distribution variance.
         proptest! {
             #[test]
             fn prop_reshuffle_bound_on_add(
@@ -1152,7 +1134,7 @@ mod tests {
                 let diff = count_assignment_diff(&old_assignment, &new_assignment);
 
                 // Relaxed bound: 4 × RF × ceil(S / Ng_new) to account for hash variance
-                let expected = rf * ((shard_count as usize + new_nodes - 1) / new_nodes);
+                let expected = rf * (shard_count as usize).div_ceil(new_nodes);
                 let max_diff = 4 * expected.max(1);
 
                 prop_assert!(diff <= max_diff,
@@ -1161,9 +1143,6 @@ mod tests {
             }
         }
 
-        /// Property: Determinism under proptest.
-        ///
-        /// The same inputs must always produce the same outputs.
         proptest! {
             #[test]
             fn prop_determinism(
@@ -1194,10 +1173,6 @@ mod tests {
             }
         }
 
-        /// Property: shard_for_key distribution is roughly uniform.
-        ///
-        /// Primary keys should be roughly uniformly distributed across shards.
-        /// Checks that no shard deviates excessively from the expected count.
         proptest! {
             #[test]
             fn prop_shard_for_key_uniformity(

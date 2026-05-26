@@ -8,11 +8,7 @@
 use super::*;
 use crate::error::Result;
 use crate::migration::{MigrationConfig, MigrationCoordinator};
-use crate::task_store::{
-    AdminSessionRow, CanaryRow, CdcCursorRow, JobRow, LeaderLeaseRow, NewAdminSession, NewCanary,
-    NewCdcCursor, NewJob, NewRolloverPolicy, NewSearchUiConfig, NewTenantMapping,
-    RolloverPolicyRow, SearchUiConfigRow, TaskStore, TenantMapRow,
-};
+use crate::task_store::{JobRow, LeaderLeaseRow, NewJob, TaskStore};
 use crate::topology::{Node, NodeId as TopologyNodeId, Topology};
 use std::sync::Arc;
 use tokio::sync::RwLock;

@@ -72,7 +72,7 @@ fn test_acceptance_1gb_dump_splits_into_4_chunks() {
     // Split into chunks (4 chunks of ~256 MiB each)
     let chunk_size = 268_435_456; // 256 MiB
                                   // Ceiling division: (size + chunk_size - 1) / chunk_size
-    let total_chunks = ((1_073_741_824 + chunk_size - 1) / chunk_size) as u32;
+    let total_chunks = 1_073_741_824_u64.div_ceil(chunk_size) as u32;
 
     let chunks: Vec<_> = (0..total_chunks)
         .map(|i| {
@@ -285,8 +285,8 @@ fn test_acceptance_two_concurrent_dumps_interleave() {
     assert_eq!(job2_chunks.len(), 6);
 
     // Neither job starves - both have chunks available
-    assert!(job1_chunks.len() > 0);
-    assert!(job2_chunks.len() > 0);
+    assert!(!job1_chunks.is_empty());
+    assert!(!job2_chunks.is_empty());
     //     let mut job1_chunk_count = 0;
     //     let mut job2_chunk_count = 0;
     //
