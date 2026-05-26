@@ -263,8 +263,8 @@ pub struct MigrationCoordinator {
     config: MigrationConfig,
     migrations: HashMap<MigrationId, MigrationState>,
     next_id: u64,
-    /// In-flight writes being tracked for drain during cutover.
-    in_flight: Vec<InFlightWrite>,
+    /// In-flight writes being tracked for drain during cutover, keyed by migration ID.
+    in_flight_by_migration: HashMap<MigrationId, Vec<InFlightWrite>>,
 }
 
 impl MigrationCoordinator {
@@ -273,7 +273,7 @@ impl MigrationCoordinator {
             config,
             migrations: HashMap::new(),
             next_id: 0,
-            in_flight: Vec::new(),
+            in_flight_by_migration: HashMap::new(),
         }
     }
 
@@ -391,7 +391,11 @@ impl MigrationCoordinator {
         }
 
         // Transition all shards to Draining
-        let total_in_flight = self.in_flight.len() as u32;
+        let total_in_flight = self
+            .in_flight_by_migration
+            .get(&id)
+            .map(|v| v.len())
+            .unwrap_or(0) as u32;
         for (shard, shard_state) in state.affected_shards.iter_mut() {
             match shard_state {
                 ShardMigrationState::MigrationComplete { docs_copied } => {
@@ -414,32 +418,60 @@ impl MigrationCoordinator {
     }
 
     /// Register an in-flight write for tracking during drain.
+    /// The write must be associated with a migration via begin_cutover first.
     pub fn register_in_flight(&mut self, write: InFlightWrite) {
-        self.in_flight.push(write);
+        // Find which migration this write belongs to based on shard
+        // Track writes for migrations in dual-write or cutover phases
+        for (id, state) in &self.migrations {
+            if state.affected_shards.contains_key(&write.shard) {
+                self.in_flight_by_migration
+                    .entry(*id)
+                    .or_default()
+                    .push(write);
+                return;
+            }
+        }
     }
 
     /// Acknowledge completion of a write to a specific node.
     pub fn ack_write(&mut self, doc_id: &str, node: &NodeId) {
-        for write in &mut self.in_flight {
-            if write.doc_id == doc_id {
-                write.completed_nodes.insert(node.clone());
+        for writes in self.in_flight_by_migration.values_mut() {
+            for write in writes {
+                if write.doc_id == doc_id {
+                    write.completed_nodes.insert(node.clone());
+                }
             }
         }
     }
 
     /// Mark a write as failed on a specific node.
     pub fn fail_write(&mut self, doc_id: &str, node: &NodeId, reason: String) {
-        for write in &mut self.in_flight {
-            if write.doc_id == doc_id {
-                write.failed_nodes.insert(node.clone(), reason.clone());
+        for writes in self.in_flight_by_migration.values_mut() {
+            for write in writes {
+                if write.doc_id == doc_id {
+                    write.failed_nodes.insert(node.clone(), reason.clone());
+                }
             }
         }
     }
 
+    /// Check if all in-flight writes have completed (drained) for a specific migration.
+    fn is_drained_for_migration(&self, id: MigrationId) -> bool {
+        self.in_flight_by_migration
+            .get(&id)
+            .map(|writes| {
+                writes
+                    .iter()
+                    .all(|w| w.completed_nodes.len() + w.failed_nodes.len() == w.target_nodes.len())
+            })
+            .unwrap_or(true)
+    }
+
     /// Check if all in-flight writes have completed (drained).
     pub fn is_drained(&self) -> bool {
-        self.in_flight
-            .iter()
+        self.in_flight_by_migration
+            .values()
+            .flat_map(|writes| writes.iter())
             .all(|w| w.completed_nodes.len() + w.failed_nodes.len() == w.target_nodes.len())
     }
 
@@ -460,14 +492,43 @@ impl MigrationCoordinator {
             ));
         }
 
-        // Check drain status
-        if !self.is_drained() {
-            let remaining = self
-                .in_flight
+        // Check drain status with timeout
+        let now = Instant::now();
+        let writes = self.in_flight_by_migration.get(&id);
+        let timeout = self.config.drain_timeout;
+
+        if let Some(writes) = writes {
+            // Check for writes that have exceeded the timeout
+            for write in writes {
+                if write.completed_nodes.len() + write.failed_nodes.len() < write.target_nodes.len()
+                {
+                    // Write is still pending - check if it exceeded timeout
+                    if now.duration_since(write.submitted_at) > timeout {
+                        let remaining = writes
+                            .iter()
+                            .filter(|w| {
+                                w.completed_nodes.len() + w.failed_nodes.len()
+                                    < w.target_nodes.len()
+                            })
+                            .count() as u32;
+                        return Err(MigrationError::DrainTimeout(remaining));
+                    }
+                }
+            }
+
+            // Also check if all writes are drained
+            let all_drained = writes
                 .iter()
-                .filter(|w| w.completed_nodes.len() + w.failed_nodes.len() < w.target_nodes.len())
-                .count() as u32;
-            return Err(MigrationError::DrainTimeout(remaining));
+                .all(|w| w.completed_nodes.len() + w.failed_nodes.len() == w.target_nodes.len());
+            if !all_drained {
+                let remaining = writes
+                    .iter()
+                    .filter(|w| {
+                        w.completed_nodes.len() + w.failed_nodes.len() < w.target_nodes.len()
+                    })
+                    .count() as u32;
+                return Err(MigrationError::DrainTimeout(remaining));
+            }
         }
 
         // Collect docs that need delta pass
@@ -497,14 +558,8 @@ impl MigrationCoordinator {
             }
         }
 
-        // Clear only the in-flight writes for this migration
-        let affected_shards = state
-            .affected_shards
-            .keys()
-            .cloned()
-            .collect::<HashSet<_>>();
-        self.in_flight
-            .retain(|w| !affected_shards.contains(&w.shard));
+        // Clear the in-flight writes for this migration only
+        self.in_flight_by_migration.remove(&id);
 
         // If going to activate, do that now (drop mutable borrow first)
         let next_phase = state.phase.clone();
@@ -534,21 +589,28 @@ impl MigrationCoordinator {
             .ok_or(MigrationError::NotFound(id))?;
         let mut candidates: HashMap<ShardId, Vec<String>> = HashMap::new();
 
-        for write in &self.in_flight {
-            let old_owner = match state.old_owners.get(&write.shard) {
-                Some(owner) => owner,
-                None => continue,
-            };
+        let writes = self.in_flight_by_migration.get(&id);
+        if let Some(writes) = writes {
+            for write in writes {
+                let old_owner = match state.old_owners.get(&write.shard) {
+                    Some(owner) => owner,
+                    None => continue,
+                };
 
-            let succeeded_on_old = write.completed_nodes.contains(old_owner);
-            let succeeded_on_new = write.completed_nodes.contains(&state.new_node);
+                let succeeded_on_old = write.completed_nodes.contains(old_owner);
+                let failed_on_old = write.failed_nodes.contains_key(old_owner);
+                let succeeded_on_new = write.completed_nodes.contains(&state.new_node);
+                let failed_on_new = write.failed_nodes.contains_key(&state.new_node);
 
-            // Doc is on OLD but not on NEW — delta pass must catch it
-            if succeeded_on_old && !succeeded_on_new {
-                candidates
-                    .entry(write.shard)
-                    .or_default()
-                    .push(write.doc_id.clone());
+                // Doc needs delta if:
+                // 1. Succeeded on OLD but not on NEW (typical straggler)
+                // 2. Failed on NEW (whether or not it succeeded on OLD - test case)
+                if (succeeded_on_old && !succeeded_on_new) || failed_on_new {
+                    candidates
+                        .entry(write.shard)
+                        .or_default()
+                        .push(write.doc_id.clone());
+                }
             }
         }
 
