@@ -3391,32 +3391,48 @@ where
                 // Create metrics callback for resharding (plan §13.1)
                 let index_label = index_uid_clone.clone();
                 let metrics_clone = metrics.clone();
-                let metrics_callback = std::sync::Arc::new(move |phase: miroir_core::reshard::ReshardPhase, value: u64| {
-                    use miroir_core::reshard::ReshardPhase;
-                    let phase_num = match phase {
-                        ReshardPhase::Idle => 0,
-                        ReshardPhase::ShadowCreated => 1,
-                        ReshardPhase::DualWriteActive => 2,
-                        ReshardPhase::BackfillInProgress => 3,
-                        ReshardPhase::Verifying => 4,
-                        ReshardPhase::Swapped => 5,
-                        ReshardPhase::CleaningUp => 6,
-                        ReshardPhase::Complete => 7,
-                        ReshardPhase::Failed => 8,
-                    };
+                let metrics_callback = std::sync::Arc::new(
+                    move |phase: miroir_core::reshard::ReshardPhase, value: u64| {
+                        use miroir_core::reshard::ReshardPhase;
+                        let phase_num = match phase {
+                            ReshardPhase::Idle => 0,
+                            ReshardPhase::ShadowCreated => 1,
+                            ReshardPhase::DualWriteActive => 2,
+                            ReshardPhase::BackfillInProgress => 3,
+                            ReshardPhase::Verifying => 4,
+                            ReshardPhase::Swapped => 5,
+                            ReshardPhase::CleaningUp => 6,
+                            ReshardPhase::Complete => 7,
+                            ReshardPhase::Failed => 8,
+                        };
 
-                    // Update reshard_in_progress gauge
-                    let in_progress = !matches!(phase, ReshardPhase::Idle | ReshardPhase::Complete | ReshardPhase::Failed);
-                    metrics_clone.set_reshard_in_progress(in_progress);
+                        // Update reshard_in_progress gauge
+                        let in_progress = !matches!(
+                            phase,
+                            ReshardPhase::Idle | ReshardPhase::Complete | ReshardPhase::Failed
+                        );
+                        metrics_clone.set_reshard_in_progress(in_progress);
 
-                    // Update reshard_phase gauge
-                    metrics_clone.set_reshard_phase(&index_label, phase_num);
+                        // Update reshard_phase gauge
+                        metrics_clone.set_reshard_phase(&index_label, phase_num);
 
-                    // Update documents_backfilled counter during backfill and later phases
-                    if matches!(phase, ReshardPhase::BackfillInProgress | ReshardPhase::Verifying | ReshardPhase::Swapped | ReshardPhase::CleaningUp | ReshardPhase::Complete) {
-                        metrics_clone.inc_reshard_documents_backfilled(&index_label, &index_label, value);
-                    }
-                });
+                        // Update documents_backfilled counter during backfill and later phases
+                        if matches!(
+                            phase,
+                            ReshardPhase::BackfillInProgress
+                                | ReshardPhase::Verifying
+                                | ReshardPhase::Swapped
+                                | ReshardPhase::CleaningUp
+                                | ReshardPhase::Complete
+                        ) {
+                            metrics_clone.inc_reshard_documents_backfilled(
+                                &index_label,
+                                &index_label,
+                                value,
+                            );
+                        }
+                    },
+                );
 
                 let config = miroir_core::reshard::ReshardOrchestratorConfig {
                     index_uid: index_uid_clone.clone(),
