@@ -170,6 +170,10 @@ impl TaskStore for MockTaskStore {
         Ok(())
     }
 
+    fn upsert_alias(&self, alias: &NewAlias) -> Result<()> {
+        self.create_alias(alias)
+    }
+
     fn get_alias(&self, _name: &str) -> Result<Option<AliasRow>> {
         Ok(None)
     }

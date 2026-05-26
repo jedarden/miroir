@@ -78,6 +78,9 @@ pub trait TaskStore: Send + Sync {
     /// Create a new alias.
     fn create_alias(&self, alias: &NewAlias) -> Result<()>;
 
+    /// Upsert an alias (create or update). Used by ILM for multi-target alias updates.
+    fn upsert_alias(&self, alias: &NewAlias) -> Result<()>;
+
     /// Get an alias by name.
     fn get_alias(&self, name: &str) -> Result<Option<AliasRow>>;
 

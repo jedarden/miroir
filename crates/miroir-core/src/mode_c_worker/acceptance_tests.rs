@@ -191,6 +191,9 @@ impl TaskStore for MockTaskStore {
     fn create_alias(&self, _alias: &crate::task_store::NewAlias) -> Result<()> {
         Ok(())
     }
+    fn upsert_alias(&self, alias: &crate::task_store::NewAlias) -> Result<()> {
+        self.create_alias(alias)
+    }
     fn get_alias(&self, _name: &str) -> Result<Option<crate::task_store::AliasRow>> {
         Ok(None)
     }

@@ -214,6 +214,9 @@ impl TaskStore for MockTaskStore {
     fn create_alias(&self, _alias: &crate::task_store::NewAlias) -> Result<()> {
         Ok(())
     }
+    fn upsert_alias(&self, alias: &crate::task_store::NewAlias) -> Result<()> {
+        self.create_alias(alias)
+    }
     fn get_alias(&self, _name: &str) -> Result<Option<crate::task_store::AliasRow>> {
         Ok(None)
     }
@@ -556,6 +559,7 @@ async fn p4_1_a2_progress_persistence_pods_resume_migration() {
         completed_at: None,
         total_docs_migrated: 5000,
         paused: false,
+        restoring_node: None,
     };
 
     // Persist the job

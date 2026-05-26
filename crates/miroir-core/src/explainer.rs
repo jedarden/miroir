@@ -731,6 +731,11 @@ mod tests {
             Ok(())
         }
 
+        fn upsert_alias(&self, alias: &NewAlias) -> crate::Result<()> {
+            // For mock, just delegate to create_alias
+            self.create_alias(alias)
+        }
+
         fn get_alias(&self, name: &str) -> crate::Result<Option<AliasRow>> {
             Ok(self.aliases.read().unwrap().get(name).cloned())
         }
