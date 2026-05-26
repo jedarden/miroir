@@ -105,6 +105,15 @@ harness = false
 name = "ingest_bench"
 harness = false
 
+# Plan §8 Criterion benchmarks
+[[bench]]
+name = "rendezvous"
+harness = false
+
+[[bench]]
+name = "merger"
+harness = false
+
 [dev-dependencies]
 tempfile = "3"
 proptest = "1"
