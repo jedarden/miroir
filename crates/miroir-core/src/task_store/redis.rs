@@ -803,6 +803,11 @@ impl TaskStore for RedisTaskStore {
         })
     }
 
+    fn upsert_alias(&self, alias: &NewAlias) -> Result<()> {
+        // Redis HSET is idempotent and overwrites, so create_alias == upsert_alias
+        self.create_alias(alias)
+    }
+
     fn get_alias(&self, name: &str) -> Result<Option<AliasRow>> {
         let manager = self.pool.manager.clone();
         let key_prefix = self.key_prefix.clone();

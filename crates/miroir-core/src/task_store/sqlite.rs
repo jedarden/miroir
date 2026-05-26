@@ -323,6 +323,36 @@ impl TaskStore for SqliteTaskStore {
         Ok(())
     }
 
+    fn upsert_alias(&self, alias: &NewAlias) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let target_uids_json = alias
+            .target_uids
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let history_json = serde_json::to_string(&alias.history)?;
+        conn.execute(
+            "INSERT INTO aliases (name, kind, current_uid, target_uids, version, created_at, history)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(name) DO UPDATE SET
+                kind = excluded.kind,
+                current_uid = excluded.current_uid,
+                target_uids = excluded.target_uids,
+                version = excluded.version,
+                history = excluded.history",
+            params![
+                alias.name,
+                alias.kind,
+                alias.current_uid,
+                target_uids_json,
+                alias.version,
+                alias.created_at,
+                history_json,
+            ],
+        )?;
+        Ok(())
+    }
+
     fn get_alias(&self, name: &str) -> Result<Option<AliasRow>> {
         let conn = self.conn.lock().unwrap();
         Ok(conn

@@ -1096,7 +1096,7 @@ impl IlmWorker {
             history: vec![],
         };
 
-        self.task_store.create_alias(&new_alias).map_err(|e| {
+        self.task_store.upsert_alias(&new_alias).map_err(|e| {
             IlmError::AliasError(format!("failed to persist read alias update: {e}"))
         })?;
 
