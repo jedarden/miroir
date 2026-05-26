@@ -6,14 +6,15 @@ mod credentials;
 
 #[derive(Parser)]
 #[command(name = "miroir-ctl")]
+#[command(author, version, about)]
 #[command(
-    about = "Miroir management CLI",
     long_about = "Miroir management CLI
 
 Runbook documentation for each subcommand is available at:
   https://github.com/jedarden/miroir/tree/main/docs/ctl/
 
-For local docs, see docs/ctl/*.md in the repository."
+For local docs, see docs/ctl/*.md in the repository.",
+    long_version = option_env!("GIT_VERSION").unwrap_or_else(|| env!("CARGO_PKG_VERSION"))
 )]
 struct Cli {
     #[command(subcommand)]
