@@ -4,7 +4,6 @@
 //! 1. Error format parity with Meilisearch (plan §5)
 //! 2. GET /_miroir/topology matches plan §10 JSON shape
 
-use axum::response::IntoResponse;
 use miroir_core::api_error::{ErrorType, MeilisearchError, MiroirCode};
 use serde_json::json;
 
@@ -161,7 +160,7 @@ fn test_error_json_matches_meilisearch_shape() {
 /// Test 6: Error with custom metadata preserves shape.
 #[test]
 fn test_error_with_custom_metadata_preserves_shape() {
-    let err = MeilisearchError::new(
+    let _err = MeilisearchError::new(
         MiroirCode::ReservedField,
         "document contains reserved field `_miroir_shard`",
     );
@@ -169,6 +168,10 @@ fn test_error_with_custom_metadata_preserves_shape() {
     // Verify the error can be converted to axum Response if feature is enabled
     #[cfg(feature = "axum")]
     {
+        let err = MeilisearchError::new(
+            MiroirCode::ReservedField,
+            "document contains reserved field `_miroir_shard`",
+        );
         let response = err.into_response();
         assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
     }
