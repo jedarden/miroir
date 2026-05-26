@@ -3,7 +3,7 @@
 
 use axum::{
     extract::{FromRef, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use miroir_core::{
@@ -154,6 +154,7 @@ fn error_label(e: &miroir_core::scatter::NodeError) -> &'static str {
 #[instrument(skip_all, fields(query_count = body.queries.len()))]
 pub async fn multi_search<S>(
     State(state): State<MultiSearchState>,
+    headers: HeaderMap,
     Json(body): Json<MultiSearchRequest>,
 ) -> Result<Json<MultiSearchResponse>, StatusCode>
 where
@@ -178,6 +179,15 @@ where
         .metrics
         .observe_multisearch_queries_per_batch(query_count);
     state.metrics.inc_multisearch_batches_total();
+
+    // Extract X-Miroir-Over-Fetch header (plan §13.12)
+    // Per-request override of vector_search.over_fetch_factor
+    let over_fetch_factor = headers
+        .get("X-Miroir-Over-Fetch")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u32>().ok())
+        .filter(|&f| f >= 1)
+        .unwrap_or_else(|| state.config.vector_search.over_fetch_factor);
 
     let executor = MultiSearchExecutor::new(state.config.multi_search.clone());
 
@@ -290,6 +300,7 @@ where
     let replica_selector_for_executor = state.replica_selector.clone();
     let query_planner_for_executor = state.query_planner.clone();
     let metrics_for_executor = state.metrics.clone();
+    let over_fetch_factor_for_executor = over_fetch_factor;
 
     let response = executor
         .execute(core_request, move |query| {
@@ -301,6 +312,7 @@ where
             let replica_selector = replica_selector_for_executor.clone();
             let query_planner = query_planner_for_executor.clone();
             let metrics = metrics_for_executor.clone();
+            let over_fetch_factor = over_fetch_factor_for_executor;
 
             async move {
                 let start = Instant::now();
@@ -374,7 +386,7 @@ where
                         .unwrap_or(false),
                     body: serde_json::json!(query.other),
                     global_idf: None,
-                    over_fetch_factor: 1, // TODO: support over-fetch in multi-search
+                    over_fetch_factor,
                     vector_mode,
                     vector_config: None,
                 };
