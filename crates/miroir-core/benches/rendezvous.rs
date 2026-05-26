@@ -23,11 +23,15 @@ fn bench_shard_for_key(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1));
 
     for shards in [16, 32, 64, 128] {
-        group.bench_with_input(BenchmarkId::from_parameter(shards), &shards, |b, &shards| {
-            b.iter(|| {
-                black_box(shard_for_key(black_box("user-12345"), shards));
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(shards),
+            &shards,
+            |b, &shards| {
+                b.iter(|| {
+                    black_box(shard_for_key(black_box("user-12345"), shards));
+                });
+            },
+        );
     }
     group.finish();
 }
@@ -51,15 +55,24 @@ fn bench_assign_shard_in_group(c: &mut Criterion) {
 
     for (shards, nodes, rf) in [(64, 3, 2), (64, 10, 2), (128, 20, 3)] {
         let _topo = create_topology_with_nodes(nodes, shards, rf);
-        let node_ids: Vec<NodeId> = (0..nodes).map(|i| NodeId::new(format!("node-{}", i))).collect();
+        let node_ids: Vec<NodeId> = (0..nodes)
+            .map(|i| NodeId::new(format!("node-{}", i)))
+            .collect();
 
         group.bench_with_input(
-            BenchmarkId::new("assign_shard_in_group", format!("s{}_n{}_rf{}", shards, nodes, rf)),
+            BenchmarkId::new(
+                "assign_shard_in_group",
+                format!("s{}_n{}_rf{}", shards, nodes, rf),
+            ),
             &(shards, rf, &node_ids),
             |b, (_shards, rf, node_ids)| {
                 b.iter(|| {
                     for shard_id in 0..shards {
-                        black_box(assign_shard_in_group(black_box(shard_id), black_box(node_ids), *rf));
+                        black_box(assign_shard_in_group(
+                            black_box(shard_id),
+                            black_box(node_ids),
+                            *rf,
+                        ));
                     }
                 });
             },
@@ -78,14 +91,22 @@ fn bench_rendezvous_assignment_batch(c: &mut Criterion) {
         let keys: Vec<String> = (0..doc_count).map(|i| format!("doc-{}", i)).collect();
 
         group.throughput(Throughput::Elements(doc_count as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(doc_count), &doc_count, |b, &_doc_count| {
-            b.iter(|| {
-                for key in &keys {
-                    let shard_id = shard_for_key(key, 64);
-                    black_box(assign_shard_in_group(black_box(shard_id), black_box(&node_ids), 2));
-                }
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(doc_count),
+            &doc_count,
+            |b, &_doc_count| {
+                b.iter(|| {
+                    for key in &keys {
+                        let shard_id = shard_for_key(key, 64);
+                        black_box(assign_shard_in_group(
+                            black_box(shard_id),
+                            black_box(&node_ids),
+                            2,
+                        ));
+                    }
+                });
+            },
+        );
     }
     group.finish();
 }
