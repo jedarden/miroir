@@ -3355,6 +3355,8 @@ where
                 target_shards: req.new_shards,
                 phase: miroir_core::reshard::ReshardPhase::ShadowCreated,
                 started_at: now,
+                documents_backfilled: 0,
+                total_documents: 0,
             };
 
             let mut registry = app_state.resharding_registry.write().await;
@@ -3438,6 +3440,27 @@ where
                     },
                 );
 
+                // Create progress callback to update registry during backfill
+                let index_uid_for_cb = index_uid_clone.clone();
+                let registry_for_cb = registry.clone();
+                let progress_callback =
+                    std::sync::Arc::new(move |docs_backfilled: u64, total_docs: u64| {
+                        let index_uid = index_uid_for_cb.clone();
+                        let registry = registry_for_cb.clone();
+                        tokio::spawn(async move {
+                            let mut reg = registry.write().await;
+                            if let Err(e) =
+                                reg.update_progress(&index_uid, docs_backfilled, total_docs)
+                            {
+                                tracing::error!(
+                                    index_uid = %index_uid,
+                                    error = %e,
+                                    "failed to update resharding progress"
+                                );
+                            }
+                        });
+                    });
+
                 let config = miroir_core::reshard::ReshardOrchestratorConfig {
                     index_uid: index_uid_clone.clone(),
                     target_shards: req.new_shards,
@@ -3451,6 +3474,7 @@ where
                     alias_history_retention: 10,
                     task_store: task_store.clone(),
                     metrics_callback: Some(metrics_callback),
+                    progress_callback: Some(progress_callback),
                 };
 
                 // Run the full orchestrator
@@ -3536,6 +3560,11 @@ where
     let operation = registry.get(&index_uid);
 
     if let Some(op) = operation {
+        let backfill_progress = if op.total_documents > 0 {
+            op.documents_backfilled as f64 / op.total_documents as f64
+        } else {
+            0.0
+        };
         Ok(Json(ReshardStatusResponse {
             active: true,
             operation: Some(ReshardOperationDetails {
@@ -3544,9 +3573,9 @@ where
                 old_shards: op.old_shards,
                 new_shards: op.target_shards,
                 phase: op.phase.name().to_string(),
-                documents_backfilled: 0, // TODO: track progress
-                total_documents: 0,
-                backfill_progress: 0.0,
+                documents_backfilled: op.documents_backfilled,
+                total_documents: op.total_documents,
+                backfill_progress,
                 shadow_index: op.shadow_index.clone(),
                 started_at: op.started_at,
                 last_error: None,
