@@ -8,6 +8,7 @@
 //! - Primary secret (`SEARCH_UI_JWT_SECRET`) signs new tokens; `kid` header identifies it.
 //! - Optional previous secret (`SEARCH_UI_JWT_SECRET_PREVIOUS`) is present only during
 //!   the rotation overlap window. Validation accepts either secret.
+#![allow(dead_code)]
 
 use axum::{
     extract::{Request, State},
@@ -77,6 +78,7 @@ pub struct JwtClaims {
 
 /// Key ID embedded in the JWT header to identify which secret signed it.
 pub const KID_PRIMARY: &str = "primary";
+#[allow(dead_code)]
 pub const KID_PREVIOUS: &str = "previous";
 
 /// JWT header (always HS256).
@@ -232,6 +234,7 @@ impl AuthState {
     /// Create a new signed JWT session token for the given index (plan §13.21).
     /// Always signs with the primary secret; `kid` header identifies it.
     /// Scope defaults to ["search", "multi_search", "beacon"] for search UI sessions.
+    #[allow(clippy::too_many_arguments)]
     pub fn sign_jwt(
         &self,
         sub: &str,
@@ -344,6 +347,7 @@ pub fn constant_time_csrf_compare(token: &str, expected: &str) -> bool {
 
 /// Validate a CSRF token against the expected session token.
 /// Returns Ok(()) if the token matches, or a CsrfMismatch error.
+#[allow(dead_code)]
 pub fn validate_csrf_token(provided: &str, expected: &str) -> Result<(), MiroirCode> {
     if constant_time_csrf_compare(provided, expected) {
         Ok(())

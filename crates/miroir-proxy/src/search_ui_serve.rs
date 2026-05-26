@@ -49,9 +49,10 @@ struct SearchUiWidget;
 ///
 /// Static assets are served with long `max-age` cache headers (1 year).
 /// HTML is served with `no-cache` to ensure fresh UI after deployments.
+#[allow(dead_code)]
 pub async fn serve_search_ui<S>(
     State(state): State<S>,
-    axum::extract::Path(index): axum::extract::Path<String>,
+    axum::extract::Path(_index): axum::extract::Path<String>,
 ) -> Result<Response, StatusCode>
 where
     S: Clone + Send + Sync + 'static,
@@ -83,6 +84,7 @@ where
 /// Serve a static asset from the Search UI (plan §13.21).
 ///
 /// Handles requests for `/ui/search/static/{path}` and serves embedded files.
+#[allow(dead_code)]
 pub async fn serve_search_ui_asset(
     axum::extract::Path(path): axum::extract::Path<String>,
 ) -> Result<Response, StatusCode> {
@@ -123,6 +125,7 @@ pub async fn serve_widget() -> Result<Response, StatusCode> {
 ///
 /// - `Ok(Response)` with the file contents and appropriate cache headers
 /// - `Err(StatusCode::NOT_FOUND)` if the file doesn't exist
+#[allow(dead_code)]
 fn serve_embedded_file(path: &str, is_static_asset: bool) -> Result<Response, StatusCode> {
     let asset = SearchUiAssets::get(path).ok_or(StatusCode::NOT_FOUND)?;
 

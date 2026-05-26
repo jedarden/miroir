@@ -1,4 +1,5 @@
 //! Atomic index alias management endpoints (plan §13.7).
+#![allow(dead_code)]
 
 use crate::middleware::Metrics;
 use axum::{

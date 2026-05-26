@@ -8,6 +8,7 @@ repository.workspace = true
 [features]
 default = []
 tracing = ["opentelemetry", "opentelemetry-otlp", "opentelemetry_sdk", "tracing-opentelemetry"]
+peer-discovery = []
 
 [[bin]]
 name = "miroir-proxy"

@@ -1,4 +1,5 @@
 //! Search route handler with DFS (Distributed Frequency Search) support.
+#![allow(dead_code)]
 
 use axum::body::Body;
 use axum::extract::{Extension, Path};

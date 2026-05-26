@@ -1,4 +1,5 @@
 //! Admin API endpoints for topology, readiness, shards, and metrics.
+#![allow(dead_code)]
 
 use axum::{
     extract::{FromRef, Path, Query, State},
@@ -3204,7 +3205,7 @@ where
 
     // Check if resharding is already active for this index
     let registry = app_state.resharding_registry.read().await;
-    if let Some(existing) = registry.get(&index_uid) {
+    if let Some(_existing) = registry.get(&index_uid) {
         // Return conflict if already resharding
         return Err(StatusCode::CONFLICT);
     }
@@ -3275,7 +3276,6 @@ where
 
             // Spawn a background task to run the full orchestrator (phases 2-6)
             let index_uid_clone = index_uid.clone();
-            let shadow_index_clone = shadow_index.clone();
             let registry = app_state.resharding_registry.clone();
             let topology = app_state.topology.clone();
             let master_key_clone = master_key.clone();

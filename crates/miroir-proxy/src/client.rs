@@ -1,4 +1,5 @@
 //! HTTP client for communicating with Meilisearch nodes.
+#![allow(dead_code)]
 
 use miroir_core::scatter::{
     DeleteByFilterRequest, DeleteByIdsRequest, DeleteResponse, FetchDocumentsRequest, NodeClient,
@@ -506,7 +507,7 @@ impl NodeClient for HttpClient {
 
     fn get_task_status(
         &self,
-        node: &NodeId,
+        _node: &NodeId,
         address: &str,
         request: &TaskStatusRequest,
     ) -> impl std::future::Future<Output = std::result::Result<TaskStatusResponse, NodeError>> + Send
@@ -567,7 +568,7 @@ impl NodeClient for HttpClient {
 impl miroir_core::group_sync_worker::SyncNodeClient for HttpClient {
     async fn fetch_documents(
         &self,
-        node: &NodeId,
+        _node: &NodeId,
         address: &str,
         request: &FetchDocumentsRequest,
     ) -> std::result::Result<serde_json::Value, String> {
@@ -603,7 +604,7 @@ impl miroir_core::group_sync_worker::SyncNodeClient for HttpClient {
 
     async fn write_documents(
         &self,
-        node: &NodeId,
+        _node: &NodeId,
         address: &str,
         index_uid: &str,
         documents: Vec<serde_json::Value>,
