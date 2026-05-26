@@ -39,17 +39,25 @@ use miroir_core::task_store::{NewAdminSession, RedisTaskStore, TaskStore};
 fn check_docker_or_redis_url() -> Result<Option<String>, String> {
     // Check if Docker tests are explicitly skipped
     if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
-        return Err(
-            "Docker tests skipped via MIROIR_TEST_SKIP_DOCKER. \
+        return Err("Docker tests skipped via MIROIR_TEST_SKIP_DOCKER. \
              Set MIROIR_TEST_REDIS_URL=redis://localhost:6379 to test against external Redis, \
              or unset MIROIR_TEST_SKIP_DOCKER and ensure Docker is available."
-            .to_string(),
-        );
+            .to_string());
     }
 
     // Use external Redis URL if provided
     if let Ok(url) = std::env::var("MIROIR_TEST_REDIS_URL") {
         return Ok(Some(url));
+    }
+
+    // Check for Docker socket
+    let docker_sock = std::path::Path::new("/var/run/docker.sock");
+    if !docker_sock.exists() {
+        return Err(
+            "Docker socket not found at /var/run/docker.sock. \
+             Set MIROIR_TEST_SKIP_DOCKER=1 to skip, or set MIROIR_TEST_REDIS_URL to use external Redis."
+                .to_string(),
+        );
     }
 
     // Default to testcontainers (requires Docker)
@@ -70,7 +78,9 @@ macro_rules! redis_url_or_skip {
     };
 }
 
-async fn redis_store(maybe_url: Option<String>) -> (RedisTaskStore, String) {
+async fn redis_store(
+    maybe_url: Option<String>,
+) -> Result<(RedisTaskStore, String), Box<dyn std::error::Error>> {
     let url = match maybe_url {
         Some(url) => url,
         None => {
@@ -79,14 +89,22 @@ async fn redis_store(maybe_url: Option<String>) -> (RedisTaskStore, String) {
             use testcontainers_modules::redis::Redis;
 
             let node = Redis::default();
-            let container = node.start().await.expect("start redis");
-            let port = container.get_host_port_ipv4(6379).await.expect("get port");
+            let container = node
+                .start()
+                .await
+                .map_err(|e| format!("start redis: {e}"))?;
+            let port = container
+                .get_host_port_ipv4(6379)
+                .await
+                .map_err(|e| format!("get port: {e}"))?;
             format!("redis://localhost:{port}")
         }
     };
 
-    let store = RedisTaskStore::open(&url).await.expect("redis connect");
-    (store, url)
+    let store = RedisTaskStore::open(&url)
+        .await
+        .map_err(|e| format!("redis connect: {e}"))?;
+    Ok((store, url))
 }
 
 fn now_ms() -> i64 {
@@ -116,7 +134,13 @@ fn make_session(id: &str) -> NewAdminSession {
 #[tokio::test]
 async fn test_login_logout_replay_rejected() {
     let redis_url = redis_url_or_skip!();
-    let (store, _url) = redis_store(redis_url).await;
+    let (store, _url) = match redis_store(redis_url).await {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     // Step 1: Login — insert admin session
     let session = make_session("sess-login-logout-test");
@@ -150,7 +174,13 @@ async fn test_login_logout_replay_rejected() {
 #[tokio::test]
 async fn test_cross_pod_revocation_via_pubsub() {
     let redis_url = redis_url_or_skip!();
-    let (store, redis_url) = redis_store(redis_url).await;
+    let (store, redis_url) = match redis_store(redis_url).await {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     // Simulate two pods, each with their own in-memory revocation cache
     let pod_a_revoked: Arc<DashMap<String, ()>> = Arc::new(DashMap::new());
@@ -253,7 +283,13 @@ async fn test_cross_pod_revocation_via_pubsub() {
 #[tokio::test]
 async fn test_revocation_is_per_session() {
     let redis_url = redis_url_or_skip!();
-    let (store, _url) = redis_store(redis_url).await;
+    let (store, _url) = match redis_store(redis_url).await {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     let session_a = make_session("sess-per-a");
     let session_b = make_session("sess-per-b");
@@ -285,7 +321,13 @@ async fn test_revocation_is_per_session() {
 #[tokio::test]
 async fn test_revoke_nonexistent_session() {
     let redis_url = redis_url_or_skip!();
-    let (store, _url) = redis_store(redis_url).await;
+    let (store, _url) = match redis_store(redis_url).await {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     let result = store
         .revoke_admin_session("sess-does-not-exist")
@@ -297,7 +339,13 @@ async fn test_revoke_nonexistent_session() {
 #[tokio::test]
 async fn test_expired_session_is_invalid() {
     let redis_url = redis_url_or_skip!();
-    let (store, _url) = redis_store(redis_url).await;
+    let (store, _url) = match redis_store(redis_url).await {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     let mut session = make_session("sess-expired");
     session.expires_at = now_ms() - 1000; // expired 1 second ago
@@ -325,7 +373,13 @@ async fn test_expired_session_is_invalid() {
 #[tokio::test]
 async fn test_csrf_refresh_preserves_revocation() {
     let redis_url = redis_url_or_skip!();
-    let (store, _url) = redis_store(redis_url).await;
+    let (store, _url) = match redis_store(redis_url).await {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     let session = make_session("sess-csrf-refresh");
     store.insert_admin_session(&session).expect("insert");
@@ -363,7 +417,13 @@ async fn test_csrf_refresh_preserves_revocation() {
 #[tokio::test]
 async fn test_pubsub_multiple_revocations() {
     let redis_url = redis_url_or_skip!();
-    let (store, redis_url) = redis_store(redis_url).await;
+    let (store, redis_url) = match redis_store(redis_url).await {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     let received: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let received_clone = received.clone();

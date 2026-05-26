@@ -15,51 +15,71 @@
 
 use reqwest::Client;
 use serde_json::json;
+use std::path::Path;
 use std::time::Duration;
 use tokio::time::sleep;
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Test Helpers
 // ---------------------------------------------------------------------------
 
-/// Check if Docker tests should skip.
+/// Check if Docker is available for testcontainers.
 ///
-/// Environment variables:
-/// - `MIROIR_TEST_SKIP_DOCKER`: If set, return Err (test should skip)
-fn check_docker_skip() -> Result<(), String> {
+/// Returns Ok(()) if Docker is available, Err(message) if not.
+fn check_docker_available() -> Result<(), String> {
+    // Check explicit skip flag first
     if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
-        return Err(
-            "Docker tests skipped via MIROIR_TEST_SKIP_DOCKER. \
+        return Err("Docker tests skipped via MIROIR_TEST_SKIP_DOCKER. \
              Unset MIROIR_TEST_SKIP_DOCKER and ensure Docker is available."
-                .to_string(),
-        );
+            .to_string());
     }
+
+    // Check for Docker socket
+    let docker_sock = Path::new("/var/run/docker.sock");
+    if !docker_sock.exists() {
+        return Err("Docker socket not found at /var/run/docker.sock. \
+             Set MIROIR_TEST_SKIP_DOCKER=1 to skip, or ensure Docker is running."
+            .to_string());
+    }
+
+    // Try to access the socket
+    if let Err(e) = std::fs::metadata(docker_sock) {
+        return Err(format!(
+            "Cannot access Docker socket: {e}. \
+             Set MIROIR_TEST_SKIP_DOCKER=1 to skip, or ensure Docker is running."
+        ));
+    }
+
     Ok(())
 }
 
-/// Macro to skip test if Docker is unavailable
-macro_rules! skip_if_no_docker {
-    () => {
-        match check_docker_skip() {
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("Skipping test: {e}");
-                return;
-            }
-        }
-    };
-}
-
 /// Start a Meilisearch node with the given master key.
+///
+/// Returns an error if Docker is unavailable or the container fails to start.
 async fn start_meilisearch_node(
     master_key: &str,
-) -> (String, testcontainers::ContainerAsync<testcontainers_modules::meilisearch::Meilisearch>) {
+) -> Result<
+    (
+        String,
+        testcontainers::ContainerAsync<testcontainers_modules::meilisearch::Meilisearch>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::meilisearch::Meilisearch;
 
+    // Check Docker availability first
+    check_docker_available().map_err(|e| format!("{e}. Set MIROIR_TEST_SKIP_DOCKER=1 to skip."))?;
+
     let node = Meilisearch::default();
-    let container = node.start().await.expect("start meilisearch");
-    let port = container.get_host_port_ipv4(7700).await.expect("get port");
+    let container = node
+        .start()
+        .await
+        .map_err(|e| format!("start meilisearch: {e}"))?;
+    let port = container
+        .get_host_port_ipv4(7700)
+        .await
+        .map_err(|e| format!("get port: {e}"))?;
     let url = format!("http://localhost:{port}");
 
     // Wait for Meilisearch to be healthy
@@ -68,7 +88,7 @@ async fn start_meilisearch_node(
         .build()
         .expect("client");
 
-    for _ in 0..30 {
+    for _i in 0..30 {
         let resp = client
             .get(format!("{url}/health"))
             .header("Authorization", format!("Bearer {master_key}"))
@@ -76,12 +96,12 @@ async fn start_meilisearch_node(
             .await;
 
         if resp.is_ok() && resp.unwrap().status().is_success() {
-            return (url, container);
+            return Ok((url, container));
         }
         sleep(Duration::from_millis(500)).await;
     }
 
-    panic!("Meilisearch did not become healthy at {url}");
+    Err(format!("Meilisearch did not become healthy at {url} after 15s").into())
 }
 
 /// Create an admin-scoped key via POST /keys.
@@ -205,9 +225,14 @@ async fn verify_key_works(
 
 #[tokio::test]
 async fn test_p10_2_four_step_rotation_flow() {
-    skip_if_no_docker!();
     let master_key = "test-master-key-for-rotation";
-    let (node_url, _container) = start_meilisearch_node(master_key).await;
+    let (node_url, _container) = match start_meilisearch_node(master_key).await {
+        Ok(container) => container,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     // Create initial admin-scoped key (simulates existing nodeMasterKey)
     let (old_uid, old_key) = create_admin_key(&node_url, master_key, "miroir-node-master-old")
@@ -278,9 +303,14 @@ async fn test_p10_2_four_step_rotation_flow() {
 
 #[tokio::test]
 async fn test_p10_2_mid_rotation_pod_restart_both_keys_valid() {
-    skip_if_no_docker!();
     let master_key = "test-master-key-mid-rotation";
-    let (node_url, _container) = start_meilisearch_node(master_key).await;
+    let (node_url, _container) = match start_meilisearch_node(master_key).await {
+        Ok(container) => container,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     // Create two admin-scoped keys (simulating old and new during rotation)
     let (old_uid, old_key) = create_admin_key(&node_url, master_key, "rotation-old")
@@ -323,13 +353,18 @@ async fn test_p10_2_mid_rotation_pod_restart_both_keys_valid() {
 
 #[tokio::test]
 async fn test_p10_2_dry_run_prints_plan_without_executing() {
-    skip_if_no_docker!();
     // This test verifies the CLI --dry-run flag behavior
     // The actual CLI command is tested in miroir-ctl unit tests
     // Here we verify that the key creation logic can be planned without executing
 
     let master_key = "test-master-key-dry-run";
-    let (node_url, _container) = start_meilisearch_node(master_key).await;
+    let (node_url, _container) = match start_meilisearch_node(master_key).await {
+        Ok(container) => container,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     // Plan: we would create a key, but we don't
     let planned_key_name = "planned-key";
@@ -366,12 +401,17 @@ async fn test_p10_2_dry_run_prints_plan_without_executing() {
 
 #[tokio::test]
 async fn test_p10_2_startup_master_rotation_requires_restart() {
-    skip_if_no_docker!();
     // This test documents that startup-master key rotation is NOT zero-downtime
     // The startup master key (MEILI_MASTER_KEY) is fixed at process start
 
     let master_key = "original-master-key";
-    let (node_url, _container) = start_meilisearch_node(master_key).await;
+    let (node_url, _container) = match start_meilisearch_node(master_key).await {
+        Ok(container) => container,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     // Create an admin-scoped key using the original master
     let (key_uid, _key_value) = create_admin_key(&node_url, master_key, "scoped-key")
@@ -401,11 +441,22 @@ async fn test_p10_2_startup_master_rotation_requires_restart() {
 
 #[tokio::test]
 async fn test_p10_2_multiple_nodes_rotation() {
-    skip_if_no_docker!();
     // Start multiple Meilisearch nodes
     let master_key = "test-master-key-multi-node";
-    let (node1_url, _c1) = start_meilisearch_node(master_key).await;
-    let (node2_url, _c2) = start_meilisearch_node(master_key).await;
+    let (node1_url, _c1) = match start_meilisearch_node(master_key).await {
+        Ok(container) => container,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
+    let (node2_url, _c2) = match start_meilisearch_node(master_key).await {
+        Ok(container) => container,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     // Create old key on both nodes
     let (old_uid, old_key) = create_admin_key(&node1_url, master_key, "multi-node-old")
@@ -480,10 +531,21 @@ async fn test_p10_2_multiple_nodes_rotation() {
 
 #[tokio::test]
 async fn test_p10_2_rollback_on_partial_creation_failure() {
-    skip_if_no_docker!();
     let master_key = "test-master-key-rollback";
-    let (node1_url, _c1) = start_meilisearch_node(master_key).await;
-    let (node2_url, _c2) = start_meilisearch_node(master_key).await;
+    let (node1_url, _c1) = match start_meilisearch_node(master_key).await {
+        Ok(container) => container,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
+    let (node2_url, _c2) = match start_meilisearch_node(master_key).await {
+        Ok(container) => container,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     // Create old key on both nodes
     let (old_uid, _old_key) = create_admin_key(&node1_url, master_key, "rollback-old")

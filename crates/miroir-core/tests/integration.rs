@@ -11,6 +11,9 @@
 //
 // Run:
 //   cargo test --test integration -- --test-threads=1
+//
+// Environment variables:
+//   - `MIROIR_TEST_SKIP_DOCKER`: If set, skip these tests (when Docker unavailable)
 
 use meilisearch_sdk::{client::Client, indexes::Index, search::SearchResults, tasks::Task};
 use serde_json::json;
@@ -24,6 +27,64 @@ const MIROIR_PORT: u16 = 7700;
 const NODE_PORTS: [u16; 3] = [7701, 7702, 7703];
 const MASTER_KEY: &str = "dev-key";
 const NODE_KEY: &str = "dev-node-key";
+
+/// Check if Miroir integration tests should skip.
+///
+/// Returns Ok(()) if Miroir is available, Err(skip_reason) if not.
+fn check_miroir_available() -> Result<(), String> {
+    // Check explicit skip flag
+    if env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
+        return Err(
+            "Miroir integration tests skipped via MIROIR_TEST_SKIP_DOCKER. \
+             Unset MIROIR_TEST_SKIP_DOCKER and ensure docker-compose stack is running."
+                .to_string(),
+        );
+    }
+
+    // Try to connect to Miroir port using a simple TCP check
+    use std::net::ToSocketAddrs;
+    use std::time::Duration;
+
+    let addr = format!("localhost:{MIROIR_PORT}");
+    let addrs: Vec<std::net::SocketAddr> = addr
+        .to_socket_addrs()
+        .map_err(|e| format!("Failed to resolve address {addr}: {e}"))?
+        .collect();
+
+    if addrs.is_empty() {
+        return Err(format!(
+            "No addresses found for {addr}. \
+             Ensure docker-compose stack is running: docker compose -f examples/docker-compose-dev.yml up -d. \
+             Or set MIROIR_TEST_SKIP_DOCKER=1 to skip."
+        ));
+    }
+
+    // Try each resolved address
+    for socket_addr in addrs {
+        if std::net::TcpStream::connect_timeout(&socket_addr, Duration::from_secs(2)).is_ok() {
+            return Ok(());
+        }
+    }
+
+    Err(format!(
+        "Failed to connect to Miroir at http://localhost:{MIROIR_PORT}. \
+         Ensure docker-compose stack is running: docker compose -f examples/docker-compose-dev.yml up -d. \
+         Or set MIROIR_TEST_SKIP_DOCKER=1 to skip."
+    ))
+}
+
+/// Macro to skip test if Miroir is unavailable
+macro_rules! skip_if_no_miroir {
+    () => {
+        match check_miroir_available() {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Skipping test: {e}");
+                return Ok(());
+            }
+        }
+    };
+}
 
 /// Test document
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -117,6 +178,7 @@ async fn ensure_healthy() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 async fn document_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    skip_if_no_miroir!();
     ensure_healthy().await?;
     let client = miroir_client();
     let index_name = "test_round_trip";
@@ -180,6 +242,7 @@ async fn document_round_trip() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 async fn search_covers_all_shards() -> Result<(), Box<dyn std::error::Error>> {
+    skip_if_no_miroir!();
     ensure_healthy().await?;
     let client = miroir_client();
     let index_name = "test_shard_coverage";
@@ -225,6 +288,7 @@ async fn search_covers_all_shards() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 async fn facet_aggregation() -> Result<(), Box<dyn std::error::Error>> {
+    skip_if_no_miroir!();
     ensure_healthy().await?;
     let client = miroir_client();
     let index_name = "test_facets";
@@ -288,6 +352,7 @@ async fn facet_aggregation() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 async fn offset_limit_paging() -> Result<(), Box<dyn std::error::Error>> {
+    skip_if_no_miroir!();
     ensure_healthy().await?;
     let client = miroir_client();
     let index_name = "test_paging";
@@ -389,6 +454,7 @@ async fn offset_limit_paging() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 async fn settings_broadcast() -> Result<(), Box<dyn std::error::Error>> {
+    skip_if_no_miroir!();
     ensure_healthy().await?;
     let client = miroir_client();
     let index_name = "test_settings";
@@ -449,6 +515,7 @@ async fn settings_broadcast() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 async fn task_polling() -> Result<(), Box<dyn std::error::Error>> {
+    skip_if_no_miroir!();
     ensure_healthy().await?;
     let client = miroir_client();
     let index_name = "test_tasks";
