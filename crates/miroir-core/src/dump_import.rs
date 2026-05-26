@@ -158,10 +158,15 @@ impl<C: NodeClient + Send + Sync + 'static> DumpImportManager<C> {
         primary_key: String,
         shard_count: u32,
     ) -> Result<String> {
-        if self.config.mode != "streaming" {
-            return Err(MiroirError::InvalidRequest(
-                "streaming dump import is disabled".into(),
-            ));
+        // In broadcast mode, fall back to legacy behavior
+        if self.config.mode == "broadcast" {
+            tracing::info!(
+                index = %index_uid,
+                "Dump import using legacy broadcast mode (all documents to all nodes)"
+            );
+            return self
+                .start_broadcast_import(index_uid, dump_data, primary_key)
+                .await;
         }
 
         let import_id = format!("dump-{}-{}", index_uid, uuid::Uuid::new_v4());
@@ -217,6 +222,174 @@ impl<C: NodeClient + Send + Sync + 'static> DumpImportManager<C> {
     pub async fn get_status(&self, import_id: &str) -> Option<DumpImportStatus> {
         let imports = self.active_imports.read().await;
         imports.get(import_id).cloned()
+    }
+
+    /// Start a legacy broadcast dump import (all documents to all nodes).
+    async fn start_broadcast_import(
+        &self,
+        index_uid: String,
+        dump_data: Vec<u8>,
+        primary_key: String,
+    ) -> Result<String> {
+        let import_id = format!("dump-{}-{}", index_uid, uuid::Uuid::new_v4());
+        let now = millis_now();
+
+        // Create initial status
+        let status = DumpImportStatus {
+            id: import_id.clone(),
+            index_uid: index_uid.clone(),
+            phase: DumpImportPhase::Reading.as_str().to_string(),
+            documents_processed: 0,
+            total_documents: 0,
+            bytes_read: 0,
+            phase_started_at: now,
+            error: None,
+        };
+
+        {
+            let mut imports = self.active_imports.write().await;
+            imports.insert(import_id.clone(), status);
+        }
+
+        // Run the broadcast import
+        let result = Self::run_broadcast_import(
+            &import_id,
+            index_uid,
+            dump_data,
+            primary_key,
+            self.topology.clone(),
+            self.active_imports.clone(),
+            self.client.clone(),
+        )
+        .await;
+
+        if let Err(e) = result {
+            tracing::error!("Broadcast dump import {} failed: {}", import_id, e);
+
+            // Update status to failed
+            let mut imports = self.active_imports.write().await;
+            if let Some(status) = imports.get_mut(&import_id) {
+                status.phase = DumpImportPhase::Failed.as_str().to_string();
+                status.error = Some(e.to_string());
+                status.phase_started_at = millis_now();
+            }
+        }
+
+        Ok(import_id)
+    }
+
+    /// Run a legacy broadcast import (sends all documents to all nodes).
+    #[allow(clippy::too_many_arguments)]
+    async fn run_broadcast_import(
+        import_id: &str,
+        index_uid: String,
+        dump_data: Vec<u8>,
+        primary_key: String,
+        topology: Arc<RwLock<Topology>>,
+        imports: Arc<RwLock<HashMap<String, DumpImportStatus>>>,
+        client: Arc<C>,
+    ) -> Result<()> {
+        // Update phase to reading
+        Self::update_phase(&imports, import_id, DumpImportPhase::Reading).await;
+
+        // Parse NDJSON
+        let data_str = std::str::from_utf8(&dump_data)
+            .map_err(|e| MiroirError::InvalidRequest(format!("invalid UTF-8 in dump: {e}")))?;
+
+        let mut documents = Vec::new();
+        let bytes_read = dump_data.len() as u64;
+
+        for line in data_str.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            let doc: Value = serde_json::from_str(line)
+                .map_err(|e| MiroirError::InvalidRequest(format!("invalid JSON in dump: {e}")))?;
+            documents.push(doc);
+        }
+
+        let total_docs = documents.len() as u64;
+
+        // Get all nodes
+        let topology = topology.read().await;
+        let node_ids: Vec<NodeId> = topology.nodes().map(|n| n.id.clone()).collect();
+
+        if node_ids.is_empty() {
+            return Err(MiroirError::Topology("no nodes available".into()));
+        }
+
+        // Send all documents to all nodes
+        Self::update_phase(&imports, import_id, DumpImportPhase::Routing).await;
+
+        let mut write_tasks = Vec::new();
+
+        for node_id in node_ids.clone() {
+            let docs = documents.clone();
+            let index = index_uid.clone();
+            let client_ref = client.clone();
+            let pk = primary_key.clone();
+
+            write_tasks.push(async move {
+                let write_req = WriteRequest {
+                    index_uid: index.clone(),
+                    documents: docs,
+                    primary_key: Some(pk),
+                    origin: None,
+                };
+
+                let result = client_ref.write_documents(&node_id, "", &write_req).await;
+                (node_id, result)
+            });
+        }
+
+        // Execute all writes in parallel
+        let results = futures_util::stream::iter(write_tasks)
+            .buffer_unordered(8)
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check for errors
+        for (node_id, result) in results {
+            match result {
+                Ok(resp) if resp.success => {
+                    tracing::debug!(
+                        "Broadcast {} documents to node {} for index {}",
+                        total_docs,
+                        node_id,
+                        index_uid
+                    );
+                }
+                Ok(resp) => {
+                    tracing::warn!(
+                        "Failed to broadcast documents to node {} for index {}: {}",
+                        node_id,
+                        index_uid,
+                        resp.message.unwrap_or_default()
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Error broadcasting documents to node {} for index {}: {:?}",
+                        node_id,
+                        index_uid,
+                        e
+                    );
+                }
+            }
+        }
+
+        // Update status
+        let mut imports_guard = imports.write().await;
+        if let Some(status) = imports_guard.get_mut(import_id) {
+            status.documents_processed = total_docs;
+            status.total_documents = total_docs;
+            status.bytes_read = bytes_read;
+        }
+
+        // Mark complete
+        Self::update_phase(&imports, import_id, DumpImportPhase::Complete).await;
+
+        Ok(())
     }
 
     /// Run the import pipeline.
@@ -488,20 +661,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_import_rejects_broadcast_mode() {
+    async fn test_import_accepts_broadcast_mode() {
         let config = DumpImportConfig {
             mode: "broadcast".into(),
             ..Default::default()
         };
         let topology = Arc::new(RwLock::new(Topology::new(64, 2, 1)));
-        let client = MockNodeClient::default();
+
+        // Create a mock client that returns success
+        let mut client = MockNodeClient::default();
+        client.write_responses.insert(
+            NodeId::new("node-0".into()),
+            WriteResponse {
+                success: true,
+                task_uid: Some(1),
+                message: None,
+                code: None,
+                error_type: None,
+            },
+        );
+
         let manager = DumpImportManager::new(config, topology, client);
 
         let result = manager
             .start_import("products".into(), vec![1, 2, 3], "id".into(), 64)
             .await;
 
-        assert!(result.is_err());
+        // Broadcast mode should now succeed
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

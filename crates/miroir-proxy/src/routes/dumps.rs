@@ -1,10 +1,10 @@
 //! Dump import routes (plan §13.9).
 //!
 //! Admin API endpoints for streaming routed dump import:
-//! - `POST /_miroir/dumps/import` — start a dump import
+//! - `POST /_miroir/dumps/import` — start a dump import (multipart)
 //! - `GET /_miroir/dumps/import/{id}/status` — get import status
 
-use axum::extract::{Extension, FromRef, Path};
+use axum::extract::{Extension, FromRef, Multipart, Path};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use miroir_core::api_error::{MeilisearchError, MiroirCode};
@@ -12,18 +12,11 @@ use miroir_core::dump_import::{DumpImportManager, DumpImportPhase, DumpImportSta
 
 use crate::client::HttpClient;
 
-/// Request body for starting a dump import.
-#[derive(serde::Deserialize)]
-struct DumpImportRequest {
-    /// Index UID to import into.
-    index_uid: String,
-    /// Primary key field name.
-    primary_key: String,
-    /// Number of shards for the index.
-    shard_count: u32,
-    /// Dump file contents (base64-encoded or raw NDJSON).
-    dump_data: String,
-}
+/// Multipart field names for dump import.
+const FIELD_INDEX_UID: &str = "index_uid";
+const FIELD_PRIMARY_KEY: &str = "primary_key";
+const FIELD_SHARD_COUNT: &str = "shard_count";
+const FIELD_DUMP_FILE: &str = "dump_file";
 
 /// Response for starting a dump import.
 #[derive(serde::Serialize)]
@@ -48,50 +41,116 @@ where
 /// POST /_miroir/dumps/import
 ///
 /// Start a streaming routed dump import.
+///
+/// Requires multipart/form-data with fields: index_uid, primary_key, shard_count, dump_file (file).
 async fn start_import<S>(
     Extension(state): Extension<crate::routes::admin_endpoints::AppState>,
-    Json(req): Json<DumpImportRequest>,
+    mut multipart: Multipart,
 ) -> Result<Json<DumpImportResponse>, MeilisearchError>
 where
     S: Clone + Send + Sync + 'static,
     crate::routes::admin_endpoints::AppState: FromRef<S>,
 {
+    // Handle multipart form data
+    let mut index_uid = None;
+    let mut primary_key = None;
+    let mut shard_count = None;
+    let mut dump_data = None;
+
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        MeilisearchError::new(MiroirCode::InvalidRequest, format!("multipart error: {e}"))
+    })? {
+        let name = field.name().unwrap_or("").to_string();
+
+        match name.as_str() {
+            FIELD_INDEX_UID => {
+                let value = field.text().await.map_err(|e| {
+                    MeilisearchError::new(
+                        MiroirCode::InvalidRequest,
+                        format!("error reading index_uid: {e}"),
+                    )
+                })?;
+                index_uid = Some(value);
+            }
+            FIELD_PRIMARY_KEY => {
+                let value = field.text().await.map_err(|e| {
+                    MeilisearchError::new(
+                        MiroirCode::InvalidRequest,
+                        format!("error reading primary_key: {e}"),
+                    )
+                })?;
+                primary_key = Some(value);
+            }
+            FIELD_SHARD_COUNT => {
+                let value = field.text().await.map_err(|e| {
+                    MeilisearchError::new(
+                        MiroirCode::InvalidRequest,
+                        format!("error reading shard_count: {e}"),
+                    )
+                })?;
+                let count = value.parse::<u32>().map_err(|_| {
+                    MeilisearchError::new(
+                        MiroirCode::InvalidRequest,
+                        "shard_count must be a number".to_string(),
+                    )
+                })?;
+                shard_count = Some(count);
+            }
+            FIELD_DUMP_FILE => {
+                let filename = field.file_name().map(|s| s.to_string());
+                let data = field.bytes().await.map_err(|e| {
+                    MeilisearchError::new(
+                        MiroirCode::InvalidRequest,
+                        format!("error reading dump_file: {e}"),
+                    )
+                })?;
+                tracing::debug!(
+                    filename,
+                    size = data.len(),
+                    "Received dump file via multipart upload"
+                );
+                dump_data = Some(data.to_vec());
+            }
+            _ => {
+                tracing::warn!(unknown_field = %name, "Ignoring unknown field in multipart dump import");
+            }
+        }
+    }
+
+    let index_uid = index_uid.ok_or_else(|| {
+        MeilisearchError::new(MiroirCode::InvalidRequest, "index_uid is required")
+    })?;
+    let primary_key = primary_key.ok_or_else(|| {
+        MeilisearchError::new(MiroirCode::InvalidRequest, "primary_key is required")
+    })?;
+    let shard_count = shard_count.ok_or_else(|| {
+        MeilisearchError::new(MiroirCode::InvalidRequest, "shard_count is required")
+    })?;
+    let dump_data = dump_data.ok_or_else(|| {
+        MeilisearchError::new(MiroirCode::InvalidRequest, "dump_file is required")
+    })?;
+
     // Validate request
-    if req.index_uid.is_empty() {
+    if index_uid.is_empty() {
         return Err(MeilisearchError::new(
             MiroirCode::InvalidRequest,
             "index_uid is required",
         ));
     }
 
-    if req.primary_key.is_empty() {
+    if primary_key.is_empty() {
         return Err(MeilisearchError::new(
             MiroirCode::InvalidRequest,
             "primary_key is required",
         ));
     }
 
-    if req.shard_count == 0 {
+    if shard_count == 0 {
         return Err(MeilisearchError::new(
             MiroirCode::InvalidRequest,
             "shard_count must be > 0",
         ));
     }
-
-    // Decode dump data (assume base64 if it looks like it, otherwise treat as raw)
-    let dump_data = if looks_like_base64(&req.dump_data) {
-        match base64_decode(&req.dump_data) {
-            Ok(data) => data,
-            Err(e) => {
-                return Err(MeilisearchError::new(
-                    MiroirCode::InvalidRequest,
-                    format!("invalid base64 dump_data: {e}"),
-                ))
-            }
-        }
-    } else {
-        req.dump_data.into_bytes()
-    };
 
     let bytes_read = dump_data.len() as u64;
 
@@ -109,10 +168,10 @@ where
     // Start the import
     let import_id = manager
         .start_import(
-            req.index_uid.clone(),
+            index_uid.clone(),
             dump_data,
-            req.primary_key.clone(),
-            req.shard_count,
+            primary_key.clone(),
+            shard_count,
         )
         .await
         .map_err(|e| {
@@ -126,14 +185,14 @@ where
     state.metrics.inc_dump_import_bytes_read(bytes_read);
     state
         .metrics
-        .set_dump_import_phase(&req.index_uid, &import_id, DumpImportPhase::Reading as u8);
+        .set_dump_import_phase(&index_uid, &import_id, DumpImportPhase::Reading as u8);
 
     tracing::info!(
         "Started dump import {} for index {} (shard_count={}, primary_key={}, bytes={})",
         import_id,
-        req.index_uid,
-        req.shard_count,
-        req.primary_key,
+        index_uid,
+        shard_count,
+        primary_key,
         bytes_read
     );
 
@@ -197,25 +256,6 @@ where
     Ok(Json(status))
 }
 
-/// Check if a string looks like base64-encoded data.
-fn looks_like_base64(s: &str) -> bool {
-    // Base64 strings are typically multiples of 4 and only contain A-Za-z0-9+/
-    if s.len() % 4 != 0 {
-        return false;
-    }
-
-    s.chars()
-        .all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '=')
-}
-
-/// Decode a base64 string.
-fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD
-        .decode(s)
-        .map_err(|e| format!("base64 decode failed: {e}"))
-}
-
 /// Get current UNIX timestamp in milliseconds.
 fn millis_now() -> u64 {
     std::time::SystemTime::now()
@@ -225,27 +265,4 @@ fn millis_now() -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_looks_like_base64() {
-        assert!(looks_like_base64("SGVsbG8gV29ybGQ=")); // "Hello World"
-        assert!(!looks_like_base64("Hello World"));
-        assert!(!looks_like_base64("not base64!"));
-        assert!(looks_like_base64("eyJpZCI6ICIxIn0=")); // JSON
-    }
-
-    #[test]
-    fn test_base64_decode() {
-        let encoded = "SGVsbG8gV29ybGQ=";
-        let decoded = base64_decode(encoded).unwrap();
-        assert_eq!(String::from_utf8(decoded).unwrap(), "Hello World");
-    }
-
-    #[test]
-    fn test_base64_decode_invalid() {
-        let result = base64_decode("invalid!base64");
-        assert!(result.is_err());
-    }
-}
+mod tests {}
