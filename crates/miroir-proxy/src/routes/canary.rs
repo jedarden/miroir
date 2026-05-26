@@ -61,14 +61,20 @@ pub struct CanaryRunInfo {
 /// Capture request
 #[derive(Debug, Deserialize)]
 pub struct CaptureRequest {
-    pub max_queries: Option<usize>,
+    /// Target index to capture queries from (optional: all indexes if not specified)
+    pub index: Option<String>,
+    /// Maximum number of queries to capture
+    pub count: usize,
+    /// Name prefix for auto-generated canary names (optional)
+    pub name_prefix: Option<String>,
 }
 
 /// Capture response
 #[derive(Debug, Serialize)]
 pub struct CaptureResponse {
     pub capture_id: String,
-    pub queries: Vec<CapturedQueryInfo>,
+    pub status: String,
+    pub message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -302,14 +308,33 @@ where
     CanaryState: FromRef<S>,
 {
     let capture_id = Uuid::new_v4().to_string();
-    let _max_queries = req.max_queries.unwrap_or(100);
 
-    // Clear previous captures
+    // Clear previous captures and start new capture session
     state.capture.clear().await;
+    state
+        .capture
+        .start_capture(req.index.clone(), req.count, req.name_prefix.clone())
+        .await;
+
+    tracing::info!(
+        capture_id = %capture_id,
+        index = ?req.index,
+        count = req.count,
+        name_prefix = ?req.name_prefix,
+        "started capture session"
+    );
 
     Ok(Json(CaptureResponse {
         capture_id,
-        queries: Vec::new(),
+        status: "capturing".to_string(),
+        message: format!(
+            "Capturing up to {} queries{}",
+            req.count,
+            req.index
+                .as_ref()
+                .map(|i| format!(" from index '{i}'"))
+                .unwrap_or_default()
+        ),
     }))
 }
 
@@ -322,6 +347,8 @@ where
     CanaryState: FromRef<S>,
 {
     let queries = state.capture.get_captured().await;
+    let session = state.capture.get_session().await;
+    let is_capturing = state.capture.is_capturing().await;
 
     let query_infos: Vec<CapturedQueryInfo> = queries
         .iter()
@@ -333,6 +360,13 @@ where
         .collect();
 
     Ok(Json(serde_json::json!({
+        "capturing": is_capturing,
+        "session": session.map(|s| serde_json::json!({
+            "target_index": s.target_index,
+            "max_count": s.max_count,
+            "name_prefix": s.name_prefix,
+        })),
+        "captured_count": query_infos.len(),
         "queries": query_infos
     })))
 }

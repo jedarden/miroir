@@ -721,6 +721,10 @@ async fn search_handler(
         1 // No over-fetch for pure keyword queries
     };
 
+    // Capture query data for canary creation before search_req is moved (plan §13.18)
+    let capture_query = body.q.clone().unwrap_or_default();
+    let capture_body = rest_body.clone();
+
     let search_req = SearchRequest {
         index_uid: effective_index.clone(),
         query: body.q,
@@ -819,6 +823,34 @@ async fn search_handler(
     if let Some(facets) = &result.facet_distribution {
         body["facetDistribution"] = serde_json::to_value(facets).unwrap_or(Value::Null);
     }
+
+    // Capture query for canary creation if a capture session is active (plan §13.18)
+    // This captures production queries + responses to create golden pairs for canary testing
+    let search_params: std::collections::HashMap<String, serde_json::Value> =
+        serde_json::from_value(capture_body).unwrap_or_default();
+    state
+        .query_capture
+        .capture(
+            effective_index.clone(),
+            miroir_core::canary::SearchQuery {
+                params: search_params,
+            },
+            miroir_core::canary::SearchResponse {
+                hits: result
+                    .hits
+                    .iter()
+                    .map(|h| {
+                        let fields: std::collections::HashMap<String, serde_json::Value> =
+                            serde_json::from_value(h.clone()).unwrap_or_default();
+                        miroir_core::canary::Hit { fields }
+                    })
+                    .collect(),
+                estimated_total_hits: result.estimated_total_hits as usize,
+                processing_time_ms: result.processing_time_ms as usize,
+                query: capture_query,
+            },
+        )
+        .await;
 
     // Broadcast result to coalesced queries (plan §13.10)
     if let (Some(broadcast_tx), Some(fp)) = (tx, fingerprint) {

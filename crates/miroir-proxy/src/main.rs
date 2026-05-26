@@ -142,13 +142,16 @@ impl UnifiedState {
             seal_key.clone(),
         );
 
+        // Use the same QueryCapture instance from admin
+        let query_capture = admin.query_capture.clone();
+
         Self {
             auth,
             metrics,
             admin,
             pod_id,
             redis_store,
-            query_capture: Arc::new(QueryCapture::new(1000)),
+            query_capture,
             peer_discovery,
         }
     }
@@ -195,6 +198,7 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             tenant_affinity_manager: state.admin.tenant_affinity_manager.clone(),
             ilm_manager: state.admin.ilm_manager.clone(),
             ilm_worker: state.admin.ilm_worker.clone(),
+            query_capture: state.query_capture.clone(),
         }
     }
 }

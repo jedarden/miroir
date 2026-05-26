@@ -514,9 +514,22 @@ pub struct CapturedQuery {
     pub timestamp: i64,
 }
 
+/// Capture session configuration
+#[derive(Debug, Clone)]
+pub struct CaptureSession {
+    /// Target index to capture queries from (None = all indexes)
+    pub target_index: Option<String>,
+    /// Maximum number of queries to capture
+    pub max_count: usize,
+    /// Name prefix for auto-generated canary names
+    pub name_prefix: Option<String>,
+}
+
 pub struct QueryCapture {
     queries: Arc<RwLock<Vec<CapturedQuery>>>,
     max_queries: usize,
+    /// Active capture session (None = not capturing)
+    session: Arc<RwLock<Option<CaptureSession>>>,
 }
 
 impl QueryCapture {
@@ -524,11 +537,27 @@ impl QueryCapture {
         Self {
             queries: Arc::new(RwLock::new(Vec::new())),
             max_queries,
+            session: Arc::new(RwLock::new(None)),
         }
     }
 
-    /// Capture a query for canary creation
+    /// Capture a query for canary creation (only if a capture session is active)
     pub async fn capture(&self, index_uid: String, query: SearchQuery, response: SearchResponse) {
+        // Check if capturing is enabled
+        let session_opt = self.session.read().await;
+        let session = match session_opt.as_ref() {
+            Some(s) => s.clone(),
+            None => return, // Not capturing
+        };
+        drop(session_opt);
+
+        // Check if this query matches the target index (if specified)
+        if let Some(ref target) = session.target_index {
+            if target != &index_uid {
+                return; // Not the target index
+            }
+        }
+
         let mut queries = self.queries.write().await;
         let now = chrono::Utc::now().timestamp_millis();
 
@@ -539,11 +568,51 @@ impl QueryCapture {
             timestamp: now,
         });
 
+        // Stop capturing if we've reached the max count
+        if queries.len() >= session.max_count {
+            // Clear the session to stop capturing
+            let mut session_lock = self.session.write().await;
+            *session_lock = None;
+        }
+
         // Keep only the most recent queries
         let len = queries.len();
         if len > self.max_queries {
             queries.drain(0..len - self.max_queries);
         }
+    }
+
+    /// Start a capture session
+    pub async fn start_capture(
+        &self,
+        target_index: Option<String>,
+        max_count: usize,
+        name_prefix: Option<String>,
+    ) {
+        let mut session = self.session.write().await;
+        *session = Some(CaptureSession {
+            target_index,
+            max_count,
+            name_prefix,
+        });
+    }
+
+    /// Stop the current capture session
+    pub async fn stop_capture(&self) {
+        let mut session = self.session.write().await;
+        *session = None;
+    }
+
+    /// Check if a capture session is active
+    pub async fn is_capturing(&self) -> bool {
+        let session = self.session.read().await;
+        session.is_some()
+    }
+
+    /// Get the current capture session (if any)
+    pub async fn get_session(&self) -> Option<CaptureSession> {
+        let session = self.session.read().await;
+        session.clone()
     }
 
     /// Get captured queries
