@@ -89,8 +89,15 @@ pub async fn explain_search(
         .plan(&index, &filter_string, shard_count)
         .await;
 
-    // Create explainer and generate explanation
-    let explainer = Explainer::new(state.config.as_ref().clone(), state.query_planner.clone());
+    // Create explainer with all integrations (plan §13.20)
+    let explainer = Explainer::new_with_integrations(
+        state.config.as_ref().clone(),
+        state.query_planner.clone(),
+        state.task_store.clone(),
+        Some(state.replica_selector.clone()),
+        // TenantAffinityManager not yet in AppState - will be added in future
+        None,
+    );
     let mut explanation = explainer.explain(
         &index,
         &query,
