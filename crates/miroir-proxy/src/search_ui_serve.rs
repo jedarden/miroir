@@ -6,11 +6,10 @@
 
 use axum::{
     body::Body,
-    extract::{FromRef, Path, State},
+    extract::{FromRef, State},
     http::{header, HeaderValue, StatusCode},
     response::Response,
 };
-use miroir_core::config::MiroirConfig;
 use rust_embed::RustEmbed;
 
 use crate::auth::build_csp_header;

@@ -12,11 +12,9 @@
 //! - Plan §14.7 Redis memory accounting validated against representative load
 
 use miroir_core::task_store::{
-    AdminSessionRow, AliasHistoryEntry, CanaryRow, CanaryRunRow, CdcCursorRow, IdempotencyEntry,
-    LeaderLeaseRow, NewAdminSession, NewAlias, NewCanary, NewCanaryRun, NewCdcCursor, NewJob,
-    NewRolloverPolicy, NewSearchUiConfig, NewTask, NewTenantMapping, NodeSettingsVersionRow,
-    RolloverPolicyRow, SearchUiConfigRow, SessionRow, SqliteTaskStore, TaskFilter, TaskRow,
-    TaskStore, TenantMapRow,
+    IdempotencyEntry, NewAdminSession, NewAlias, NewCanary, NewCanaryRun, NewCdcCursor, NewJob,
+    NewRolloverPolicy, NewSearchUiConfig, NewTask, NewTenantMapping, SessionRow, SqliteTaskStore, TaskFilter,
+    TaskStore,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -434,7 +432,7 @@ fn test_job_list_by_state() {
     for (i, state) in ["queued", "in_progress", "completed"].iter().enumerate() {
         store
             .insert_job(&NewJob {
-                id: format!("job-{}", i),
+                id: format!("job-{i}"),
                 type_: "test".to_string(),
                 params: "{}".to_string(),
                 state: state.to_string(),
@@ -759,7 +757,7 @@ fn test_sqlite_list_uses_index_for_pagination() {
         node_tasks.insert("node-0".to_string(), i as u64);
         store
             .insert_task(&NewTask {
-                miroir_id: format!("task-{}", i),
+                miroir_id: format!("task-{i}"),
                 created_at: now_ms() - (9 - i) * 1000, // task-0 is oldest
                 status: "succeeded".to_string(),
                 node_tasks,
@@ -847,7 +845,7 @@ fn test_task_count_returns_accurate_size() {
         node_tasks.insert("node-0".to_string(), i as u64);
         store
             .insert_task(&NewTask {
-                miroir_id: format!("task-{}", i),
+                miroir_id: format!("task-{i}"),
                 created_at: now_ms(),
                 status: "enqueued".to_string(),
                 node_tasks,

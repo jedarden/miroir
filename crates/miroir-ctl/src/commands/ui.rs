@@ -194,7 +194,7 @@ fn read_secret_key(
             "-n",
             namespace,
             "-o",
-            &format!("jsonpath={{.data.{}}}", key),
+            &format!("jsonpath={{.data.{key}}}"),
         ])
         .output()?;
     if !output.status.success() {
@@ -203,7 +203,7 @@ fn read_secret_key(
         if stderr.contains("not found") || output.stdout.is_empty() {
             return Ok(String::new());
         }
-        return Err(format!("kubectl get secret failed: {}", stderr).into());
+        return Err(format!("kubectl get secret failed: {stderr}").into());
     }
     let b64 = String::from_utf8(output.stdout)?;
     if b64.is_empty() {
@@ -220,7 +220,7 @@ fn patch_secret_key(
     key: &str,
     value: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let patch = format!("{{\"stringData\":{{\"{}\":\"{}\"}}}}", key, value);
+    let patch = format!("{{\"stringData\":{{\"{key}\":\"{value}\"}}}}");
     let output = Command::new("kubectl")
         .args([
             "patch",
@@ -247,7 +247,7 @@ fn remove_secret_key(
     secret_name: &str,
     key: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let patch = format!("{{\"stringData\":{{\"{}\":null}}}}", key);
+    let patch = format!("{{\"stringData\":{{\"{key}\":null}}}}");
     let output = Command::new("kubectl")
         .args([
             "patch",

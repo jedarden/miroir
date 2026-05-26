@@ -112,7 +112,7 @@ pub async fn run(
 
             let response = client
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", admin_key))
+                .header("Authorization", format!("Bearer {admin_key}"))
                 .json(&request_body)
                 .send()
                 .await?;
@@ -124,44 +124,42 @@ pub async fn run(
                     .ok_or("missing miroir_task_id")?;
 
                 println!("Dump import started successfully!");
-                println!("Import ID: {}", task_id);
+                println!("Import ID: {task_id}");
                 println!(
                     "Status URL: {}/_miroir/dumps/import/{}/status",
                     api_url.trim_end_matches('/'),
                     task_id
                 );
-                println!("\nMode: {}", mode);
-                println!("Index: {}", index);
-                println!("Primary key: {}", primary_key);
-                println!("Shard count: {}", shard_count);
+                println!("\nMode: {mode}");
+                println!("Index: {index}");
+                println!("Primary key: {primary_key}");
+                println!("Shard count: {shard_count}");
                 println!("\nTo check status, run:");
-                println!("  miroir-ctl dump status --id {}", task_id);
+                println!("  miroir-ctl dump status --id {task_id}");
                 Ok(())
             } else {
                 let error = response.text().await?;
-                Err(format!("Dump import failed: {}", error).into())
+                Err(format!("Dump import failed: {error}").into())
             }
         }
 
         DumpSubcommand::Export { output, index, .. } => Err(format!(
             "Dump export is not yet implemented. See bead miroir-qon for tracking.\n\n\
                  Requested:\n\
-                 Output: {}\n\
-                 Index: {:?}",
-            output, index
+                 Output: {output}\n\
+                 Index: {index:?}"
         )
         .into()),
 
         DumpSubcommand::Analyze { file } => Err(format!(
             "Dump analysis is not yet implemented. See bead miroir-zc2.5 for tracking.\n\n\
-                 This command will analyze {} and report:\n\
+                 This command will analyze {file} and report:\n\
                  - Whether streaming mode can reconstruct the dump\n\
                  - Any field conflicts (e.g., existing `_miroir_shard`)\n\
                  - Meilisearch version compatibility\n\
                  - Recommended import mode\n\n\
                  See compatibility matrix:\n\
-                 docs/dump-import/compatibility-matrix.md",
-            file
+                 docs/dump-import/compatibility-matrix.md"
         )
         .into()),
 
@@ -176,7 +174,7 @@ pub async fn run(
 
             let response = client
                 .get(&url)
-                .header("Authorization", format!("Bearer {}", admin_key))
+                .header("Authorization", format!("Bearer {admin_key}"))
                 .send()
                 .await?;
 
@@ -202,13 +200,13 @@ pub async fn run(
                 println!("Bytes Read: {}", status["bytes_read"].as_u64().unwrap_or(0));
 
                 if let Some(error) = status["error"].as_str() {
-                    println!("Error: {}", error);
+                    println!("Error: {error}");
                 }
 
                 Ok(())
             } else {
                 let error = response.text().await?;
-                Err(format!("Failed to get status: {}", error).into())
+                Err(format!("Failed to get status: {error}").into())
             }
         }
     }

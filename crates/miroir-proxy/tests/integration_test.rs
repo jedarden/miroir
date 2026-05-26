@@ -25,12 +25,12 @@ impl TestSetup {
         let mut meilisearch_urls = Vec::new();
         for i in 0..3 {
             let meilisearch = Meilisearch::default()
-                .with_cmd([format!("--master-key=key{}", i)])
+                .with_cmd([format!("--master-key=key{i}")])
                 .start()
                 .await?;
 
             let port = meilisearch.get_host_port_ipv4(7700).await?;
-            let url = format!("http://localhost:{}", port);
+            let url = format!("http://localhost:{port}");
             meilisearch_urls.push(url);
         }
 
@@ -38,7 +38,7 @@ impl TestSetup {
         let mut nodes = Vec::new();
         for (i, url) in meilisearch_urls.iter().enumerate() {
             nodes.push(NodeConfig {
-                id: format!("node-{}", i),
+                id: format!("node-{i}"),
                 address: url.clone(),
                 replica_group: (i % 2) as u32, // 2 replica groups
             });
@@ -81,7 +81,7 @@ impl TestSetup {
         while tokio::time::Instant::now() < deadline {
             match self
                 .client
-                .get(&format!("{}/health", self.proxy_url))
+                .get(format!("{}/health", self.proxy_url))
                 .send()
                 .await
             {
@@ -101,7 +101,7 @@ impl TestSetup {
 
         let resp = self
             .client
-            .post(&format!("{}/indexes", self.proxy_url))
+            .post(format!("{}/indexes", self.proxy_url))
             .header("Authorization", format!("Bearer {}", self.master_key))
             .json(&body)
             .send()
@@ -121,7 +121,7 @@ impl TestSetup {
         while tokio::time::Instant::now() < deadline {
             match self
                 .client
-                .get(&format!("{}/indexes/{}", self.proxy_url, uid))
+                .get(format!("{}/indexes/{}", self.proxy_url, uid))
                 .header("Authorization", format!("Bearer {}", self.master_key))
                 .send()
                 .await
@@ -130,14 +130,14 @@ impl TestSetup {
                 _ => sleep(Duration::from_millis(100)).await,
             }
         }
-        anyhow::bail!("Index {} did not become ready", uid)
+        anyhow::bail!("Index {uid} did not become ready")
     }
 
     /// Add documents to an index.
     async fn add_documents(&self, uid: &str, documents: Vec<Value>) -> anyhow::Result<Value> {
         let resp = self
             .client
-            .post(&format!("{}/indexes/{}/documents", self.proxy_url, uid))
+            .post(format!("{}/indexes/{}/documents", self.proxy_url, uid))
             .header("Authorization", format!("Bearer {}", self.master_key))
             .json(&documents)
             .send()
@@ -154,7 +154,7 @@ impl TestSetup {
     async fn search(&self, uid: &str, query: &serde_json::Value) -> anyhow::Result<Value> {
         let resp = self
             .client
-            .post(&format!("{}/indexes/{}/search", self.proxy_url, uid))
+            .post(format!("{}/indexes/{}/search", self.proxy_url, uid))
             .header("Authorization", format!("Bearer {}", self.master_key))
             .json(query)
             .send()
@@ -171,7 +171,7 @@ impl TestSetup {
     async fn get_document(&self, uid: &str, id: &str) -> anyhow::Result<Value> {
         let resp = self
             .client
-            .get(&format!(
+            .get(format!(
                 "{}/indexes/{}/documents/{}",
                 self.proxy_url, uid, id
             ))
@@ -223,16 +223,16 @@ async fn test_1000_documents_indexed_and_retrievable() {
 
     // Verify each document is retrievable by ID
     for i in 0..1000 {
-        let doc_id = format!("doc-{:04}", i);
+        let doc_id = format!("doc-{i:04}");
         let doc = setup
             .get_document(index_uid, &doc_id)
             .await
-            .expect(&format!("Failed to get document {}", doc_id));
+            .unwrap_or_else(|_| panic!("Failed to get document {doc_id}"));
 
         assert_eq!(doc.get("id").unwrap().as_str().unwrap(), doc_id);
         assert_eq!(
             doc.get("title").unwrap().as_str().unwrap(),
-            format!("Document {}", i)
+            format!("Document {i}")
         );
     }
 }
@@ -270,11 +270,11 @@ async fn test_unique_keyword_search_finds_each_doc_once() {
 
     // Search for each unique keyword and verify exactly one result
     for i in 0..100 {
-        let keyword = format!("keyword{:03}", i);
+        let keyword = format!("keyword{i:03}");
         let result = setup
             .search(index_uid, &json!({"q": keyword}))
             .await
-            .expect(&format!("Search failed for {}", keyword));
+            .unwrap_or_else(|_| panic!("Search failed for {keyword}"));
 
         let hits = result.get("hits").unwrap().as_array().unwrap();
         assert_eq!(
@@ -285,7 +285,7 @@ async fn test_unique_keyword_search_finds_each_doc_once() {
             hits.len()
         );
 
-        let doc_id = format!("doc-{:03}", i);
+        let doc_id = format!("doc-{i:03}");
         assert_eq!(hits[0].get("id").unwrap().as_str().unwrap(), doc_id);
     }
 }
@@ -308,7 +308,7 @@ async fn test_facet_aggregation_sums_correctly() {
     let filterable = json!({"filterableAttributes": ["color"]});
     let resp = setup
         .client
-        .patch(&format!(
+        .patch(format!(
             "{}/indexes/{}/settings",
             setup.proxy_url, index_uid
         ))
@@ -321,7 +321,7 @@ async fn test_facet_aggregation_sums_correctly() {
     assert!(resp.status().is_success());
 
     // Add documents with color facets
-    let colors = vec!["red", "green", "blue"];
+    let colors = ["red", "green", "blue"];
     let documents: Vec<Value> = (0..300)
         .map(|i| {
             json!({
@@ -421,11 +421,10 @@ async fn test_offset_limit_preserves_global_ordering() {
     // Verify we got all 100 documents in order
     assert_eq!(all_ids.len(), 100);
     for (i, id) in all_ids.iter().enumerate() {
-        let expected = format!("doc-{:02}", i);
+        let expected = format!("doc-{i:02}");
         assert_eq!(
             id, &expected,
-            "Document at position {} should be {}, got {}",
-            i, expected, id
+            "Document at position {i} should be {expected}, got {id}"
         );
     }
 }
@@ -461,7 +460,7 @@ async fn test_write_with_one_group_down_succeeds_on_remaining() {
 
     let resp = setup
         .client
-        .post(&format!(
+        .post(format!(
             "{}/indexes/{}/documents",
             setup.proxy_url, index_uid
         ))
@@ -499,7 +498,7 @@ async fn test_error_format_parity_with_meilisearch() {
     let empty_docs: [Value; 0] = [];
     let resp = setup
         .client
-        .post(&format!("{}/indexes/test/documents", setup.proxy_url))
+        .post(format!("{}/indexes/test/documents", setup.proxy_url))
         .header("Authorization", format!("Bearer {}", setup.master_key))
         .json(&empty_docs)
         .send()
@@ -533,7 +532,7 @@ async fn test_error_format_parity_with_meilisearch() {
     // 2. Not found (non-existent index)
     let resp = setup
         .client
-        .get(&format!("{}/indexes/nonexistent", setup.proxy_url))
+        .get(format!("{}/indexes/nonexistent", setup.proxy_url))
         .header("Authorization", format!("Bearer {}", setup.master_key))
         .send()
         .await
@@ -544,7 +543,7 @@ async fn test_error_format_parity_with_meilisearch() {
     // 3. Authentication error
     let resp = setup
         .client
-        .get(&format!("{}/indexes/test", setup.proxy_url))
+        .get(format!("{}/indexes/test", setup.proxy_url))
         .header("Authorization", "Bearer invalid_key")
         .send()
         .await

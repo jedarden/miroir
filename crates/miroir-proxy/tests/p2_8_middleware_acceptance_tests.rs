@@ -109,8 +109,7 @@ async fn test_metrics_endpoint_returns_all_metrics() {
     for metric_name in &required_metrics {
         assert!(
             output.contains(metric_name),
-            "missing required metric: {}",
-            metric_name
+            "missing required metric: {metric_name}"
         );
     }
 
@@ -123,8 +122,7 @@ async fn test_metrics_endpoint_returns_all_metrics() {
 
         assert!(
             has_definition,
-            "metric {} should have a TYPE or HELP definition",
-            metric_name
+            "metric {metric_name} should have a TYPE or HELP definition"
         );
     }
 }
@@ -191,8 +189,7 @@ fn test_log_lines_parse_as_json() {
         let parsed: Result<Value, _> = serde_json::from_str(log_line);
         assert!(
             parsed.is_ok(),
-            "log line should parse as valid JSON: {}",
-            log_line
+            "log line should parse as valid JSON: {log_line}"
         );
 
         let json = parsed.unwrap();
@@ -259,8 +256,7 @@ async fn test_request_id_in_response_header() {
     let id_str = request_id.to_str().unwrap();
     assert!(
         is_valid_request_id(id_str),
-        "X-Request-Id should be 8 hex chars, got: {}",
-        id_str
+        "X-Request-Id should be 8 hex chars, got: {id_str}"
     );
 }
 
@@ -325,7 +321,7 @@ async fn test_path_template_prevents_high_cardinality() {
                     captured
                         .lock()
                         .unwrap()
-                        .push(format!("/indexes/{{uid}}/search (uid={})", uid));
+                        .push(format!("/indexes/{{uid}}/search (uid={uid})"));
                     "ok"
                 },
             ),
@@ -343,7 +339,7 @@ async fn test_path_template_prevents_high_cardinality() {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(&format!("/indexes/{}/search", uid))
+                    .uri(format!("/indexes/{uid}/search"))
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"q": "test"}"#))
                     .unwrap(),
@@ -381,8 +377,7 @@ async fn test_path_template_prevents_high_cardinality() {
                 if key == "path_template" {
                     assert!(
                         !contains_high_cardinality_id(&value),
-                        "path_template value should not contain high-cardinality IDs: {}",
-                        value
+                        "path_template value should not contain high-cardinality IDs: {value}"
                     );
                 }
             }

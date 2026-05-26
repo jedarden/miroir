@@ -130,23 +130,23 @@ async fn add_node(
 
     let resp = client
         .post(&url)
-        .header("Authorization", format!("Bearer {}", admin_key))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .header("X-Admin-Key", admin_key)
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Failed to add node: {}", e))?;
+        .map_err(|e| format!("Failed to add node: {e}"))?;
 
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Add node failed: HTTP {} — {}", status, text).into());
+        return Err(format!("Add node failed: HTTP {status} — {text}").into());
     }
 
     let result: AddNodeResponse = resp
         .json()
         .await
-        .map_err(|e| format!("Invalid response: {}", e))?;
+        .map_err(|e| format!("Invalid response: {e}"))?;
 
     println!("{}", result.message);
     println!("Operation ID: {}", result.operation_id);
@@ -192,23 +192,23 @@ async fn remove_node(
 
     let resp = client
         .delete(&url)
-        .header("Authorization", format!("Bearer {}", admin_key))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .header("X-Admin-Key", admin_key)
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Failed to remove node: {}", e))?;
+        .map_err(|e| format!("Failed to remove node: {e}"))?;
 
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Remove node failed: HTTP {} — {}", status, text).into());
+        return Err(format!("Remove node failed: HTTP {status} — {text}").into());
     }
 
     let result: RemoveNodeResponse = resp
         .json()
         .await
-        .map_err(|e| format!("Invalid response: {}", e))?;
+        .map_err(|e| format!("Invalid response: {e}"))?;
 
     println!("{}", result.message);
     println!("Operation ID: {}", result.operation_id);
@@ -230,22 +230,22 @@ async fn drain_node(
 
     let resp = client
         .post(&url)
-        .header("Authorization", format!("Bearer {}", admin_key))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .header("X-Admin-Key", admin_key)
         .send()
         .await
-        .map_err(|e| format!("Failed to drain node: {}", e))?;
+        .map_err(|e| format!("Failed to drain node: {e}"))?;
 
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Drain node failed: HTTP {} — {}", status, text).into());
+        return Err(format!("Drain node failed: HTTP {status} — {text}").into());
     }
 
     let result: DrainNodeResponse = resp
         .json()
         .await
-        .map_err(|e| format!("Invalid response: {}", e))?;
+        .map_err(|e| format!("Invalid response: {e}"))?;
 
     println!("{}", result.message);
     println!("Operation ID: {}", result.operation_id);
@@ -268,22 +268,22 @@ async fn list_nodes(
 
     let resp = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", admin_key))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .header("X-Admin-Key", admin_key)
         .send()
         .await
-        .map_err(|e| format!("Failed to list nodes: {}", e))?;
+        .map_err(|e| format!("Failed to list nodes: {e}"))?;
 
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("List nodes failed: HTTP {} — {}", status, text).into());
+        return Err(format!("List nodes failed: HTTP {status} — {text}").into());
     }
 
     let topo: TopologyResponse = resp
         .json()
         .await
-        .map_err(|e| format!("Invalid response: {}", e))?;
+        .map_err(|e| format!("Invalid response: {e}"))?;
 
     println!("=== Miroir Cluster Topology ===");
     println!();
@@ -328,7 +328,7 @@ async fn list_nodes(
             );
 
             if let Some(ref error) = node.error {
-                println!("    └─ error: {}", error);
+                println!("    └─ error: {error}");
             }
         }
     }

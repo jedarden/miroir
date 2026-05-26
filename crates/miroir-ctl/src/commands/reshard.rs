@@ -186,20 +186,20 @@ async fn run_start(
 
     let response = client
         .post(&url)
-        .header("Authorization", format!("Bearer {}", admin_key))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&request_body)
         .send()
         .await
-        .map_err(|e| format!("Failed to connect to {}: {}", url, e))?;
+        .map_err(|e| format!("Failed to connect to {url}: {e}"))?;
 
     let status = response.status();
     let body_text = response
         .text()
         .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
+        .map_err(|e| format!("Failed to read response: {e}"))?;
 
     if status.as_u16() == 409 {
-        return Err(format!("Resharding already in progress for index '{}'", index).into());
+        return Err(format!("Resharding already in progress for index '{index}'").into());
     }
 
     if !status.is_success() {
@@ -212,7 +212,7 @@ async fn run_start(
     }
 
     let result: serde_json::Value =
-        serde_json::from_str(&body_text).map_err(|e| format!("Failed to parse response: {}", e))?;
+        serde_json::from_str(&body_text).map_err(|e| format!("Failed to parse response: {e}"))?;
 
     println!("Resharding started successfully!");
     println!("  Operation ID: {}", result["operation_id"]);
@@ -223,7 +223,7 @@ async fn run_start(
     println!("  Current phase: {}", result["phase"]);
     println!();
     println!("Monitor progress with:");
-    println!("  miroir-ctl reshard --status --index {}", index);
+    println!("  miroir-ctl reshard --status --index {index}");
 
     Ok(())
 }
@@ -242,16 +242,16 @@ async fn run_status(
 
     let response = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", admin_key))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .send()
         .await
-        .map_err(|e| format!("Failed to connect to {}: {}", url, e))?;
+        .map_err(|e| format!("Failed to connect to {url}: {e}"))?;
 
     let status = response.status();
     let body_text = response
         .text()
         .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
+        .map_err(|e| format!("Failed to read response: {e}"))?;
 
     if !status.is_success() {
         return Err(format!(
@@ -263,15 +263,15 @@ async fn run_status(
     }
 
     let result: serde_json::Value =
-        serde_json::from_str(&body_text).map_err(|e| format!("Failed to parse response: {}", e))?;
+        serde_json::from_str(&body_text).map_err(|e| format!("Failed to parse response: {e}"))?;
 
     if !result["active"].as_bool().unwrap_or(false) {
-        println!("No active resharding operation for index '{}'", index);
+        println!("No active resharding operation for index '{index}'");
         return Ok(());
     }
 
     let op = &result["operation"];
-    println!("Resharding status for index '{}':", index);
+    println!("Resharding status for index '{index}':");
     println!("  Operation ID: {}", op["id"]);
     println!("  Current phase: {}", op["phase"]);
     println!("  Old shards: {}", op["old_shards"]);
@@ -290,7 +290,7 @@ async fn run_status(
     }
 
     if let Some(error) = op["last_error"].as_str() {
-        println!("  Last error: {}", error);
+        println!("  Last error: {error}");
     }
 
     if let Some(_verify) = op["verification_results"].as_object() {

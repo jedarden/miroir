@@ -180,20 +180,19 @@ async fn rotate_node_master(
         let url = format!("{}/keys", addr.trim_end_matches('/'));
         let resp = client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", current_key))
+            .header("Authorization", format!("Bearer {current_key}"))
             .header("Content-Type", "application/json")
             .json(&create_body)
             .send()
             .await
-            .map_err(|e| format!("Failed to contact {}: {}", addr, e))?;
+            .map_err(|e| format!("Failed to contact {addr}: {e}"))?;
 
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             rollback_create(&client, &created_on, &new_key_uid, &current_key).await;
             return Err(format!(
-                "Key creation failed on {}: HTTP {} — {}",
-                addr, status, text
+                "Key creation failed on {addr}: HTTP {status} — {text}"
             )
             .into());
         }
@@ -201,14 +200,14 @@ async fn rotate_node_master(
         let body: MeiliKeyCreated = resp
             .json()
             .await
-            .map_err(|e| format!("Bad response from {}: {}", addr, e))?;
+            .map_err(|e| format!("Bad response from {addr}: {e}"))?;
 
         if new_key_value.is_none() {
             new_key_value = Some(body.key.clone());
             new_key_uid = Some(body.uid.clone());
         }
         created_on.push(addr.clone());
-        eprintln!("  Created key on {}", addr);
+        eprintln!("  Created key on {addr}");
     }
 
     let new_key = new_key_value.ok_or("No key value received")?;
@@ -228,8 +227,7 @@ async fn rotate_node_master(
         args.namespace, args.secret_name
     );
     println!(
-        "    -p '{{\"stringData\":{{\"nodeMasterKey\":\"{}\"}}}}'",
-        new_key
+        "    -p '{{\"stringData\":{{\"nodeMasterKey\":\"{new_key}\"}}}}'"
     );
     println!("\nOr update your ExternalSecret / OpenBao source.\n");
 
@@ -259,10 +257,10 @@ async fn rotate_node_master(
 
     match old_uid {
         Some(uid) => {
-            eprintln!("  Old key UID: {}", uid);
+            eprintln!("  Old key UID: {uid}");
 
             if !args.yes {
-                print!("Delete old key {} from all nodes? [y/N] ", uid);
+                print!("Delete old key {uid} from all nodes? [y/N] ");
                 io::stdout().flush()?;
                 let mut buf = String::new();
                 io::stdin().read_line(&mut buf)?;
@@ -283,19 +281,18 @@ async fn rotate_node_master(
                 let url = format!("{}/keys/{}", addr.trim_end_matches('/'), uid);
                 let resp = client
                     .delete(&url)
-                    .header("Authorization", format!("Bearer {}", current_key))
+                    .header("Authorization", format!("Bearer {current_key}"))
                     .send()
                     .await
-                    .map_err(|e| format!("Delete failed on {}: {}", addr, e))?;
+                    .map_err(|e| format!("Delete failed on {addr}: {e}"))?;
 
                 if resp.status().is_success() {
-                    eprintln!("  Deleted old key on {}", addr);
+                    eprintln!("  Deleted old key on {addr}");
                 } else {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
                     eprintln!(
-                        "  Warning: delete on {} returned HTTP {} — {}",
-                        addr, status, text
+                        "  Warning: delete on {addr} returned HTTP {status} — {text}"
                     );
                 }
             }
@@ -327,7 +324,7 @@ fn print_dry_run(
 
     println!("Target nodes ({}):", nodes.len());
     for addr in nodes {
-        println!("  - {}", addr);
+        println!("  - {addr}");
     }
     println!();
 
@@ -344,7 +341,7 @@ fn print_dry_run(
         args.key_name
     );
     if let Some(ref exp) = args.expires_at {
-        println!("       expiresAt: {:?}", exp);
+        println!("       expiresAt: {exp:?}");
     }
     println!();
 
@@ -386,22 +383,22 @@ async fn discover_nodes(
     let url = format!("{}/_miroir/topology", api_url.trim_end_matches('/'));
     let resp = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", admin_key))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .header("X-Admin-Key", admin_key)
         .send()
         .await
-        .map_err(|e| format!("Topology API unreachable at {}: {}", url, e))?;
+        .map_err(|e| format!("Topology API unreachable at {url}: {e}"))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Topology API returned HTTP {} — {}", status, text).into());
+        return Err(format!("Topology API returned HTTP {status} — {text}").into());
     }
 
     let topo: TopologyResponse = resp
         .json()
         .await
-        .map_err(|e| format!("Bad topology response: {}", e))?;
+        .map_err(|e| format!("Bad topology response: {e}"))?;
 
     let addresses: Vec<String> = topo
         .nodes
@@ -428,17 +425,16 @@ async fn find_old_key_uid(
     let url = format!("{}/keys", node_addr.trim_end_matches('/'));
     let resp = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", current_key))
+        .header("Authorization", format!("Bearer {current_key}"))
         .send()
         .await
-        .map_err(|e| format!("Failed to list keys on {}: {}", node_addr, e))?;
+        .map_err(|e| format!("Failed to list keys on {node_addr}: {e}"))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         eprintln!(
-            "  Warning: could not list keys on {} (HTTP {} — {})",
-            node_addr, status, text
+            "  Warning: could not list keys on {node_addr} (HTTP {status} — {text})"
         );
         return Ok(None);
     }
@@ -446,7 +442,7 @@ async fn find_old_key_uid(
     let keys: MeiliKeysResponse = resp
         .json()
         .await
-        .map_err(|e| format!("Bad keys response from {}: {}", node_addr, e))?;
+        .map_err(|e| format!("Bad keys response from {node_addr}: {e}"))?;
 
     let prefix_len = 8.min(current_key.len());
     let prefix = &current_key[..prefix_len];
@@ -473,18 +469,18 @@ async fn rollback_create(
         let url = format!("{}/keys/{}", addr.trim_end_matches('/'), uid);
         match client
             .delete(&url)
-            .header("Authorization", format!("Bearer {}", auth_key))
+            .header("Authorization", format!("Bearer {auth_key}"))
             .send()
             .await
         {
             Ok(resp) if resp.status().is_success() => {
-                eprintln!("  Rollback: deleted key on {}", addr);
+                eprintln!("  Rollback: deleted key on {addr}");
             }
             Ok(resp) => {
                 eprintln!("  Rollback failed on {}: HTTP {}", addr, resp.status());
             }
             Err(e) => {
-                eprintln!("  Rollback failed on {}: {}", addr, e);
+                eprintln!("  Rollback failed on {addr}: {e}");
             }
         }
     }

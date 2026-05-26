@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use miroir_core::task_store::{NewAdminSession, RedisTaskStore, TaskStore};
+use miroir_core::task_store::NewAdminSession;
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -11,7 +11,7 @@
 //!
 //! See runbook comments in each test for operator documentation.
 
-use meilisearch_sdk::{client::Client, indexes::Index, search::SearchResults, tasks::Task};
+use meilisearch_sdk::{client::Client, search::SearchResults, tasks::Task};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -37,7 +37,7 @@ impl TestCluster {
     fn new(name: &str, rf: u32) -> Self {
         assert!(rf == 1 || rf == 2, "RF must be 1 or 2");
         Self {
-            project_name: format!("miroir-test-{}", name),
+            project_name: format!("miroir-test-{name}"),
             rf,
         }
     }
@@ -125,7 +125,7 @@ impl TestCluster {
     /// Kill a Meilisearch node by index (docker stop).
     async fn kill_meili(&self, node_index: usize) -> Result<(), Box<dyn std::error::Error>> {
         let container_name = format!("{}_meili-{}_1", self.project_name, node_index);
-        println!("Killing container {}...", container_name);
+        println!("Killing container {container_name}...");
 
         let output = std::process::Command::new("docker")
             .arg("stop")
@@ -149,7 +149,7 @@ impl TestCluster {
     /// Restart a previously killed Meilisearch node.
     async fn restart_meili(&self, node_index: usize) -> Result<(), Box<dyn std::error::Error>> {
         let container_name = format!("{}_meili-{}_1", self.project_name, node_index);
-        println!("Restarting container {}...", container_name);
+        println!("Restarting container {container_name}...");
 
         let output = std::process::Command::new("docker")
             .arg("start")
@@ -178,8 +178,7 @@ impl TestCluster {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let container_name = format!("{}_meili-{}_1", self.project_name, node_index);
         println!(
-            "Applying {}ms delay to container {}...",
-            delay_ms, container_name
+            "Applying {delay_ms}ms delay to container {container_name}..."
         );
 
         // Try to remove existing qdisc first, then add new one
@@ -205,7 +204,7 @@ impl TestCluster {
             .arg("root")
             .arg("netem")
             .arg("delay")
-            .arg(format!("{}ms", delay_ms))
+            .arg(format!("{delay_ms}ms"))
             .output()?;
 
         if !output.status.success() {
@@ -223,7 +222,7 @@ impl TestCluster {
     /// Remove network delay from a Meilisearch node.
     async fn remove_netem(&self, node_index: usize) -> Result<(), Box<dyn std::error::Error>> {
         let container_name = format!("{}_meili-{}_1", self.project_name, node_index);
-        println!("Removing netem from container {}...", container_name);
+        println!("Removing netem from container {container_name}...");
 
         let output = std::process::Command::new("docker")
             .arg("exec")
@@ -244,7 +243,7 @@ impl TestCluster {
     /// Kill the Miroir orchestrator (scale to 0).
     async fn kill_miroir(&self) -> Result<(), Box<dyn std::error::Error>> {
         let service_name = "miroir";
-        println!("Scaling {} to 0...", service_name);
+        println!("Scaling {service_name} to 0...");
 
         let output = std::process::Command::new("docker-compose")
             .arg("-f")
@@ -252,7 +251,7 @@ impl TestCluster {
             .arg("-p")
             .arg(&self.project_name)
             .arg("scale")
-            .arg(format!("{}=0", service_name))
+            .arg(format!("{service_name}=0"))
             .output()?;
 
         if !output.status.success() {
@@ -271,7 +270,7 @@ impl TestCluster {
     /// Restart the Miroir orchestrator (scale back to 1).
     async fn restart_miroir(&self) -> Result<(), Box<dyn std::error::Error>> {
         let service_name = "miroir";
-        println!("Scaling {} back to 1...", service_name);
+        println!("Scaling {service_name} back to 1...");
 
         let output = std::process::Command::new("docker-compose")
             .arg("-f")
@@ -279,7 +278,7 @@ impl TestCluster {
             .arg("-p")
             .arg(&self.project_name)
             .arg("scale")
-            .arg(format!("{}=1", service_name))
+            .arg(format!("{service_name}=1"))
             .output()?;
 
         if !output.status.success() {
@@ -307,7 +306,7 @@ impl TestCluster {
             }
         }
 
-        Err(format!("Miroir not healthy after timeout at {}", health_url).into())
+        Err(format!("Miroir not healthy after timeout at {health_url}").into())
     }
 
     /// Wait for a Meilisearch node to be healthy.
@@ -325,7 +324,7 @@ impl TestCluster {
             }
         }
 
-        Err(format!("Meilisearch node {} not healthy after timeout", node_index).into())
+        Err(format!("Meilisearch node {node_index} not healthy after timeout").into())
     }
 }
 
@@ -349,7 +348,7 @@ impl Drop for TestCluster {
 
 /// Helper: Get Miroir client
 fn miroir_client(port: u16) -> Client {
-    let url = format!("http://localhost:{}", port);
+    let url = format!("http://localhost:{port}");
     Client::new(url, Some(MASTER_KEY.to_string())).expect("Failed to create Meilisearch client")
 }
 
@@ -368,13 +367,13 @@ async fn wait_for_task(
         match task {
             Task::Succeeded { .. } => return Ok(task),
             Task::Failed { .. } => {
-                return Err(format!("Task {} failed: {:?}", task_uid, task).into())
+                return Err(format!("Task {task_uid} failed: {task:?}").into())
             }
             _ => {}
         }
 
         if start.elapsed() > timeout {
-            return Err(format!("Task {} timed out", task_uid).into());
+            return Err(format!("Task {task_uid} timed out").into());
         }
 
         sleep(Duration::from_millis(200)).await;
@@ -493,7 +492,7 @@ async fn chaos_scenario_1_kill_one_node_rf2() -> Result<(), Box<dyn std::error::
     );
     let resp = http_client
         .post(&search_url)
-        .header("Authorization", format!("Bearer {}", MASTER_KEY))
+        .header("Authorization", format!("Bearer {MASTER_KEY}"))
         .json(&json!({"q": "content", "limit": 500}))
         .send()
         .await?;
@@ -573,7 +572,7 @@ async fn chaos_scenario_2_kill_two_nodes_rf2() -> Result<(), Box<dyn std::error:
     // Search may fail with 503 or return partial results
     let resp = http_client
         .post(&search_url)
-        .header("Authorization", format!("Bearer {}", MASTER_KEY))
+        .header("Authorization", format!("Bearer {MASTER_KEY}"))
         .json(&json!({"q": "content"}))
         .send()
         .await?;
@@ -759,8 +758,7 @@ async fn chaos_scenario_4_netem_delay() -> Result<(), Box<dyn std::error::Error>
     // But not excessively slower (max shard latency + some overhead)
     assert!(
         delayed_latency < Duration::from_secs(2),
-        "Delayed search should complete in < 2s, took {:?}",
-        delayed_latency
+        "Delayed search should complete in < 2s, took {delayed_latency:?}"
     );
 
     cluster.down().await?;

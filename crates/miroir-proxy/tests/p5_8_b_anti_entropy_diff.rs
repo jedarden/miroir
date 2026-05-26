@@ -7,10 +7,10 @@
 //! - Reused by §13.1 reshard verify with PK-keyed bucketing
 
 use miroir_core::anti_entropy::{
-    AntiEntropyConfig, AntiEntropyReconciler, ReplicaDiff, ShardFingerprint, BUCKET_COUNT,
+    AntiEntropyConfig, AntiEntropyReconciler, ShardFingerprint, BUCKET_COUNT,
 };
-use miroir_core::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, MockNodeClient};
-use miroir_core::topology::{Node, NodeId, Topology};
+use miroir_core::scatter::{FetchDocumentsResponse, MockNodeClient};
+use miroir_core::topology::{NodeId, Topology};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -35,7 +35,7 @@ async fn test_bucket_for_primary_key_distributes() {
     let mut buckets = std::collections::HashSet::new();
 
     for i in 0..1000 {
-        let pk = format!("key-{}", i);
+        let pk = format!("key-{i}");
         let bucket = AntiEntropyReconciler::<MockNodeClient>::bucket_for_primary_key(&pk);
         buckets.insert(bucket);
     }
@@ -130,7 +130,7 @@ async fn test_diff_fingerprints_divergent_buckets() {
         Arc::new(MockNodeClient::default()),
     );
 
-    let mut fp_a = ShardFingerprint {
+    let fp_a = ShardFingerprint {
         shard_id: 0,
         node_id: "node-a".to_string(),
         merkle_root: "xxh3:123".to_string(),
@@ -170,7 +170,7 @@ async fn test_diff_fingerprints_isolates_divergence() {
     );
 
     // Create a fingerprint with 100 divergent buckets
-    let mut fp_a = ShardFingerprint {
+    let fp_a = ShardFingerprint {
         shard_id: 0,
         node_id: "node-a".to_string(),
         merkle_root: "xxh3:123".to_string(),
@@ -188,7 +188,7 @@ async fn test_diff_fingerprints_isolates_divergence() {
 
     // Make 100 buckets divergent
     for i in 0..100 {
-        fp_b.bucket_hashes[i] = format!("xxh3:divergent-{}", i);
+        fp_b.bucket_hashes[i] = format!("xxh3:divergent-{i}");
     }
 
     let divergent = reconciler.diff_fingerprints(&fp_a, &fp_b);

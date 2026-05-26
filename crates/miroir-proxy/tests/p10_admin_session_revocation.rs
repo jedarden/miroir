@@ -161,8 +161,7 @@ async fn test_cross_pod_revocation_via_pubsub() {
 
         if start.elapsed() > deadline {
             panic!(
-                "Pub/Sub propagation did not complete within {:?}: pod_a={}, pod_b={}",
-                deadline, a_has, b_has
+                "Pub/Sub propagation did not complete within {deadline:?}: pod_a={a_has}, pod_b={b_has}"
             );
         }
 
@@ -172,8 +171,7 @@ async fn test_cross_pod_revocation_via_pubsub() {
     let elapsed = start.elapsed();
     assert!(
         elapsed < deadline,
-        "Propagation should be fast, took {:?}",
-        elapsed
+        "Propagation should be fast, took {elapsed:?}"
     );
 
     // Both pods must now reject the session

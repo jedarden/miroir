@@ -773,7 +773,7 @@ async fn integration_session_pin_with_scatter_plan() {
     assert_eq!(plan.target_shards.len(), 4, "All shards should be targeted");
 
     // Verify all selected nodes are from group 1
-    for (_shard_id, node_id) in &plan.shard_to_node {
+    for node_id in plan.shard_to_node.values() {
         let node = topo.node(node_id).unwrap();
         assert_eq!(
             node.replica_group, 1,

@@ -42,15 +42,15 @@ async fn eleven_login_attempts_in_60s_returns_429() {
         let (allowed, wait_seconds) = store
             .check_rate_limit_admin_login(ip, limit, window_seconds)
             .expect("check rate limit");
-        assert_eq!(allowed, true, "attempt {} should be allowed", i);
-        assert_eq!(wait_seconds, None, "attempt {} should have no wait time", i);
+        assert!(allowed, "attempt {i} should be allowed");
+        assert_eq!(wait_seconds, None, "attempt {i} should have no wait time");
     }
 
     // 11th attempt should be blocked
     let (allowed, wait_seconds) = store
         .check_rate_limit_admin_login(ip, limit, window_seconds)
         .expect("check rate limit");
-    assert_eq!(allowed, false, "11th attempt should be blocked");
+    assert!(!allowed, "11th attempt should be blocked");
     assert_eq!(
         wait_seconds, None,
         "rate limit exceeded should have no specific wait time"
@@ -81,8 +81,7 @@ async fn five_failed_attempts_triggers_10_minute_backoff() {
         if i < 5 {
             assert_eq!(
                 wait_seconds, None,
-                "failure {} should not trigger backoff",
-                i
+                "failure {i} should not trigger backoff"
             );
         } else {
             // 5th failure triggers backoff: 10 minutes = 600 seconds
@@ -98,14 +97,13 @@ async fn five_failed_attempts_triggers_10_minute_backoff() {
     let (allowed, wait_seconds) = store
         .check_rate_limit_admin_login(ip, 10, 60)
         .expect("check rate limit");
-    assert_eq!(allowed, false, "login should be blocked during backoff");
+    assert!(!allowed, "login should be blocked during backoff");
     assert!(wait_seconds.is_some(), "backoff should return wait time");
     let wait = wait_seconds.unwrap();
     // Should be approximately 600 seconds (10 minutes)
     assert!(
-        wait >= 590 && wait <= 610,
-        "wait time should be ~600 seconds, got {}",
-        wait
+        (590..=610).contains(&wait),
+        "wait time should be ~600 seconds, got {wait}"
     );
 }
 
@@ -142,9 +140,7 @@ async fn exponential_backoff_doubles_per_failure() {
         assert_eq!(
             wait_seconds,
             Some(expected_wait),
-            "{}th failure should trigger {} second backoff",
-            failure_count,
-            expected_wait
+            "{failure_count}th failure should trigger {expected_wait} second backoff"
         );
 
         // Clear the backoff for next iteration (simulating time passing)
@@ -183,8 +179,7 @@ async fn backoff_caps_at_24_hours() {
             assert_eq!(
                 wait_seconds,
                 Some(max_wait_seconds),
-                "{}th failure should be capped at 24 hours",
-                i
+                "{i}th failure should be capped at 24 hours"
             );
         }
 
@@ -217,7 +212,7 @@ async fn successful_login_resets_all_counters() {
     let (allowed, _) = store
         .check_rate_limit_admin_login(ip, limit, window_seconds)
         .expect("check rate limit");
-    assert_eq!(allowed, false, "should be rate limited");
+    assert!(!allowed, "should be rate limited");
 
     // Also trigger backoff
     for _ in 1..=5 {
@@ -235,7 +230,7 @@ async fn successful_login_resets_all_counters() {
     let (allowed, wait_seconds) = store
         .check_rate_limit_admin_login(ip, limit, window_seconds)
         .expect("check rate limit");
-    assert_eq!(allowed, false, "should be in backoff");
+    assert!(!allowed, "should be in backoff");
     assert!(wait_seconds.is_some(), "backoff should be active");
 
     // Simulate successful login - resets both counters
@@ -247,7 +242,7 @@ async fn successful_login_resets_all_counters() {
     let (allowed, wait_seconds) = store
         .check_rate_limit_admin_login(ip, limit, window_seconds)
         .expect("check rate limit");
-    assert_eq!(allowed, true, "rate limit should be reset");
+    assert!(allowed, "rate limit should be reset");
     assert_eq!(wait_seconds, None, "no wait time after reset");
 
     // Can make 10 more attempts
@@ -255,7 +250,7 @@ async fn successful_login_resets_all_counters() {
         let (allowed, _) = store
             .check_rate_limit_admin_login(ip, limit, window_seconds)
             .expect("check rate limit");
-        assert_eq!(allowed, true, "should have fresh rate limit bucket");
+        assert!(allowed, "should have fresh rate limit bucket");
     }
 }
 
@@ -282,7 +277,7 @@ async fn multi_pod_shares_rate_limit_bucket() {
         let (allowed, _) = store_a
             .check_rate_limit_admin_login(ip, limit, window_seconds)
             .expect("pod A check rate limit");
-        assert_eq!(allowed, true, "pod A attempt {} should be allowed", i);
+        assert!(allowed, "pod A attempt {i} should be allowed");
     }
 
     // Pod B makes 5 requests
@@ -290,20 +285,20 @@ async fn multi_pod_shares_rate_limit_bucket() {
         let (allowed, _) = store_b
             .check_rate_limit_admin_login(ip, limit, window_seconds)
             .expect("pod B check rate limit");
-        assert_eq!(allowed, true, "pod B attempt {} should be allowed", i);
+        assert!(allowed, "pod B attempt {i} should be allowed");
     }
 
     // Pod A tries the 11th request - should be blocked
     let (allowed, _) = store_a
         .check_rate_limit_admin_login(ip, limit, window_seconds)
         .expect("pod A check rate limit");
-    assert_eq!(allowed, false, "pod A 11th request should be blocked");
+    assert!(!allowed, "pod A 11th request should be blocked");
 
     // Pod B also tries - should also be blocked
     let (allowed, _) = store_b
         .check_rate_limit_admin_login(ip, limit, window_seconds)
         .expect("pod B check rate limit");
-    assert_eq!(allowed, false, "pod B 11th request should be blocked");
+    assert!(!allowed, "pod B 11th request should be blocked");
 }
 
 /// Multi-pod: backoff state is shared across Redis connections.
@@ -345,7 +340,7 @@ async fn multi_pod_shares_backoff_state() {
     let (allowed, wait_seconds) = store_b
         .check_rate_limit_admin_login(ip, 10, 60)
         .expect("pod B check rate limit");
-    assert_eq!(allowed, false, "pod B should see backoff from pod A");
+    assert!(!allowed, "pod B should see backoff from pod A");
     assert!(wait_seconds.is_some(), "pod B should see backoff wait time");
     assert!(wait_seconds.unwrap() >= 590 && wait_seconds.unwrap() <= 610);
 
@@ -368,7 +363,7 @@ async fn multi_pod_shares_backoff_state() {
     let (allowed, wait_seconds) = store_a
         .check_rate_limit_admin_login(ip, 10, 60)
         .expect("pod A check rate limit");
-    assert_eq!(allowed, false);
+    assert!(!allowed);
     assert!(wait_seconds.is_some());
     assert!(wait_seconds.unwrap() >= 1190 && wait_seconds.unwrap() <= 1210);
 }
@@ -416,12 +411,12 @@ async fn multi_pod_successful_login_resets_all_counters() {
     let (allowed_a, _) = store_a
         .check_rate_limit_admin_login(ip, limit, window_seconds)
         .expect("pod A check rate limit");
-    assert_eq!(allowed_a, false);
+    assert!(!allowed_a);
 
     let (allowed_b, _) = store_b
         .check_rate_limit_admin_login(ip, limit, window_seconds)
         .expect("pod B check rate limit");
-    assert_eq!(allowed_b, false);
+    assert!(!allowed_b);
 
     // Pod A simulates successful login - resets counters
     store_a
@@ -432,7 +427,7 @@ async fn multi_pod_successful_login_resets_all_counters() {
     let (allowed, _) = store_b
         .check_rate_limit_admin_login(ip, limit, window_seconds)
         .expect("pod B check rate limit after reset");
-    assert_eq!(allowed, true, "pod B should see reset state");
+    assert!(allowed, "pod B should see reset state");
 }
 
 /// Different IPs have independent rate limit buckets.
@@ -455,14 +450,14 @@ async fn different_ips_have_independent_buckets() {
     let (allowed, _) = store
         .check_rate_limit_admin_login(ip1, limit, window_seconds)
         .expect("check rate limit");
-    assert_eq!(allowed, false, "IP1 should be blocked");
+    assert!(!allowed, "IP1 should be blocked");
 
     // IP2 should still be allowed
     let (allowed, _) = store
         .check_rate_limit_admin_login(ip2, limit, window_seconds)
         .expect("check rate limit");
-    assert_eq!(
-        allowed, true,
+    assert!(
+        allowed,
         "IP2 should not be affected by IP1's rate limit"
     );
 }
@@ -486,7 +481,7 @@ async fn rate_limit_window_expires_after_ttl() {
     let (allowed, _) = store
         .check_rate_limit_admin_login(ip, limit, window_seconds)
         .expect("check rate limit");
-    assert_eq!(allowed, false, "should be rate limited");
+    assert!(!allowed, "should be rate limited");
 
     // Wait for window to expire
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -495,7 +490,7 @@ async fn rate_limit_window_expires_after_ttl() {
     let (allowed, _) = store
         .check_rate_limit_admin_login(ip, limit, window_seconds)
         .expect("check rate limit");
-    assert_eq!(allowed, true, "should be allowed after window expires");
+    assert!(allowed, "should be allowed after window expires");
 }
 
 /// Backoff expires after its TTL (backoff duration + buffer).
@@ -523,7 +518,7 @@ async fn backoff_expires_after_ttl() {
     let (allowed, wait_seconds) = store
         .check_rate_limit_admin_login(ip, 10, 60)
         .expect("check rate limit");
-    assert_eq!(allowed, false);
+    assert!(!allowed);
     let _wait = wait_seconds.expect("should have wait time");
 
     // Simulate backoff expiring by resetting the rate limit state
@@ -536,7 +531,7 @@ async fn backoff_expires_after_ttl() {
     let (allowed, wait_seconds) = store
         .check_rate_limit_admin_login(ip, 10, 60)
         .expect("check rate limit");
-    assert_eq!(allowed, true, "should be allowed after backoff expires");
+    assert!(allowed, "should be allowed after backoff expires");
     assert_eq!(wait_seconds, None);
 }
 
@@ -575,8 +570,7 @@ fn helm_schema_rejects_local_backend_with_replicas_gt_1() {
 
     assert!(
         error_message.contains("admin_ui.rate_limit.backend must be 'redis' when replicas > 1"),
-        "error message should mention the constraint: {}",
-        error_message
+        "error message should mention the constraint: {error_message}"
     );
 
     // Verify the if-then structure

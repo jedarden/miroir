@@ -9,7 +9,7 @@
 use reqwest::Client;
 use serde_json::json;
 use std::time::Duration;
-use testcontainers::{runners::AsyncRunner, ImageExt};
+use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::meilisearch::Meilisearch;
 use tokio::time::sleep;
 
@@ -34,8 +34,8 @@ async fn start_meilisearch_node(
 
     for _ in 0..30 {
         let resp = client
-            .get(&format!("{}/health", url))
-            .header("Authorization", format!("Bearer {}", master_key))
+            .get(format!("{url}/health"))
+            .header("Authorization", format!("Bearer {master_key}"))
             .send()
             .await;
 
@@ -45,7 +45,7 @@ async fn start_meilisearch_node(
         sleep(Duration::from_millis(500)).await;
     }
 
-    panic!("Meilisearch did not become healthy at {}", url);
+    panic!("Meilisearch did not become healthy at {url}");
 }
 
 /// Create an admin-scoped key via POST /keys.
@@ -64,8 +64,8 @@ async fn create_admin_key(
     });
 
     let resp = client
-        .post(&format!("{}/keys", node_url))
-        .header("Authorization", format!("Bearer {}", master_key))
+        .post(format!("{node_url}/keys"))
+        .header("Authorization", format!("Bearer {master_key}"))
         .json(&body)
         .send()
         .await?;
@@ -73,7 +73,7 @@ async fn create_admin_key(
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("POST /keys failed: HTTP {} — {}", status, text).into());
+        return Err(format!("POST /keys failed: HTTP {status} — {text}").into());
     }
 
     let key: serde_json::Value = resp.json().await?;
@@ -91,15 +91,15 @@ async fn list_keys(
     let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
 
     let resp = client
-        .get(&format!("{}/keys", node_url))
-        .header("Authorization", format!("Bearer {}", auth_key))
+        .get(format!("{node_url}/keys"))
+        .header("Authorization", format!("Bearer {auth_key}"))
         .send()
         .await?;
 
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("GET /keys failed: HTTP {} — {}", status, text).into());
+        return Err(format!("GET /keys failed: HTTP {status} — {text}").into());
     }
 
     let body: serde_json::Value = resp.json().await?;
@@ -120,8 +120,8 @@ async fn delete_key(
     let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
 
     let resp = client
-        .delete(&format!("{}/keys/{}", node_url, key_uid))
-        .header("Authorization", format!("Bearer {}", auth_key))
+        .delete(format!("{node_url}/keys/{key_uid}"))
+        .header("Authorization", format!("Bearer {auth_key}"))
         .send()
         .await?;
 
@@ -129,8 +129,7 @@ async fn delete_key(
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
         return Err(format!(
-            "DELETE /keys/{} failed: HTTP {} — {}",
-            key_uid, status, text
+            "DELETE /keys/{key_uid} failed: HTTP {status} — {text}"
         )
         .into());
     }
@@ -152,8 +151,8 @@ async fn verify_key_works(
     });
 
     let resp = client
-        .post(&format!("{}/indexes", node_url))
-        .header("Authorization", format!("Bearer {}", key))
+        .post(format!("{node_url}/indexes"))
+        .header("Authorization", format!("Bearer {key}"))
         .json(&body)
         .send()
         .await?;
@@ -161,7 +160,7 @@ async fn verify_key_works(
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Index creation failed: HTTP {} — {}", status, text).into());
+        return Err(format!("Index creation failed: HTTP {status} — {text}").into());
     }
 
     Ok(())

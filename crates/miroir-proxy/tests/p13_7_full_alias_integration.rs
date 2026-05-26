@@ -132,7 +132,7 @@ async fn acceptance_5_history_retention_11th_flip_evicts_oldest() {
 
     // Perform 10 flips (total 11 targets including initial)
     for i in 2..=11 {
-        let target = format!("v{}", i);
+        let target = format!("v{i}");
         registry.flip("current", target).await.unwrap();
     }
 

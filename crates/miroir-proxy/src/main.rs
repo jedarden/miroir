@@ -6,7 +6,7 @@ use axum::{
 use miroir_core::{
     config::MiroirConfig,
     peer_discovery::PeerDiscovery,
-    rebalancer_worker::{RebalancerWorker, RebalancerWorkerConfig, TopologyChangeEvent},
+    rebalancer_worker::TopologyChangeEvent,
     resource_pressure, task_pruner,
     topology::{NodeStatus, Topology},
 };
@@ -32,12 +32,12 @@ use auth::AuthState;
 use middleware::{metrics_router, Metrics, TelemetryState};
 use miroir_core::{
     canary::{
-        CanaryAssertion, CanaryRunner, CapturedQuery, QueryCapture, SearchQuery, SearchResponse,
+        CanaryRunner, QueryCapture, SearchQuery, SearchResponse,
     },
     task_store::TaskStore,
 };
 use routes::{
-    admin, admin_endpoints, explain, health, indexes, keys, multi_search, search, search_ui,
+    admin, admin_endpoints, health, indexes, keys, multi_search, search, search_ui,
     settings, tasks, version,
 };
 use scoped_key_rotation::ScopedKeyRotationState;
@@ -283,7 +283,7 @@ impl FromRef<UnifiedState> for routes::canary::CanaryState {
 async fn main() -> anyhow::Result<()> {
     // Load configuration (file → env → CLI overlay)
     let config =
-        MiroirConfig::load().map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
+        MiroirConfig::load().map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
 
     // Initialize structured JSON logging (plan §10 format)
     // Fields on every line: timestamp, level, target, message, pod_id
@@ -338,9 +338,8 @@ async fn main() -> anyhow::Result<()> {
             Ok(v) if !v.is_empty() => {}
             _ => {
                 anyhow::bail!(
-                    "search_ui is enabled but {} is not set — refusing to start. \
-                     Either set the env var or disable search_ui (search_ui.enabled: false)",
-                    jwt_env
+                    "search_ui is enabled but {jwt_env} is not set — refusing to start. \
+                     Either set the env var or disable search_ui (search_ui.enabled: false)"
                 );
             }
         }
@@ -642,13 +641,13 @@ async fn main() -> anyhow::Result<()> {
                                 Ok(v) => v,
                                 Err(e) => {
                                     return Err(miroir_core::error::MiroirError::InvalidRequest(
-                                        format!("Failed to serialize query: {}", e),
+                                        format!("Failed to serialize query: {e}"),
                                     ))
                                 }
                             };
 
                             // Add limit to avoid large responses for canary queries
-                            if !body.get("limit").and_then(|v| v.as_u64()).is_some() {
+                            if body.get("limit").and_then(|v| v.as_u64()).is_none() {
                                 body["limit"] = serde_json::json!(20);
                             }
 
@@ -732,7 +731,7 @@ async fn main() -> anyhow::Result<()> {
 
             // Create and start the canary runner
             // Wire up Mode A coordinator for shard-partitioned canary execution (plan §14.5 Mode A, P6.3)
-            let mut runner = CanaryRunner::new(
+            let runner = CanaryRunner::new(
                 store,
                 canary_config.max_concurrent_canaries as usize,
                 canary_config.run_history_per_canary as usize,
@@ -820,7 +819,7 @@ async fn main() -> anyhow::Result<()> {
 
     let main_addr: SocketAddr = format!("{}:{}", config.server.bind, config.server.port)
         .parse()
-        .map_err(|e| anyhow::anyhow!("Invalid bind address: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Invalid bind address: {e}"))?;
     let metrics_addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], 9090));
 
     info!(

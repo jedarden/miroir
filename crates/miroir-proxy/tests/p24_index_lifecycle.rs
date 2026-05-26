@@ -10,7 +10,7 @@
 //! - POST /keys creates on every node; failure rolls back
 //! - DELETE /keys/{key} broadcasts to all nodes
 
-use miroir_core::config::{Config, MiroirConfig, NodeConfig};
+use miroir_core::config::{MiroirConfig, NodeConfig};
 use miroir_proxy::routes::indexes::MeilisearchClient;
 use serde_json::json;
 
@@ -97,7 +97,7 @@ async fn test_create_index_broadcasts_to_all_nodes() {
 
     for address in &nodes {
         match client.post_raw(address, "/indexes", &body).await {
-            Ok((status, text)) if status >= 200 && status < 300 => {
+            Ok((status, text)) if (200..300).contains(&status) => {
                 if first_response.is_none() {
                     first_response = serde_json::from_str(&text).ok();
                 }
@@ -159,7 +159,7 @@ async fn test_create_index_rollback_on_failure() {
 
     for address in &nodes {
         match client.post_raw(address, "/indexes", &body).await {
-            Ok((status, _)) if status >= 200 && status < 300 => {
+            Ok((status, _)) if (200..300).contains(&status) => {
                 created_on.push(address.clone());
             }
             Ok((status, text)) => {
@@ -232,7 +232,7 @@ async fn test_miroir_shard_in_filterable_attributes() {
     // Step 1: Create index
     let body = json!({"uid": "test-idx"});
     let (status, _) = client.post_raw(&nodes[0], "/indexes", &body).await.unwrap();
-    assert!(status >= 200 && status < 300);
+    assert!((200..300).contains(&status));
 
     // Step 2: Read current settings and merge _miroir_shard
     let mut merged_attrs: Vec<serde_json::Value> = vec![json!("_miroir_shard")];
@@ -240,7 +240,7 @@ async fn test_miroir_shard_in_filterable_attributes() {
         .get_raw(&nodes[0], "/indexes/test-idx/settings")
         .await
     {
-        if s >= 200 && s < 300 {
+        if (200..300).contains(&s) {
             if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&text) {
                 if let Some(existing) = settings
                     .get("filterableAttributes")
@@ -263,7 +263,7 @@ async fn test_miroir_shard_in_filterable_attributes() {
         .patch_raw(&nodes[0], "/indexes/test-idx/settings", &patch)
         .await
         .unwrap();
-    assert!(status >= 200 && status < 300);
+    assert!((200..300).contains(&status));
 
     mock.assert_async().await;
     get_settings.assert_async().await;
@@ -404,7 +404,7 @@ async fn test_settings_broadcast_rollback() {
     let mut snapshots: Vec<(String, serde_json::Value)> = Vec::new();
     for address in &nodes {
         let (status, text) = client.get_raw(address, settings_path).await.unwrap();
-        assert!(status >= 200 && status < 300);
+        assert!((200..300).contains(&status));
         snapshots.push((address.clone(), serde_json::from_str(&text).unwrap()));
     }
 
@@ -415,7 +415,7 @@ async fn test_settings_broadcast_rollback() {
             .patch_raw(address, settings_path, &new_settings)
             .await
         {
-            Ok((status, _)) if status >= 200 && status < 300 => {
+            Ok((status, _)) if (200..300).contains(&status) => {
                 applied.push(address.clone());
             }
             _ => {
@@ -473,7 +473,7 @@ async fn test_delete_index_broadcasts_to_all_nodes() {
             .delete_raw(address, "/indexes/test-idx")
             .await
             .unwrap();
-        if status >= 200 && status < 300 {
+        if (200..300).contains(&status) {
             success_count += 1;
         }
     }
@@ -519,7 +519,7 @@ async fn test_create_key_broadcasts_to_all_nodes() {
     let mut created_count = 0;
     for address in &nodes {
         let (status, _) = client.post_raw(address, "/keys", &body).await.unwrap();
-        if status >= 200 && status < 300 {
+        if (200..300).contains(&status) {
             created_count += 1;
         }
     }
@@ -569,7 +569,7 @@ async fn test_create_key_rollback_on_failure() {
 
     for address in &nodes {
         match client.post_raw(address, "/keys", &body).await {
-            Ok((status, _)) if status >= 200 && status < 300 => {
+            Ok((status, _)) if (200..300).contains(&status) => {
                 created_on.push(address.clone());
             }
             _ => {
@@ -654,7 +654,7 @@ async fn test_update_index_snapshot_and_rollback() {
     let mut snapshots: Vec<(String, serde_json::Value)> = Vec::new();
     for address in &nodes {
         let (status, text) = client.get_raw(address, "/indexes/test-idx").await.unwrap();
-        assert!(status >= 200 && status < 300);
+        assert!((200..300).contains(&status));
         snapshots.push((address.clone(), serde_json::from_str(&text).unwrap()));
     }
 
@@ -665,7 +665,7 @@ async fn test_update_index_snapshot_and_rollback() {
             .patch_raw(address, "/indexes/test-idx", &update_body)
             .await
         {
-            Ok((status, _)) if status >= 200 && status < 300 => {
+            Ok((status, _)) if (200..300).contains(&status) => {
                 applied.push(address.clone());
             }
             _ => {

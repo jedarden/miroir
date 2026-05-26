@@ -103,7 +103,7 @@ fn test_reserved_field_matrix_all_combinations() {
 
     for (doc, should_reject, description) in test_cases {
         let has_shard = doc.get("_miroir_shard").is_some();
-        assert_eq!(has_shard, should_reject, "{}: doc={}", description, doc);
+        assert_eq!(has_shard, should_reject, "{description}: doc={doc}");
     }
 }
 

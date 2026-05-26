@@ -61,8 +61,8 @@ async fn chaos_add_node_mid_indexing() {
     // Simulate initial document set
     let mut docs: HashMap<String, u32> = HashMap::new();
     for i in 0..1000 {
-        let key = format!("doc:{}", i);
-        let shard_id = (i % shard_count) as u32;
+        let key = format!("doc:{i}");
+        let shard_id = i % shard_count;
         docs.insert(key, shard_id);
     }
 
@@ -162,17 +162,15 @@ async fn chaos_drain_node_while_querying() {
     // Simulate queries during drain - all shards should still be covered
     let topo_read = topology.read().await;
     let group = topo_read.groups().next().unwrap();
-    let nodes: Vec<_> = group.nodes().iter().cloned().collect();
+    let nodes: Vec<_> = group.nodes().to_vec();
 
     // For each shard, verify RF nodes are available
     for shard_id in 0..shard_count {
         let assigned = assign_shard_in_group(shard_id, &nodes, rf);
         assert_eq!(
             assigned.len(),
-            rf as usize,
-            "Shard {} should have {} replicas",
-            shard_id,
-            rf
+            rf,
+            "Shard {shard_id} should have {rf} replicas"
         );
     }
 }
@@ -239,7 +237,7 @@ async fn chaos_add_replica_group_while_querying() {
     // Original group should still be functional for queries
     let topo_read = topology.read().await;
     let original_group = topo_read.groups().find(|g| g.id == 0).unwrap();
-    let nodes: Vec<_> = original_group.nodes().iter().cloned().collect();
+    let nodes: Vec<_> = original_group.nodes().to_vec();
     assert_eq!(nodes.len(), 2, "Original group should have 2 nodes");
 }
 
@@ -269,7 +267,7 @@ async fn chaos_rebalance_optimal_movement() {
     // Track initial shard assignment
     let topo_read = topology.read().await;
     let group = topo_read.groups().next().unwrap();
-    let initial_nodes: Vec<_> = group.nodes().iter().cloned().collect();
+    let initial_nodes: Vec<_> = group.nodes().to_vec();
     drop(topo_read);
 
     // Count shards on each node initially
@@ -609,9 +607,7 @@ async fn p45_rf2_with_one_failed_node_succeeds() {
         assert_eq!(
             assigned.len(),
             2,
-            "Shard {} should have {} replicas",
-            shard_id,
-            rf
+            "Shard {shard_id} should have {rf} replicas"
         );
 
         // At least one should be healthy
@@ -622,8 +618,7 @@ async fn p45_rf2_with_one_failed_node_succeeds() {
 
         assert!(
             healthy_count >= 1,
-            "Shard {} should have at least 1 healthy replica",
-            shard_id
+            "Shard {shard_id} should have at least 1 healthy replica"
         );
     }
 }
@@ -689,8 +684,7 @@ async fn p45_rf1_with_failed_node_has_cross_group_fallback() {
         if g0_assigned[0].as_str() == "node-0" {
             assert!(
                 topology.node(&g1_assigned[0]).unwrap().is_healthy(),
-                "Fallback node for shard {} should be healthy",
-                shard_id
+                "Fallback node for shard {shard_id} should be healthy"
             );
         }
     }

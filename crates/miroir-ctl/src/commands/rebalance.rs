@@ -95,22 +95,22 @@ async fn show_status(
 
     let resp = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", admin_key))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .header("X-Admin-Key", admin_key)
         .send()
         .await
-        .map_err(|e| format!("Failed to get rebalance status: {}", e))?;
+        .map_err(|e| format!("Failed to get rebalance status: {e}"))?;
 
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Rebalance status failed: HTTP {} — {}", status, text).into());
+        return Err(format!("Rebalance status failed: HTTP {status} — {text}").into());
     }
 
     let result: RebalanceStatusResponse = resp
         .json()
         .await
-        .map_err(|e| format!("Invalid response: {}", e))?;
+        .map_err(|e| format!("Invalid response: {e}"))?;
 
     print_status(&result);
 
@@ -133,17 +133,17 @@ async fn watch_status(
 
         let resp = client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", admin_key))
+            .header("Authorization", format!("Bearer {admin_key}"))
             .header("X-Admin-Key", admin_key)
             .send()
             .await
-            .map_err(|e| format!("Failed to get rebalance status: {}", e))?;
+            .map_err(|e| format!("Failed to get rebalance status: {e}"))?;
 
         if resp.status().is_success() {
             let result: RebalanceStatusResponse = resp
                 .json()
                 .await
-                .map_err(|e| format!("Invalid response: {}", e))?;
+                .map_err(|e| format!("Invalid response: {e}"))?;
 
             print_status(&result);
             println!("\nRefreshing every 2 seconds (Ctrl+C to exit)...");
@@ -184,23 +184,23 @@ fn print_status(result: &RebalanceStatusResponse) {
             println!("  {} Operation {} ({})", status_emoji, op.id, op.op_type);
 
             if let Some(ref node) = op.target_node {
-                println!("    Target node: {}", node);
+                println!("    Target node: {node}");
             }
             if let Some(group) = op.target_group {
-                println!("    Target group: {}", group);
+                println!("    Target group: {group}");
             }
 
             println!("    Status: {}", op.status);
             println!("    Migrations: {}", op.migrations.len());
 
             if let Some(ref error) = op.error {
-                println!("    Error: {}", error);
+                println!("    Error: {error}");
             }
 
             if let Some(started) = op.started_at {
                 if let Some(completed) = op.completed_at {
                     let duration_secs = (completed - started) / 1000;
-                    println!("    Duration: {}s", duration_secs);
+                    println!("    Duration: {duration_secs}s");
                 }
             }
         }
@@ -235,7 +235,7 @@ async fn cancel_rebalance(
     api_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !yes {
-        print!("Cancel rebalance operation {}? [y/N] ", operation_id);
+        print!("Cancel rebalance operation {operation_id}? [y/N] ");
         use std::io::Write;
         std::io::stdout().flush()?;
         let mut input = String::new();
@@ -254,7 +254,7 @@ async fn cancel_rebalance(
     println!("  1. Let the current migrations complete (they are safe)");
     println!("  2. Or restart the proxy to cancel pending operations");
     println!();
-    println!("Operation ID: {}", operation_id);
+    println!("Operation ID: {operation_id}");
 
     let _ = (client, admin_key, api_url);
     Ok(())

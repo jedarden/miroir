@@ -7,10 +7,9 @@
 //! - `_miroir_expires_at` stripped from search hits
 //! - 10k-doc sweep respects `max_deletes_per_sweep` (doesn't exceed)
 
-use miroir_core::anti_entropy::{AntiEntropyConfig, AntiEntropyReconciler};
 use miroir_core::cdc::{CdcConfig, CdcEvent, CdcManager, CdcOperation, ORIGIN_TTL_EXPIRE};
-use miroir_core::config::{Config, MiroirConfig, NodeConfig};
-use miroir_core::scatter::{DeleteByFilterRequest, MockNodeClient, NodeClient};
+use miroir_core::config::MiroirConfig;
+use miroir_core::scatter::MockNodeClient;
 use miroir_core::topology::{Node, NodeId, Topology};
 use miroir_core::ttl::{TtlConfig, TtlManager, TtlOverride};
 use serde_json::json;

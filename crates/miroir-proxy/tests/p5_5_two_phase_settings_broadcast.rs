@@ -326,7 +326,7 @@ async fn test_drift_check_config() {
 #[tokio::test]
 async fn test_client_pinned_freshness_header_parsing() {
     use axum::extract::FromRequestParts;
-    use axum::http::{HeaderValue, Method, Request, Uri};
+    use axum::http::{Method, Request};
     use http_body_util::Empty;
     use miroir_proxy::middleware::OptionalMinSettingsVersion;
 
@@ -412,8 +412,8 @@ async fn test_client_pinned_freshness_node_version_meets_floor() {
 /// Test 11: Client-pinned freshness - covering_set_with_version_floor excludes stale nodes.
 #[tokio::test]
 async fn test_client_pinned_freshness_covering_set_excludes_stale_nodes() {
-    use miroir_core::router::{assign_shard_in_group, covering_set_with_version_floor};
-    use miroir_core::topology::{Group, Node, NodeId, Topology};
+    use miroir_core::router::covering_set_with_version_floor;
+    use miroir_core::topology::{Node, NodeId, Topology};
 
     // Create topology with 3 nodes in one group
     let mut topo = Topology::new(16, 1, 2);
@@ -485,8 +485,8 @@ async fn test_client_pinned_freshness_covering_set_excludes_stale_nodes() {
 /// Test 12: Client-pinned freshness - covering_set_with_version_floor returns None when no nodes meet floor.
 #[tokio::test]
 async fn test_client_pinned_freshness_covering_set_none_when_all_stale() {
-    use miroir_core::router::{assign_shard_in_group, covering_set_with_version_floor};
-    use miroir_core::topology::{Group, Node, NodeId, Topology};
+    use miroir_core::router::covering_set_with_version_floor;
+    use miroir_core::topology::{Node, NodeId, Topology};
 
     // Create topology with 2 nodes in one group
     let mut topo = Topology::new(16, 1, 2);
@@ -532,7 +532,7 @@ async fn test_client_pinned_freshness_covering_set_none_when_all_stale() {
 #[tokio::test]
 async fn test_client_pinned_freshness_plan_returns_none_when_no_covering_set() {
     use miroir_core::scatter::plan_search_scatter_with_version_floor;
-    use miroir_core::topology::{Group, Node, NodeId, Topology};
+    use miroir_core::topology::{Node, NodeId, Topology};
 
     // Create topology with 2 nodes
     let mut topo = Topology::new(16, 1, 2);
@@ -579,7 +579,7 @@ async fn test_client_pinned_freshness_plan_returns_none_when_no_covering_set() {
 #[tokio::test]
 async fn test_client_pinned_freshness_plan_succeeds_when_nodes_meet_floor() {
     use miroir_core::scatter::plan_search_scatter_with_version_floor;
-    use miroir_core::topology::{Group, Node, NodeId, Topology};
+    use miroir_core::topology::{Node, NodeId, Topology};
 
     // Create topology with 3 nodes
     let mut topo = Topology::new(16, 1, 2);
@@ -636,7 +636,7 @@ async fn test_client_pinned_freshness_plan_succeeds_when_nodes_meet_floor() {
     let plan = result.unwrap();
 
     // Verify all shards are mapped to nodes that meet the floor
-    for (_shard_id, node_id) in &plan.shard_to_node {
+    for node_id in plan.shard_to_node.values() {
         let version = version_checker(index, node_id.as_str());
         assert!(version >= floor, "selected node should meet version floor");
     }

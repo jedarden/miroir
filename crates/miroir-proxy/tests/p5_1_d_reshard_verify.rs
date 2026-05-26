@@ -10,7 +10,7 @@
 //! ensuring the shadow index is identical to the live index before
 //! the atomic alias swap.
 
-use miroir_core::anti_entropy::{AntiEntropyReconciler, BUCKET_COUNT};
+use miroir_core::anti_entropy::AntiEntropyReconciler;
 use miroir_core::reshard::executor::{ReshardConfig, ReshardExecutor};
 use miroir_core::scatter::MockNodeClient;
 use miroir_core::topology::Topology;
@@ -32,8 +32,7 @@ async fn test_pk_keyed_bucketing_independent_of_shard_count() {
 
         assert_eq!(
             bucket_1, bucket_2,
-            "bucket should be deterministic for PK {}",
-            pk
+            "bucket should be deterministic for PK {pk}"
         );
         assert!(bucket_1 < 256, "bucket should be in range 0..255");
     }
