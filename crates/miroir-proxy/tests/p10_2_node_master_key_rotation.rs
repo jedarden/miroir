@@ -5,22 +5,58 @@
 //! 2. Mid-rotation pod restart: old and new keys both valid concurrently
 //! 3. CLI --dry-run: prints plan without executing
 //! 4. Startup-master rotation: separate runbook with maintenance window
+//!
+//! Run with:
+//!   cargo nextest run -E 'test(p10_2_node_master_key_rotation)'
+//!
+//! Prerequisites:
+//!   Option 1: Docker available for testcontainers Meilisearch
+//!   Option 2: Set MIROIR_TEST_SKIP_DOCKER=1 to skip these tests
 
 use reqwest::Client;
 use serde_json::json;
 use std::time::Duration;
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::meilisearch::Meilisearch;
 use tokio::time::sleep;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Check if Docker tests should skip.
+///
+/// Environment variables:
+/// - `MIROIR_TEST_SKIP_DOCKER`: If set, return Err (test should skip)
+fn check_docker_skip() -> Result<(), String> {
+    if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
+        return Err(
+            "Docker tests skipped via MIROIR_TEST_SKIP_DOCKER. \
+             Unset MIROIR_TEST_SKIP_DOCKER and ensure Docker is available."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Macro to skip test if Docker is unavailable
+macro_rules! skip_if_no_docker {
+    () => {
+        match check_docker_skip() {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Skipping test: {e}");
+                return;
+            }
+        }
+    };
+}
+
 /// Start a Meilisearch node with the given master key.
 async fn start_meilisearch_node(
     master_key: &str,
-) -> (String, testcontainers::ContainerAsync<Meilisearch>) {
+) -> (String, testcontainers::ContainerAsync<testcontainers_modules::meilisearch::Meilisearch>) {
+    use testcontainers::runners::AsyncRunner;
+    use testcontainers_modules::meilisearch::Meilisearch;
+
     let node = Meilisearch::default();
     let container = node.start().await.expect("start meilisearch");
     let port = container.get_host_port_ipv4(7700).await.expect("get port");
@@ -169,6 +205,7 @@ async fn verify_key_works(
 
 #[tokio::test]
 async fn test_p10_2_four_step_rotation_flow() {
+    skip_if_no_docker!();
     let master_key = "test-master-key-for-rotation";
     let (node_url, _container) = start_meilisearch_node(master_key).await;
 
@@ -241,6 +278,7 @@ async fn test_p10_2_four_step_rotation_flow() {
 
 #[tokio::test]
 async fn test_p10_2_mid_rotation_pod_restart_both_keys_valid() {
+    skip_if_no_docker!();
     let master_key = "test-master-key-mid-rotation";
     let (node_url, _container) = start_meilisearch_node(master_key).await;
 
@@ -285,6 +323,7 @@ async fn test_p10_2_mid_rotation_pod_restart_both_keys_valid() {
 
 #[tokio::test]
 async fn test_p10_2_dry_run_prints_plan_without_executing() {
+    skip_if_no_docker!();
     // This test verifies the CLI --dry-run flag behavior
     // The actual CLI command is tested in miroir-ctl unit tests
     // Here we verify that the key creation logic can be planned without executing
@@ -327,6 +366,7 @@ async fn test_p10_2_dry_run_prints_plan_without_executing() {
 
 #[tokio::test]
 async fn test_p10_2_startup_master_rotation_requires_restart() {
+    skip_if_no_docker!();
     // This test documents that startup-master key rotation is NOT zero-downtime
     // The startup master key (MEILI_MASTER_KEY) is fixed at process start
 
@@ -361,6 +401,7 @@ async fn test_p10_2_startup_master_rotation_requires_restart() {
 
 #[tokio::test]
 async fn test_p10_2_multiple_nodes_rotation() {
+    skip_if_no_docker!();
     // Start multiple Meilisearch nodes
     let master_key = "test-master-key-multi-node";
     let (node1_url, _c1) = start_meilisearch_node(master_key).await;
@@ -439,6 +480,7 @@ async fn test_p10_2_multiple_nodes_rotation() {
 
 #[tokio::test]
 async fn test_p10_2_rollback_on_partial_creation_failure() {
+    skip_if_no_docker!();
     let master_key = "test-master-key-rollback";
     let (node1_url, _c1) = start_meilisearch_node(master_key).await;
     let (node2_url, _c2) = start_meilisearch_node(master_key).await;

@@ -27,6 +27,14 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+/// Callback type for recording ILM metrics.
+///
+/// Called with:
+/// - metric name (e.g., "miroir_rollover_events_total")
+/// - label map (e.g., {"policy": "logs-ilm"})
+/// - value (counter increment or gauge value)
+pub type IlmMetricsCallback = Arc<dyn Fn(&str, &HashMap<String, String>, f64) + Send + Sync>;
+
 /// CDC origin tag for ILM rollover writes (plan §13.13).
 pub const ORIGIN_ROLLOVER: &str = "rollover";
 
@@ -145,6 +153,8 @@ pub struct IlmWorker {
     master_key: Arc<String>,
     /// Alias registry.
     alias_registry: Arc<AliasRegistry>,
+    /// Metrics callback (optional).
+    metrics_callback: Option<IlmMetricsCallback>,
 }
 
 /// Trigger evaluation result.
@@ -334,6 +344,16 @@ impl IlmManager {
         leader_election: Arc<LeaderElection>,
         pod_id: String,
     ) -> std::result::Result<IlmWorker, IlmError> {
+        self.create_worker_with_metrics(leader_election, pod_id, None)
+    }
+
+    /// Create an ILM worker with a metrics callback.
+    pub fn create_worker_with_metrics(
+        &self,
+        leader_election: Arc<LeaderElection>,
+        pod_id: String,
+        metrics_callback: Option<IlmMetricsCallback>,
+    ) -> std::result::Result<IlmWorker, IlmError> {
         let task_store = self
             .task_store
             .clone()
@@ -349,6 +369,7 @@ impl IlmManager {
             node_addresses: self.node_addresses.clone(),
             master_key: self.master_key.clone(),
             alias_registry: self.alias_registry.clone(),
+            metrics_callback,
         })
     }
 
@@ -541,6 +562,41 @@ pub struct RolloverState {
 }
 
 impl IlmWorker {
+    /// Emit a metric if a callback is configured.
+    fn emit_metric(&self, name: &str, labels: HashMap<String, String>, value: f64) {
+        if let Some(ref callback) = self.metrics_callback {
+            callback(name, &labels, value);
+        }
+    }
+
+    /// Increment the rollover events counter.
+    fn inc_rollover_events(&self, policy: &str) {
+        let mut labels = HashMap::new();
+        labels.insert("policy".to_string(), policy.to_string());
+        self.emit_metric("miroir_rollover_events_total", labels, 1.0);
+    }
+
+    /// Set the active indexes gauge.
+    fn set_rollover_active_indexes(&self, alias: &str, count: f64) {
+        let mut labels = HashMap::new();
+        labels.insert("alias".to_string(), alias.to_string());
+        self.emit_metric("miroir_rollover_active_indexes", labels, count);
+    }
+
+    /// Increment the documents expired counter.
+    fn inc_rollover_documents_expired(&self, policy: &str, count: f64) {
+        let mut labels = HashMap::new();
+        labels.insert("policy".to_string(), policy.to_string());
+        self.emit_metric("miroir_rollover_documents_expired_total", labels, count);
+    }
+
+    /// Set the last action seconds gauge.
+    fn set_rollover_last_action_seconds(&self, policy: &str, secs: f64) {
+        let mut labels = HashMap::new();
+        labels.insert("policy".to_string(), policy.to_string());
+        self.emit_metric("miroir_rollover_last_action_seconds", labels, secs);
+    }
+
     /// Run the ILM worker loop.
     ///
     /// This should be spawned as a background task on the leader pod.
@@ -819,6 +875,8 @@ impl IlmWorker {
         policy: &RolloverPolicy,
         _evaluation: &TriggerEvaluation,
     ) -> std::result::Result<(), IlmError> {
+        let start_time = std::time::Instant::now();
+
         // Phase 1: Starting - validate preconditions
         let current_index = self.resolve_write_alias(&policy.write_alias).await?;
 
@@ -864,6 +922,10 @@ impl IlmWorker {
         )
         .await?;
 
+        // Emit metrics for active indexes
+        let targets = self.alias_registry.resolve(&policy.read_alias).await;
+        self.set_rollover_active_indexes(&policy.read_alias, targets.len() as f64);
+
         // Phase 6: Clean retention (delete old indexes)
         self.coordinator.advance_phase("cleaning_retention").await?;
         self.clean_retention(
@@ -872,6 +934,13 @@ impl IlmWorker {
             policy.retention.keep_indexes as usize,
         )
         .await?;
+
+        // Emit rollover events counter
+        self.inc_rollover_events(&policy.name);
+
+        // Emit last action duration
+        let duration_secs = start_time.elapsed().as_secs_f64();
+        self.set_rollover_last_action_seconds(&policy.name, duration_secs);
 
         // Complete
         self.coordinator.advance_phase("complete").await?;
@@ -1046,12 +1115,12 @@ impl IlmWorker {
         read_alias: &str,
         pattern: &str,
         keep_indexes: usize,
-    ) -> std::result::Result<(), IlmError> {
+    ) -> std::result::Result<u64, IlmError> {
         // Get current targets from read alias
         let targets = if self.alias_registry.is_alias(read_alias).await {
             self.alias_registry.resolve(read_alias).await
         } else {
-            return Ok(()); // No targets, nothing to clean
+            return Ok(0); // No targets, nothing to clean
         };
 
         // Find all indexes matching the pattern
@@ -1065,6 +1134,8 @@ impl IlmWorker {
         // Sort by name (descending) - index names contain dates so this sorts by recency
         let mut sorted_indexes = matching_indexes.clone();
         sorted_indexes.sort_by(|a, b| b.cmp(a));
+
+        let mut total_documents_expired = 0u64;
 
         // Delete indexes beyond the retention limit
         if sorted_indexes.len() > keep_indexes {
@@ -1080,9 +1151,25 @@ impl IlmWorker {
                     continue;
                 }
 
+                // Fetch document count before deletion
+                let doc_count = match self.fetch_index_stats(index_uid).await {
+                    Ok(stats) => stats.total_documents,
+                    Err(e) => {
+                        warn!(
+                            "ILM: failed to fetch stats for '{}': {}, using 0",
+                            index_uid, e
+                        );
+                        0
+                    }
+                };
+
                 match self.delete_index(index_uid).await {
                     Ok(()) => {
-                        info!("ILM: deleted old index '{}'", index_uid);
+                        info!(
+                            "ILM: deleted old index '{}' ({} documents)",
+                            index_uid, doc_count
+                        );
+                        total_documents_expired += doc_count;
                     }
                     Err(e) => {
                         warn!("ILM: failed to delete index '{}': {}", index_uid, e);
@@ -1091,7 +1178,7 @@ impl IlmWorker {
             }
         }
 
-        Ok(())
+        Ok(total_documents_expired)
     }
 
     /// Check if an index is too new to delete (safety lock).
