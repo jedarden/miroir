@@ -745,9 +745,7 @@ async fn p42_log_inspection_old_node_not_queried_after_migration() {
     let fetch_calls = executor.fetch_calls.lock().unwrap();
     println!("Total fetch calls: {}", fetch_calls.len());
     for ((node, shard, offset), count) in fetch_calls.iter() {
-        println!(
-            "  {node} shard {shard} offset {offset}: {count} calls"
-        );
+        println!("  {node} shard {shard} offset {offset}: {count} calls");
     }
 
     // Verify the new node HAS documents for migrated shards
@@ -807,12 +805,7 @@ async fn p42_verify_dual_write_during_migration() {
     for shard_id in 0..shards {
         let assigned = assign_shard_in_group(shard_id, &node_ids, 2);
         for node_id in &assigned {
-            populate_node(
-                &executor,
-                node_id.as_str(),
-                &[shard_id],
-                docs_per_shard,
-            );
+            populate_node(&executor, node_id.as_str(), &[shard_id], docs_per_shard);
         }
     }
 
@@ -939,12 +932,7 @@ async fn p42_pagination_limit_offset() {
     for shard_id in 0..shards {
         let assigned = assign_shard_in_group(shard_id, &node_ids, 2);
         for node_id in &assigned {
-            populate_node(
-                &executor,
-                node_id.as_str(),
-                &[shard_id],
-                docs_per_shard,
-            );
+            populate_node(&executor, node_id.as_str(), &[shard_id], docs_per_shard);
         }
     }
 
@@ -1033,9 +1021,7 @@ async fn p42_pagination_limit_offset() {
     );
 
     let (shard_id, offsets) = found_paginated_shard.unwrap();
-    println!(
-        "Shard {shard_id} has paginated fetches with offsets: {offsets:?}"
-    );
+    println!("Shard {shard_id} has paginated fetches with offsets: {offsets:?}");
 
     // Verify offsets are multiples of batch size
     for offset in &offsets {

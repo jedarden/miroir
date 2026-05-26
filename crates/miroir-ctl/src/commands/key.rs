@@ -191,10 +191,7 @@ async fn rotate_node_master(
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             rollback_create(&client, &created_on, &new_key_uid, &current_key).await;
-            return Err(format!(
-                "Key creation failed on {addr}: HTTP {status} — {text}"
-            )
-            .into());
+            return Err(format!("Key creation failed on {addr}: HTTP {status} — {text}").into());
         }
 
         let body: MeiliKeyCreated = resp
@@ -226,9 +223,7 @@ async fn rotate_node_master(
         "  kubectl -n {} patch secret {} \\",
         args.namespace, args.secret_name
     );
-    println!(
-        "    -p '{{\"stringData\":{{\"nodeMasterKey\":\"{new_key}\"}}}}'"
-    );
+    println!("    -p '{{\"stringData\":{{\"nodeMasterKey\":\"{new_key}\"}}}}'");
     println!("\nOr update your ExternalSecret / OpenBao source.\n");
 
     // ── Step 3: Rolling restart instructions ─────────────────────────
@@ -291,9 +286,7 @@ async fn rotate_node_master(
                 } else {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
-                    eprintln!(
-                        "  Warning: delete on {addr} returned HTTP {status} — {text}"
-                    );
+                    eprintln!("  Warning: delete on {addr} returned HTTP {status} — {text}");
                 }
             }
         }
@@ -433,9 +426,7 @@ async fn find_old_key_uid(
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        eprintln!(
-            "  Warning: could not list keys on {node_addr} (HTTP {status} — {text})"
-        );
+        eprintln!("  Warning: could not list keys on {node_addr} (HTTP {status} — {text})");
         return Ok(None);
     }
 

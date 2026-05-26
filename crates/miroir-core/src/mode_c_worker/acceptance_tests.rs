@@ -116,9 +116,7 @@ impl TaskStore for MockTaskStore {
         Ok(jobs
             .iter()
             .filter(|j| {
-                j.state == "in_progress"
-                    && j.claim_expires_at
-                        .is_some_and(|exp| exp < now_ms)
+                j.state == "in_progress" && j.claim_expires_at.is_some_and(|exp| exp < now_ms)
             })
             .cloned()
             .collect())

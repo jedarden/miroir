@@ -5,14 +5,11 @@
 // Allow functions with many parameters - refactoring to use parameter structs
 // would be a significant API change. These functions are well-documented.
 #![allow(clippy::too_many_arguments)]
-
 // Some unused variables are intentional (e.g., for future use or debug-only),
 // or are part of complex async patterns where suppressing is cleaner than
 // adding conditional compilation attributes throughout.
 #![allow(unused_variables)]
-
 #![allow(dead_code)]
-
 // Additional test-specific allowances
 #![cfg_attr(test, allow(clippy::useless_vec))]
 #![cfg_attr(test, allow(non_snake_case))]

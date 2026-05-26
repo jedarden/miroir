@@ -280,7 +280,10 @@ mod tests {
             MergeStrategy::parse_strategy("convex"),
             Some(MergeStrategy::Convex)
         );
-        assert_eq!(MergeStrategy::parse_strategy("rrf"), Some(MergeStrategy::Rrf));
+        assert_eq!(
+            MergeStrategy::parse_strategy("rrf"),
+            Some(MergeStrategy::Rrf)
+        );
         assert_eq!(MergeStrategy::parse_strategy("unknown"), None);
     }
 

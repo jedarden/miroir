@@ -63,9 +63,7 @@ async fn wait_for_task(
         // Check if task is finished (Succeeded or Failed)
         match task {
             Task::Succeeded { .. } => return Ok(task),
-            Task::Failed { .. } => {
-                return Err(format!("Task {task_uid} failed: {task:?}").into())
-            }
+            Task::Failed { .. } => return Err(format!("Task {task_uid} failed: {task:?}").into()),
             _ => {}
         }
 
@@ -168,10 +166,7 @@ async fn document_round_trip() -> Result<(), Box<dyn std::error::Error>> {
 
     // Total across nodes equals 1000
     let total: usize = node_doc_counts.values().sum();
-    assert_eq!(
-        total, 1000,
-        "Total documents mismatch: {node_doc_counts:?}"
-    );
+    assert_eq!(total, 1000, "Total documents mismatch: {node_doc_counts:?}");
 
     // Clean up
     delete_index(&client, index_name).await?;

@@ -13,8 +13,8 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use miroir_core::merger::ScoreMergeStrategy;
 use miroir_core::replica_selection::ReplicaSelector;
 use miroir_core::scatter::{
-    plan_search_scatter, GlobalIdf, MockNodeClient,
-    PreflightRequest, PreflightResponse, SearchRequest, TermStats,
+    plan_search_scatter, GlobalIdf, MockNodeClient, PreflightRequest, PreflightResponse,
+    SearchRequest, TermStats,
 };
 use miroir_core::topology::{Node, NodeId, Topology};
 use serde_json::json;

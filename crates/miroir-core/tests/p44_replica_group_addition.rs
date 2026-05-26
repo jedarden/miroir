@@ -344,19 +344,11 @@ async fn acceptance_3_mid_sync_writes_present_on_both_groups_after_sync() {
         let node_map = t.node_map();
         let group_0_count = targets
             .iter()
-            .filter(|n| {
-                node_map
-                    .get(n)
-                    .is_some_and(|node| node.replica_group == 0)
-            })
+            .filter(|n| node_map.get(n).is_some_and(|node| node.replica_group == 0))
             .count();
         let group_1_count = targets
             .iter()
-            .filter(|n| {
-                node_map
-                    .get(n)
-                    .is_some_and(|node| node.replica_group == 1)
-            })
+            .filter(|n| node_map.get(n).is_some_and(|node| node.replica_group == 1))
             .count();
 
         assert_eq!(group_0_count, 2, "Should have 2 nodes from group 0");

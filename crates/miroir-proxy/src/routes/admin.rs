@@ -71,10 +71,7 @@ where
             post(canary::create_from_capture::<S>),
         )
         // Explain endpoint (plan §13.20)
-        .route(
-            "/indexes/{index}/explain",
-            post(explain::explain_search),
-        )
+        .route("/indexes/{index}/explain", post(explain::explain_search))
         // Node management (plan §2 node addition flow)
         .route("/nodes", post(admin_endpoints::add_node::<S>))
         .route("/nodes/{id}", delete(admin_endpoints::remove_node::<S>))
