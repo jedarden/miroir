@@ -315,6 +315,61 @@ impl LocalSearchUiRateLimiter {
         timestamps.push(now);
         (true, None)
     }
+
+    /// Check rate limit for search UI with detailed info.
+    /// Returns (allowed, remaining, reset_after_seconds) to match Redis backend.
+    pub fn check_detailed(&self, ip: &str, limit: u64, window_seconds: u64) -> (bool, u64, i64) {
+        let mut inner = self.inner.lock().unwrap();
+        let now = now_ms();
+        let window_ms = window_seconds * 1000;
+        let timestamps = inner.state.entry(ip.to_string()).or_default();
+
+        // Clean old timestamps outside the window
+        timestamps.retain(|&ts| now - ts < window_ms as i64);
+
+        // Calculate remaining and reset time
+        let current_count = timestamps.len() as u64;
+        let remaining = limit.saturating_sub(current_count);
+
+        // Calculate reset_after based on oldest timestamp in window
+        let reset_after = if current_count >= limit {
+            // Find oldest timestamp and calculate when it expires
+            if let Some(&oldest) = timestamps.first() {
+                let reset_ms = oldest + window_ms as i64 - now;
+                if reset_ms > 0 {
+                    reset_ms / 1000
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        } else if current_count > 0 {
+            // If we have some requests but not at limit, window resets from oldest
+            if let Some(&oldest) = timestamps.first() {
+                let reset_ms = oldest + window_ms as i64 - now;
+                if reset_ms > 0 {
+                    reset_ms / 1000
+                } else {
+                    0
+                }
+            } else {
+                window_seconds as i64
+            }
+        } else {
+            window_seconds as i64
+        };
+
+        // Check if limit exceeded
+        if current_count >= limit {
+            return (false, 0, reset_after);
+        }
+
+        // Record this request
+        timestamps.push(now);
+
+        (true, remaining, reset_after)
+    }
 }
 
 impl Default for LocalSearchUiRateLimiter {

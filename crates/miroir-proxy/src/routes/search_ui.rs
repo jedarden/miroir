@@ -31,7 +31,7 @@ use tracing::{debug, info};
 use crate::routes::indexes::MeilisearchClient;
 use crate::scoped_key_rotation::mint_scoped_key;
 
-use super::admin_endpoints::AppState;
+use super::admin_endpoints::{parse_rate_limit, AppState};
 
 /// Session mint response (plan §13.21).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +163,61 @@ pub async fn mint_session(
     // Check if search UI is enabled
     if !config.search_ui.enabled {
         return Err(ErrorResponse::invalid_request("search UI is not enabled"));
+    }
+
+    // Extract source IP from X-Forwarded-For or X-Real-IP (trust proxy)
+    let source_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()))
+        .unwrap_or("unknown")
+        .trim()
+        .to_string();
+
+    // Parse rate limit config (e.g., "60/minute" -> limit=60, window=60s)
+    let (rate_limit, window_seconds) =
+        match parse_rate_limit(&config.search_ui.auth.session_rate_limit) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                return Err(ErrorResponse::internal_error(format!(
+                    "invalid search_ui.auth.session_rate_limit config: {e}"
+                )));
+            }
+        };
+
+    // Check rate limit based on backend config
+    let backend = config.search_ui.rate_limit.backend.as_str();
+    let (allowed, remaining, reset_in) = if backend == "redis" {
+        // Use Redis backend for distributed rate limiting
+        if let Some(ref redis) = state.redis_store {
+            match redis.check_rate_limit_searchui(&source_ip, rate_limit, window_seconds) {
+                Ok(result) => result,
+                Err(e) => {
+                    return Err(ErrorResponse::internal_error(format!(
+                        "rate limit check failed: {e}"
+                    )));
+                }
+            }
+        } else {
+            // Fallback to local if Redis not available
+            state.local_search_ui_rate_limiter.check_detailed(
+                &source_ip,
+                rate_limit,
+                window_seconds,
+            )
+        }
+    } else {
+        // Use local in-memory rate limiter
+        state
+            .local_search_ui_rate_limiter
+            .check_detailed(&source_ip, rate_limit, window_seconds)
+    };
+
+    if !allowed {
+        return Err(ErrorResponse::rate_limited(format!(
+            "Rate limit exceeded. Try again in {reset_in}s."
+        )));
     }
 
     // Validate auth mode
@@ -301,8 +356,8 @@ pub async fn mint_session(
         index: index_uid,
         rate_limit: RateLimitInfo {
             limit: auth_config.session_rate_limit.clone(),
-            remaining: 10, // TODO: implement actual rate limiting
-            reset_in: 60,
+            remaining: remaining as u32,
+            reset_in: reset_in.max(0) as u32,
         },
     }))
 }
