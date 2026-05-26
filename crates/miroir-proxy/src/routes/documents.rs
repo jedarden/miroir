@@ -1254,7 +1254,10 @@ mod tests {
         assert_eq!(extract_primary_key(&doc_with_key), Some("key".to_string()));
 
         let doc_with_id_field = serde_json::json!({"_id": "test000", "name": "Test"});
-        assert_eq!(extract_primary_key(&doc_with_id_field), Some("_id".to_string()));
+        assert_eq!(
+            extract_primary_key(&doc_with_id_field),
+            Some("_id".to_string())
+        );
     }
 
     #[test]

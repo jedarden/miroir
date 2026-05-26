@@ -591,7 +591,10 @@ mod tests {
             JobState::parse_state("in_progress"),
             Some(JobState::InProgress)
         );
-        assert_eq!(JobState::parse_state("completed"), Some(JobState::Completed));
+        assert_eq!(
+            JobState::parse_state("completed"),
+            Some(JobState::Completed)
+        );
         assert_eq!(JobState::parse_state("failed"), Some(JobState::Failed));
         assert_eq!(JobState::parse_state("unknown"), None);
 
@@ -603,7 +606,10 @@ mod tests {
 
     #[test]
     fn test_job_type_roundtrip() {
-        assert_eq!(JobType::parse_type("dump_import"), Some(JobType::DumpImport));
+        assert_eq!(
+            JobType::parse_type("dump_import"),
+            Some(JobType::DumpImport)
+        );
         assert_eq!(
             JobType::parse_type("reshard_backfill"),
             Some(JobType::ReshardBackfill)

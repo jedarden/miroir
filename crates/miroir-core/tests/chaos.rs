@@ -177,9 +177,7 @@ impl TestCluster {
         delay_ms: u32,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let container_name = format!("{}_meili-{}_1", self.project_name, node_index);
-        println!(
-            "Applying {delay_ms}ms delay to container {container_name}..."
-        );
+        println!("Applying {delay_ms}ms delay to container {container_name}...");
 
         // Try to remove existing qdisc first, then add new one
         let _ = std::process::Command::new("docker")
@@ -366,9 +364,7 @@ async fn wait_for_task(
         // Check if task is finished (Succeeded or Failed)
         match task {
             Task::Succeeded { .. } => return Ok(task),
-            Task::Failed { .. } => {
-                return Err(format!("Task {task_uid} failed: {task:?}").into())
-            }
+            Task::Failed { .. } => return Err(format!("Task {task_uid} failed: {task:?}").into()),
             _ => {}
         }
 

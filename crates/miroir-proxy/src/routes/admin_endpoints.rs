@@ -716,8 +716,8 @@ impl AppState {
         // This must be created before drift_reconciler and anti_entropy_worker so they can be wired up
         let pod_name = std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string());
         let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string());
-        let service_name = std::env::var("MIROR_SERVICE_NAME")
-            .unwrap_or_else(|_| "miroir-headless".to_string());
+        let service_name =
+            std::env::var("MIROR_SERVICE_NAME").unwrap_or_else(|_| "miroir-headless".to_string());
         let peer_discovery = Arc::new(PeerDiscovery::new(
             pod_name.clone(),
             namespace,

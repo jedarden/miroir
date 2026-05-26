@@ -55,8 +55,7 @@ pub async fn explain_search(
     Extension(state): Extension<Arc<AppState>>,
     headers: HeaderMap,
     Json(query): Json<SearchQuery>,
-) -> Result<Json<serde_json::Value>, StatusCode>
-{
+) -> Result<Json<serde_json::Value>, StatusCode> {
     if !state.config.explain.enabled {
         return Err(StatusCode::NOT_FOUND);
     }
