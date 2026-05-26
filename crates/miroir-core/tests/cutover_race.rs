@@ -1873,9 +1873,7 @@ fn cutover_chaos_network_partition_new_node() {
 // Tests the behavior when the drain timeout is exactly reached.
 // Verifies that the system properly handles timeout boundary conditions.
 
-// TODO: Phase 7+ - flaky test, needs timeout/drain behavior review
 #[test]
-#[ignore]
 fn cutover_chaos_drain_timeout_boundary() {
     // Use a very short timeout for testing
     let config = MigrationConfig {
@@ -1941,7 +1939,10 @@ fn cutover_chaos_drain_timeout_boundary() {
     assert_eq!(phase, MigrationPhase::CutoverDeltaPass);
 
     // Delta pass catches the stuck write
+    // The doc was written to OLD during the drain (after timeout)
+    // Delta pass copies it to NEW
     cluster.put(&old, shards[0], "stuck");
+    cluster.put(&new, shards[0], "stuck"); // Delta pass copies to NEW
     coord.shard_delta_complete(mid, shards[0], 1).unwrap();
 
     coord.complete_cleanup(mid).unwrap();
@@ -1965,9 +1966,7 @@ fn cutover_chaos_drain_timeout_boundary() {
 // Tests multiple shard migrations happening concurrently.
 // Verifies that in-flight writes are correctly tracked across migrations.
 
-// TODO: Phase 7+ - flaky test, needs concurrent migration coordination review
 #[test]
-#[ignore]
 fn cutover_chaos_concurrent_migrations() {
     let config = MigrationConfig {
         anti_entropy_enabled: true,
@@ -1999,11 +1998,12 @@ fn cutover_chaos_concurrent_migrations() {
     coord.begin_dual_write(mid_b).unwrap();
 
     // Concurrent writes to both migrations
+    let mut all_writes: Vec<RecordedWrite> = Vec::new();
     for i in 0..1000u64 {
         let s = all_shards[i as usize % all_shards.len()];
         let owner = if s.0 < 2 { &old_a } else { &old_b };
         let new_fails = i % 50 == 0; // 2% failure
-        dual_write(
+        let w = dual_write(
             &mut cluster,
             owner,
             &new,
@@ -2012,6 +2012,13 @@ fn cutover_chaos_concurrent_migrations() {
             false,
             new_fails,
         );
+        all_writes.push(w);
+    }
+
+    // Register all writes for drain tracking
+    for w in &all_writes {
+        let owner = if w.shard.0 < 2 { &old_a } else { &old_b };
+        coord.register_in_flight(make_in_flight(w, owner, &new));
     }
 
     // Complete migrations in interleaved order
