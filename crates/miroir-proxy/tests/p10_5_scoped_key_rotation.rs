@@ -27,24 +27,34 @@ use serde_json::json;
 // ---------------------------------------------------------------------------
 
 /// Check if Docker tests should skip and optionally get external Redis URL.
+#[allow(dead_code)]
 fn check_docker_or_redis_url() -> Result<Option<String>, String> {
     if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
-        return Err(
-            "Docker tests skipped via MIROIR_TEST_SKIP_DOCKER. \
+        return Err("Docker tests skipped via MIROIR_TEST_SKIP_DOCKER. \
              Set MIROIR_TEST_REDIS_URL=redis://localhost:6379 to test against external Redis, \
              or unset MIROIR_TEST_SKIP_DOCKER and ensure Docker is available."
-                .to_string(),
-        );
+            .to_string());
     }
 
     if let Ok(url) = std::env::var("MIROIR_TEST_REDIS_URL") {
         return Ok(Some(url));
     }
 
+    // Check for Docker socket
+    let docker_sock = std::path::Path::new("/var/run/docker.sock");
+    if !docker_sock.exists() {
+        return Err(
+            "Docker socket not found at /var/run/docker.sock. \
+             Set MIROIR_TEST_SKIP_DOCKER=1 to skip, or set MIROIR_TEST_REDIS_URL to use external Redis."
+                .to_string(),
+        );
+    }
+
     Ok(None)
 }
 
 /// Macro to get Redis URL or skip test if Docker/Redis is unavailable
+#[allow(unused_macros)]
 macro_rules! redis_url_or_skip {
     () => {
         match check_docker_or_redis_url() {
@@ -81,7 +91,11 @@ fn make_config(node_addresses: Vec<String>, search_ui: SearchUiConfig) -> Miroir
 }
 
 /// Create a RedisTaskStore from a testcontainers Redis instance or external URL.
-async fn redis_store(maybe_url: Option<String>) -> RedisTaskStore {
+///
+/// Returns an error if Docker is unavailable or Redis connection fails.
+async fn redis_store(
+    maybe_url: Option<String>,
+) -> Result<RedisTaskStore, Box<dyn std::error::Error>> {
     let url = match maybe_url {
         Some(url) => url,
         None => {
@@ -89,12 +103,20 @@ async fn redis_store(maybe_url: Option<String>) -> RedisTaskStore {
             use testcontainers_modules::redis::Redis;
 
             let node = Redis::default();
-            let container = node.start().await.expect("start redis");
-            let port = container.get_host_port_ipv4(6379).await.expect("get port");
+            let container = node
+                .start()
+                .await
+                .map_err(|e| format!("start redis: {e}"))?;
+            let port = container
+                .get_host_port_ipv4(6379)
+                .await
+                .map_err(|e| format!("get port: {e}"))?;
             format!("redis://localhost:{port}")
         }
     };
-    RedisTaskStore::open(&url).await.expect("redis connect")
+    Ok(RedisTaskStore::open(&url)
+        .await
+        .map_err(|e| format!("redis connect: {e}"))?)
 }
 
 /// Seed a scoped key into Redis (simulating a previous rotation).
@@ -148,7 +170,13 @@ fn register_pod(redis: &RedisTaskStore, pod_id: &str) {
 /// before the old key is revoked — no 403 window.
 #[tokio::test]
 async fn test_rotation_zero_403_during_overlap() {
-    let redis = redis_store(None).await;
+    let redis = match redis_store(None).await {
+        Ok(redis) => redis,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     let mut server1 = mockito::Server::new_async().await;
     let mut server2 = mockito::Server::new_async().await;
@@ -278,7 +306,13 @@ async fn test_rotation_zero_403_during_overlap() {
 /// The leader waits the drain period and returns drain_pending status.
 #[tokio::test]
 async fn test_kill_pod_mid_rotation_drain_pending() {
-    let redis = redis_store(None).await;
+    let redis = match redis_store(None).await {
+        Ok(redis) => redis,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     let mut server1 = mockito::Server::new_async().await;
     let mut server2 = mockito::Server::new_async().await;
@@ -375,7 +409,13 @@ async fn test_kill_pod_mid_rotation_drain_pending() {
 /// current key is fresh (1 day old, well within the 30-day window).
 #[tokio::test]
 async fn test_force_rotation_bypasses_timing_gate() {
-    let redis = redis_store(None).await;
+    let redis = match redis_store(None).await {
+        Ok(redis) => redis,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     let mut server1 = mockito::Server::new_async().await;
     let mut server2 = mockito::Server::new_async().await;
@@ -476,7 +516,13 @@ async fn test_force_rotation_bypasses_timing_gate() {
 /// is NOT rotated under the normal timing gate.
 #[tokio::test]
 async fn test_timing_gate_skips_fresh_key() {
-    let redis = redis_store(None).await;
+    let redis = match redis_store(None).await {
+        Ok(redis) => redis,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     seed_scoped_key(
         &redis,
@@ -519,7 +565,13 @@ async fn test_timing_gate_skips_fresh_key() {
 /// different pods to lead rotation for different indexes.
 #[tokio::test]
 async fn test_per_index_leader_lease() {
-    let redis = redis_store(None).await;
+    let redis = match redis_store(None).await {
+        Ok(redis) => redis,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -568,7 +620,13 @@ async fn test_per_index_leader_lease() {
 /// startup, using primary_key directly (skipping the old UID).
 #[tokio::test]
 async fn test_pod_restart_skips_old_uid() {
-    let redis = redis_store(None).await;
+    let redis = match redis_store(None).await {
+        Ok(redis) => redis,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     // Seed a scoped key with overlap (generation 2, old key still present)
     let now = std::time::SystemTime::now()
@@ -612,7 +670,13 @@ async fn test_pod_restart_skips_old_uid() {
 /// Test: When no scoped key exists yet, rotation triggers initial key minting.
 #[tokio::test]
 async fn test_initial_key_minting() {
-    let redis = redis_store(None).await;
+    let redis = match redis_store(None).await {
+        Ok(redis) => redis,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     let mut server1 = mockito::Server::new_async().await;
     let mut server2 = mockito::Server::new_async().await;
@@ -719,7 +783,13 @@ async fn test_mint_key_all_nodes_fail() {
 /// Test: Pod beacons have a 60-second TTL set.
 #[tokio::test]
 async fn test_beacon_ttl_set() {
-    let redis = redis_store(None).await;
+    let redis = match redis_store(None).await {
+        Ok(redis) => redis,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     redis
         .observe_search_ui_scoped_key("pod-1", "test-idx", 5)
@@ -752,7 +822,13 @@ async fn test_beacon_ttl_set() {
 /// completes successfully.
 #[tokio::test]
 async fn test_revocation_tolerates_404() {
-    let redis = redis_store(None).await;
+    let redis = match redis_store(None).await {
+        Ok(redis) => redis,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
 
     let mut server1 = mockito::Server::new_async().await;
     let mut server2 = mockito::Server::new_async().await;

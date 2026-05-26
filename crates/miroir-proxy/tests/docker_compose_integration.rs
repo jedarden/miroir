@@ -39,6 +39,8 @@ const MASTER_KEY: &str = "dev-key";
 /// Environment variables:
 /// - `MIROIR_TEST_MIROIR_URL`: If set, use this URL instead of the default
 /// - `MIROIR_TEST_SKIP_DOCKER`: If set, return an error (test should skip)
+///
+/// Returns Ok(url) if Miroir is reachable, Err(skip_reason) if not.
 fn get_miroir_base_url() -> Result<String, String> {
     // Check if Docker tests are explicitly skipped
     if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
@@ -49,12 +51,48 @@ fn get_miroir_base_url() -> Result<String, String> {
     }
 
     // Use external URL if provided
-    if let Ok(url) = std::env::var("MIROIR_TEST_MIROIR_URL") {
-        return Ok(url);
+    let url = if let Ok(url) = std::env::var("MIROIR_TEST_MIROIR_URL") {
+        url
+    } else {
+        DEFAULT_MIROIR_BASE_URL.to_string()
+    };
+
+    // Verify Miroir is actually reachable using a simple TCP check
+    use std::net::ToSocketAddrs;
+    use std::time::Duration;
+
+    // Extract host and port from URL (assuming http://host:port format)
+    let url_without_scheme = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .unwrap_or(&url);
+
+    let addrs: Vec<std::net::SocketAddr> = url_without_scheme
+        .to_socket_addrs()
+        .map_err(|e| format!("Failed to resolve address {url_without_scheme}: {e}"))?
+        .collect();
+
+    if addrs.is_empty() {
+        return Err(format!(
+            "No addresses found for {url_without_scheme}. \
+             Ensure docker-compose stack is running: docker compose -f examples/docker-compose-dev.yml up -d. \
+             Or set MIROIR_TEST_MIROIR_URL to point to a running Miroir instance."
+        ));
     }
 
-    // Default to localhost
-    Ok(DEFAULT_MIROIR_BASE_URL.to_string())
+    // Try each resolved address
+    for socket_addr in addrs {
+        if std::net::TcpStream::connect_timeout(&socket_addr, Duration::from_secs(2)).is_ok() {
+            return Ok(url);
+        }
+    }
+
+    Err(format!(
+        "Failed to connect to Miroir at {url}. \
+         Ensure docker-compose stack is running: docker compose -f examples/docker-compose-dev.yml up -d. \
+         Or set MIROIR_TEST_MIROIR_URL to point to a running Miroir instance, \
+         or set MIROIR_TEST_SKIP_DOCKER=1 to skip."
+    ))
 }
 
 /// Macro to skip test if Miroir/Docker is unavailable
