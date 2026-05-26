@@ -1990,6 +1990,52 @@ impl TaskStore for RedisTaskStore {
         })
     }
 
+    fn list_tenant_mappings(&self) -> Result<Vec<TenantMapRow>> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+        let index_key = format!("{key_prefix}:tenant_map:_index");
+
+        self.block_on(async move {
+            let mut conn = manager.lock().await;
+
+            // Get all tenant_map keys from the index
+            let keys: Vec<String> = conn
+                .smembers(&index_key)
+                .await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            let mut mappings = Vec::new();
+            for key in keys {
+                let fields: HashMap<String, Value> = conn
+                    .hgetall(&key)
+                    .await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+                if fields.is_empty() {
+                    continue;
+                }
+
+                let api_key_hash =
+                    if let Some(Value::BulkString(bytes)) = fields.get("api_key_hash") {
+                        hex::decode(bytes).map_err(|e| MiroirError::Redis(e.to_string()))?
+                    } else {
+                        continue;
+                    };
+
+                let tenant_id = get_field_string(&fields, "tenant_id")?;
+                let group_id = opt_field_i64(&fields, "group_id");
+
+                mappings.push(TenantMapRow {
+                    api_key_hash,
+                    tenant_id,
+                    group_id,
+                });
+            }
+
+            Ok(mappings)
+        })
+    }
+
     // --- Table 12: rollover_policies ---
 
     fn upsert_rollover_policy(&self, policy: &NewRolloverPolicy) -> Result<()> {

@@ -299,6 +299,9 @@ impl TaskStore for MockTaskStore {
     fn delete_tenant_mapping(&self, _api_key_hash: &[u8]) -> Result<bool> {
         Ok(false)
     }
+    fn list_tenant_mappings(&self) -> Result<Vec<crate::task_store::TenantMapRow>> {
+        Ok(Vec::new())
+    }
     fn upsert_rollover_policy(&self, _policy: &crate::task_store::NewRolloverPolicy) -> Result<()> {
         Ok(())
     }

@@ -81,6 +81,10 @@ where
             "/nodes/{id}/recover",
             post(admin_endpoints::recover_node::<S>),
         )
+        .route(
+            "/nodes/{id}/status",
+            get(admin_endpoints::get_node_status::<S>),
+        )
         // Rebalancer management
         .route("/rebalance", post(admin_endpoints::trigger_rebalance::<S>))
         .route(
@@ -128,5 +132,12 @@ where
         .route(
             "/ttl-policies",
             get(admin_endpoints::list_ttl_policies::<S>),
+        )
+        // Tenant management endpoints (plan §13.15)
+        .route("/tenants", post(admin_endpoints::add_tenant_mapping::<S>))
+        .route("/tenants", get(admin_endpoints::list_tenant_mappings::<S>))
+        .route(
+            "/tenants",
+            delete(admin_endpoints::delete_tenant_mapping::<S>),
         )
 }
