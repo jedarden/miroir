@@ -1,7 +1,7 @@
 //! Redis integration tests for the task store.
 //! Phase 3 feature — uses testcontainers to spin up a real Redis instance.
 
-#![cfg(feature = "task-store")]
+#![cfg(feature = "redis-store")]
 
 /// Helper function to create a Redis store.
 /// Note: This is a placeholder for Phase 0. In Phase 3, this will use testcontainers.

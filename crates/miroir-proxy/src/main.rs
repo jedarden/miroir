@@ -882,9 +882,6 @@ async fn run_health_checker(state: admin_endpoints::AppState) {
         let node_ids: Vec<_> = topo.nodes().map(|n| n.id.clone()).collect();
 
         for node_id in &node_ids {
-            // Get current node status
-            let current_status = topo.node(node_id).map(|n| n.status);
-
             // Get node address
             let node_address = match topo.node(node_id) {
                 Some(n) => n.address.clone(),
@@ -944,7 +941,7 @@ async fn run_health_checker(state: admin_endpoints::AppState) {
                                 info!(node_id = %node_id, "node recovered to Active (was Failed)");
 
                                 // Trigger RF-restore if configured
-                                if let Some(ref rebalancer) = state.rebalancer {
+                                if state.rebalancer.is_some() {
                                     if let Some(ref worker) = state.rebalancer_worker {
                                         let event = TopologyChangeEvent::NodeRecovered {
                                             node_id: node_id.as_str().to_string(),
@@ -984,7 +981,7 @@ async fn run_health_checker(state: admin_endpoints::AppState) {
                                 warn!(node_id = %node_id, consecutive_failures = failures, "node marked Failed");
 
                                 // Trigger failure handling
-                                if let Some(ref rebalancer) = state.rebalancer {
+                                if state.rebalancer.is_some() {
                                     if let Some(ref worker) = state.rebalancer_worker {
                                         let event = TopologyChangeEvent::NodeFailed {
                                             node_id: node_id.as_str().to_string(),

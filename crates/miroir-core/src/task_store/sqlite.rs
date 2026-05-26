@@ -1517,7 +1517,6 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::fs;
 
     fn test_store() -> SqliteTaskStore {
         let store = SqliteTaskStore::open_in_memory().unwrap();
@@ -2735,7 +2734,7 @@ mod tests {
             ) {
                 let store = test_store();
                 let unique_names: std::collections::HashSet<String> = names.into_iter().collect();
-                for (_i, name) in unique_names.iter().enumerate() {
+                for name in unique_names.iter() {
                     store.upsert_rollover_policy(&NewRolloverPolicy {
                         name: name.clone(),
                         write_alias: format!("{name}-w"),

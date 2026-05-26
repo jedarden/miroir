@@ -20,7 +20,7 @@ use crate::task_store::TaskStore;
 type ModeACoordinator = ActualModeACoordinator;
 
 #[cfg(not(feature = "peer-discovery"))]
-struct ModeACoordinator;
+pub struct ModeACoordinator;
 
 #[cfg(not(feature = "peer-discovery"))]
 impl ModeACoordinator {
@@ -391,7 +391,6 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     #[test]
     fn test_drift_reconciler_config_default() {

@@ -578,7 +578,7 @@ async fn acceptance_write_session_read_with_route_pin_strategy() {
         ..Default::default()
     };
     let manager = test_manager(config);
-    let task_registry = Arc::new(MockTaskRegistry::new());
+    let _task_registry = Arc::new(MockTaskRegistry::new());
 
     let session_id = "test-session-route-pin";
     let mtask_id = "mtask-route-pin-123".to_string();

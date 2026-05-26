@@ -3582,7 +3582,7 @@ mod tests {
                     key: format!("idemp-{}", i),
                     body_sha256: vec![0u8; 32],
                     miroir_task_id: format!("task-{}", i),
-                    expires_at: now_ms() + 3600_000,
+                    expires_at: now_ms() + 3_600_000,
                 };
                 store
                     .insert_idempotency_entry(&entry)
@@ -3597,7 +3597,7 @@ mod tests {
                     last_write_at: Some(now_ms()),
                     pinned_group: Some(i as i64),
                     min_settings_version: 1,
-                    ttl: now_ms() + 3600_000,
+                    ttl: now_ms() + 3_600_000,
                 };
                 store
                     .upsert_session(&session)
@@ -3645,7 +3645,7 @@ mod tests {
                 csrf_token: "csrf".to_string(),
                 admin_key_hash: "hash".to_string(),
                 created_at: now_ms(),
-                expires_at: now_ms() + 3600_000,
+                expires_at: now_ms() + 3_600_000,
                 user_agent: None,
                 source_ip: None,
             };
@@ -3661,11 +3661,12 @@ mod tests {
             // Wait for subscriber to receive the message (must be < 100ms)
             let deadline = tokio::time::Duration::from_millis(200);
             loop {
-                let received = revoked.lock().unwrap();
-                if received.len() == 1 && received[0] == "pubsub-test-session" {
-                    break;
+                {
+                    let received = revoked.lock().unwrap();
+                    if received.len() == 1 && received[0] == "pubsub-test-session" {
+                        break;
+                    }
                 }
-                drop(received);
                 if start.elapsed() > deadline {
                     panic!("Pub/Sub message not received within 200ms");
                 }

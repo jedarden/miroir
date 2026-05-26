@@ -463,7 +463,7 @@ async fn test_write_with_degraded_group_succeeds_with_header() {
     );
 
     // Check for X-Miroir-Degraded header
-    let degraded_header = resp.headers().get("X-Miroir-Degraded");
+    let _degraded_header = resp.headers().get("X-Miroir-Degraded");
     // Note: In a real test with actual node failure, this would be Some("true")
 
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;

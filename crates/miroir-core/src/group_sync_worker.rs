@@ -18,6 +18,10 @@ use crate::scatter::FetchDocumentsRequest;
 use crate::topology::{NodeId, Topology};
 use crate::Result;
 
+// Type alias to reduce complexity in tests
+type FetchResponsesMap = std::collections::HashMap<(NodeId, String), serde_json::Value>;
+type WriteCallsVec = Vec<(NodeId, String, Vec<serde_json::Value>)>;
+
 /// Configuration for the group sync worker.
 #[derive(Debug, Clone)]
 pub struct GroupSyncWorkerConfig {
@@ -215,9 +219,9 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
         // Sync documents with pagination
         let mut offset = 0u32;
         let mut total_copied = 0u64;
-        let mut has_more = true;
+        let mut _has_more = true;
 
-        while has_more {
+        while _has_more {
             let filter_value = serde_json::json!(shard_id.0);
 
             let fetch_req = FetchDocumentsRequest {
@@ -258,7 +262,7 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
             let total = docs.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
 
             if results.is_empty() {
-                has_more = false;
+                _has_more = false;
                 break;
             }
 
@@ -291,7 +295,7 @@ impl<C: SyncNodeClient> GroupSyncWorker<C> {
             );
 
             // Check if we're done
-            has_more = (offset as u64 + count) < total;
+            _has_more = (offset as u64 + count) < total;
             offset += page_size;
         }
 
@@ -378,8 +382,8 @@ mod tests {
 
     // Mock node client for testing
     struct MockSyncClient {
-        fetch_responses: Arc<RwLock<HashMap<(NodeId, String), serde_json::Value>>>,
-        write_calls: Arc<RwLock<Vec<(NodeId, String, Vec<serde_json::Value>)>>>,
+        fetch_responses: Arc<RwLock<FetchResponsesMap>>,
+        write_calls: Arc<RwLock<WriteCallsVec>>,
     }
 
     #[allow(unused_variables)]

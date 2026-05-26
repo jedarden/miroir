@@ -1049,6 +1049,7 @@ pub enum RateLimitBucket {
 pub struct RateLimiter;
 
 impl RateLimiter {
+    #[allow(clippy::result_unit_err)]
     pub fn check(&self, _bucket: &RateLimitBucket) -> Result<(), ()> {
         Ok(()) // Phase 2: always allow
     }

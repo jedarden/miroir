@@ -461,7 +461,7 @@ fn test_schema_version_persisted() {
 
     // Initial migration
     {
-        let store = open_store(path).unwrap();
+        let _store = open_store(path).unwrap();
         // migrate() is called in open_store()
     }
 

@@ -129,7 +129,7 @@ impl ModeCWorker {
         info!("Claimed job {} (type: {})", job_id, job_type_str);
 
         // Parse job type and parameters
-        let job_type = JobType::from_str(&claimed.type_).ok_or_else(|| {
+        let job_type = JobType::parse_type(&claimed.type_).ok_or_else(|| {
             MiroirError::InvalidRequest(format!("unknown job type: {}", claimed.type_))
         })?;
         let params = claimed.parse_params()?;
@@ -819,6 +819,6 @@ mod tests_reshard_backfill {
     fn test_reshard_backfill_job_type() {
         let job_type = JobType::ReshardBackfill;
         assert_eq!(job_type.as_str(), "reshard_backfill");
-        assert_eq!(JobType::from_str("reshard_backfill"), Some(job_type));
+        assert_eq!(JobType::parse_type("reshard_backfill"), Some(job_type));
     }
 }

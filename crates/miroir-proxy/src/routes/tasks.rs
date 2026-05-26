@@ -9,7 +9,7 @@ use axum::extract::{FromRef, Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Json, Router};
 use miroir_core::scatter::{NodeClient, TaskStatusRequest};
-use miroir_core::task::{MiroirTask, NodeTaskStatus, TaskRegistry, TaskStatus};
+use miroir_core::task::{MiroirTask, NodeTaskStatus, TaskStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -18,6 +18,7 @@ use crate::routes::admin_endpoints::AppState;
 
 /// Query parameters for GET /tasks (Meilisearch-compatible).
 #[derive(Debug, Deserialize)]
+#[allow(non_snake_case)]
 pub struct TasksQuery {
     /// Filter by status (comma-separated: "succeeded,failed")
     statuses: Option<String>,
@@ -33,6 +34,7 @@ pub struct TasksQuery {
 
 /// Meilisearch-compatible task response.
 #[derive(Debug, Serialize)]
+#[allow(non_snake_case)]
 pub struct TaskResponse {
     #[serde(rename = "taskUid")]
     pub task_uid: String,

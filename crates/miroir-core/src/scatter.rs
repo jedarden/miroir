@@ -681,6 +681,7 @@ pub async fn plan_search_scatter_with_narrowing(
 ///
 /// Excludes nodes whose settings version for the given index is below `floor`.
 /// Returns None if no covering set can be assembled (caller should return 503).
+#[allow(clippy::too_many_arguments)]
 pub async fn plan_search_scatter_with_version_floor(
     topology: &Topology,
     query_seq: u64,
@@ -1221,6 +1222,7 @@ pub async fn dfs_query_then_fetch_search<C: NodeClient>(
 /// If hedging is enabled and the primary request exceeds the p95 deadline,
 /// a duplicate request is sent to an alternate replica. The first response wins.
 #[instrument(skip_all, fields(node_id = %primary_node, shard_id))]
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_hedged_request<C: NodeClient>(
     client: &C,
     primary_node: &NodeId,
@@ -1621,7 +1623,7 @@ mod tests {
             assert!(plan.shard_to_node.contains_key(&s));
         }
         let g0 = topo.group(0).unwrap();
-        for (_, nid) in &plan.shard_to_node {
+        for nid in plan.shard_to_node.values() {
             assert!(g0.nodes().contains(nid));
         }
     }

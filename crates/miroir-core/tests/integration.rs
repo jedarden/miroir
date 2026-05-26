@@ -580,6 +580,7 @@ async fn node_failure_rf2() -> Result<(), Box<dyn std::error::Error>> {
 // Helper: Check index exists on all nodes
 // ============================================================================
 
+#[allow(dead_code)]
 async fn index_exists_on_all_nodes(index_name: &str) -> Result<bool, Box<dyn std::error::Error>> {
     for &port in &NODE_PORTS {
         let node = node_client(port);

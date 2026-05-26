@@ -508,8 +508,10 @@ mod tests {
     /// P5.11-A4: Per-query timeout enforcement.
     #[tokio::test]
     async fn test_per_query_timeout() {
-        let mut config = MultiSearchConfig::default();
-        config.per_query_timeout_ms = 100;
+        let config = MultiSearchConfig {
+            per_query_timeout_ms: 100,
+            ..Default::default()
+        };
         let executor = MultiSearchExecutor::new(config);
 
         let request = MultiSearchRequest {
@@ -558,9 +560,11 @@ mod tests {
     /// P5.11-A5: Total timeout enforcement.
     #[tokio::test]
     async fn test_total_timeout() {
-        let mut config = MultiSearchConfig::default();
-        config.total_timeout_ms = 100;
-        config.per_query_timeout_ms = 5000; // Individual queries have longer timeout
+        let config = MultiSearchConfig {
+            total_timeout_ms: 100,
+            per_query_timeout_ms: 5000, // Individual queries have longer timeout
+            ..Default::default()
+        };
         let executor = MultiSearchExecutor::new(config);
 
         let request = MultiSearchRequest {

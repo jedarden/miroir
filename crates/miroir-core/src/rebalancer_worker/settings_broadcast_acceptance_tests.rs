@@ -19,7 +19,6 @@ use crate::task_store::{
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Mock task store for testing.
 struct MockTaskStore {

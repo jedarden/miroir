@@ -2980,7 +2980,7 @@ pub async fn alias_swap_phase(
 #[cfg(test)]
 mod tests_alias_swap_phase {
     use super::*;
-    use crate::task_store::{AliasRow, NewAlias};
+    use crate::task_store::AliasRow;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -3272,6 +3272,7 @@ pub type BackfillProgressCallback = Arc<dyn Fn(u32, u64, u32) + Send + Sync>;
 ///
 /// # Returns
 /// `Ok(BackfillResult)` with backfill statistics on success.
+#[allow(clippy::too_many_arguments)]
 pub async fn backfill_phase(
     live_index_uid: &str,
     shadow_index_uid: &str,
@@ -3405,6 +3406,7 @@ pub async fn backfill_phase(
 ///
 /// Reads all documents from the live index for a given shard,
 /// re-hashes them under the new shard count, and writes to shadow.
+#[allow(clippy::too_many_arguments)]
 async fn backfill_single_shard(
     client: &reqwest::Client,
     node_address: &str,
@@ -3923,7 +3925,9 @@ pub async fn execute_reshard(
     .map_err(|e| {
         // Rollback: delete shadow index
         tracing::error!(error = %e, "Phase 3 backfill failed, rolling back");
-        let _ = rollback_shadow_orchestrator(&shadow_index, &config);
+        // TODO: spawn background task to actually run the rollback
+        let rollback = rollback_shadow_orchestrator(&shadow_index, &config);
+        std::mem::drop(rollback);
         format!("Phase 3 backfill failed: {e}")
     })?;
 
@@ -3954,7 +3958,9 @@ pub async fn execute_reshard(
     .map_err(|e| {
         // Rollback: delete shadow index
         tracing::error!(error = %e, "Phase 4 verify failed, rolling back");
-        let _ = rollback_shadow_orchestrator(&shadow_index, &config);
+        // TODO: spawn background task to actually run the rollback
+        let rollback = rollback_shadow_orchestrator(&shadow_index, &config);
+        std::mem::drop(rollback);
         format!("Phase 4 verify failed: {e}")
     })?;
 
@@ -3967,7 +3973,9 @@ pub async fn execute_reshard(
             verify_result.mismatched_pks.len()
         );
         tracing::error!(error);
-        let _ = rollback_shadow_orchestrator(&shadow_index, &config);
+        // TODO: spawn background task to actually run the rollback
+        let rollback = rollback_shadow_orchestrator(&shadow_index, &config);
+        std::mem::drop(rollback);
         return Err(error);
     }
 

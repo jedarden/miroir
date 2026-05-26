@@ -24,7 +24,6 @@ use miroir_core::router::{shard_for_key, write_targets_with_migration};
 use miroir_core::scatter::{
     DeleteByFilterRequest, DeleteByIdsRequest, NodeClient, WriteRequest, WriteResponse,
 };
-use miroir_core::task::TaskRegistry;
 use miroir_core::topology::{NodeId, Topology};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -37,12 +36,14 @@ use crate::routes::admin_endpoints::AppState;
 
 /// Document write parameters from query string.
 #[derive(Debug, Deserialize)]
+#[allow(non_snake_case)]
 pub struct DocumentsParams {
     primaryKey: Option<String>,
 }
 
 /// Task response (Meilisearch-compatible).
 #[derive(Debug, Serialize)]
+#[allow(non_snake_case)]
 pub struct TaskResponse {
     taskUid: u64,
     indexUid: String,
@@ -56,6 +57,7 @@ pub struct TaskResponse {
 
 /// Response for write operations.
 #[derive(Debug, Serialize)]
+#[allow(non_snake_case)]
 pub struct DocumentsWriteResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     taskUid: Option<String>, // Changed to String to hold mtask-<uuid>
@@ -1250,8 +1252,8 @@ mod tests {
         let doc_with_key = serde_json::json!({"key": "test789", "name": "Test"});
         assert_eq!(extract_primary_key(&doc_with_key), Some("key".to_string()));
 
-        let doc_with__id = serde_json::json!({"_id": "test000", "name": "Test"});
-        assert_eq!(extract_primary_key(&doc_with__id), Some("_id".to_string()));
+        let doc_with_id_field = serde_json::json!({"_id": "test000", "name": "Test"});
+        assert_eq!(extract_primary_key(&doc_with_id_field), Some("_id".to_string()));
     }
 
     #[test]

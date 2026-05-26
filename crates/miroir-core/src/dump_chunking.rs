@@ -262,7 +262,7 @@ mod tests {
         let lines_per_chunk = (256 * 1024 * 1024) / line_size;
         let total_lines = lines_per_chunk * 4; // 4 chunks
 
-        let data = create_test_data(total_lines as usize, line_size - 20);
+        let data = create_test_data(total_lines, line_size - 20);
         let chunks = split_dump_into_chunks(&data, 256 * 1024 * 1024);
 
         // Should get approximately 4 chunks

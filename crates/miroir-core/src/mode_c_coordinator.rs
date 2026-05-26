@@ -78,7 +78,7 @@ pub enum JobState {
 
 impl JobState {
     /// Parse from string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_state(s: &str) -> Option<Self> {
         match s {
             "queued" => Some(Self::Queued),
             "in_progress" => Some(Self::InProgress),
@@ -110,7 +110,7 @@ pub enum JobType {
 
 impl JobType {
     /// Parse from string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_type(s: &str) -> Option<Self> {
         match s {
             "dump_import" => Some(Self::DumpImport),
             "reshard_backfill" => Some(Self::ReshardBackfill),
@@ -586,14 +586,14 @@ mod tests {
 
     #[test]
     fn test_job_state_roundtrip() {
-        assert_eq!(JobState::from_str("queued"), Some(JobState::Queued));
+        assert_eq!(JobState::parse_state("queued"), Some(JobState::Queued));
         assert_eq!(
-            JobState::from_str("in_progress"),
+            JobState::parse_state("in_progress"),
             Some(JobState::InProgress)
         );
-        assert_eq!(JobState::from_str("completed"), Some(JobState::Completed));
-        assert_eq!(JobState::from_str("failed"), Some(JobState::Failed));
-        assert_eq!(JobState::from_str("unknown"), None);
+        assert_eq!(JobState::parse_state("completed"), Some(JobState::Completed));
+        assert_eq!(JobState::parse_state("failed"), Some(JobState::Failed));
+        assert_eq!(JobState::parse_state("unknown"), None);
 
         assert_eq!(JobState::Queued.as_str(), "queued");
         assert_eq!(JobState::InProgress.as_str(), "in_progress");
@@ -603,12 +603,12 @@ mod tests {
 
     #[test]
     fn test_job_type_roundtrip() {
-        assert_eq!(JobType::from_str("dump_import"), Some(JobType::DumpImport));
+        assert_eq!(JobType::parse_type("dump_import"), Some(JobType::DumpImport));
         assert_eq!(
-            JobType::from_str("reshard_backfill"),
+            JobType::parse_type("reshard_backfill"),
             Some(JobType::ReshardBackfill)
         );
-        assert_eq!(JobType::from_str("unknown"), None);
+        assert_eq!(JobType::parse_type("unknown"), None);
 
         assert_eq!(JobType::DumpImport.as_str(), "dump_import");
         assert_eq!(JobType::ReshardBackfill.as_str(), "reshard_backfill");

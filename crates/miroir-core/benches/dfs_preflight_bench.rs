@@ -108,17 +108,17 @@ fn bench_preflight_phase(c: &mut Criterion) {
         ));
 
         // Create mock client with preflight responses
-        let client = MockNodeClient::default();
+        let _client = MockNodeClient::default();
 
-        for node_id in plan.shard_to_node.values() {
+        for _node_id in plan.shard_to_node.values() {
             // Each node returns a preflight response
-            let response = make_preflight_response(1000, 500.0, 100);
+            let _response = make_preflight_response(1000, 500.0, 100);
             // Store the response in the mock client
             // (Note: MockNodeClient doesn't support preflight responses yet,
             // so we'll just measure the aggregation cost)
         }
 
-        let req = PreflightRequest {
+        let _req = PreflightRequest {
             index_uid: "test".to_string(),
             terms: vec!["rust".to_string(), "programming".to_string()],
             filter: None,
@@ -176,7 +176,7 @@ fn bench_dfs_vs_standard_scatter(c: &mut Criterion) {
         client.responses.insert(node_id.clone(), response);
     }
 
-    let search_req = SearchRequest {
+    let _search_req = SearchRequest {
         index_uid: "test".to_string(),
         query: Some("rust programming".to_string()),
         offset: 0,
@@ -191,7 +191,7 @@ fn bench_dfs_vs_standard_scatter(c: &mut Criterion) {
         vector_config: None,
     };
 
-    let strategy = ScoreMergeStrategy::new();
+    let _strategy = ScoreMergeStrategy::new();
 
     // Note: We can't actually benchmark the async execution in criterion
     // without a runtime, so we measure the planning and aggregation overhead

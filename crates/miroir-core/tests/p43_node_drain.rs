@@ -11,6 +11,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
+// Type aliases to reduce complexity
+type StoredDocsMap = HashMap<(String, u32), Vec<serde_json::Value>>;
+type DeletedDocsMap = HashMap<(String, u32), usize>;
+
 use miroir_core::{
     config::UnavailableShardPolicy,
     migration::MigrationConfig,
@@ -40,9 +44,9 @@ fn create_test_topology(shards: u32, node_count: usize, rf: usize) -> Topology {
 #[derive(Default)]
 struct DrainTestExecutor {
     /// Documents stored per (node, shard)
-    stored_docs: Arc<std::sync::Mutex<HashMap<(String, u32), Vec<serde_json::Value>>>>,
+    stored_docs: Arc<std::sync::Mutex<StoredDocsMap>>,
     /// Documents deleted per (node, shard)
-    deleted_docs: Arc<std::sync::Mutex<HashMap<(String, u32), usize>>>,
+    deleted_docs: Arc<std::sync::Mutex<DeletedDocsMap>>,
 }
 
 impl DrainTestExecutor {

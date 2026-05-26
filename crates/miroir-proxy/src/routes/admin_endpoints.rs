@@ -713,21 +713,16 @@ impl AppState {
 
         // Create Mode A coordinator for shard-partitioned ownership (plan §14.5 Mode A)
         // This must be created before drift_reconciler and anti_entropy_worker so they can be wired up
-        let mode_a_coordinator = if cfg!(feature = "peer-discovery") {
-            let pod_name = std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string());
-            let namespace =
-                std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string());
-            let service_name = std::env::var("MIROR_SERVICE_NAME")
-                .unwrap_or_else(|_| "miroir-headless".to_string());
-            let peer_discovery = Arc::new(PeerDiscovery::new(
-                pod_name.clone(),
-                namespace,
-                service_name,
-            ));
-            Some(Arc::new(ModeACoordinator::new(pod_name, peer_discovery)))
-        } else {
-            None
-        };
+        let pod_name = std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string());
+        let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+        let service_name = std::env::var("MIROR_SERVICE_NAME")
+            .unwrap_or_else(|_| "miroir-headless".to_string());
+        let peer_discovery = Arc::new(PeerDiscovery::new(
+            pod_name.clone(),
+            namespace,
+            service_name,
+        ));
+        let mode_a_coordinator = Some(Arc::new(ModeACoordinator::new(pod_name, peer_discovery)));
 
         // Wire up Mode A coordinator to drift_reconciler (plan §14.5 Mode A, P6.3)
         let drift_reconciler = if let Some(ref reconciler) = drift_reconciler {

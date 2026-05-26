@@ -6,12 +6,11 @@
 //! 3. HPA queue depth metric drives autoscaling
 //! 4. Concurrent dumps interleave without starvation
 
-use super::*;
 use crate::error::Result;
 use crate::mode_c_coordinator::{JobChunk, JobParams, JobProgress, JobType, ModeCCoordinator};
 use crate::task_store::{JobRow, NewJob, TaskStore};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::time::sleep;
 
 /// Create a test coordinator with in-memory task store.
@@ -117,7 +116,9 @@ impl TaskStore for MockTaskStore {
         Ok(jobs
             .iter()
             .filter(|j| {
-                j.state == "in_progress" && j.claim_expires_at.map_or(false, |exp| exp < now_ms)
+                j.state == "in_progress"
+                    && j.claim_expires_at
+                        .is_some_and(|exp| exp < now_ms)
             })
             .cloned()
             .collect())
@@ -418,7 +419,7 @@ async fn p6_5_a1_one_gb_dump_splits_into_chunks_processed_in_parallel() {
 
     // Pod 1 splits the job into 4 chunks (4 × 256 MiB)
     let chunk_size_bytes = 268_435_456; // 256 MiB
-    let total_chunks = ((1_000_000_000 + chunk_size_bytes - 1) / chunk_size_bytes) as u32;
+    let total_chunks = 1_000_000_000_u64.div_ceil(chunk_size_bytes) as u32;
     assert_eq!(total_chunks, 4);
 
     let chunks: Vec<JobChunk> = (0..total_chunks)
@@ -766,18 +767,17 @@ async fn p6_5_a5_reshard_backfill_splits_by_shard_id_range() {
     let claimed = coordinator.claim_job().unwrap().unwrap();
 
     // Split into chunks by shard-id range (32 shards per chunk)
-    let old_shards = 64;
-    let shards_per_chunk = 32;
-    let total_chunks = (old_shards + shards_per_chunk - 1) / shards_per_chunk; // 2 chunks
+    let old_shards = 64u32;
+    let shards_per_chunk = 32u32;
+    let total_chunks = old_shards.div_ceil(shards_per_chunk); // 2 chunks
 
     let chunks: Vec<JobChunk> = (0..total_chunks)
         .map(|i| {
-            let i = i as u32;
             let start_shard = i * shards_per_chunk;
             let end_shard = std::cmp::min(start_shard + shards_per_chunk, old_shards);
             JobChunk {
                 index: i,
-                total: total_chunks as u32,
+                total: total_chunks,
                 start: start_shard.to_string(),
                 end: end_shard.to_string(),
                 size_bytes: (end_shard - start_shard) as u64,
