@@ -171,6 +171,9 @@ async fn ac3_assertion_failure_includes_actual_value() {
 async fn ac4_capture_flow_records_queries() {
     let capture = QueryCapture::new(10);
 
+    // Start a capture session (plan §13.18)
+    capture.start_capture(Some("products".to_string()), 10, None).await;
+
     // Simulate capturing 10 production queries
     for i in 0..10 {
         let mut params = HashMap::new();
@@ -212,6 +215,9 @@ async fn ac4_capture_flow_records_queries() {
 #[tokio::test]
 async fn ac5_captured_query_can_be_promoted_to_canary() {
     let capture = QueryCapture::new(10);
+
+    // Start a capture session (plan §13.18)
+    capture.start_capture(Some("products".to_string()), 1, None).await;
 
     // Capture a query
     let mut params = HashMap::new();
@@ -525,6 +531,9 @@ async fn ac11_all_assertion_types_serialize() {
 #[tokio::test]
 async fn ac12_query_with_various_parameters_can_be_captured() {
     let capture = QueryCapture::new(10);
+
+    // Start a capture session (plan §13.18)
+    capture.start_capture(Some("products".to_string()), 1, None).await;
 
     // Capture a complex query
     let mut params = HashMap::new();

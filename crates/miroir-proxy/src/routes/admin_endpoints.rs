@@ -8,6 +8,7 @@ use axum::{
     Json,
 };
 use miroir_core::{
+    canary::QueryCapture,
     config::MiroirConfig,
     group_addition::GroupAdditionCoordinator,
     group_sync_worker::GroupSyncWorker,
@@ -475,6 +476,8 @@ pub struct AppState {
     pub ilm_manager: Option<Arc<IlmManager>>,
     /// ILM worker for background rollover evaluation (plan §13.17).
     pub ilm_worker: Option<Arc<tokio::sync::RwLock<IlmWorker>>>,
+    /// Query capture for canary creation from production traffic (plan §13.18).
+    pub query_capture: Arc<QueryCapture>,
 }
 
 impl AppState {
@@ -1033,6 +1036,7 @@ impl AppState {
             },
             ilm_manager,
             ilm_worker: None, // Will be created after leader_election is available
+            query_capture: Arc::new(QueryCapture::new(1000)),
         }
     }
 
