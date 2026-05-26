@@ -5,6 +5,9 @@
 
 use crate::config::MiroirConfig;
 use crate::query_planner::QueryPlanner;
+use crate::replica_selection::ReplicaSelector;
+use crate::task_store::TaskStore;
+use crate::tenant::TenantAffinityManager;
 use crate::topology::{NodeId, Topology};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -136,14 +139,37 @@ pub enum Warning {
 pub struct Explainer {
     config: MiroirConfig,
     query_planner: Arc<QueryPlanner>,
+    task_store: Option<Arc<dyn TaskStore>>,
+    replica_selector: Option<Arc<ReplicaSelector>>,
+    tenant_affinity_manager: Option<Arc<TenantAffinityManager>>,
 }
 
 impl Explainer {
-    /// Create a new explainer.
+    /// Create a new explainer with all integrations.
+    pub fn new_with_integrations(
+        config: MiroirConfig,
+        query_planner: Arc<QueryPlanner>,
+        task_store: Option<Arc<dyn TaskStore>>,
+        replica_selector: Option<Arc<ReplicaSelector>>,
+        tenant_affinity_manager: Option<Arc<TenantAffinityManager>>,
+    ) -> Self {
+        Self {
+            config,
+            query_planner,
+            task_store,
+            replica_selector,
+            tenant_affinity_manager,
+        }
+    }
+
+    /// Create a new explainer (backward compatible).
     pub fn new(config: MiroirConfig, query_planner: Arc<QueryPlanner>) -> Self {
         Self {
             config,
             query_planner,
+            task_store: None,
+            replica_selector: None,
+            tenant_affinity_manager: None,
         }
     }
 
@@ -348,10 +374,36 @@ impl Explainer {
     fn resolve_alias(
         &self,
         index_uid: &str,
-        topology: &Topology,
+        _topology: &Topology,
     ) -> (String, Option<AliasResolution>) {
-        // TODO: Look up alias in task store
-        // For now, return as-is
+        // Look up alias in task store if available
+        if let Some(ref store) = self.task_store {
+            if let Ok(Some(alias_row)) = store.get_alias(index_uid) {
+                // Return the first target for single-target aliases
+                let resolved = if let Some(current) = alias_row.current_uid {
+                    current
+                } else if let Some(ref targets) = alias_row.target_uids {
+                    // For multi-target aliases, return the first target
+                    targets
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| index_uid.to_string())
+                } else {
+                    index_uid.to_string()
+                };
+
+                return (
+                    resolved.clone(),
+                    Some(AliasResolution {
+                        from: index_uid.to_string(),
+                        to: resolved,
+                        version: alias_row.version as u64,
+                    }),
+                );
+            }
+        }
+
+        // Not found or no task store - return as-is
         (index_uid.to_string(), None)
     }
 
@@ -403,8 +455,56 @@ impl Explainer {
     }
 
     /// Resolve tenant affinity to a group ID.
-    fn resolve_tenant_affinity(&self, _tenant: &str, _topology: &Topology) -> Option<u32> {
-        // TODO: Look up tenant mapping in task store
+    fn resolve_tenant_affinity(&self, tenant: &str, topology: &Topology) -> Option<u32> {
+        // Check static map first (from config)
+        if let Some(&group) = self.config.tenant_affinity.static_map.get(tenant) {
+            return Some(group);
+        }
+
+        // If tenant affinity is enabled, always hash to a group
+        if self.config.tenant_affinity.enabled {
+            let replica_groups = topology.replica_groups;
+            if replica_groups > 0 {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                tenant.hash(&mut hasher);
+                return Some((hasher.finish() as u32) % replica_groups);
+            }
+        }
+
+        // Use TenantAffinityManager if available
+        if let Some(ref manager) = self.tenant_affinity_manager {
+            // Use a tokio runtime if available, otherwise use hash fallback
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                // Build a minimal headers map with the tenant
+                let mut headers = HashMap::new();
+                headers.insert(
+                    self.config.tenant_affinity.header_name.clone(),
+                    tenant.to_string(),
+                );
+
+                // Resolve from the manager
+                let resolution =
+                    handle.block_on(async { manager.resolve_from_headers(&headers, false).await });
+
+                if let Ok(ref res) = resolution {
+                    if let Some(group) = res.pinned_group {
+                        return Some(group);
+                    }
+                }
+            }
+
+            // Fallback: hash the tenant to a group
+            let replica_groups = topology.replica_groups;
+            if replica_groups > 0 {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                tenant.hash(&mut hasher);
+                return Some((hasher.finish() as u32) % replica_groups);
+            }
+        }
+
+        // No affinity available
         None
     }
 
@@ -431,9 +531,42 @@ impl Explainer {
     }
 
     /// Estimate p95 latency for the query.
-    fn estimate_latency(&self, _topology: &Topology, _group_id: u32, _shards: &[u32]) -> f64 {
-        // TODO: Use EWMA latency from replica selection
-        50.0 // Default estimate
+    fn estimate_latency(&self, topology: &Topology, group_id: u32, shards: &[u32]) -> f64 {
+        // Use EWMA latency from replica selection if available
+        if let Some(ref selector) = self.replica_selector {
+            // Get the group and its nodes
+            if let Some(group) = topology.group(group_id) {
+                let mut latencies = Vec::new();
+
+                // For each shard, get the assigned node and its metrics
+                for &shard_id in shards {
+                    let assigned = crate::router::assign_shard_in_group(
+                        shard_id,
+                        group.nodes(),
+                        topology.rf(),
+                    );
+                    for node_id in assigned {
+                        // Get metrics for this node
+                        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                            let metrics =
+                                handle.block_on(async { selector.get_metrics(&node_id).await });
+                            if let Some(m) = metrics {
+                                latencies.push(m.latency_p95_ms);
+                            }
+                        }
+                    }
+                }
+
+                // Return average latency if we have metrics
+                if !latencies.is_empty() {
+                    let sum: f64 = latencies.iter().sum();
+                    return sum / latencies.len() as f64;
+                }
+            }
+        }
+
+        // Fallback to default estimate
+        50.0
     }
 
     /// Add warnings based on query characteristics.
@@ -486,7 +619,469 @@ mod tests {
     use super::*;
     use crate::config::MiroirConfig;
     use crate::query_planner::QueryPlanner;
+    use crate::task_store::{AliasRow, NewAlias, TaskStore};
+    use std::collections::HashMap;
     use std::sync::Arc;
+
+    /// Mock task store for testing.
+    struct MockTaskStore {
+        aliases: std::sync::RwLock<HashMap<String, AliasRow>>,
+    }
+
+    impl MockTaskStore {
+        fn new() -> Self {
+            Self {
+                aliases: std::sync::RwLock::new(HashMap::new()),
+            }
+        }
+
+        fn add_alias(&self, name: &str, current_uid: &str, version: i64) {
+            self.aliases.write().unwrap().insert(
+                name.to_string(),
+                AliasRow {
+                    name: name.to_string(),
+                    kind: "single".to_string(),
+                    current_uid: Some(current_uid.to_string()),
+                    target_uids: None,
+                    version,
+                    created_at: 0,
+                    history: Vec::new(),
+                },
+            );
+        }
+    }
+
+    impl TaskStore for MockTaskStore {
+        fn migrate(&self) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn insert_task(&self, _task: &crate::task_store::NewTask) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_task(&self, _miroir_id: &str) -> crate::Result<Option<crate::task_store::TaskRow>> {
+            Ok(None)
+        }
+
+        fn update_task_status(&self, _miroir_id: &str, _status: &str) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn update_node_task(
+            &self,
+            _miroir_id: &str,
+            _node_id: &str,
+            _task_uid: u64,
+        ) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn set_task_error(&self, _miroir_id: &str, _error: &str) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn list_tasks(
+            &self,
+            _filter: &crate::task_store::TaskFilter,
+        ) -> crate::Result<Vec<crate::task_store::TaskRow>> {
+            Ok(Vec::new())
+        }
+
+        fn prune_tasks(&self, _cutoff_ms: i64, _batch_size: u32) -> crate::Result<usize> {
+            Ok(0)
+        }
+
+        fn list_terminal_tasks_batch(
+            &self,
+            _cutoff_ms: i64,
+            _offset: i64,
+            _limit: i64,
+        ) -> crate::Result<Vec<crate::task_store::TaskRow>> {
+            Ok(Vec::new())
+        }
+
+        fn delete_tasks_batch(&self, _miroir_ids: &[&str]) -> crate::Result<usize> {
+            Ok(0)
+        }
+
+        fn task_count(&self) -> crate::Result<u64> {
+            Ok(0)
+        }
+
+        fn upsert_node_settings_version(
+            &self,
+            _index_uid: &str,
+            _node_id: &str,
+            _version: i64,
+            _updated_at: i64,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_node_settings_version(
+            &self,
+            _index_uid: &str,
+            _node_id: &str,
+        ) -> crate::Result<Option<crate::task_store::NodeSettingsVersionRow>> {
+            Ok(None)
+        }
+
+        fn create_alias(&self, _alias: &NewAlias) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_alias(&self, name: &str) -> crate::Result<Option<AliasRow>> {
+            Ok(self.aliases.read().unwrap().get(name).cloned())
+        }
+
+        fn flip_alias(
+            &self,
+            _name: &str,
+            _new_uid: &str,
+            _history_retention: usize,
+        ) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn delete_alias(&self, name: &str) -> crate::Result<bool> {
+            Ok(self.aliases.write().unwrap().remove(name).is_some())
+        }
+
+        fn list_aliases(&self) -> crate::Result<Vec<AliasRow>> {
+            Ok(self.aliases.read().unwrap().values().cloned().collect())
+        }
+
+        fn upsert_session(&self, _session: &crate::task_store::SessionRow) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_session(
+            &self,
+            _session_id: &str,
+        ) -> crate::Result<Option<crate::task_store::SessionRow>> {
+            Ok(None)
+        }
+
+        fn delete_expired_sessions(&self, _now_ms: i64) -> crate::Result<usize> {
+            Ok(0)
+        }
+
+        fn insert_idempotency_entry(
+            &self,
+            _entry: &crate::task_store::IdempotencyEntry,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_idempotency_entry(
+            &self,
+            _key: &str,
+        ) -> crate::Result<Option<crate::task_store::IdempotencyEntry>> {
+            Ok(None)
+        }
+
+        fn delete_expired_idempotency_entries(&self, _now_ms: i64) -> crate::Result<usize> {
+            Ok(0)
+        }
+
+        fn insert_job(&self, _job: &crate::task_store::NewJob) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_job(&self, _id: &str) -> crate::Result<Option<crate::task_store::JobRow>> {
+            Ok(None)
+        }
+
+        fn claim_job(
+            &self,
+            _id: &str,
+            _claimed_by: &str,
+            _claim_expires_at: i64,
+        ) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn update_job_progress(
+            &self,
+            _id: &str,
+            _state: &str,
+            _progress: &str,
+        ) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn renew_job_claim(&self, _id: &str, _claim_expires_at: i64) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn list_jobs_by_state(
+            &self,
+            _state: &str,
+        ) -> crate::Result<Vec<crate::task_store::JobRow>> {
+            Ok(Vec::new())
+        }
+
+        fn count_jobs_by_state(&self, _state: &str) -> crate::Result<u64> {
+            Ok(0)
+        }
+
+        fn list_expired_claims(
+            &self,
+            _now_ms: i64,
+        ) -> crate::Result<Vec<crate::task_store::JobRow>> {
+            Ok(Vec::new())
+        }
+
+        fn list_jobs_by_parent(
+            &self,
+            _parent_job_id: &str,
+        ) -> crate::Result<Vec<crate::task_store::JobRow>> {
+            Ok(Vec::new())
+        }
+
+        fn reclaim_job_claim(
+            &self,
+            _id: &str,
+            _state: &str,
+            _progress: &str,
+        ) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn try_acquire_leader_lease(
+            &self,
+            _scope: &str,
+            _holder: &str,
+            _expires_at: i64,
+            _now_ms: i64,
+        ) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn renew_leader_lease(
+            &self,
+            _scope: &str,
+            _holder: &str,
+            _expires_at: i64,
+            _now_ms: i64,
+        ) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn get_leader_lease(
+            &self,
+            _scope: &str,
+        ) -> crate::Result<Option<crate::task_store::LeaderLeaseRow>> {
+            Ok(None)
+        }
+
+        fn upsert_canary(&self, _canary: &crate::task_store::NewCanary) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_canary(&self, _id: &str) -> crate::Result<Option<crate::task_store::CanaryRow>> {
+            Ok(None)
+        }
+
+        fn list_canaries(&self) -> crate::Result<Vec<crate::task_store::CanaryRow>> {
+            Ok(Vec::new())
+        }
+
+        fn delete_canary(&self, _id: &str) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn insert_canary_run(
+            &self,
+            _run: &crate::task_store::NewCanaryRun,
+            _run_history_limit: usize,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_canary_runs(
+            &self,
+            _canary_id: &str,
+            _limit: usize,
+        ) -> crate::Result<Vec<crate::task_store::CanaryRunRow>> {
+            Ok(Vec::new())
+        }
+
+        fn upsert_cdc_cursor(
+            &self,
+            _cursor: &crate::task_store::NewCdcCursor,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_cdc_cursor(
+            &self,
+            _sink_name: &str,
+            _index_uid: &str,
+        ) -> crate::Result<Option<crate::task_store::CdcCursorRow>> {
+            Ok(None)
+        }
+
+        fn list_cdc_cursors(
+            &self,
+            _sink_name: &str,
+        ) -> crate::Result<Vec<crate::task_store::CdcCursorRow>> {
+            Ok(Vec::new())
+        }
+
+        fn insert_tenant_mapping(
+            &self,
+            _mapping: &crate::task_store::NewTenantMapping,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_tenant_mapping(
+            &self,
+            _api_key_hash: &[u8],
+        ) -> crate::Result<Option<crate::task_store::TenantMapRow>> {
+            Ok(None)
+        }
+
+        fn delete_tenant_mapping(&self, _api_key_hash: &[u8]) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn upsert_rollover_policy(
+            &self,
+            _policy: &crate::task_store::NewRolloverPolicy,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_rollover_policy(
+            &self,
+            _name: &str,
+        ) -> crate::Result<Option<crate::task_store::RolloverPolicyRow>> {
+            Ok(None)
+        }
+
+        fn list_rollover_policies(
+            &self,
+        ) -> crate::Result<Vec<crate::task_store::RolloverPolicyRow>> {
+            Ok(Vec::new())
+        }
+
+        fn delete_rollover_policy(&self, _name: &str) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn upsert_search_ui_config(
+            &self,
+            _config: &crate::task_store::NewSearchUiConfig,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_search_ui_config(
+            &self,
+            _index_uid: &str,
+        ) -> crate::Result<Option<crate::task_store::SearchUiConfigRow>> {
+            Ok(None)
+        }
+
+        fn delete_search_ui_config(&self, _index_uid: &str) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn insert_admin_session(
+            &self,
+            _session: &crate::task_store::NewAdminSession,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_admin_session(
+            &self,
+            _session_id: &str,
+        ) -> crate::Result<Option<crate::task_store::AdminSessionRow>> {
+            Ok(None)
+        }
+
+        fn revoke_admin_session(&self, _session_id: &str) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn delete_expired_admin_sessions(&self, _now_ms: i64) -> crate::Result<usize> {
+            Ok(0)
+        }
+
+        fn upsert_mode_b_operation(
+            &self,
+            _operation: &crate::task_store::ModeBOperation,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_mode_b_operation(
+            &self,
+            _operation_id: &str,
+        ) -> crate::Result<Option<crate::task_store::ModeBOperation>> {
+            Ok(None)
+        }
+
+        fn get_mode_b_operation_by_scope(
+            &self,
+            _scope: &str,
+        ) -> crate::Result<Option<crate::task_store::ModeBOperation>> {
+            Ok(None)
+        }
+
+        fn list_mode_b_operations(
+            &self,
+            _filter: &crate::task_store::ModeBOperationFilter,
+        ) -> crate::Result<Vec<crate::task_store::ModeBOperation>> {
+            Ok(Vec::new())
+        }
+
+        fn delete_mode_b_operation(&self, _operation_id: &str) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn prune_mode_b_operations(
+            &self,
+            _cutoff_ms: i64,
+            _batch_size: u32,
+        ) -> crate::Result<usize> {
+            Ok(0)
+        }
+
+        fn check_and_mark_beacon_event(
+            &self,
+            _index_uid: &str,
+            _event_id: &str,
+        ) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn upsert_ttl_policy(
+            &self,
+            _policy: &crate::task_store::NewTtlPolicy,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn get_ttl_policy(
+            &self,
+            _index_uid: &str,
+        ) -> crate::Result<Option<crate::task_store::TtlPolicyRow>> {
+            Ok(None)
+        }
+
+        fn delete_ttl_policy(&self, _index_uid: &str) -> crate::Result<bool> {
+            Ok(false)
+        }
+
+        fn list_ttl_policies(&self) -> crate::Result<Vec<crate::task_store::TtlPolicyRow>> {
+            Ok(Vec::new())
+        }
+    }
 
     #[test]
     fn test_explain_basic_query() {
@@ -509,5 +1104,232 @@ mod tests {
         assert_eq!(explanation.resolved_uid, "products");
         assert!(!explanation.plan.narrowed);
         assert_eq!(explanation.plan.target_shards.len(), 64);
+    }
+
+    #[test]
+    fn test_alias_resolution() {
+        let config = MiroirConfig::default();
+        let query_planner = Arc::new(QueryPlanner::default());
+
+        // Create mock task store with an alias
+        let store = MockTaskStore::new();
+        store.add_alias("products", "products_v4", 7);
+
+        let explainer = Explainer::new_with_integrations(
+            config,
+            query_planner,
+            Some(Arc::new(store)),
+            None,
+            None,
+        );
+
+        let topology = Topology::new(64, 2, 1);
+        let query = SearchQueryExplanation {
+            q: Some("test".to_string()),
+            filter: None,
+            sort: None,
+            offset: None,
+            limit: None,
+            tenant_id: None,
+        };
+
+        let explanation = explainer.explain("products", &query, &topology, 1, None);
+
+        // Alias should be resolved
+        assert_eq!(explanation.resolved_uid, "products_v4");
+        assert!(explanation.plan.alias_resolution.is_some());
+        let resolution = explanation.plan.alias_resolution.as_ref().unwrap();
+        assert_eq!(resolution.from, "products");
+        assert_eq!(resolution.to, "products_v4");
+        assert_eq!(resolution.version, 7);
+    }
+
+    #[test]
+    fn test_alias_not_found() {
+        let config = MiroirConfig::default();
+        let query_planner = Arc::new(QueryPlanner::default());
+
+        let explainer = Explainer::new_with_integrations(
+            config,
+            query_planner,
+            Some(Arc::new(MockTaskStore::new())),
+            None,
+            None,
+        );
+
+        let topology = Topology::new(64, 2, 1);
+        let query = SearchQueryExplanation {
+            q: Some("test".to_string()),
+            filter: None,
+            sort: None,
+            offset: None,
+            limit: None,
+            tenant_id: None,
+        };
+
+        let explanation = explainer.explain("products", &query, &topology, 1, None);
+
+        // Unknown alias should pass through
+        assert_eq!(explanation.resolved_uid, "products");
+        assert!(explanation.plan.alias_resolution.is_none());
+    }
+
+    #[test]
+    fn test_tenant_affinity_static_map() {
+        let mut config = MiroirConfig::default();
+        config.tenant_affinity.enabled = true;
+        config.tenant_affinity.mode = "header".to_string();
+        config.tenant_affinity.header_name = "X-Miroir-Tenant".to_string();
+
+        let query_planner = Arc::new(QueryPlanner::default());
+        let explainer = Explainer::new_with_integrations(config, query_planner, None, None, None);
+
+        let topology = Topology::new(64, 2, 2);
+        let query = SearchQueryExplanation {
+            q: Some("test".to_string()),
+            filter: None,
+            sort: None,
+            offset: None,
+            limit: None,
+            tenant_id: Some("tenant-a".to_string()),
+        };
+
+        let explanation = explainer.explain("products", &query, &topology, 1, None);
+
+        // Tenant affinity should be in the plan (static map would be empty in this test)
+        // The group will be hash-derived since we don't have a static mapping
+        assert!(explanation.plan.tenant_affinity_pinned.is_some());
+    }
+
+    #[test]
+    fn test_tenant_affinity_none() {
+        let config = MiroirConfig::default();
+        let query_planner = Arc::new(QueryPlanner::default());
+        let explainer = Explainer::new(config, query_planner);
+
+        let topology = Topology::new(64, 2, 1);
+        let query = SearchQueryExplanation {
+            q: Some("test".to_string()),
+            filter: None,
+            sort: None,
+            offset: None,
+            limit: None,
+            tenant_id: None,
+        };
+
+        let explanation = explainer.explain("products", &query, &topology, 1, None);
+
+        // No tenant affinity when no tenant_id provided
+        assert!(explanation.plan.tenant_affinity_pinned.is_none());
+    }
+
+    #[test]
+    fn test_latency_default_estimate() {
+        let config = MiroirConfig::default();
+        let query_planner = Arc::new(QueryPlanner::default());
+        let explainer = Explainer::new_with_integrations(
+            config,
+            query_planner,
+            None,
+            None, // No replica selector
+            None,
+        );
+
+        let topology = Topology::new(64, 2, 1);
+        let query = SearchQueryExplanation {
+            q: Some("test".to_string()),
+            filter: None,
+            sort: None,
+            offset: None,
+            limit: None,
+            tenant_id: None,
+        };
+
+        let explanation = explainer.explain("products", &query, &topology, 1, None);
+
+        // Should return default estimate when no replica selector
+        assert_eq!(explanation.plan.estimated_p95_ms, 50.0);
+    }
+
+    #[test]
+    fn test_query_planner_integration_narrowed() {
+        let config = MiroirConfig::default();
+        let query_planner = Arc::new(QueryPlanner::default());
+        let explainer = Explainer::new(config, query_planner);
+
+        let topology = Topology::new(64, 2, 1);
+        let query = SearchQueryExplanation {
+            q: Some("test".to_string()),
+            filter: Some(serde_json::json!("id IN [1, 2, 3]")),
+            sort: None,
+            offset: None,
+            limit: None,
+            tenant_id: None,
+        };
+
+        let explanation = explainer.explain("products", &query, &topology, 1, None);
+
+        // QueryPlanner should narrow the query if the filter contains shard keys
+        // This verifies the integration exists (actual narrowing behavior depends on QueryPlanner)
+        assert_eq!(explanation.resolved_uid, "products");
+        // The plan should have target_shards populated
+        assert!(!explanation.plan.target_shards.is_empty());
+    }
+
+    #[test]
+    fn test_warnings_large_offset_limit() {
+        let config = MiroirConfig::default();
+        let query_planner = Arc::new(QueryPlanner::default());
+        let explainer = Explainer::new(config, query_planner);
+
+        let topology = Topology::new(64, 2, 1);
+        let query = SearchQueryExplanation {
+            q: Some("test".to_string()),
+            filter: None,
+            sort: None,
+            offset: Some(10000),
+            limit: Some(500),
+            tenant_id: None,
+        };
+
+        let explanation = explainer.explain("products", &query, &topology, 1, None);
+
+        // Should warn about large offset+limit
+        assert!(!explanation.warnings.is_empty());
+        match &explanation.warnings[0] {
+            Warning::LargeOffsetLimit { offset, limit, .. } => {
+                assert_eq!(*offset, 10000);
+                assert_eq!(*limit, 500);
+            }
+            _ => panic!("Expected LargeOffsetLimit warning"),
+        }
+    }
+
+    #[test]
+    fn test_warnings_unbounded_wildcard() {
+        let config = MiroirConfig::default();
+        let query_planner = Arc::new(QueryPlanner::default());
+        let explainer = Explainer::new(config, query_planner);
+
+        let topology = Topology::new(64, 2, 1);
+        let query = SearchQueryExplanation {
+            q: Some("*".to_string()),
+            filter: None,
+            sort: None,
+            offset: None,
+            limit: None,
+            tenant_id: None,
+        };
+
+        let explanation = explainer.explain("products", &query, &topology, 1, None);
+
+        // Should warn about unbounded wildcard
+        assert!(!explanation.warnings.is_empty());
+        match &explanation.warnings[0] {
+            Warning::UnboundedWildcard { query } => {
+                assert_eq!(query, "*");
+            }
+            _ => panic!("Expected UnboundedWildcard warning"),
+        }
     }
 }
