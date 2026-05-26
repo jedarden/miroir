@@ -97,23 +97,27 @@ pub async fn run(
         } => {
             let client = Client::new();
 
-            // Read the dump file
-            let dump_data = std::fs::read_to_string(&file)?;
+            // Read the dump file as bytes
+            let dump_bytes = std::fs::read(&file)?;
 
-            // Build the request
-            let request_body = serde_json::json!({
-                "index_uid": index,
-                "primary_key": primary_key,
-                "shard_count": shard_count,
-                "dump_data": dump_data,
-            });
-
+            // Build the multipart form
             let url = format!("{}/_miroir/dumps/import", api_url.trim_end_matches('/'));
+
+            let form_part = reqwest::multipart::Part::bytes(dump_bytes)
+                .file_name(file.clone())
+                .mime_str("application/octet-stream")
+                .map_err(|e| format!("Failed to set mime type: {e}"))?;
+
+            let form = reqwest::multipart::Form::new()
+                .text("index_uid", index.clone())
+                .text("primary_key", primary_key.clone())
+                .text("shard_count", shard_count.to_string())
+                .part("dump_file", form_part);
 
             let response = client
                 .post(&url)
                 .header("Authorization", format!("Bearer {admin_key}"))
-                .json(&request_body)
+                .multipart(form)
                 .send()
                 .await?;
 
