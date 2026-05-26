@@ -97,6 +97,14 @@ harness = false
 name = "dfs_preflight_bench"
 harness = false
 
+[[bench]]
+name = "end_to_end_bench"
+harness = false
+
+[[bench]]
+name = "ingest_bench"
+harness = false
+
 [dev-dependencies]
 tempfile = "3"
 proptest = "1"
