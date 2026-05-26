@@ -193,6 +193,8 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             shadow_manager: state.admin.shadow_manager.clone(),
             cdc_manager: state.admin.cdc_manager.clone(),
             tenant_affinity_manager: state.admin.tenant_affinity_manager.clone(),
+            ilm_manager: state.admin.ilm_manager.clone(),
+            ilm_worker: state.admin.ilm_worker.clone(),
         }
     }
 }
@@ -479,6 +481,41 @@ async fn main() -> anyhow::Result<()> {
         });
     } else {
         info!("drift reconciler not available (no task store configured)");
+    }
+
+    // Start ILM worker background task (plan §13.17)
+    // Evaluates rollover policies and performs index rollovers when triggers fire
+    if let Some(ref ilm_manager) = state.admin.ilm_manager {
+        if let Some(ref leader_election) = state.admin.leader_election {
+            let pod_id = state.pod_id.clone();
+            let ilm_manager = ilm_manager.clone();
+            let leader_election = leader_election.clone();
+
+            tokio::spawn(async move {
+                info!("ILM worker starting");
+
+                // Create the ILM worker
+                match ilm_manager.create_worker(leader_election.clone(), pod_id.clone()) {
+                    Ok(mut worker) => {
+                        match worker.run().await {
+                            Ok(()) => {
+                                info!("ILM worker exited cleanly");
+                            }
+                            Err(e) => {
+                                error!(error = %e, "ILM worker exited with error");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!(error = %e, "ILM worker failed to start: {}", e);
+                    }
+                }
+            });
+        } else {
+            info!("ILM worker not available (no leader election service)");
+        }
+    } else {
+        info!("ILM worker not available (disabled or no task store configured)");
     }
 
     // Start anti-entropy worker background task (plan §13.8)

@@ -11,6 +11,7 @@ use miroir_core::{
     config::MiroirConfig,
     group_addition::GroupAdditionCoordinator,
     group_sync_worker::GroupSyncWorker,
+    ilm::{IlmManager, IlmWorker},
     leader_election::{LeaderElection, LeaderElectionMetricsCallback},
     migration::{MigrationConfig, MigrationCoordinator},
     mode_a_coordinator::ModeACoordinator,
@@ -470,6 +471,10 @@ pub struct AppState {
     pub cdc_manager: Option<Arc<miroir_core::cdc::CdcManager>>,
     /// Tenant affinity manager for noisy-neighbor isolation (plan §13.15).
     pub tenant_affinity_manager: Arc<miroir_core::tenant::TenantAffinityManager>,
+    /// ILM manager for index lifecycle management (plan §13.17).
+    pub ilm_manager: Option<Arc<IlmManager>>,
+    /// ILM worker for background rollover evaluation (plan §13.17).
+    pub ilm_worker: Option<Arc<tokio::sync::RwLock<IlmWorker>>>,
 }
 
 impl AppState {
@@ -726,6 +731,33 @@ impl AppState {
         // Create alias registry (§13.7)
         // Note: Aliases are loaded asynchronously in background, not during initialization
         let alias_registry = Arc::new(miroir_core::alias::AliasRegistry::new());
+
+        // Create ILM manager (plan §13.17) if enabled in config
+        let ilm_manager = if config.ilm.enabled {
+            let node_addresses = config.nodes.iter().map(|n| n.address.clone()).collect();
+            // Convert from config::advanced::IlmConfig to ilm::IlmConfig
+            let ilm_config = miroir_core::ilm::IlmConfig {
+                enabled: config.ilm.enabled,
+                check_interval_s: config.ilm.check_interval_s,
+                safety_lock_older_than_days: config.ilm.safety_lock_older_than_days,
+                max_rollovers_per_check: config.ilm.max_rollovers_per_check,
+            };
+            let manager = IlmManager::new(ilm_config)
+                .with_node_addresses(node_addresses)
+                .with_master_key(config.node_master_key.clone())
+                .with_alias_registry(alias_registry.clone());
+
+            // Set task store if available
+            let manager = if let Some(ref store) = task_store {
+                manager.with_task_store(store.clone())
+            } else {
+                manager
+            };
+
+            Some(Arc::new(manager))
+        } else {
+            None
+        };
 
         // Create leader election service (plan §14.5) if task store is available
         let leader_election = if let Some(ref store) = task_store {
@@ -999,6 +1031,8 @@ impl AppState {
                     None
                 }
             },
+            ilm_manager,
+            ilm_worker: None, // Will be created after leader_election is available
         }
     }
 
