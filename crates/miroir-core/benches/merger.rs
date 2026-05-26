@@ -40,10 +40,7 @@ fn bench_merge_hits(c: &mut Criterion) {
         group.throughput(Throughput::Elements(total_hits as u64));
 
         group.bench_with_input(
-            BenchmarkId::new(
-                "merge_hits",
-                format!("s{}_h{}", shard_count, hits_per_shard),
-            ),
+            BenchmarkId::new("merge_hits", format!("s{shard_count}_h{hits_per_shard}")),
             &(shard_count, hits_per_shard),
             |b, &(shard_count, hits_per_shard)| {
                 let shard_hits: Vec<merger::ShardHitPage> = (0..shard_count)
@@ -64,7 +61,7 @@ fn bench_merge_hits(c: &mut Criterion) {
                 };
 
                 b.iter(|| {
-                    black_box(merger::merge(black_box(input.clone())));
+                    let _ = black_box(merger::merge(black_box(input.clone())));
                 });
             },
         );
@@ -94,7 +91,7 @@ fn bench_full_merge(c: &mut Criterion) {
         };
 
         b.iter(|| {
-            black_box(merger::merge(black_box(input.clone())));
+            let _ = black_box(merger::merge(black_box(input.clone())));
         });
     });
 
@@ -117,7 +114,7 @@ fn bench_full_merge(c: &mut Criterion) {
         };
 
         b.iter(|| {
-            black_box(merger::merge(black_box(input.clone())));
+            let _ = black_box(merger::merge(black_box(input.clone())));
         });
     });
 

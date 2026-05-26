@@ -10,8 +10,8 @@ fn create_topology_with_nodes(node_count: u32, shards: u32, rf: usize) -> Topolo
     let mut topo = Topology::new(shards, 1, rf);
     for i in 0..node_count {
         topo.add_node(Node::new(
-            NodeId::new(format!("node-{}", i)),
-            format!("http://node-{}:7700", i),
+            NodeId::new(format!("node-{i}")),
+            format!("http://node-{i}:7700"),
             0,
         ));
     }
@@ -56,13 +56,13 @@ fn bench_assign_shard_in_group(c: &mut Criterion) {
     for (shards, nodes, rf) in [(64, 3, 2), (64, 10, 2), (128, 20, 3)] {
         let _topo = create_topology_with_nodes(nodes, shards, rf);
         let node_ids: Vec<NodeId> = (0..nodes)
-            .map(|i| NodeId::new(format!("node-{}", i)))
+            .map(|i| NodeId::new(format!("node-{i}")))
             .collect();
 
         group.bench_with_input(
             BenchmarkId::new(
                 "assign_shard_in_group",
-                format!("s{}_n{}_rf{}", shards, nodes, rf),
+                format!("s{shards}_n{nodes}_rf{rf}"),
             ),
             &(shards, rf, &node_ids),
             |b, (_shards, rf, node_ids)| {
@@ -87,8 +87,8 @@ fn bench_rendezvous_assignment_batch(c: &mut Criterion) {
 
     for doc_count in [1_000, 5_000, 10_000] {
         let _topo = create_topology_with_nodes(3, 64, 2);
-        let node_ids: Vec<NodeId> = (0..3).map(|i| NodeId::new(format!("node-{}", i))).collect();
-        let keys: Vec<String> = (0..doc_count).map(|i| format!("doc-{}", i)).collect();
+        let node_ids: Vec<NodeId> = (0..3).map(|i| NodeId::new(format!("node-{i}"))).collect();
+        let keys: Vec<String> = (0..doc_count).map(|i| format!("doc-{i}")).collect();
 
         group.throughput(Throughput::Elements(doc_count as u64));
         group.bench_with_input(
