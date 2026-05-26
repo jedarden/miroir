@@ -1,4 +1,5 @@
 //! Health check endpoints: /health, /version, /_miroir/ready
+#![allow(dead_code)]
 
 use crate::error_response::ErrorResponse;
 use crate::routes::admin_endpoints::AppState;

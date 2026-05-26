@@ -1,4 +1,5 @@
 //! Document write path: add, replace, and delete documents.
+#![allow(dead_code)]
 //!
 //! Implements P2.2 write path:
 //! - Primary key extraction on the hot path
@@ -607,7 +608,7 @@ async fn write_documents_impl(
 
     // 5.5. Dual-write to shadow index during resharding (plan §13.1 step 2)
     // Shadow writes are tagged with origin="reshard_backfill" for CDC suppression (plan §13.13)
-    if let Some((shadow_docs, shadow_index, old_shards, target_shards)) = shadow_write_info {
+    if let Some((shadow_docs, shadow_index, _old_shards, target_shards)) = shadow_write_info {
         tracing::debug!(
             shadow_index = %shadow_index,
             docs_count = shadow_docs.len(),

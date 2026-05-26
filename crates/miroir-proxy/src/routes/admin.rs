@@ -73,7 +73,7 @@ where
         // Explain endpoint (plan §13.20)
         .route(
             "/indexes/{index}/explain",
-            post(explain::explain_search::<S>),
+            post(explain::explain_search),
         )
         // Node management (plan §2 node addition flow)
         .route("/nodes", post(admin_endpoints::add_node::<S>))

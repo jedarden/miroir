@@ -325,7 +325,7 @@ where
             get(get_settings_subpath_handler).patch(update_settings_subpath_handler),
         )
         .route("/:index/_preflight", post(preflight_handler))
-        .route("/:index/explain", post(explain::explain_search::<S>))
+        .route("/:index/explain", post(explain::explain_search))
         .nest("/:index/documents", documents::router::<S>())
 }
 

@@ -1,4 +1,5 @@
 //! Structured logging, request IDs, and Prometheus metrics middleware.
+#![allow(dead_code)]
 
 use std::time::Instant;
 

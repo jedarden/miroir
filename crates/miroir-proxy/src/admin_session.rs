@@ -6,6 +6,7 @@
 //!
 //! Cookie wire format (base64 of):
 //!   [24-byte XNonce][ciphertext + 16-byte Poly1305 tag]
+#![allow(dead_code)]
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chacha20poly1305::{

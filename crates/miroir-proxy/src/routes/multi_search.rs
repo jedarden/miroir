@@ -1,4 +1,5 @@
 //! Multi-search batch API endpoint (plan §13.11).
+#![allow(dead_code)]
 
 use axum::{
     extract::{FromRef, State},

@@ -1,4 +1,5 @@
 //! §13.18 Canary routes
+#![allow(dead_code)]
 
 use axum::{
     extract::{FromRef, Path, State},

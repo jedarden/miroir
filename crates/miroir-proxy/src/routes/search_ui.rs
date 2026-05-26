@@ -1,4 +1,5 @@
 //! Search UI routes (plan §13.21).
+#![allow(dead_code)]
 //!
 //! Public end-user search SPA with JWT-based session management.
 //! - GET /_miroir/ui/search/{index}/session — JWT session minting
@@ -217,7 +218,7 @@ pub async fn mint_session(
     }
 
     // Get or create scoped key for this index
-    let scoped_key = get_or_create_scoped_key(&state, &index_uid, &config.search_ui).await?;
+    let _scoped_key = get_or_create_scoped_key(&state, &index_uid, &config.search_ui).await?;
 
     // Build JWT claims
     let now = chrono::Utc::now().timestamp() as u64;

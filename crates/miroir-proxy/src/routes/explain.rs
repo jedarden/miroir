@@ -1,4 +1,5 @@
 //! Query explain API endpoint (plan §13.20).
+#![allow(dead_code)]
 
 use axum::{
     extract::{Extension, Path, Query},
@@ -48,15 +49,13 @@ pub struct ExplainParams {
 ///
 /// Query parameters:
 /// - execute=true: also execute the query and return results in one call
-pub async fn explain_search<S>(
+pub async fn explain_search(
     Path(index): Path<String>,
     Query(params): Query<ExplainParams>,
     Extension(state): Extension<Arc<AppState>>,
     headers: HeaderMap,
     Json(query): Json<SearchQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode>
-where
-    S: Clone + Send + Sync + 'static,
 {
     if !state.config.explain.enabled {
         return Err(StatusCode::NOT_FOUND);
@@ -313,7 +312,7 @@ async fn check_unfilterable_attributes(
 }
 
 /// Get filterable attributes for an index from the first node.
-async fn get_filterable_attributes(index: &str, config: &MiroirConfig) -> Vec<String> {
+async fn get_filterable_attributes(_index: &str, _config: &MiroirConfig) -> Vec<String> {
     // In production, this would query the node for index settings
     // For now, return a default set
     vec!["id".to_string(), "_miroir_shard".to_string()]
@@ -366,7 +365,7 @@ async fn execute_search(
     query: &SearchQuery,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     // Build search request
-    let search_req = SearchRequest {
+    let _search_req = SearchRequest {
         index_uid: index.to_string(),
         query: query.q.clone(),
         offset: query.offset.unwrap_or(0),
@@ -383,7 +382,7 @@ async fn execute_search(
 
     // Get topology and plan scatter
     let topo = state.topology.read().await;
-    let plan = plan_search_scatter(&topo, 0, 1, state.config.shards, None).await;
+    let _plan = plan_search_scatter(&topo, 0, 1, state.config.shards, None).await;
 
     // Execute search (simplified - in production this would use the full search path)
     Ok(serde_json::json!({
