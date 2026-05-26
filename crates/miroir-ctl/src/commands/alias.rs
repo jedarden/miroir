@@ -70,6 +70,7 @@ struct GetAliasResponse {
     current_uid: Option<String>,
     target_uids: Option<Vec<String>>,
     version: u64,
+    #[allow(dead_code)]
     created_at: u64,
     history: Vec<AliasHistoryEntry>,
 }
@@ -106,7 +107,11 @@ async fn create_alias(
     admin_key: &str,
     api_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/_miroir/aliases/{}", api_url.trim_end_matches('/'), args.name);
+    let url = format!(
+        "{}/_miroir/aliases/{}",
+        api_url.trim_end_matches('/'),
+        args.name
+    );
 
     // Determine request body based on whether target or targets is provided
     let body = if let Some(target) = args.target {
@@ -159,7 +164,11 @@ async fn delete_alias(
         }
     }
 
-    let url = format!("{}/_miroir/aliases/{}", api_url.trim_end_matches('/'), args.name);
+    let url = format!(
+        "{}/_miroir/aliases/{}",
+        api_url.trim_end_matches('/'),
+        args.name
+    );
 
     let resp = client
         .delete(&url)
@@ -211,7 +220,12 @@ async fn list_aliases(
     if result.aliases.is_empty() {
         println!("(none)");
     } else {
-        let max_name_len = result.aliases.iter().map(|a| a.name.len()).max().unwrap_or(0);
+        let max_name_len = result
+            .aliases
+            .iter()
+            .map(|a| a.name.len())
+            .max()
+            .unwrap_or(0);
 
         for alias in result.aliases {
             let kind_display = match alias.kind.as_str() {
@@ -226,18 +240,25 @@ async fn list_aliases(
                 "operator"
             };
 
-            println!("{:width$}  {:8}  {:10}  v{}", alias.name, kind_display, manager, alias.version, width = max_name_len);
+            println!(
+                "{:width$}  {:8}  {:10}  v{}",
+                alias.name,
+                kind_display,
+                manager,
+                alias.version,
+                width = max_name_len
+            );
 
             // Show targets
             if let Some(ref target) = alias.current_uid {
-                println!("  └─ target: {}", target);
+                println!("  └─ target: {target}");
             } else if let Some(ref targets) = alias.target_uids {
                 if targets.len() == 1 {
                     println!("  └─ target: {}", targets[0]);
                 } else {
                     println!("  └─ targets ({}):", targets.len());
                     for target in targets {
-                        println!("       └─ {}", target);
+                        println!("       └─ {target}");
                     }
                 }
             }
@@ -253,7 +274,11 @@ async fn show_alias(
     admin_key: &str,
     api_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/_miroir/aliases/{}", api_url.trim_end_matches('/'), args.name);
+    let url = format!(
+        "{}/_miroir/aliases/{}",
+        api_url.trim_end_matches('/'),
+        args.name
+    );
 
     let resp = client
         .get(&url)
@@ -285,16 +310,16 @@ async fn show_alias(
     } else {
         "operator (writable)"
     };
-    println!("Manager: {}", manager);
+    println!("Manager: {manager}");
 
     println!();
     println!("Targets:");
 
     if let Some(ref target) = alias.current_uid {
-        println!("  {}", target);
+        println!("  {target}");
     } else if let Some(ref targets) = alias.target_uids {
         for target in targets {
-            println!("  {}", target);
+            println!("  {target}");
         }
     }
 
@@ -309,6 +334,20 @@ async fn show_alias(
     }
 
     Ok(())
+}
+
+/// Format a UNIX timestamp as ISO 8601 string.
+fn format_timestamp(timestamp_ms: u64) -> String {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let duration = Duration::from_millis(timestamp_ms);
+    if let Some(datetime) = UNIX_EPOCH.checked_add(duration) {
+        // Use debug format which gives ISO 8601-like output
+        return format!("{datetime:?}");
+    }
+
+    // Fallback: just show the raw value
+    format!("{timestamp_ms} ms")
 }
 
 #[cfg(test)]
@@ -347,18 +386,4 @@ mod tests {
 
         let _alias: GetAliasResponse = serde_json::from_str(json).unwrap();
     }
-}
-
-/// Format a UNIX timestamp as ISO 8601 string.
-fn format_timestamp(timestamp_ms: u64) -> String {
-    use std::time::{Duration, UNIX_EPOCH};
-
-    let duration = Duration::from_millis(timestamp_ms);
-    if let Some(datetime) = UNIX_EPOCH.checked_add(duration) {
-        // Use debug format which gives ISO 8601-like output
-        return format!("{:?}", datetime);
-    }
-
-    // Fallback: just show the raw value
-    format!("{} ms", timestamp_ms)
 }
