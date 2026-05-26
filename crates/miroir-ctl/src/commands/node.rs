@@ -22,6 +22,8 @@ pub enum NodeSubcommand {
     Drain(DrainNodeArgs),
     /// List all nodes in the cluster
     List,
+    /// Show detailed status of a specific node
+    Status(StatusNodeArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -56,6 +58,12 @@ pub struct RemoveNodeArgs {
 #[derive(Parser, Debug)]
 pub struct DrainNodeArgs {
     /// Node ID to drain
+    node_id: String,
+}
+
+#[derive(Parser, Debug)]
+pub struct StatusNodeArgs {
+    /// Node ID to show status for
     node_id: String,
 }
 
@@ -99,6 +107,28 @@ struct DrainNodeResponse {
     migrations_count: usize,
 }
 
+#[derive(Debug, Deserialize)]
+struct NodeStatusResponse {
+    id: String,
+    address: String,
+    status: String,
+    replica_group: u32,
+    shard_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restoring: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rf_restore_progress: Option<RFRestoreProgress>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RFRestoreProgress {
+    total_shards: u32,
+    completed_shards: u32,
+    docs_migrated: u64,
+}
+
 pub async fn run(
     cmd: NodeSubcommand,
     admin_key: &str,
@@ -111,6 +141,7 @@ pub async fn run(
         NodeSubcommand::Remove(args) => remove_node(client, args, admin_key, api_url).await,
         NodeSubcommand::Drain(args) => drain_node(client, args, admin_key, api_url).await,
         NodeSubcommand::List => list_nodes(client, admin_key, api_url).await,
+        NodeSubcommand::Status(args) => node_status(client, args, admin_key, api_url).await,
     }
 }
 
@@ -313,6 +344,7 @@ async fn list_nodes(
                 "draining" => "↓",
                 "failed" => "✗",
                 "degraded" => "⚠",
+                "restoring" => "↻",
                 _ => "?",
             };
 
@@ -331,6 +363,75 @@ async fn list_nodes(
                 println!("    └─ error: {error}");
             }
         }
+    }
+
+    Ok(())
+}
+
+async fn node_status(
+    client: Client,
+    args: StatusNodeArgs,
+    admin_key: &str,
+    api_url: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let url = format!(
+        "{}/_miroir/nodes/{}/status",
+        api_url.trim_end_matches('/'),
+        args.node_id
+    );
+
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .header("X-Admin-Key", admin_key)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to get node status: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("Get node status failed: HTTP {status} — {text}").into());
+    }
+
+    let node_status: NodeStatusResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Invalid response: {e}"))?;
+
+    println!("=== Node Status ===");
+    println!();
+    println!("ID: {}", node_status.id);
+    println!("Address: {}", node_status.address);
+    println!("Status: {}", node_status.status);
+    println!("Replica Group: {}", node_status.replica_group);
+    println!("Shard Count: {}", node_status.shard_count);
+    println!();
+
+    if let Some(ref progress) = node_status.rf_restore_progress {
+        println!("RF Restoration Progress:");
+        println!(
+            "  Shards: {}/{}",
+            progress.completed_shards, progress.total_shards
+        );
+        println!("  Documents Migrated: {}", progress.docs_migrated);
+        let percent = if progress.total_shards > 0 {
+            (progress.completed_shards as f64 / progress.total_shards as f64) * 100.0
+        } else {
+            0.0
+        };
+        println!("  Progress: {percent:.1}%");
+        println!();
+    }
+
+    if node_status.restoring == Some(true) {
+        println!("Note: Node is currently restoring replication factor.");
+        println!("Writes are being fanned out to this node during restoration.");
+        println!();
+    }
+
+    if let Some(ref error) = node_status.error {
+        println!("Error: {error}");
     }
 
     Ok(())
