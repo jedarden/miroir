@@ -43,7 +43,7 @@ fn create_test_config() -> MiroirConfig {
 /// Test 1: Preview endpoint returns fingerprint and version information.
 #[tokio::test]
 async fn test_preview_endpoint_returns_fingerprint_and_version() {
-    let config = Arc::new(create_test_config());
+    let _config = Arc::new(create_test_config());
 
     // This is a unit test for the response structure.
     // In a full integration test, we would:

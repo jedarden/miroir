@@ -18,7 +18,7 @@ use miroir_core::task_store::NewAdminSession;
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn now_ms() -> i64 {
+fn _now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -26,20 +26,20 @@ fn now_ms() -> i64 {
 }
 
 /// Create an admin session for testing.
-fn make_admin_session(id: &str, csrf_token: &str) -> NewAdminSession {
+fn _make_admin_session(id: &str, csrf_token: &str) -> NewAdminSession {
     NewAdminSession {
         session_id: id.to_string(),
         csrf_token: csrf_token.to_string(),
         admin_key_hash: "test-admin-key-hash".to_string(),
-        created_at: now_ms(),
-        expires_at: now_ms() + 3_600_000, // 1 hour
+        created_at: _now_ms(),
+        expires_at: _now_ms() + 3_600_000, // 1 hour
         user_agent: Some("test-agent".to_string()),
         source_ip: Some("127.0.0.1".to_string()),
     }
 }
 
 /// Extract error code from a Miroir error response.
-fn extract_error_code(body: &str) -> Option<String> {
+fn _extract_error_code(body: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     value
         .get("code")

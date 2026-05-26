@@ -111,9 +111,11 @@ fn test_request_id_format_in_logs() {
 
 #[test]
 fn test_request_id_extraction_from_logs() {
-    let logs = [r#"{"timestamp":"2026-05-01T12:00:00.000Z","level":"info","target":"miroir.request","request_id":"abc12345","pod_id":"pod-1","message":"GET /search 200"}"#,
+    let logs = [
+        r#"{"timestamp":"2026-05-01T12:00:00.000Z","level":"info","target":"miroir.request","request_id":"abc12345","pod_id":"pod-1","message":"GET /search 200"}"#,
         r#"{"timestamp":"2026-05-01T12:00:00.001Z","level":"debug","target":"miroir.node","request_id":"abc12345","pod_id":"pod-1","node_id":"node-1","message":"node call started"}"#,
-        r#"{"timestamp":"2026-05-01T12:00:00.010Z","level":"info","target":"miroir.search","request_id":"abc12345","pod_id":"pod-1","index":"products","message":"search completed"}"#];
+        r#"{"timestamp":"2026-05-01T12:00:00.010Z","level":"info","target":"miroir.search","request_id":"abc12345","pod_id":"pod-1","index":"products","message":"search completed"}"#,
+    ];
 
     // Extract all logs with request_id = "abc12345"
     let target_id = "abc12345";
@@ -229,9 +231,11 @@ fn test_no_document_content_in_logs() {
 fn test_log_volume_info_level() {
     // At INFO level, search requests produce 2 INFO log entries:
     // 1 from telemetry middleware (miroir.request) + 1 from search handler (miroir.search)
-    let request_logs = [r#"{"timestamp":"2026-05-01T12:00:00.000Z","level":"info","target":"miroir.request","message":"GET /indexes/products/search 200"}"#,
+    let request_logs = [
+        r#"{"timestamp":"2026-05-01T12:00:00.000Z","level":"info","target":"miroir.request","message":"GET /indexes/products/search 200"}"#,
         r#"{"timestamp":"2026-05-01T12:00:00.001Z","level":"debug","target":"miroir.node","message":"node call"}"#,
-        r#"{"timestamp":"2026-05-01T12:00:00.002Z","level":"info","target":"miroir.search","message":"search completed"}"#];
+        r#"{"timestamp":"2026-05-01T12:00:00.002Z","level":"info","target":"miroir.search","message":"search completed"}"#,
+    ];
 
     let info_count = request_logs
         .iter()
@@ -247,10 +251,12 @@ fn test_log_volume_info_level() {
 #[test]
 fn test_debug_level_has_more_logs() {
     // At DEBUG level, we get per-node logs in addition to the INFO logs
-    let debug_logs = [r#"{"timestamp":"2026-05-01T12:00:00.000Z","level":"info","target":"miroir.request","message":"GET / 200"}"#,
+    let debug_logs = [
+        r#"{"timestamp":"2026-05-01T12:00:00.000Z","level":"info","target":"miroir.request","message":"GET / 200"}"#,
         r#"{"timestamp":"2026-05-01T12:00:00.001Z","level":"debug","target":"miroir.node","message":"node call started"}"#,
         r#"{"timestamp":"2026-05-01T12:00:00.002Z","level":"debug","target":"miroir.node","message":"node call completed"}"#,
-        r#"{"timestamp":"2026-05-01T12:00:00.003Z","level":"info","target":"miroir.search","message":"search completed"}"#];
+        r#"{"timestamp":"2026-05-01T12:00:00.003Z","level":"info","target":"miroir.search","message":"search completed"}"#,
+    ];
 
     let debug_count = debug_logs
         .iter()
@@ -570,7 +576,7 @@ async fn test_request_id_appears_in_all_log_lines_within_request() {
     // Acceptance criterion: Every log line inside a request must carry request_id=<id>
     // This is achieved via tracing::Span with request_id recorded on span enter
     // and tracing_subscriber::fmt().with_current_span(true)
-    
+
     use axum::{routing::get, Extension};
     use miroir_core::config::MiroirConfig;
     use miroir_proxy::middleware::{
@@ -659,7 +665,8 @@ async fn test_request_id_appears_in_all_log_lines_within_request() {
 
     // Every log line should contain the request_id (either at top level or in span)
     for line in &log_lines {
-        let json = parse_log_line(line).unwrap_or_else(|| panic!("Log line should be valid JSON: {line}"));
+        let json =
+            parse_log_line(line).unwrap_or_else(|| panic!("Log line should be valid JSON: {line}"));
 
         // Verify request_id field exists and matches the response header
         // It can be at the top level OR nested in the span object

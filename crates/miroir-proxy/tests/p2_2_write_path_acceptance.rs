@@ -21,7 +21,7 @@ use miroir_core::router::shard_for_key;
 use serde_json::json;
 use std::collections::HashMap;
 
-fn make_config(
+fn _make_config(
     shards: u32,
     rf: u32,
     replica_groups: u32,

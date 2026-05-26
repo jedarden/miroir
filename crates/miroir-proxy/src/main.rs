@@ -3,6 +3,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use clap::Parser;
 use miroir_core::{
     config::MiroirConfig,
     peer_discovery::PeerDiscovery,
@@ -15,6 +16,17 @@ use std::time::Duration;
 use tokio::signal;
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, registry, util::SubscriberInitExt, EnvFilter};
+
+/// Miroir proxy - distributed search orchestrator for Meilisearch CE
+#[derive(Parser, Debug)]
+#[command(name = "miroir-proxy")]
+#[command(author, version, about)]
+#[command(long_version = option_env!("GIT_VERSION").unwrap_or_else(|| env!("CARGO_PKG_VERSION")))]
+struct CliArgs {
+    /// Path to configuration file (YAML or TOML)
+    #[arg(short, long)]
+    config: Option<String>,
+}
 
 mod admin_session;
 mod admin_ui;
@@ -31,14 +43,12 @@ use admin_session::SealKey;
 use auth::AuthState;
 use middleware::{metrics_router, Metrics, TelemetryState};
 use miroir_core::{
-    canary::{
-        CanaryRunner, QueryCapture, SearchQuery, SearchResponse,
-    },
+    canary::{CanaryRunner, QueryCapture, SearchQuery, SearchResponse},
     task_store::TaskStore,
 };
 use routes::{
-    admin, admin_endpoints, health, indexes, keys, multi_search, search, search_ui,
-    settings, tasks, version,
+    admin, admin_endpoints, health, indexes, keys, multi_search, search, search_ui, settings,
+    tasks, version,
 };
 use scoped_key_rotation::ScopedKeyRotationState;
 use std::sync::Arc;
@@ -281,9 +291,35 @@ impl FromRef<UnifiedState> for routes::canary::CanaryState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Handle --version and --help before any other setup
+    // These must work without requiring config files or nodes
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "--version" | "-V" => {
+                println!("miroir-proxy {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            "--help" | "-h" => {
+                println!("Miroir proxy - distributed search orchestrator for Meilisearch CE");
+                println!();
+                println!("Usage: miroir-proxy [OPTIONS]");
+                println!();
+                println!("Options:");
+                println!("  -h, --help     Print help information");
+                println!("  -V, --version  Print version information");
+                println!("  -c, --config <FILE>  Path to configuration file (YAML or TOML)");
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+    }
+
+    // Parse CLI arguments - config file path can be specified here
+    let _cli = CliArgs::parse();
+
     // Load configuration (file → env → CLI overlay)
-    let config =
-        MiroirConfig::load().map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+    let config = MiroirConfig::load().map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
 
     // Initialize structured JSON logging (plan §10 format)
     // Fields on every line: timestamp, level, target, message, pod_id

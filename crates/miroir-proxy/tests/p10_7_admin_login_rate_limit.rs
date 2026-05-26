@@ -79,10 +79,7 @@ async fn five_failed_attempts_triggers_10_minute_backoff() {
             .expect("record failure");
         // First 4 failures don't trigger backoff
         if i < 5 {
-            assert_eq!(
-                wait_seconds, None,
-                "failure {i} should not trigger backoff"
-            );
+            assert_eq!(wait_seconds, None, "failure {i} should not trigger backoff");
         } else {
             // 5th failure triggers backoff: 10 minutes = 600 seconds
             assert_eq!(
@@ -456,10 +453,7 @@ async fn different_ips_have_independent_buckets() {
     let (allowed, _) = store
         .check_rate_limit_admin_login(ip2, limit, window_seconds)
         .expect("check rate limit");
-    assert!(
-        allowed,
-        "IP2 should not be affected by IP1's rate limit"
-    );
+    assert!(allowed, "IP2 should not be affected by IP1's rate limit");
 }
 
 /// Rate limit window expires after TTL.

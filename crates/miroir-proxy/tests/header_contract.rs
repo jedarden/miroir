@@ -599,7 +599,7 @@ fn idempotency_key_follows_cross_vendor_convention() {
 #[test]
 fn validate_header_directions() {
     // Request headers
-    let request_headers = vec![
+    let request_headers = [
         "X-Miroir-Min-Settings-Version",
         "X-Miroir-Session", // Both directions
         "Idempotency-Key",
@@ -611,7 +611,7 @@ fn validate_header_directions() {
     ];
 
     // Response headers
-    let response_headers = vec![
+    let response_headers = [
         "X-Miroir-Degraded",
         "X-Miroir-Settings-Version",
         "X-Miroir-Settings-Inconsistent",
@@ -638,7 +638,8 @@ fn validate_header_directions() {
 #[test]
 fn header_contract_complete() {
     // Verify all headers from plan §5 are covered by tests
-    let all_expected_headers = ["X-Miroir-Degraded",
+    let all_expected_headers = [
+        "X-Miroir-Degraded",
         "X-Miroir-Settings-Version",
         "X-Miroir-Min-Settings-Version",
         "X-Miroir-Settings-Inconsistent",
@@ -648,7 +649,8 @@ fn header_contract_complete() {
         "X-Miroir-Tenant",
         "X-Admin-Key",
         "X-CSRF-Token",
-        "X-Search-UI-Key"];
+        "X-Search-UI-Key",
+    ];
 
     // This test serves as documentation that all headers are accounted for
     assert_eq!(
@@ -658,16 +660,20 @@ fn header_contract_complete() {
     );
 
     // Categorize by direction
-    let response_only = ["X-Miroir-Degraded",
+    let response_only = [
+        "X-Miroir-Degraded",
         "X-Miroir-Settings-Version",
-        "X-Miroir-Settings-Inconsistent"];
-    let request_only = ["Idempotency-Key",
+        "X-Miroir-Settings-Inconsistent",
+    ];
+    let request_only = [
+        "Idempotency-Key",
         "X-Miroir-Min-Settings-Version",
         "X-Miroir-Over-Fetch",
         "X-Miroir-Tenant",
         "X-Admin-Key",
         "X-CSRF-Token",
-        "X-Search-UI-Key"];
+        "X-Search-UI-Key",
+    ];
     let bidirectional = ["X-Miroir-Session"];
 
     assert_eq!(response_only.len(), 3, "3 response-only headers");

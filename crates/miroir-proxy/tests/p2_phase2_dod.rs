@@ -502,10 +502,7 @@ fn test_error_shape_byte_for_byte_parity() {
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         // Must have all four fields
-        assert!(
-            parsed.get("message").is_some(),
-            "{code:?}: missing message"
-        );
+        assert!(parsed.get("message").is_some(), "{code:?}: missing message");
         assert!(parsed.get("code").is_some(), "{code:?}: missing code");
         assert!(parsed.get("type").is_some(), "{code:?}: missing type");
         assert!(parsed.get("link").is_some(), "{code:?}: missing link");
