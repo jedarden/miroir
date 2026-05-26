@@ -90,7 +90,7 @@ pub async fn explain_search(
         .await;
 
     // Create explainer and generate explanation
-    let explainer = Explainer::new(state.config.as_ref().clone());
+    let explainer = Explainer::new(state.config.as_ref().clone(), state.query_planner.clone());
     let mut explanation = explainer.explain(
         &index,
         &query,
@@ -98,15 +98,6 @@ pub async fn explain_search(
         settings_version,
         broadcast_pending_info.as_ref(),
     );
-
-    // Apply query planner results to explanation
-    explanation.plan.narrowed = query_plan.narrowed;
-    explanation.plan.narrowing_reason = if query_plan.narrowed {
-        Some(query_plan.reason)
-    } else {
-        None
-    };
-    explanation.plan.target_shards = query_plan.target_shards;
 
     // Add query planner warnings
     for warning in query_plan.warnings {

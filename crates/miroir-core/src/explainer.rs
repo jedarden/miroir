@@ -4,9 +4,11 @@
 //! showing the chosen replica group, target nodes, and any warnings.
 
 use crate::config::MiroirConfig;
+use crate::query_planner::QueryPlanner;
 use crate::topology::{NodeId, Topology};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Query explanation response (plan §13.20).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,12 +135,16 @@ pub enum Warning {
 /// Explainer for queries.
 pub struct Explainer {
     config: MiroirConfig,
+    query_planner: Arc<QueryPlanner>,
 }
 
 impl Explainer {
     /// Create a new explainer.
-    pub fn new(config: MiroirConfig) -> Self {
-        Self { config }
+    pub fn new(config: MiroirConfig, query_planner: Arc<QueryPlanner>) -> Self {
+        Self {
+            config,
+            query_planner,
+        }
     }
 
     /// Explain a search query.
@@ -158,8 +164,122 @@ impl Explainer {
         // Resolve alias (if applicable)
         let (resolved_uid, alias_resolution) = self.resolve_alias(index_uid, topology);
 
-        // For now, we don't narrow queries - all shards are targeted
-        // TODO: Integrate QueryPlanner when query planning is implemented
+        // Query planner integration (plan §13.4): narrow target shards based on PK constraints
+        let filter_string = query.filter.as_ref().and_then(|v| {
+            // Convert filter Value to string representation for QueryPlanner
+            if v.is_string() {
+                v.as_str().map(|s| s.to_string())
+            } else {
+                // For object/array filters, serialize to JSON string
+                serde_json::to_string(v).ok()
+            }
+        });
+
+        // Use a blocking runtime since this is a sync method
+        let rt = tokio::runtime::Handle::try_current();
+        let query_plan = if let Ok(handle) = rt {
+            handle.block_on(async {
+                self.query_planner
+                    .plan(&resolved_uid, &filter_string, topology.shards)
+                    .await
+            })
+        } else {
+            // Fallback for contexts without a runtime - use default plan (no narrowing)
+            return self.explain_without_planner(
+                &resolved_uid,
+                query,
+                topology,
+                settings_version,
+                broadcast_pending,
+                alias_resolution,
+                warnings,
+            );
+        };
+
+        let target_shards = if query_plan.narrowed {
+            query_plan.target_shards
+        } else {
+            (0..topology.shards).collect()
+        };
+        let narrowed = query_plan.narrowed;
+        let narrowing_reason = if query_plan.narrowed {
+            Some(query_plan.reason)
+        } else {
+            None
+        };
+
+        // Choose replica group
+        let chosen_group = self.choose_group(topology, &query.tenant_id, settings_version);
+
+        // Map shards to nodes
+        let target_nodes = self.map_shards_to_nodes(&target_shards, chosen_group.id, topology);
+
+        // Check for hedging
+        let hedging_armed = self.config.hedging.enabled;
+        let hedge_trigger_ms = if hedging_armed {
+            Some(self.config.hedging.min_trigger_ms)
+        } else {
+            None
+        };
+
+        // Check coalescing eligibility
+        let coalescing_eligible = self.config.query_coalescing.enabled;
+
+        // Check cache candidate
+        let cache_candidate = query.filter.is_none() && query.q.is_some();
+
+        // Estimate p95 latency
+        let estimated_p95_ms = self.estimate_latency(topology, chosen_group.id, &target_shards);
+
+        // Tenant affinity
+        let tenant_affinity_pinned = query.tenant_id.as_ref().and_then(|tenant| {
+            self.resolve_tenant_affinity(tenant, topology)
+                .map(|group| GroupAffinity {
+                    tenant: tenant.clone(),
+                    group,
+                })
+        });
+
+        // Broadcast pending
+        let broadcast_pending = broadcast_pending.cloned();
+
+        // Add warnings based on query characteristics
+        self.add_query_warnings(query, &mut warnings);
+
+        QueryExplanation {
+            resolved_uid,
+            plan: ExplainPlan {
+                alias_resolution,
+                narrowed,
+                narrowing_reason,
+                target_shards,
+                chosen_group,
+                target_nodes,
+                hedging_armed,
+                hedge_trigger_ms,
+                coalescing_eligible,
+                cache_candidate,
+                tenant_affinity_pinned,
+                estimated_p95_ms,
+                settings_version,
+                broadcast_pending,
+            },
+            warnings,
+        }
+    }
+
+    /// Explain a query without query planner (fallback for contexts without a runtime).
+    fn explain_without_planner(
+        &self,
+        resolved_uid: &str,
+        query: &SearchQueryExplanation,
+        topology: &Topology,
+        settings_version: u64,
+        broadcast_pending: Option<&BroadcastPending>,
+        alias_resolution: Option<AliasResolution>,
+        mut warnings: Vec<Warning>,
+    ) -> QueryExplanation {
+        // No narrowing - target all shards
         let target_shards: Vec<u32> = (0..topology.shards).collect();
         let narrowed = false;
         let narrowing_reason: Option<String> = None;
@@ -203,7 +323,7 @@ impl Explainer {
         self.add_query_warnings(query, &mut warnings);
 
         QueryExplanation {
-            resolved_uid,
+            resolved_uid: resolved_uid.to_string(),
             plan: ExplainPlan {
                 alias_resolution,
                 narrowed,
@@ -365,11 +485,14 @@ pub struct SearchQueryExplanation {
 mod tests {
     use super::*;
     use crate::config::MiroirConfig;
+    use crate::query_planner::QueryPlanner;
+    use std::sync::Arc;
 
     #[test]
     fn test_explain_basic_query() {
         let config = MiroirConfig::default();
-        let explainer = Explainer::new(config);
+        let query_planner = Arc::new(QueryPlanner::default());
+        let explainer = Explainer::new(config, query_planner);
 
         let topology = Topology::new(64, 2, 1);
         let query = SearchQueryExplanation {

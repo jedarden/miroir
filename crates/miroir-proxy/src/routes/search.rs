@@ -13,7 +13,8 @@ use miroir_core::merger::AdaptiveMergeStrategy;
 use miroir_core::replica_selection::SelectionObserver;
 use miroir_core::scatter::{
     dfs_query_then_fetch_search, plan_search_scatter, plan_search_scatter_for_group,
-    plan_search_scatter_with_version_floor, NodeClient, SearchRequest, VectorMode,
+    plan_search_scatter_with_narrowing, plan_search_scatter_with_version_floor, NodeClient,
+    SearchRequest, VectorMode,
 };
 use miroir_core::session_pinning::WaitStrategy;
 use miroir_core::shadow::ShadowOperation;
@@ -521,6 +522,31 @@ async fn search_handler(
         state.config.node_master_key.clone()
     };
 
+    // Apply filter injection from JWT claims (plan §13.21)
+    // When a JWT has an injected_filter claim, AND it with any user-supplied filter
+    let filter = if let Some(Extension(jwt_ext)) = jwt_claims {
+        if let Some(ref injected_filter) = jwt_ext.0.injected_filter {
+            // JWT has an injected filter - AND it with user-supplied filter
+            match body.filter {
+                None => Some(serde_json::from_str(injected_filter).unwrap_or_else(|_| {
+                    // If parse fails, treat as string filter
+                    serde_json::json!(injected_filter)
+                })),
+                Some(ref user_filter) => {
+                    // Combine filters: (user_filter) AND (injected_filter)
+                    // Meilisearch filter syntax: ["user_filter", "injected_filter"]
+                    Some(serde_json::json!([user_filter, injected_filter]))
+                }
+            }
+        } else {
+            // No injected filter, use user-supplied filter as-is
+            body.filter.clone()
+        }
+    } else {
+        // No JWT claims, use user-supplied filter as-is
+        body.filter.clone()
+    };
+
     // Extract X-Miroir-Min-Settings-Version header (plan §13.5)
     let min_settings_version = headers
         .get("X-Miroir-Min-Settings-Version")
@@ -529,6 +555,27 @@ async fn search_handler(
 
     // Use live topology from shared state (updated by health checker)
     let topo = state.topology.read().await;
+
+    // Query planner integration (plan §13.4): narrow target shards based on PK constraints
+    let filter_string = filter.as_ref().and_then(|v| {
+        // Convert filter Value to string representation for QueryPlanner
+        if v.is_string() {
+            v.as_str().map(|s| s.to_string())
+        } else {
+            // For object/array filters, serialize to JSON string
+            serde_json::to_string(v).ok()
+        }
+    });
+    let query_plan = state
+        .query_planner
+        .plan(&effective_index, &filter_string, state.config.shards)
+        .await;
+    let narrowed_shards = if query_plan.narrowed {
+        Some(query_plan.target_shards)
+    } else {
+        None
+    };
+
     let policy = match state.config.scatter.unavailable_shard_policy.as_str() {
         "partial" => UnavailableShardPolicy::Partial,
         "error" => UnavailableShardPolicy::Error,
@@ -583,12 +630,13 @@ async fn search_handler(
                         pinned_group = group,
                         "pinned group unavailable, falling back to normal routing"
                     );
-                    plan_search_scatter(
+                    plan_search_scatter_with_narrowing(
                         &topo,
                         0,
                         state.config.replication_factor as usize,
                         state.config.shards,
                         replica_selector_ref,
+                        narrowed_shards,
                     )
                     .await
                 }
@@ -635,13 +683,14 @@ async fn search_handler(
                 }
             }
         } else {
-            // No version floor requested, use normal planning
-            plan_search_scatter(
+            // No version floor requested, use normal planning with query planner narrowing
+            plan_search_scatter_with_narrowing(
                 &topo,
                 0,
                 state.config.replication_factor as usize,
                 state.config.shards,
                 replica_selector_ref,
+                narrowed_shards,
             )
             .await
         }
@@ -650,31 +699,6 @@ async fn search_handler(
 
     // Record scatter fan-out size before executing
     state.metrics.record_scatter_fan_out(node_count);
-
-    // Apply filter injection from JWT claims (plan §13.21)
-    // When a JWT has an injected_filter claim, AND it with any user-supplied filter
-    let filter = if let Some(Extension(jwt_ext)) = jwt_claims {
-        if let Some(ref injected_filter) = jwt_ext.0.injected_filter {
-            // JWT has an injected filter - AND it with user-supplied filter
-            match body.filter {
-                None => Some(serde_json::from_str(injected_filter).unwrap_or_else(|_| {
-                    // If parse fails, treat as string filter
-                    serde_json::json!(injected_filter)
-                })),
-                Some(ref user_filter) => {
-                    // Combine filters: (user_filter) AND (injected_filter)
-                    // Meilisearch filter syntax: ["user_filter", "injected_filter"]
-                    Some(serde_json::json!([user_filter, injected_filter]))
-                }
-            }
-        } else {
-            // No injected filter, use user-supplied filter as-is
-            body.filter
-        }
-    } else {
-        // No JWT claims, use user-supplied filter as-is
-        body.filter
-    };
 
     // Build search request
     // Clone facets for fingerprinting before moving into SearchRequest
