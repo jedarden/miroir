@@ -131,6 +131,7 @@ impl DriftReconciler {
             &self.config.leader_scope,
             &self.config.pod_id,
             lease_ttl,
+            now,
         );
     }
 

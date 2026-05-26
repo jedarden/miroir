@@ -277,9 +277,9 @@ impl LeaderElection {
         let ttl_secs = self.config.lease_ttl_s;
         let expires_at = now_ms + (ttl_secs * 1000) as i64;
 
-        let renewed = self
-            .task_store
-            .renew_leader_lease(scope, &self.pod_id, expires_at)?;
+        let renewed =
+            self.task_store
+                .renew_leader_lease(scope, &self.pod_id, expires_at, now_ms)?;
 
         if renewed {
             debug!(scope, pod_id = %self.pod_id, "renewed leader lease");
@@ -332,9 +332,9 @@ impl LeaderElection {
             // To step down, we set the expiration to the past
             // This allows another pod to acquire the lease immediately
             let past_expiration = now_ms - 1000;
-            let _ = self
-                .task_store
-                .renew_leader_lease(scope, &self.pod_id, past_expiration);
+            let _ =
+                self.task_store
+                    .renew_leader_lease(scope, &self.pod_id, past_expiration, now_ms);
 
             info!(scope, pod_id = %self.pod_id, "stepped down from leadership");
 

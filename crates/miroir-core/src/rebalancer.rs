@@ -470,7 +470,7 @@ impl Rebalancer {
         let now = now_ms() as i64;
         let lease_ttl = now + 15000; // 15 second TTL
 
-        let _ = task_store.renew_leader_lease(&self.leader_scope, pod_id, lease_ttl);
+        let _ = task_store.renew_leader_lease(&self.leader_scope, pod_id, lease_ttl, now);
     }
 
     /// Check for topology changes and trigger rebalancing if needed.

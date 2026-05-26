@@ -489,11 +489,11 @@ proptest! {
         store.try_acquire_leader_lease(&scope, holder1, expires_at1, now_ms).unwrap();
 
         // Renew with holder1 should succeed
-        let renewed = store.renew_leader_lease(&scope, holder1, expires_at2).unwrap();
+        let renewed = store.renew_leader_lease(&scope, holder1, expires_at2, now_ms).unwrap();
         prop_assert!(renewed);
 
         // Renew with holder2 should fail
-        let renewed2 = store.renew_leader_lease(&scope, holder2, expires_at2).unwrap();
+        let renewed2 = store.renew_leader_lease(&scope, holder2, expires_at2, now_ms).unwrap();
         prop_assert!(!renewed2);
     }
 }

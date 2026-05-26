@@ -230,7 +230,7 @@ impl<C: NodeClient> TtlWorker<C> {
                         let scope = scope.to_string();
                         let pod_id = self.pod_id.clone();
                         move || {
-                            task_store.renew_leader_lease(&scope, &pod_id, expires_at)
+                            task_store.renew_leader_lease(&scope, &pod_id, expires_at, now_ms)
                         }
                     })
                     .await

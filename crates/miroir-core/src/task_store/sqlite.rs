@@ -716,12 +716,18 @@ impl TaskStore for SqliteTaskStore {
         }
     }
 
-    fn renew_leader_lease(&self, scope: &str, holder: &str, expires_at: i64) -> Result<bool> {
+    fn renew_leader_lease(
+        &self,
+        scope: &str,
+        holder: &str,
+        expires_at: i64,
+        now_ms: i64,
+    ) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
         // Only renew if we still hold the lease AND it's not expired
         let rows = conn.execute(
             "UPDATE leader_lease SET expires_at = ?1 WHERE scope = ?2 AND holder = ?3 AND expires_at > ?4",
-            params![expires_at, scope, holder, now_ms()],
+            params![expires_at, scope, holder, now_ms],
         )?;
         Ok(rows > 0)
     }
@@ -1933,12 +1939,12 @@ mod tests {
 
         // Renew by current holder
         assert!(store
-            .renew_leader_lease("reshard:idx-1", "pod-b", t5)
+            .renew_leader_lease("reshard:idx-1", "pod-b", t5, now)
             .unwrap());
 
         // Wrong holder cannot renew
         assert!(!store
-            .renew_leader_lease("reshard:idx-1", "pod-a", t5)
+            .renew_leader_lease("reshard:idx-1", "pod-a", t5, now)
             .unwrap());
 
         // Get lease

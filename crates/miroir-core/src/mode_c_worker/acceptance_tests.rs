@@ -233,7 +233,13 @@ impl TaskStore for MockTaskStore {
     ) -> Result<bool> {
         Ok(true)
     }
-    fn renew_leader_lease(&self, _scope: &str, _holder: &str, _expires_at: i64) -> Result<bool> {
+    fn renew_leader_lease(
+        &self,
+        _scope: &str,
+        _holder: &str,
+        _expires_at: i64,
+        _now_ms: i64,
+    ) -> Result<bool> {
         Ok(true)
     }
     fn get_leader_lease(&self, _scope: &str) -> Result<Option<crate::task_store::LeaderLeaseRow>> {

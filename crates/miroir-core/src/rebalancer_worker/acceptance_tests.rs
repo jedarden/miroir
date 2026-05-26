@@ -145,7 +145,13 @@ impl TaskStore for MockTaskStore {
         Ok(true)
     }
 
-    fn renew_leader_lease(&self, scope: &str, holder: &str, expires_at: i64) -> Result<bool> {
+    fn renew_leader_lease(
+        &self,
+        scope: &str,
+        holder: &str,
+        expires_at: i64,
+        _now_ms: i64,
+    ) -> Result<bool> {
         let mut leases = self.leader_leases.lock().unwrap();
         for lease in leases.iter_mut() {
             if lease.scope == scope && lease.holder == holder {
@@ -469,7 +475,8 @@ async fn p4_1_a1_advisory_lock_prevents_duplicate_migrations() {
         let task_store = task_store.clone();
         let scope = scope.to_string();
         let holder = "pod-1".to_string();
-        move || task_store.renew_leader_lease(&scope, &holder, expires_at + 2000)
+        let now = now_ms();
+        move || task_store.renew_leader_lease(&scope, &holder, expires_at + 2000, now)
     })
     .await
     .unwrap()

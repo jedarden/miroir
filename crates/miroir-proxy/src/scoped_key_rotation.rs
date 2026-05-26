@@ -90,10 +90,12 @@ pub async fn run_scoped_key_rotator(state: ScopedKeyRotationState) {
             }
 
             // Renew the lease for this index
+            let now = now_ms();
             let _ = state.redis.renew_leader_lease(
                 &lease_scope,
                 &state.pod_id,
-                now_ms() + lease_ttl_ms,
+                now + lease_ttl_ms,
+                now,
             );
         }
     }
