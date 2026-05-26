@@ -278,6 +278,20 @@ pub trait TaskStore: Send + Sync {
     /// Returns true if the event_id is new (not yet processed), false if duplicate.
     /// If new, marks it as processed with a 24-hour TTL.
     fn check_and_mark_beacon_event(&self, index_uid: &str, event_id: &str) -> Result<bool>;
+
+    // --- Table 16: ttl_policy (plan §13.14) ---
+
+    /// Set or update TTL sweep policy for an index.
+    fn upsert_ttl_policy(&self, policy: &NewTtlPolicy) -> Result<()>;
+
+    /// Get TTL policy for an index.
+    fn get_ttl_policy(&self, index_uid: &str) -> Result<Option<TtlPolicyRow>>;
+
+    /// Delete TTL policy for an index.
+    fn delete_ttl_policy(&self, index_uid: &str) -> Result<bool>;
+
+    /// List all TTL policies.
+    fn list_ttl_policies(&self) -> Result<Vec<TtlPolicyRow>>;
 }
 
 // --- Row types ---
@@ -567,6 +581,26 @@ pub struct NewAdminSession {
     pub expires_at: i64,
     pub user_agent: Option<String>,
     pub source_ip: Option<String>,
+}
+
+/// TTL policy row (table 16).
+#[derive(Debug, Clone)]
+pub struct TtlPolicyRow {
+    pub index_uid: String,
+    pub sweep_interval_s: i64,
+    pub max_deletes_per_sweep: i64,
+    pub enabled: bool,
+    pub updated_at: i64,
+}
+
+/// New or updated TTL policy (table 16).
+#[derive(Debug, Clone)]
+pub struct NewTtlPolicy {
+    pub index_uid: String,
+    pub sweep_interval_s: i64,
+    pub max_deletes_per_sweep: i64,
+    pub enabled: bool,
+    pub updated_at: i64,
 }
 
 /// Mode B operation state (table 15).

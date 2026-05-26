@@ -3557,6 +3557,183 @@ where
     }
 }
 
+// ---------------------------------------------------------------------------
+// TTL policy endpoints (plan §13.14)
+// ---------------------------------------------------------------------------
+
+/// POST /_miroir/indexes/{uid}/ttl-policy — Set or update TTL sweep policy.
+///
+/// Request body: {"sweep_interval_s": u64, "max_deletes_per_sweep": u32, "enabled": bool}
+/// Response: {"index_uid": string, "sweep_interval_s": u64, "max_deletes_per_sweep": u32, "enabled": bool, "updated_at": u64}
+pub async fn post_ttl_policy<S>(
+    State(state): State<S>,
+    Path(index_uid): Path<String>,
+    Json(policy): Json<TtlPolicyRequest>,
+) -> Result<Json<TtlPolicyResponse>, StatusCode>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let task_store = app_state
+        .task_store
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let now = millis_now();
+    let new_policy = miroir_core::task_store::NewTtlPolicy {
+        index_uid: index_uid.clone(),
+        sweep_interval_s: policy.sweep_interval_s as i64,
+        max_deletes_per_sweep: policy.max_deletes_per_sweep as i64,
+        enabled: policy.enabled,
+        updated_at: now as i64,
+    };
+
+    task_store.upsert_ttl_policy(&new_policy).map_err(|e| {
+        tracing::error!(error = %e, index = %index_uid, "failed to upsert TTL policy");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(TtlPolicyResponse {
+        index_uid,
+        sweep_interval_s: policy.sweep_interval_s,
+        max_deletes_per_sweep: policy.max_deletes_per_sweep,
+        enabled: policy.enabled,
+        updated_at: now,
+    }))
+}
+
+/// GET /_miroir/indexes/{uid}/ttl-policy — Get TTL sweep policy for an index.
+///
+/// Response: {"index_uid": string, "sweep_interval_s": u64, "max_deletes_per_sweep": u32, "enabled": bool, "updated_at": u64}
+/// Returns 404 if no policy is set for the index (uses global defaults).
+pub async fn get_ttl_policy<S>(
+    State(state): State<S>,
+    Path(index_uid): Path<String>,
+) -> Result<Json<TtlPolicyResponse>, StatusCode>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let task_store = app_state
+        .task_store
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let policy = task_store.get_ttl_policy(&index_uid).map_err(|e| {
+        tracing::error!(error = %e, index = %index_uid, "failed to get TTL policy");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if let Some(p) = policy {
+        Ok(Json(TtlPolicyResponse {
+            index_uid,
+            sweep_interval_s: p.sweep_interval_s as u64,
+            max_deletes_per_sweep: p.max_deletes_per_sweep as u32,
+            enabled: p.enabled,
+            updated_at: p.updated_at as u64,
+        }))
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+/// DELETE /_miroir/indexes/{uid}/ttl-policy — Delete TTL sweep policy for an index.
+///
+/// Returns 204 on success, 404 if no policy was set.
+/// After deletion, the index uses global TTL defaults.
+pub async fn delete_ttl_policy<S>(
+    State(state): State<S>,
+    Path(index_uid): Path<String>,
+) -> Result<StatusCode, StatusCode>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let task_store = app_state
+        .task_store
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let deleted = task_store.delete_ttl_policy(&index_uid).map_err(|e| {
+        tracing::error!(error = %e, index = %index_uid, "failed to delete TTL policy");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+/// GET /_miroir/ttl-policies — List all TTL policies.
+///
+/// Response: [{"index_uid": string, "sweep_interval_s": u64, "max_deletes_per_sweep": u32, "enabled": bool, "updated_at": u64}, ...]
+pub async fn list_ttl_policies<S>(
+    State(state): State<S>,
+) -> Result<Json<Vec<TtlPolicyResponse>>, StatusCode>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
+    let app_state = AppState::from_ref(&state);
+
+    let task_store = app_state
+        .task_store
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let policies = task_store.list_ttl_policies().map_err(|e| {
+        tracing::error!(error = %e, "failed to list TTL policies");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let response = policies
+        .into_iter()
+        .map(|p| TtlPolicyResponse {
+            index_uid: p.index_uid,
+            sweep_interval_s: p.sweep_interval_s as u64,
+            max_deletes_per_sweep: p.max_deletes_per_sweep as u32,
+            enabled: p.enabled,
+            updated_at: p.updated_at as u64,
+        })
+        .collect();
+
+    Ok(Json(response))
+}
+
+/// Request body for setting a TTL policy.
+#[derive(serde::Deserialize)]
+pub struct TtlPolicyRequest {
+    /// Sweep interval in seconds.
+    pub sweep_interval_s: u64,
+    /// Maximum deletes per sweep.
+    pub max_deletes_per_sweep: u32,
+    /// Whether TTL is enabled for this index.
+    pub enabled: bool,
+}
+
+/// Response body for TTL policy operations.
+#[derive(serde::Serialize)]
+pub struct TtlPolicyResponse {
+    /// Index UID.
+    pub index_uid: String,
+    /// Sweep interval in seconds.
+    pub sweep_interval_s: u64,
+    /// Maximum deletes per sweep.
+    pub max_deletes_per_sweep: u32,
+    /// Whether TTL is enabled for this index.
+    pub enabled: bool,
+    /// Last update timestamp (Unix millis).
+    pub updated_at: u64,
+}
+
 fn millis_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -211,6 +211,12 @@ fn get_field_i64(fields: &HashMap<String, Value>, key: &str) -> Result<i64> {
         .ok_or_else(|| MiroirError::TaskStore(format!("missing or invalid field: {key}")))
 }
 
+/// Helper: get a bool field from a Redis hash (stored as "0" or "1").
+fn get_field_bool(fields: &HashMap<String, Value>, key: &str) -> Result<bool> {
+    let val = get_field_i64(fields, key)?;
+    Ok(val != 0)
+}
+
 /// Helper: convert optional field to Option<String>.
 fn opt_field(fields: &HashMap<String, Value>, key: &str) -> Option<String> {
     fields.get(key).and_then(|v| match v {
@@ -2176,6 +2182,122 @@ impl TaskStore for RedisTaskStore {
                 .map_err(|e| MiroirError::Redis(e.to_string()))?;
 
             Ok(true)
+        })
+    }
+
+    // --- Table 16: ttl_policy ---
+
+    fn upsert_ttl_policy(&self, policy: &NewTtlPolicy) -> Result<()> {
+        let pool = self.pool.clone();
+        let key_prefix = self.key_prefix.clone();
+        let policy = policy.clone();
+        let key = format!("{}:ttl_policy:{}", key_prefix, policy.index_uid);
+        let updated_at_str = policy.updated_at.to_string();
+        let interval_str = policy.sweep_interval_s.to_string();
+        let deletes_str = policy.max_deletes_per_sweep.to_string();
+        let enabled_str = if policy.enabled { "1" } else { "0" };
+
+        self.block_on(async move {
+            let mut pipe = pipe();
+            pipe.hset(&key, "index_uid", &policy.index_uid);
+            pipe.hset(&key, "sweep_interval_s", &interval_str);
+            pipe.hset(&key, "max_deletes_per_sweep", &deletes_str);
+            pipe.hset(&key, "enabled", enabled_str);
+            pipe.hset(&key, "updated_at", &updated_at_str);
+
+            pool.pipeline_query::<()>(&mut pipe).await?;
+
+            Ok(())
+        })
+    }
+
+    fn get_ttl_policy(&self, index_uid: &str) -> Result<Option<TtlPolicyRow>> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+        let index_uid = index_uid.to_string();
+        let key = format!("{key_prefix}:ttl_policy:{index_uid}");
+
+        self.block_on(async move {
+            let mut conn = manager.lock().await;
+            let fields: HashMap<String, Value> = conn
+                .hgetall(&key)
+                .await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            if fields.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(TtlPolicyRow {
+                    index_uid: index_uid.clone(),
+                    sweep_interval_s: get_field_i64(&fields, "sweep_interval_s")?,
+                    max_deletes_per_sweep: get_field_i64(&fields, "max_deletes_per_sweep")?,
+                    enabled: get_field_bool(&fields, "enabled")?,
+                    updated_at: get_field_i64(&fields, "updated_at")?,
+                }))
+            }
+        })
+    }
+
+    fn delete_ttl_policy(&self, index_uid: &str) -> Result<bool> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+        let index_uid = index_uid.to_string();
+        let key = format!("{key_prefix}:ttl_policy:{index_uid}");
+
+        self.block_on(async move {
+            let mut conn = manager.lock().await;
+
+            let exists: bool = conn
+                .exists(&key)
+                .await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            if !exists {
+                return Ok(false);
+            }
+
+            let _: () = conn
+                .del(&key)
+                .await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            Ok(true)
+        })
+    }
+
+    fn list_ttl_policies(&self) -> Result<Vec<TtlPolicyRow>> {
+        let manager = self.pool.manager.clone();
+        let key_prefix = self.key_prefix.clone();
+
+        self.block_on(async move {
+            let mut conn = manager.lock().await;
+
+            let pattern = format!("{key_prefix}:ttl_policy:*");
+            let keys: Vec<String> = conn
+                .keys(&pattern)
+                .await
+                .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+            let mut policies = Vec::new();
+            for key in keys {
+                let fields: HashMap<String, Value> = conn
+                    .hgetall(&key)
+                    .await
+                    .map_err(|e| MiroirError::Redis(e.to_string()))?;
+
+                if !fields.is_empty() {
+                    policies.push(TtlPolicyRow {
+                        index_uid: get_field_string(&fields, "index_uid")?,
+                        sweep_interval_s: get_field_i64(&fields, "sweep_interval_s")?,
+                        max_deletes_per_sweep: get_field_i64(&fields, "max_deletes_per_sweep")?,
+                        enabled: get_field_bool(&fields, "enabled")?,
+                        updated_at: get_field_i64(&fields, "updated_at")?,
+                    });
+                }
+            }
+
+            policies.sort_by(|a, b| a.index_uid.cmp(&b.index_uid));
+            Ok(policies)
         })
     }
 

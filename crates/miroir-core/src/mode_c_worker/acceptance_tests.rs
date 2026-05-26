@@ -388,6 +388,22 @@ impl TaskStore for MockTaskStore {
     fn check_and_mark_beacon_event(&self, _index_uid: &str, _event_id: &str) -> Result<bool> {
         Ok(true) // Always return new for mock
     }
+
+    fn upsert_ttl_policy(&self, _policy: &crate::task_store::NewTtlPolicy) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_ttl_policy(&self, _index_uid: &str) -> Result<Option<crate::task_store::TtlPolicyRow>> {
+        Ok(None)
+    }
+
+    fn delete_ttl_policy(&self, _index_uid: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn list_ttl_policies(&self) -> Result<Vec<crate::task_store::TtlPolicyRow>> {
+        Ok(Vec::new())
+    }
 }
 
 /// P6.5-A1: 1 GB dump splits into 4× 256 MiB chunks; 3 pods claim 3 of 4 chunks in parallel.
