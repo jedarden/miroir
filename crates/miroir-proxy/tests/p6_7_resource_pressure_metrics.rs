@@ -76,7 +76,7 @@ fn test_all_resource_pressure_metrics_present() {
     println!("All TYPE lines:");
     for line in metrics_text.lines() {
         if line.starts_with("# TYPE") {
-            println!("{}", line);
+            println!("{line}");
         }
     }
 
@@ -99,14 +99,13 @@ fn test_all_resource_pressure_metrics_present() {
     for metric_name in &expected_metrics {
         let found = metrics_text.lines().any(|line| {
             line.starts_with(metric_name)
-                || line.starts_with(&format!("# HELP {}", metric_name))
-                || line.starts_with(&format!("# TYPE {}", metric_name))
+                || line.starts_with(&format!("# HELP {metric_name}"))
+                || line.starts_with(&format!("# TYPE {metric_name}"))
         });
 
         assert!(
             found,
-            "Metric '{}' not found in metrics output (checked name, HELP, and TYPE lines)",
-            metric_name
+            "Metric '{metric_name}' not found in metrics output (checked name, HELP, and TYPE lines)"
         );
     }
 }
@@ -193,8 +192,7 @@ fn test_read_memory_pressure_returns_valid_level() {
         Ok(level) => {
             assert!(
                 level <= 2,
-                "Memory pressure level should be 0, 1, or 2, got {}",
-                level
+                "Memory pressure level should be 0, 1, or 2, got {level}"
             );
         }
         Err(_) => {
@@ -214,8 +212,7 @@ fn test_read_cpu_throttling_returns_valid_values() {
         Ok((_nr_throttled, throttled_time)) => {
             assert!(
                 throttled_time >= 0.0,
-                "Throttled time should be non-negative, got {}",
-                throttled_time
+                "Throttled time should be non-negative, got {throttled_time}"
             );
         }
         Err(_) => {

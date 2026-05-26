@@ -24,8 +24,8 @@ fn test_topology_1_group() -> Topology {
     let mut topo = Topology::new(16, 1, 2); // 16 shards, 1 replica group, RF=2
     for i in 0..3 {
         topo.add_node(Node::new(
-            NodeId::new(format!("node-g0-{}", i)),
-            format!("http://g0-{}:7700", i),
+            NodeId::new(format!("node-g0-{i}")),
+            format!("http://g0-{i}:7700"),
             0,
         ));
     }
@@ -35,7 +35,7 @@ fn test_topology_1_group() -> Topology {
     }
     // Mark nodes as active
     for i in 0..3 {
-        let node_id = NodeId::new(format!("node-g0-{}", i));
+        let node_id = NodeId::new(format!("node-g0-{i}"));
         if let Some(node) = topo.node_mut(&node_id) {
             node.status = miroir_core::topology::NodeStatus::Active;
         }
@@ -49,16 +49,16 @@ fn test_topology_2_groups() -> Topology {
                                             // Group 0 (existing, active)
     for i in 0..3 {
         topo.add_node(Node::new(
-            NodeId::new(format!("node-g0-{}", i)),
-            format!("http://g0-{}:7700", i),
+            NodeId::new(format!("node-g0-{i}")),
+            format!("http://g0-{i}:7700"),
             0,
         ));
     }
     // Group 1 (new, initializing)
     for i in 0..3 {
         topo.add_node(Node::new(
-            NodeId::new(format!("node-g1-{}", i)),
-            format!("http://g1-{}:7700", i),
+            NodeId::new(format!("node-g1-{i}")),
+            format!("http://g1-{i}:7700"),
             1,
         ));
     }
@@ -104,7 +104,7 @@ impl MockSyncNodeClient {
         docs: Vec<serde_json::Value>,
     ) {
         let mut responses = self.fetch_responses.write().await;
-        let key = (node, format!("{}-{}", index_uid, offset));
+        let key = (node, format!("{index_uid}-{offset}"));
         responses.insert(
             key,
             json!({
@@ -199,8 +199,8 @@ async fn acceptance_1_during_sync_query_throughput_unchanged_on_original_group()
         let mut t = topo.write().await;
         for i in 0..3 {
             t.add_node(Node::new(
-                NodeId::new(format!("node-g1-{}", i)),
-                format!("http://g1-{}:7700", i),
+                NodeId::new(format!("node-g1-{i}")),
+                format!("http://g1-{i}:7700"),
                 1,
             ));
         }
@@ -218,8 +218,7 @@ async fn acceptance_1_during_sync_query_throughput_unchanged_on_original_group()
         let chosen_group = router::query_group_active(query_seq, &*topo.read().await);
         assert_eq!(
             chosen_group, 0,
-            "Query {} should route to group 0 (active), not group 1 (initializing)",
-            query_seq
+            "Query {query_seq} should route to group 0 (active), not group 1 (initializing)"
         );
     }
 
@@ -304,7 +303,7 @@ async fn acceptance_3_mid_sync_writes_present_on_both_groups_after_sync() {
 
     // Set up fetch responses for group 0 nodes (source)
     for i in 0..3 {
-        let node_id = NodeId::new(format!("node-g0-{}", i));
+        let node_id = NodeId::new(format!("node-g0-{i}"));
         // Set up 5 pages of 1000 docs each (5000 total)
         for page in 0..5 {
             let docs: Vec<serde_json::Value> = (0..1000)
@@ -345,7 +344,7 @@ async fn acceptance_3_mid_sync_writes_present_on_both_groups_after_sync() {
             .filter(|n| {
                 node_map
                     .get(n)
-                    .map_or(false, |node| node.replica_group == 0)
+                    .is_some_and(|node| node.replica_group == 0)
             })
             .count();
         let group_1_count = targets
@@ -353,7 +352,7 @@ async fn acceptance_3_mid_sync_writes_present_on_both_groups_after_sync() {
             .filter(|n| {
                 node_map
                     .get(n)
-                    .map_or(false, |node| node.replica_group == 1)
+                    .is_some_and(|node| node.replica_group == 1)
             })
             .count();
 
@@ -423,7 +422,7 @@ async fn acceptance_4_failed_sync_pauses_and_resumes() {
 
     // Set up fetch responses for group 0 nodes
     for i in 0..3 {
-        let node_id = NodeId::new(format!("node-g0-{}", i));
+        let node_id = NodeId::new(format!("node-g0-{i}"));
         let docs: Vec<serde_json::Value> = (0..1000)
             .map(|j| json!({"id": format!("doc-{}", j), "data": "value"}))
             .collect();

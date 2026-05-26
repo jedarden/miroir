@@ -90,7 +90,7 @@ fn test_tracing_enabled_creates_layer() {
 fn test_default_tracing_config_is_disabled() {
     // Verify the default config has tracing disabled
     let config = MiroirConfig::default();
-    assert_eq!(config.tracing.enabled, false, "Default should be disabled");
+    assert!(!config.tracing.enabled, "Default should be disabled");
     assert_eq!(config.tracing.endpoint, "http://tempo.monitoring.svc:4317");
     assert_eq!(config.tracing.service_name, "miroir");
     assert_eq!(config.tracing.sample_rate, 0.1);
@@ -146,7 +146,7 @@ fn test_pod_name_from_env() {
 
     // The actual POD_NAME value is read at runtime in otel.rs
     // Here we just verify the config structure supports the tracing field
-    assert!(config.tracing.service_name.len() > 0);
+    assert!(!config.tracing.service_name.is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +268,7 @@ fn test_tracing_config_from_toml() {
     let parsed: miroir_core::config::advanced::TracingConfig =
         toml::from_str(toml_str).expect("Should parse from TOML");
 
-    assert_eq!(parsed.enabled, true);
+    assert!(parsed.enabled);
     assert_eq!(parsed.endpoint, "http://tempo-custom:4317");
     assert_eq!(parsed.service_name, "miroir-custom");
     assert_eq!(parsed.sample_rate, 0.25);

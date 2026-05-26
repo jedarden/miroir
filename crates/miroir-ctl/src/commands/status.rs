@@ -58,22 +58,22 @@ async fn show_status(
 
     let resp = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", admin_key))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .header("X-Admin-Key", admin_key)
         .send()
         .await
-        .map_err(|e| format!("Failed to get cluster status: {}", e))?;
+        .map_err(|e| format!("Failed to get cluster status: {e}"))?;
 
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Status check failed: HTTP {} — {}", status, text).into());
+        return Err(format!("Status check failed: HTTP {status} — {text}").into());
     }
 
     let topo: TopologyResponse = resp
         .json()
         .await
-        .map_err(|e| format!("Invalid response: {}", e))?;
+        .map_err(|e| format!("Invalid response: {e}"))?;
 
     print_cluster_status(&topo);
     Ok(())
@@ -94,17 +94,17 @@ async fn watch_status(
 
         let resp = client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", admin_key))
+            .header("Authorization", format!("Bearer {admin_key}"))
             .header("X-Admin-Key", admin_key)
             .send()
             .await
-            .map_err(|e| format!("Failed to get cluster status: {}", e))?;
+            .map_err(|e| format!("Failed to get cluster status: {e}"))?;
 
         if resp.status().is_success() {
             let topo: TopologyResponse = resp
                 .json()
                 .await
-                .map_err(|e| format!("Invalid response: {}", e))?;
+                .map_err(|e| format!("Invalid response: {e}"))?;
 
             print_cluster_status(&topo);
             println!("\nRefreshing every 2 seconds (Ctrl+C to exit)...");
@@ -155,7 +155,7 @@ fn print_cluster_status(topo: &TopologyResponse) {
             );
 
             if let Some(ref error) = node.error {
-                println!("    └─ error: {}", error);
+                println!("    └─ error: {error}");
             }
         }
     }

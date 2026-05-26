@@ -114,7 +114,7 @@ fn acceptance_1_1000_docs_indexed_retrievable() {
                 .any(|d| d.get("id").and_then(|v| v.as_str()) == Some(id)),
             _ => false,
         };
-        assert!(found, "document {} should be retrievable", id);
+        assert!(found, "document {id} should be retrievable");
     }
 }
 
@@ -147,10 +147,7 @@ async fn acceptance_2_distribution_across_all_nodes() {
     for (node_idx, count) in &node_counts {
         assert!(
             *count >= min_count,
-            "node {} has {} docs, expected at least {} (20%)",
-            node_idx,
-            count,
-            min_count
+            "node {node_idx} has {count} docs, expected at least {min_count} (20%)"
         );
     }
 
@@ -162,10 +159,8 @@ async fn acceptance_2_distribution_across_all_nodes() {
     for (node_idx, count) in &node_counts {
         let percentage = (*count as f64 / 1000.0) * 100.0;
         assert!(
-            percentage >= 20.0 && percentage <= 50.0,
-            "node {} has {:.1}% of documents, expected roughly 33%",
-            node_idx,
-            percentage
+            (20.0..=50.0).contains(&percentage),
+            "node {node_idx} has {percentage:.1}% of documents, expected roughly 33%"
         );
     }
 }
@@ -469,7 +464,7 @@ fn test_shard_for_key_within_range() {
     let shard_count = 8u32;
 
     for i in 0..100 {
-        let key = format!("key-{}", i);
+        let key = format!("key-{i}");
         let shard = shard_for_key(&key, shard_count);
         assert!(shard < shard_count, "shard ID should be within range");
     }
@@ -483,7 +478,7 @@ fn test_shard_distribution_evenness() {
     let mut shard_counts: HashMap<u32, usize> = HashMap::new();
 
     for i in 0..doc_count {
-        let key = format!("doc-{}", i);
+        let key = format!("doc-{i}");
         let shard = shard_for_key(&key, shard_count);
         *shard_counts.entry(shard).or_insert(0) += 1;
     }
@@ -496,11 +491,7 @@ fn test_shard_distribution_evenness() {
     for (shard, count) in &shard_counts {
         assert!(
             *count >= min_expected && *count <= max_expected,
-            "shard {} has {} docs, expected between {} and {}",
-            shard,
-            count,
-            min_expected,
-            max_expected
+            "shard {shard} has {count} docs, expected between {min_expected} and {max_expected}"
         );
     }
 

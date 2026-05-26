@@ -80,8 +80,7 @@ fn test_miroir_error_shape_matches_meilisearch() {
         let error_code = json.get("code").unwrap().as_str().unwrap();
         assert!(
             error_code.starts_with("miroir_"),
-            "Miroir error codes must have 'miroir_' prefix, got: {}",
-            error_code
+            "Miroir error codes must have 'miroir_' prefix, got: {error_code}"
         );
 
         // Verify link format
@@ -216,9 +215,7 @@ fn test_error_code_roundtrip() {
         assert_eq!(
             parsed,
             Some(code),
-            "Code '{}' should roundtrip to {:?}",
-            code_str,
-            code
+            "Code '{code_str}' should roundtrip to {code:?}"
         );
     }
 }
@@ -334,9 +331,7 @@ fn test_all_miroir_codes_are_documented() {
         // Verify link contains the error code
         assert!(
             link.contains(&format!("#{}", code.as_str())),
-            "Documentation link for {:?} should reference the error code: {}",
-            code,
-            link
+            "Documentation link for {code:?} should reference the error code: {link}"
         );
 
         // Verify link is a valid URL
@@ -436,10 +431,8 @@ fn test_http_status_matches_error_type() {
     for (code, expected_status) in client_error_codes {
         let status = code.http_status();
         assert!(
-            status >= 400 && status < 500,
-            "Client error {:?} should have 4xx status, got {}",
-            code,
-            status
+            (400..500).contains(&status),
+            "Client error {code:?} should have 4xx status, got {status}"
         );
         assert_eq!(status, expected_status);
     }
@@ -455,10 +448,8 @@ fn test_http_status_matches_error_type() {
     for (code, expected_status) in server_error_codes {
         let status = code.http_status();
         assert!(
-            status >= 500 && status < 600,
-            "Server error {:?} should have 5xx status, got {}",
-            code,
-            status
+            (500..600).contains(&status),
+            "Server error {code:?} should have 5xx status, got {status}"
         );
         assert_eq!(status, expected_status);
     }

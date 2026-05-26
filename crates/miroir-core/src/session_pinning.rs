@@ -146,9 +146,9 @@ impl SessionManager {
 
         // Enforce max sessions (simple FIFO - remove oldest entry when at capacity)
         if sessions.len() >= self.config.max_sessions as usize {
-            // Remove oldest entry (first key in HashMap)
+            // Remove oldest entry (first key in IndexMap)
             if let Some(key) = sessions.keys().next().cloned() {
-                sessions.remove(&key);
+                sessions.shift_remove(&key);
                 debug!(session_id = %key, "evicted oldest session to enforce max_sessions");
             }
         }
@@ -311,7 +311,7 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         let mut pending = self.pending_writes.write().await;
         pending.remove(session_id);
-        sessions.remove(session_id).is_some()
+        sessions.shift_remove(session_id).is_some()
     }
 
     /// Clean up expired sessions.
@@ -329,7 +329,7 @@ impl SessionManager {
         }
 
         for id in &to_remove {
-            sessions.remove(id);
+            sessions.shift_remove(id);
             pending.remove(id);
         }
 

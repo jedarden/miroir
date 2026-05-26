@@ -45,7 +45,6 @@ use crate::{
 };
 
 // Re-export commonly used types for admin API responses
-pub use miroir_core::rebalancer_worker::RebalanceJobId;
 
 /// Hash a PII value (IP address) for safe log correlation.
 fn hash_for_log(value: &str) -> String {

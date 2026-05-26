@@ -12,7 +12,7 @@ use miroir_core::config::{MiroirConfig, NodeConfig, SearchUiConfig};
 use miroir_core::task_store::{RedisTaskStore, SearchUiScopedKey, TaskStore};
 use miroir_proxy::routes::indexes::MeilisearchClient;
 use miroir_proxy::scoped_key_rotation::{
-    self, RotateScopedKeyRequest, RotateScopedKeyResponse, ScopedKeyRotationState,
+    self, ScopedKeyRotationState,
 };
 use serde_json::json;
 use testcontainers::runners::AsyncRunner;
@@ -345,7 +345,7 @@ async fn test_force_rotation_bypasses_timing_gate() {
         None,
         None,
         1,
-        1 * 24 * 3600 * 1000,
+        24 * 3600 * 1000,
     );
 
     register_pod(&redis, "pod-1");

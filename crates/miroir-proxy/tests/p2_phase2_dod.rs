@@ -117,8 +117,7 @@ fn test_1000_docs_shard_assignment_coverage() {
         for node_id in &targets {
             assert!(
                 topo.node(node_id).is_some(),
-                "target node {} should exist",
-                node_id
+                "target node {node_id} should exist"
             );
         }
     }
@@ -225,7 +224,7 @@ async fn test_unique_keyword_search_deduplication() {
     }
 
     for (id, count) in &seen_ids {
-        assert_eq!(*count, 1, "doc {} appeared {} times, expected 1", id, count);
+        assert_eq!(*count, 1, "doc {id} appeared {count} times, expected 1");
     }
 
     // Should find all 8 docs (2 per shard × 4 shards)
@@ -391,8 +390,7 @@ async fn test_paging_preserves_global_ordering() {
     let overlap: std::collections::HashSet<_> = page1_ids.intersection(&page2_ids).collect();
     assert!(
         overlap.is_empty(),
-        "pages should not overlap, but found: {:?}",
-        overlap
+        "pages should not overlap, but found: {overlap:?}"
     );
 
     // Combined should have 10 hits total (5 per page)
@@ -412,9 +410,7 @@ async fn test_paging_preserves_global_ordering() {
         .unwrap_or(1.0);
     assert!(
         page1_max_score >= page2_min_score,
-        "page 1 min score ({}) should be >= page 2 max score ({})",
-        page1_max_score,
-        page2_min_score
+        "page 1 min score ({page1_max_score}) should be >= page 2 max score ({page2_min_score})"
     );
 }
 
@@ -457,8 +453,7 @@ fn test_degraded_write_one_group_down() {
             .collect();
         assert!(
             !group0_targets.is_empty(),
-            "shard {} should have group 0 targets",
-            shard_id
+            "shard {shard_id} should have group 0 targets"
         );
     }
 }
@@ -502,45 +497,38 @@ fn test_error_shape_byte_for_byte_parity() {
     // Every MiroirCode must produce a JSON object with exactly the keys:
     // {message, code, type, link} where code starts with "miroir_".
     for code in ALL_CODES {
-        let err = MeilisearchError::new(code, format!("test message for {:?}", code));
+        let err = MeilisearchError::new(code, format!("test message for {code:?}"));
         let json_str = serde_json::to_string(&err).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         // Must have all four fields
         assert!(
             parsed.get("message").is_some(),
-            "{:?}: missing message",
-            code
+            "{code:?}: missing message"
         );
-        assert!(parsed.get("code").is_some(), "{:?}: missing code", code);
-        assert!(parsed.get("type").is_some(), "{:?}: missing type", code);
-        assert!(parsed.get("link").is_some(), "{:?}: missing link", code);
+        assert!(parsed.get("code").is_some(), "{code:?}: missing code");
+        assert!(parsed.get("type").is_some(), "{code:?}: missing type");
+        assert!(parsed.get("link").is_some(), "{code:?}: missing link");
 
         // Code must start with miroir_
         let code_str = parsed["code"].as_str().unwrap();
         assert!(
             code_str.starts_with("miroir_"),
-            "{:?}: code '{}' should start with miroir_",
-            code,
-            code_str
+            "{code:?}: code '{code_str}' should start with miroir_"
         );
 
         // Type must be a valid Meilisearch error type
         let type_str = parsed["type"].as_str().unwrap();
         assert!(
             ["invalid_request", "auth", "internal", "system"].contains(&type_str),
-            "{:?}: type '{}' is not a valid Meilisearch error type",
-            code,
-            type_str
+            "{code:?}: type '{type_str}' is not a valid Meilisearch error type"
         );
 
         // Link must be a string pointing to docs
         let link_str = parsed["link"].as_str().unwrap();
         assert!(
             link_str.contains("docs/errors.md"),
-            "{:?}: link '{}' should point to error docs",
-            code,
-            link_str
+            "{code:?}: link '{link_str}' should point to error docs"
         );
     }
 }

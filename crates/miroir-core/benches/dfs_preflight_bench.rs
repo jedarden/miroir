@@ -13,7 +13,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use miroir_core::merger::ScoreMergeStrategy;
 use miroir_core::replica_selection::ReplicaSelector;
 use miroir_core::scatter::{
-    dfs_query_then_fetch_search, execute_preflight, plan_search_scatter, GlobalIdf, MockNodeClient,
+    plan_search_scatter, GlobalIdf, MockNodeClient,
     PreflightRequest, PreflightResponse, SearchRequest, TermStats,
 };
 use miroir_core::topology::{Node, NodeId, Topology};
@@ -28,8 +28,8 @@ fn make_test_topology(shards: u32, replica_groups: u32, replication_factor: usiz
     for rg in 0..replica_groups {
         for _ in 0..replication_factor {
             let mut node = Node::new(
-                NodeId::new(format!("node-{}", node_count)),
-                format!("http://node-{}:7700", node_count),
+                NodeId::new(format!("node-{node_count}")),
+                format!("http://node-{node_count}:7700"),
                 rg,
             );
             node.status = miroir_core::topology::NodeStatus::Active;
@@ -108,7 +108,7 @@ fn bench_preflight_phase(c: &mut Criterion) {
         ));
 
         // Create mock client with preflight responses
-        let mut client = MockNodeClient::default();
+        let client = MockNodeClient::default();
 
         for node_id in plan.shard_to_node.values() {
             // Each node returns a preflight response
@@ -226,7 +226,7 @@ fn bench_varying_term_counts(c: &mut Criterion) {
     let mut group = c.benchmark_group("varying_term_counts");
 
     for term_count in [1, 3, 5, 10, 20].iter() {
-        let terms: Vec<String> = (0..*term_count).map(|i| format!("term{}", i)).collect();
+        let terms: Vec<String> = (0..*term_count).map(|i| format!("term{i}")).collect();
 
         // Simulate responses with term_count terms each
         let responses: Vec<PreflightResponse> = (0..3)

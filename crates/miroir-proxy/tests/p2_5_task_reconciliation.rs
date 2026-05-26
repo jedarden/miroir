@@ -314,7 +314,7 @@ async fn test_registry_survives_multiple_concurrent_requests() {
         let reg = registry.clone();
         let handle = tokio::spawn(async move {
             let mut node_tasks = HashMap::new();
-            node_tasks.insert(format!("node-{}", i), i as u64);
+            node_tasks.insert(format!("node-{i}"), i as u64);
             node_tasks.insert(format!("node-{}", i + 10), (i + 10) as u64);
 
             reg.register_async(node_tasks).await.unwrap()
@@ -335,8 +335,7 @@ async fn test_registry_survives_multiple_concurrent_requests() {
         let retrieved = registry.get_async(miroir_id).await;
         assert!(
             retrieved.is_some(),
-            "Task {} should be in registry",
-            miroir_id
+            "Task {miroir_id} should be in registry"
         );
     }
 
@@ -420,7 +419,7 @@ async fn test_list_tasks_with_limit_and_offset() {
     let mut miroir_ids = Vec::new();
     for i in 0..5 {
         let mut node_tasks = HashMap::new();
-        node_tasks.insert(format!("node-{}", i), i as u64);
+        node_tasks.insert(format!("node-{i}"), i as u64);
         let task = registry.register_async(node_tasks).await.unwrap();
         miroir_ids.push(task.miroir_id);
     }
@@ -470,7 +469,7 @@ async fn test_count_returns_total_tasks() {
     // Add 3 tasks
     for i in 0..3 {
         let mut node_tasks = HashMap::new();
-        node_tasks.insert(format!("node-{}", i), i as u64);
+        node_tasks.insert(format!("node-{i}"), i as u64);
         registry.register_async(node_tasks).await.unwrap();
     }
 

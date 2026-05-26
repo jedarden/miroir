@@ -6,9 +6,9 @@
 //! - Streaming xxh3 digest folding
 //! - Self-throttling behavior
 
-use miroir_core::anti_entropy::{AntiEntropyConfig, AntiEntropyReconciler, ShardFingerprint};
-use miroir_core::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, MockNodeClient};
-use miroir_core::topology::{Node, NodeId, Topology};
+use miroir_core::anti_entropy::{AntiEntropyConfig, AntiEntropyReconciler};
+use miroir_core::scatter::{FetchDocumentsResponse, MockNodeClient};
+use miroir_core::topology::{NodeId, Topology};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock;

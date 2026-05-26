@@ -49,7 +49,7 @@ async fn echo_headers(headers: HeaderMap) -> String {
     let mut echoed = Vec::new();
     for (name, value) in headers.iter() {
         if let Ok(value_str) = value.to_str() {
-            echoed.push(format!("{}: {}", name, value_str));
+            echoed.push(format!("{name}: {value_str}"));
         }
     }
     echoed.join("\n")
@@ -575,8 +575,7 @@ fn validate_all_miroir_header_names() {
         {
             assert!(
                 header.starts_with("X-Miroir-"),
-                "Miroir-specific header should use X-Miroir- prefix: {}",
-                header
+                "Miroir-specific header should use X-Miroir- prefix: {header}"
             );
         }
     }
@@ -639,8 +638,7 @@ fn validate_header_directions() {
 #[test]
 fn header_contract_complete() {
     // Verify all headers from plan §5 are covered by tests
-    let all_expected_headers = vec![
-        "X-Miroir-Degraded",
+    let all_expected_headers = ["X-Miroir-Degraded",
         "X-Miroir-Settings-Version",
         "X-Miroir-Min-Settings-Version",
         "X-Miroir-Settings-Inconsistent",
@@ -650,8 +648,7 @@ fn header_contract_complete() {
         "X-Miroir-Tenant",
         "X-Admin-Key",
         "X-CSRF-Token",
-        "X-Search-UI-Key",
-    ];
+        "X-Search-UI-Key"];
 
     // This test serves as documentation that all headers are accounted for
     assert_eq!(
@@ -661,21 +658,17 @@ fn header_contract_complete() {
     );
 
     // Categorize by direction
-    let response_only = vec![
-        "X-Miroir-Degraded",
+    let response_only = ["X-Miroir-Degraded",
         "X-Miroir-Settings-Version",
-        "X-Miroir-Settings-Inconsistent",
-    ];
-    let request_only = vec![
-        "Idempotency-Key",
+        "X-Miroir-Settings-Inconsistent"];
+    let request_only = ["Idempotency-Key",
         "X-Miroir-Min-Settings-Version",
         "X-Miroir-Over-Fetch",
         "X-Miroir-Tenant",
         "X-Admin-Key",
         "X-CSRF-Token",
-        "X-Search-UI-Key",
-    ];
-    let bidirectional = vec!["X-Miroir-Session"];
+        "X-Search-UI-Key"];
+    let bidirectional = ["X-Miroir-Session"];
 
     assert_eq!(response_only.len(), 3, "3 response-only headers");
     assert_eq!(request_only.len(), 7, "7 request-only headers");

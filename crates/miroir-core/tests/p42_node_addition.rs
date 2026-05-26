@@ -12,8 +12,8 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use miroir_core::{
-    migration::{MigrationConfig, MigrationCoordinator, NodeId as MigrationNodeId, ShardId},
-    rebalancer::{HttpMigrationExecutor, MigrationExecutor, Rebalancer, RebalancerConfig},
+    migration::MigrationConfig,
+    rebalancer::{MigrationExecutor, Rebalancer, RebalancerConfig},
     router::assign_shard_in_group,
     topology::{Node, NodeId, NodeStatus, Topology},
 };
@@ -151,8 +151,7 @@ impl MigrationExecutor for MockMigrationExecutor {
             })
             .unwrap_or_else(|| {
                 println!(
-                    "MockMigrationExecutor: fetch {} shard {} offset {} -> NO DOCS",
-                    source_node, shard_id, offset
+                    "MockMigrationExecutor: fetch {source_node} shard {shard_id} offset {offset} -> NO DOCS"
                 );
                 (Vec::new(), 0)
             });
@@ -211,7 +210,7 @@ impl MigrationExecutor for MockMigrationExecutor {
                     let mut stored = self.stored_docs.lock().unwrap();
                     let docs = stored
                         .entry((target_node.to_string(), shard_id as u32))
-                        .or_insert_with(Vec::new);
+                        .or_default();
 
                     // Check if doc already exists (by id)
                     if !docs
@@ -270,7 +269,7 @@ fn populate_node(
             });
             stored
                 .entry((node.to_string(), shard_id))
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(doc);
         }
     }
@@ -287,7 +286,7 @@ async fn p42_node_addition_3_to_4_migration_10k_docs() {
     let total_docs = shards * docs_per_shard;
 
     // Create 3-node topology
-    let mut topo = create_test_topology(shards, 3);
+    let topo = create_test_topology(shards, 3);
 
     // Create mock executor
     let executor = Arc::new(MockMigrationExecutor::default());
@@ -325,7 +324,7 @@ async fn p42_node_addition_3_to_4_migration_10k_docs() {
         anti_entropy_enabled: true,
     };
 
-    let mut rebalancer = Rebalancer::new(config, topo_arc.clone(), migration_config)
+    let rebalancer = Rebalancer::new(config, topo_arc.clone(), migration_config)
         .with_migration_executor(executor.clone());
 
     // Add a 4th node
@@ -336,7 +335,7 @@ async fn p42_node_addition_3_to_4_migration_10k_docs() {
     };
 
     let result = rebalancer.add_node(request).await;
-    assert!(result.is_ok(), "Node addition should succeed: {:?}", result);
+    assert!(result.is_ok(), "Node addition should succeed: {result:?}");
 
     let result = result.unwrap();
     // With RF=2, the new node enters the assignment for roughly RF/(N+1) = 2/4 = 1/2 of shards
@@ -407,8 +406,7 @@ async fn p42_node_addition_3_to_4_migration_10k_docs() {
                 if shards_on_new_node.contains(&shard_id) {
                     assert_eq!(
                         count, docs_per_shard as usize,
-                        "New node should have {} docs for shard {}, got {}",
-                        docs_per_shard, shard_id, count
+                        "New node should have {docs_per_shard} docs for shard {shard_id}, got {count}"
                     );
                 }
             }
@@ -417,7 +415,7 @@ async fn p42_node_addition_3_to_4_migration_10k_docs() {
         // Track unique document IDs (not per-replica)
         // Documents are identified by their shard-local ID, which is unique across replicas
         for i in 0..docs_per_shard {
-            verified_docs.insert(format!("s{}-{}", shard_id, i));
+            verified_docs.insert(format!("s{shard_id}-{i}"));
         }
     }
 
@@ -425,8 +423,7 @@ async fn p42_node_addition_3_to_4_migration_10k_docs() {
     assert_eq!(
         verified_docs.len(),
         total_docs as usize,
-        "All {} documents should be retrievable",
-        total_docs
+        "All {total_docs} documents should be retrievable"
     );
 }
 
@@ -440,7 +437,7 @@ async fn p42_chaos_writes_during_migration_dual_write() {
     let docs_per_shard = 100;
     let migration_writes_per_shard = 50; // Writes during migration
 
-    let mut topo = create_test_topology(shards, 3);
+    let topo = create_test_topology(shards, 3);
     let executor = Arc::new(MockMigrationExecutor::default());
 
     // Populate initial documents
@@ -507,7 +504,7 @@ async fn p42_chaos_writes_during_migration_dual_write() {
     for shard_id in 0..shards {
         let count = executor.get_stored_doc_count("node-3", shard_id);
         if count > 0 {
-            println!("Shard {} has {} docs on node-3", shard_id, count);
+            println!("Shard {shard_id} has {count} docs on node-3");
             shards_with_docs_on_new_node.push(shard_id);
         }
     }
@@ -532,15 +529,13 @@ async fn p42_chaos_writes_during_migration_dual_write() {
         let assigned = assign_shard_in_group(*shard_id, &all_nodes, 2);
         assert!(
             assigned.contains(&new_node_id),
-            "Shard {} with docs on new node should be assigned to new node",
-            shard_id
+            "Shard {shard_id} with docs on new node should be assigned to new node"
         );
         // Verify correct number of docs
         let count = executor.get_stored_doc_count("node-3", *shard_id);
         assert_eq!(
             count, docs_per_shard as usize,
-            "New node should have {} docs for shard {}, got {}",
-            docs_per_shard, shard_id, count
+            "New node should have {docs_per_shard} docs for shard {shard_id}, got {count}"
         );
     }
 
@@ -563,7 +558,7 @@ async fn p42_performance_document_count_bounds() {
     let old_node_count = 3;
     let new_node_count = 4;
 
-    let mut topo = create_test_topology(shards, old_node_count);
+    let topo = create_test_topology(shards, old_node_count);
     let executor = Arc::new(MockMigrationExecutor::default());
 
     // Populate all shards across all nodes
@@ -625,20 +620,14 @@ async fn p42_performance_document_count_bounds() {
 
     assert!(
         docs_moved <= expected_max as usize,
-        "Migrated {} docs, expected ≤ {} ({} total / {} nodes × 2.2)",
-        docs_moved,
-        expected_max,
-        total_docs,
-        new_node_count
+        "Migrated {docs_moved} docs, expected ≤ {expected_max} ({total_docs} total / {new_node_count} nodes × 2.2)"
     );
 
     // Also verify we moved at least some documents
     let expected_min = total_docs / new_node_count; // At least the expected amount
     assert!(
         docs_moved >= expected_min as usize,
-        "Migrated {} docs, expected ≥ {}",
-        docs_moved,
-        expected_min
+        "Migrated {docs_moved} docs, expected ≥ {expected_min}"
     );
 }
 
@@ -687,7 +676,7 @@ async fn p42_log_inspection_old_node_not_queried_after_migration() {
     };
 
     let add_result = rebalancer.add_node(request).await;
-    println!("add_node result: {:?}", add_result);
+    println!("add_node result: {add_result:?}");
 
     // Wait for migration to complete
     let mut attempts = 0;
@@ -721,7 +710,7 @@ async fn p42_log_inspection_old_node_not_queried_after_migration() {
 
     for shard_id in 0..shards {
         let assigned = assign_shard_in_group(shard_id, &all_nodes, 2);
-        if assigned.iter().any(|n| *n == new_node_id) {
+        if assigned.contains(&new_node_id) {
             new_node_shards.push(shard_id);
         }
     }
@@ -749,8 +738,7 @@ async fn p42_log_inspection_old_node_not_queried_after_migration() {
     println!("Total fetch calls: {}", fetch_calls.len());
     for ((node, shard, offset), count) in fetch_calls.iter() {
         println!(
-            "  {} shard {} offset {}: {} calls",
-            node, shard, offset, count
+            "  {node} shard {shard} offset {offset}: {count} calls"
         );
     }
 
@@ -800,7 +788,7 @@ async fn p42_verify_dual_write_during_migration() {
     let shards = 16;
     let docs_per_shard = 50;
 
-    let mut topo = create_test_topology(shards, 3);
+    let topo = create_test_topology(shards, 3);
     let executor = Arc::new(MockMigrationExecutor::default());
 
     // Populate initial documents
@@ -815,7 +803,7 @@ async fn p42_verify_dual_write_during_migration() {
                 &executor,
                 node_id.as_str(),
                 &[shard_id],
-                docs_per_shard as usize,
+                docs_per_shard,
             );
         }
     }
@@ -913,15 +901,13 @@ async fn p42_verify_dual_write_during_migration() {
     // New node should have the document
     assert!(
         doc_on_new > 0,
-        "New node should have documents for shard {}",
-        shard_id
+        "New node should have documents for shard {shard_id}"
     );
 
     // At least one old node should have cleaned up this shard
     assert!(
         doc_on_old_0 == 0 || doc_on_old_1 == 0 || doc_on_old_0 < docs_per_shard,
-        "At least one old node should have cleaned up shard {}",
-        shard_id
+        "At least one old node should have cleaned up shard {shard_id}"
     );
 }
 
@@ -934,7 +920,7 @@ async fn p42_pagination_limit_offset() {
     let shards = 8;
     let docs_per_shard = 3500; // More than default batch size of 1000
 
-    let mut topo = create_test_topology(shards, 2);
+    let topo = create_test_topology(shards, 2);
     let executor = Arc::new(MockMigrationExecutor::default());
 
     // Populate initial documents
@@ -949,7 +935,7 @@ async fn p42_pagination_limit_offset() {
                 &executor,
                 node_id.as_str(),
                 &[shard_id],
-                docs_per_shard as usize,
+                docs_per_shard,
             );
         }
     }
@@ -973,7 +959,7 @@ async fn p42_pagination_limit_offset() {
     };
 
     let add_result = rebalancer.add_node(request).await;
-    println!("add_node result: {:?}", add_result);
+    println!("add_node result: {add_result:?}");
 
     // Give the background task a moment to start
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1035,22 +1021,19 @@ async fn p42_pagination_limit_offset() {
 
     assert!(
         found_paginated_shard.is_some(),
-        "Should have multiple fetch calls for at least one shard with {} docs (pagination needed)",
-        docs_per_shard
+        "Should have multiple fetch calls for at least one shard with {docs_per_shard} docs (pagination needed)"
     );
 
     let (shard_id, offsets) = found_paginated_shard.unwrap();
     println!(
-        "Shard {} has paginated fetches with offsets: {:?}",
-        shard_id, offsets
+        "Shard {shard_id} has paginated fetches with offsets: {offsets:?}"
     );
 
     // Verify offsets are multiples of batch size
     for offset in &offsets {
         assert!(
             *offset % 1000 == 0,
-            "Offset {} should be a multiple of batch size 1000",
-            offset
+            "Offset {offset} should be a multiple of batch size 1000"
         );
     }
 
@@ -1058,9 +1041,6 @@ async fn p42_pagination_limit_offset() {
     let new_node_docs = executor.get_stored_doc_count("node-2", shard_id);
     assert!(
         new_node_docs == docs_per_shard,
-        "All {} documents should be migrated for shard {}, got {}",
-        docs_per_shard,
-        shard_id,
-        new_node_docs
+        "All {docs_per_shard} documents should be migrated for shard {shard_id}, got {new_node_docs}"
     );
 }

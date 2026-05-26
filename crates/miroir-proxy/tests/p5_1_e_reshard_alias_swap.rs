@@ -9,7 +9,7 @@
 //! This is the cutover phase that runs after verification completes,
 //! making the new shadow index the live target for all client traffic.
 
-use miroir_core::reshard::{alias_swap_phase, AliasSwapError, AliasSwapResult};
+use miroir_core::reshard::{alias_swap_phase, AliasSwapError};
 use miroir_core::task_store::{AliasHistoryEntry, NewAlias, TaskStore};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -167,7 +167,7 @@ async fn test_alias_swap_phase_history_retention() {
     let mut history = vec![];
     for i in 1..=5 {
         history.push(AliasHistoryEntry {
-            uid: format!("v{}", i),
+            uid: format!("v{i}"),
             flipped_at: now - (5 - i) * 100,
         });
     }
@@ -207,7 +207,7 @@ async fn test_alias_swap_error_display() {
     ];
 
     for error in errors {
-        let msg = format!("{}", error);
+        let msg = format!("{error}");
         assert!(!msg.is_empty(), "error message should not be empty");
     }
 }

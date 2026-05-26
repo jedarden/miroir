@@ -7,8 +7,6 @@
 //! - History retention: 11th flip evicts oldest
 
 use miroir_core::alias::{Alias, AliasKind, AliasRegistry};
-use miroir_core::task_store::{NewAlias, TaskStore};
-use std::sync::Arc;
 
 /// Test that single-target alias resolves correctly.
 #[tokio::test]
@@ -47,7 +45,7 @@ async fn test_unknown_index_returns_as_is() {
     let registry = AliasRegistry::new();
 
     // Resolve unknown index - should return as-is
-    let resolved = registry.resolve("concrete_index".into()).await;
+    let resolved = registry.resolve("concrete_index").await;
     assert_eq!(resolved, vec!["concrete_index"]);
 }
 

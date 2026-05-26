@@ -10,8 +10,6 @@
 //! - GET /_miroir/topology matches expected shape
 
 use std::collections::HashSet;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 #[derive(Clone)]
 struct TestNode {
@@ -23,7 +21,7 @@ impl TestNode {
     fn new(id: impl Into<String>, port: u16) -> Self {
         Self {
             id: id.into(),
-            base_url: format!("http://127.0.0.1:{}", port),
+            base_url: format!("http://127.0.0.1:{port}"),
         }
     }
 
@@ -66,11 +64,11 @@ impl TestCluster {
         let nodes = node_ports
             .into_iter()
             .enumerate()
-            .map(|(i, port)| TestNode::new(format!("node-{}", i), port))
+            .map(|(i, port)| TestNode::new(format!("node-{i}"), port))
             .collect();
 
         Self {
-            proxy_url: format!("http://127.0.0.1:{}", proxy_port),
+            proxy_url: format!("http://127.0.0.1:{proxy_port}"),
             nodes,
         }
     }
@@ -179,7 +177,7 @@ async fn test_1000_documents_indexed_retrievable_by_id() {
 
     // Verify each document is retrievable by ID
     for i in 0..1000 {
-        let id = format!("doc-{:05}", i);
+        let id = format!("doc-{i:05}");
         let resp = cluster.get_document("test_index", &id).await;
 
         assert!(
@@ -225,7 +223,7 @@ async fn test_unique_keyword_search_finds_all_docs_once() {
 
     // Search for each unique keyword and verify exactly one result
     for i in 0..100 {
-        let keyword = format!("unique-keyword-{}", i);
+        let keyword = format!("unique-keyword-{i}");
         let search_resp = cluster
             .search(
                 "search_test",
@@ -262,7 +260,7 @@ async fn test_unique_keyword_search_finds_all_docs_once() {
     let mut seen_ids = HashSet::new();
     for hit in all_hits {
         let id = hit["id"].as_str().unwrap();
-        assert!(seen_ids.insert(id), "Duplicate document ID found: {}", id);
+        assert!(seen_ids.insert(id), "Duplicate document ID found: {id}");
     }
 
     assert_eq!(seen_ids.len(), 100, "Expected 100 unique documents");
@@ -404,9 +402,7 @@ async fn test_offset_limit_paging_preserves_global_ordering() {
         assert_eq!(
             hits.len(),
             page_size,
-            "Expected {} results on page {}",
-            page_size,
-            page
+            "Expected {page_size} results on page {page}"
         );
 
         for hit in hits {
@@ -423,13 +419,12 @@ async fn test_offset_limit_paging_preserves_global_ordering() {
     for value in all_values {
         assert!(
             seen.insert(value),
-            "Duplicate value found in paging: {}",
-            value
+            "Duplicate value found in paging: {value}"
         );
     }
 
     for i in 0..100 {
-        assert!(seen.contains(&i), "Missing value {} in results", i);
+        assert!(seen.contains(&i), "Missing value {i} in results");
     }
 }
 

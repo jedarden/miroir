@@ -13,7 +13,6 @@
 //   cargo test --test integration -- --test-threads=1
 
 use meilisearch_sdk::{client::Client, indexes::Index, search::SearchResults, tasks::Task};
-use reqwest::StatusCode;
 use serde_json::json;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -40,13 +39,13 @@ struct TestDoc {
 
 /// Helper: Get Miroir client
 fn miroir_client() -> Client {
-    let url = format!("http://localhost:{}", MIROIR_PORT);
+    let url = format!("http://localhost:{MIROIR_PORT}");
     Client::new(url, Some(MASTER_KEY.to_string())).expect("Failed to create Miroir client")
 }
 
 /// Helper: Get direct client to a Meilisearch node
 fn node_client(port: u16) -> Client {
-    let url = format!("http://localhost:{}", port);
+    let url = format!("http://localhost:{port}");
     Client::new(url, Some(NODE_KEY.to_string())).expect("Failed to create Meilisearch node client")
 }
 
@@ -65,13 +64,13 @@ async fn wait_for_task(
         match task {
             Task::Succeeded { .. } => return Ok(task),
             Task::Failed { .. } => {
-                return Err(format!("Task {} failed: {:?}", task_uid, task).into())
+                return Err(format!("Task {task_uid} failed: {task:?}").into())
             }
             _ => {}
         }
 
         if start.elapsed() > timeout {
-            return Err(format!("Task {} timed out", task_uid).into());
+            return Err(format!("Task {task_uid} timed out").into());
         }
 
         sleep(Duration::from_millis(200)).await;
@@ -102,7 +101,7 @@ async fn delete_index(client: &Client, name: &str) -> Result<(), Box<dyn std::er
 /// Helper: Ensure Miroir is healthy
 async fn ensure_healthy() -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
-    let url = format!("http://localhost:{}/health", MIROIR_PORT);
+    let url = format!("http://localhost:{MIROIR_PORT}/health");
 
     for _ in 0..30 {
         match client.get(&url).send().await {
@@ -143,10 +142,10 @@ async fn document_round_trip() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify all documents can be retrieved by ID
     for i in 0..1000 {
-        let id = format!("doc-{:05}", i);
+        let id = format!("doc-{i:05}");
         let doc: TestDoc = index.get_document(&id).await?;
         assert_eq!(doc.id, id);
-        assert_eq!(doc.title, format!("Document {}", i));
+        assert_eq!(doc.title, format!("Document {i}"));
     }
 
     // Verify documents are distributed across all 3 nodes
@@ -164,16 +163,14 @@ async fn document_round_trip() -> Result<(), Box<dyn std::error::Error>> {
     let populated_nodes = node_doc_counts.values().filter(|&&c| c > 0).count();
     assert!(
         populated_nodes >= 2,
-        "Documents not distributed: {:?}",
-        node_doc_counts
+        "Documents not distributed: {node_doc_counts:?}"
     );
 
     // Total across nodes equals 1000
     let total: usize = node_doc_counts.values().sum();
     assert_eq!(
         total, 1000,
-        "Total documents mismatch: {:?}",
-        node_doc_counts
+        "Total documents mismatch: {node_doc_counts:?}"
     );
 
     // Clean up
@@ -210,7 +207,7 @@ async fn search_covers_all_shards() -> Result<(), Box<dyn std::error::Error>> {
 
     // Search for each unique keyword — every search must return exactly 1 hit
     for i in 0..100 {
-        let keyword = format!("unique_keyword_{}", i);
+        let keyword = format!("unique_keyword_{i}");
         let results: SearchResults<Value> = index.search().with_query(&keyword).execute().await?;
         let hits = results.hits;
         assert_eq!(
@@ -278,7 +275,7 @@ async fn facet_aggregation() -> Result<(), Box<dyn std::error::Error>> {
     let blue_count = *facet_dist.get("blue").unwrap_or(&0);
 
     let total = red_count + green_count + blue_count;
-    assert_eq!(total, 100, "Facet counts sum to {}, expected 100", total);
+    assert_eq!(total, 100, "Facet counts sum to {total}, expected 100");
 
     // Each color should have at least some documents
     assert!(red_count > 0, "No red documents");
@@ -430,8 +427,7 @@ async fn settings_broadcast() -> Result<(), Box<dyn std::error::Error>> {
             assert_eq!(
                 node_synonyms.get("earbuds"),
                 Some(&vec!["headphones".to_string()]),
-                "Node port {} missing synonyms",
-                port
+                "Node port {port} missing synonyms"
             );
         }
     }
@@ -443,7 +439,7 @@ async fn settings_broadcast() -> Result<(), Box<dyn std::error::Error>> {
         .execute()
         .await?;
     assert!(
-        results.hits.len() >= 1,
+        !results.hits.is_empty(),
         "Synonym search returned no results"
     );
 
@@ -481,13 +477,12 @@ async fn task_polling() -> Result<(), Box<dyn std::error::Error>> {
     let task = wait_for_task(&client, task_uid).await?;
     assert!(
         matches!(task, Task::Succeeded { .. }),
-        "Task did not succeed: {:?}",
-        task
+        "Task did not succeed: {task:?}"
     );
 
     // Verify all documents are searchable
     for i in 0..500 {
-        let id = format!("task-doc-{:04}", i);
+        let id = format!("task-doc-{i:04}");
         let doc: TestDoc = index.get_document(&id).await?;
         assert_eq!(doc.id, id);
     }
@@ -524,7 +519,7 @@ async fn node_failure_rf2() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(7700);
 
-    let client_url = format!("http://localhost:{}", rf2_port);
+    let client_url = format!("http://localhost:{rf2_port}");
     let index_name = "test_rf2_failure";
     let client = Client::new(&client_url, Some(MASTER_KEY.to_string()))
         .expect("Failed to create Meilisearch client");
@@ -562,10 +557,10 @@ async fn node_failure_rf2() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check for X-Miroir-Degraded header (should not appear with RF=2 when one node fails)
     let http_client = reqwest::Client::new();
-    let search_url = format!("{}/indexes/{}/search", client_url, index_name);
+    let search_url = format!("{client_url}/indexes/{index_name}/search");
     let resp = http_client
         .post(&search_url)
-        .header("Authorization", format!("Bearer {}", MASTER_KEY))
+        .header("Authorization", format!("Bearer {MASTER_KEY}"))
         .json(&json!({"q": "content", "limit": 500}))
         .send()
         .await?;

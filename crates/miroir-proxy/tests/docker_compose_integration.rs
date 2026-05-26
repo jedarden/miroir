@@ -57,13 +57,13 @@ impl HttpClient {
             .header("Authorization", format!("Bearer {}", self.master_key))
             .send()
             .await
-            .map_err(|e| format!("GET {} failed: {}", url, e))?;
+            .map_err(|e| format!("GET {url} failed: {e}"))?;
 
         let status = response.status().as_u16();
         let body = response
             .text()
             .await
-            .map_err(|e| format!("Failed to read body: {}", e))?;
+            .map_err(|e| format!("Failed to read body: {e}"))?;
         Ok((status, body))
     }
 
@@ -77,13 +77,13 @@ impl HttpClient {
             .json(body)
             .send()
             .await
-            .map_err(|e| format!("POST {} failed: {}", url, e))?;
+            .map_err(|e| format!("POST {url} failed: {e}"))?;
 
         let status = response.status().as_u16();
         let body = response
             .text()
             .await
-            .map_err(|e| format!("Failed to read body: {}", e))?;
+            .map_err(|e| format!("Failed to read body: {e}"))?;
         Ok((status, body))
     }
 
@@ -97,13 +97,13 @@ impl HttpClient {
             .json(body)
             .send()
             .await
-            .map_err(|e| format!("PATCH {} failed: {}", url, e))?;
+            .map_err(|e| format!("PATCH {url} failed: {e}"))?;
 
         let status = response.status().as_u16();
         let body = response
             .text()
             .await
-            .map_err(|e| format!("Failed to read body: {}", e))?;
+            .map_err(|e| format!("Failed to read body: {e}"))?;
         Ok((status, body))
     }
 
@@ -115,13 +115,13 @@ impl HttpClient {
             .header("Authorization", format!("Bearer {}", self.master_key))
             .send()
             .await
-            .map_err(|e| format!("DELETE {} failed: {}", url, e))?;
+            .map_err(|e| format!("DELETE {url} failed: {e}"))?;
 
         let status = response.status().as_u16();
         let body = response
             .text()
             .await
-            .map_err(|e| format!("Failed to read body: {}", e))?;
+            .map_err(|e| format!("Failed to read body: {e}"))?;
         Ok((status, body))
     }
 }
@@ -137,14 +137,14 @@ async fn wait_for_task(
     let timeout = Duration::from_secs(timeout_secs);
 
     while start.elapsed() < timeout {
-        let (status, body) = client.get(&format!("/tasks/{}", task_uid)).await?;
+        let (status, body) = client.get(&format!("/tasks/{task_uid}")).await?;
         if status == 200 {
             if let Ok(task) = serde_json::from_str::<serde_json::Value>(&body) {
                 if let Some(status_str) = task.get("status").and_then(|v| v.as_str()) {
                     if status_str == "succeeded" {
                         return Ok(task);
                     } else if status_str == "failed" {
-                        return Err(format!("Task failed: {}", body));
+                        return Err(format!("Task failed: {body}"));
                     }
                 }
             }
@@ -153,8 +153,7 @@ async fn wait_for_task(
     }
 
     Err(format!(
-        "Task {} timed out after {} seconds",
-        task_uid, timeout_secs
+        "Task {task_uid} timed out after {timeout_secs} seconds"
     ))
 }
 
@@ -189,8 +188,7 @@ async fn test_document_round_trip() {
     let (status, body) = client.post("/indexes", &create_body).await.unwrap();
     assert!(
         status == 202 || status == 200,
-        "Index creation failed: {}",
-        body
+        "Index creation failed: {body}"
     );
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
@@ -209,7 +207,7 @@ async fn test_document_round_trip() {
         .post("/indexes/round_trip_test/documents", &json!(docs))
         .await
         .unwrap();
-    assert_eq!(status, 202, "Document indexing failed: {}", body);
+    assert_eq!(status, 202, "Document indexing failed: {body}");
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
         .unwrap()
@@ -224,19 +222,19 @@ async fn test_document_round_trip() {
     // Verify all 1000 documents are retrievable by ID
     for i in 0..1000 {
         let (status, body) = client
-            .get(&format!("/indexes/round_trip_test/documents/{}", i))
+            .get(&format!("/indexes/round_trip_test/documents/{i}"))
             .await
             .unwrap();
-        assert_eq!(status, 200, "Failed to fetch document {}: {}", i, body);
+        assert_eq!(status, 200, "Failed to fetch document {i}: {body}");
 
         let doc: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(
             doc.get("id").and_then(|v| v.as_i64()),
-            Some(i64::try_from(i).unwrap())
+            Some(i64::from(i))
         );
         assert_eq!(
             doc.get("title").and_then(|v| v.as_str()),
-            Some(format!("Document {}", i).as_str())
+            Some(format!("Document {i}").as_str())
         );
     }
 
@@ -258,8 +256,7 @@ async fn test_search_shard_coverage() {
     let (status, body) = client.post("/indexes", &create_body).await.unwrap();
     assert!(
         status == 202 || status == 200,
-        "Index creation failed: {}",
-        body
+        "Index creation failed: {body}"
     );
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
@@ -283,8 +280,7 @@ async fn test_search_shard_coverage() {
         .unwrap();
     assert!(
         status == 202 || status == 200,
-        "Settings update failed: {}",
-        body
+        "Settings update failed: {body}"
     );
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
@@ -303,7 +299,7 @@ async fn test_search_shard_coverage() {
         .post("/indexes/shard_coverage_test/documents", &json!(docs))
         .await
         .unwrap();
-    assert_eq!(status, 202, "Document indexing failed: {}", body);
+    assert_eq!(status, 202, "Document indexing failed: {body}");
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
         .unwrap()
@@ -319,7 +315,7 @@ async fn test_search_shard_coverage() {
     let mut found_keywords: HashSet<String> = HashSet::new();
 
     for shard_id in 0..16 {
-        let keyword = format!("keyword_{}", shard_id);
+        let keyword = format!("keyword_{shard_id}");
         let search_body = json!({
             "q": keyword,
             "filter": format!("keyword = {}", keyword)
@@ -331,8 +327,7 @@ async fn test_search_shard_coverage() {
             .unwrap();
         assert_eq!(
             status, 200,
-            "Search failed for keyword {}: {}",
-            keyword, body
+            "Search failed for keyword {keyword}: {body}"
         );
 
         let response: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -375,8 +370,7 @@ async fn test_facet_aggregation() {
     let (status, body) = client.post("/indexes", &create_body).await.unwrap();
     assert!(
         status == 202 || status == 200,
-        "Index creation failed: {}",
-        body
+        "Index creation failed: {body}"
     );
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
@@ -400,8 +394,7 @@ async fn test_facet_aggregation() {
         .unwrap();
     assert!(
         status == 202 || status == 200,
-        "Settings update failed: {}",
-        body
+        "Settings update failed: {body}"
     );
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
@@ -429,7 +422,7 @@ async fn test_facet_aggregation() {
         .post("/indexes/facet_test/documents", &json!(docs))
         .await
         .unwrap();
-    assert_eq!(status, 202, "Document indexing failed: {}", body);
+    assert_eq!(status, 202, "Document indexing failed: {body}");
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
         .unwrap()
@@ -451,7 +444,7 @@ async fn test_facet_aggregation() {
         .post("/indexes/facet_test/search", &search_body)
         .await
         .unwrap();
-    assert_eq!(status, 200, "Facet search failed: {}", body);
+    assert_eq!(status, 200, "Facet search failed: {body}");
 
     let response: serde_json::Value = serde_json::from_str(&body).unwrap();
     let facet_distribution = response
@@ -477,25 +470,21 @@ async fn test_facet_aggregation() {
     let total = red_count + green_count + blue_count;
     assert_eq!(
         total, 100,
-        "Expected total of 100 documents across colors, got {}",
-        total
+        "Expected total of 100 documents across colors, got {total}"
     );
 
     // Each color should have approximately equal distribution (33-34 each)
     assert!(
         (32..=35).contains(&red_count),
-        "Expected ~33 red documents, got {}",
-        red_count
+        "Expected ~33 red documents, got {red_count}"
     );
     assert!(
         (32..=35).contains(&green_count),
-        "Expected ~33 green documents, got {}",
-        green_count
+        "Expected ~33 green documents, got {green_count}"
     );
     assert!(
         (32..=35).contains(&blue_count),
-        "Expected ~33 blue documents, got {}",
-        blue_count
+        "Expected ~33 blue documents, got {blue_count}"
     );
 
     // Clean up
@@ -516,8 +505,7 @@ async fn test_offset_limit_paging() {
     let (status, body) = client.post("/indexes", &create_body).await.unwrap();
     assert!(
         status == 202 || status == 200,
-        "Index creation failed: {}",
-        body
+        "Index creation failed: {body}"
     );
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
@@ -544,7 +532,7 @@ async fn test_offset_limit_paging() {
         .post("/indexes/paging_test/documents", &json!(docs))
         .await
         .unwrap();
-    assert_eq!(status, 202, "Document indexing failed: {}", body);
+    assert_eq!(status, 202, "Document indexing failed: {body}");
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
         .unwrap()
@@ -573,7 +561,7 @@ async fn test_offset_limit_paging() {
             .post("/indexes/paging_test/search", &search_body)
             .await
             .unwrap();
-        assert_eq!(status, 200, "Search failed for page {}: {}", page, body);
+        assert_eq!(status, 200, "Search failed for page {page}: {body}");
 
         let response: serde_json::Value = serde_json::from_str(&body).unwrap();
         let hits = response.get("hits").and_then(|v| v.as_array()).unwrap();
@@ -629,8 +617,7 @@ async fn test_settings_broadcast() {
     let (status, body) = client.post("/indexes", &create_body).await.unwrap();
     assert!(
         status == 202 || status == 200,
-        "Index creation failed: {}",
-        body
+        "Index creation failed: {body}"
     );
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
@@ -657,8 +644,7 @@ async fn test_settings_broadcast() {
         .unwrap();
     assert!(
         status == 202 || status == 200,
-        "Settings update failed: {}",
-        body
+        "Settings update failed: {body}"
     );
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
@@ -673,7 +659,7 @@ async fn test_settings_broadcast() {
 
     // Verify settings were applied
     let (status, body) = client.get("/indexes/settings_test/settings").await.unwrap();
-    assert_eq!(status, 200, "Failed to get settings: {}", body);
+    assert_eq!(status, 200, "Failed to get settings: {body}");
 
     let settings: serde_json::Value = serde_json::from_str(&body).unwrap();
 
@@ -711,8 +697,7 @@ async fn test_task_polling() {
     let (status, body) = client.post("/indexes", &create_body).await.unwrap();
     assert!(
         status == 202 || status == 200,
-        "Index creation failed: {}",
-        body
+        "Index creation failed: {body}"
     );
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
@@ -751,7 +736,7 @@ async fn test_task_polling() {
         .post("/indexes/task_polling_test/documents", &json!(docs))
         .await
         .unwrap();
-    assert_eq!(status, 202, "Document indexing failed: {}", body);
+    assert_eq!(status, 202, "Document indexing failed: {body}");
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
         .unwrap()
@@ -781,7 +766,7 @@ async fn test_health_check() {
     let client = HttpClient::new();
 
     let (status, body) = client.get("/health").await.unwrap();
-    assert_eq!(status, 200, "Health check failed: {}", body);
+    assert_eq!(status, 200, "Health check failed: {body}");
 
     let health: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(
@@ -842,8 +827,7 @@ async fn test_node_failure_rf2() {
     let (status, body) = client.post("/indexes", &create_body).await.unwrap();
     assert!(
         status == 202 || status == 200,
-        "Index creation failed: {}",
-        body
+        "Index creation failed: {body}"
     );
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
@@ -871,7 +855,7 @@ async fn test_node_failure_rf2() {
         .post("/indexes/node_failure_test/documents", &json!(docs))
         .await
         .unwrap();
-    assert_eq!(status, 202, "Document indexing failed: {}", body);
+    assert_eq!(status, 202, "Document indexing failed: {body}");
 
     let task_uid: u64 = serde_json::from_str::<serde_json::Value>(&body)
         .unwrap()
@@ -893,7 +877,7 @@ async fn test_node_failure_rf2() {
         .post("/indexes/node_failure_test/search", &search_body)
         .await
         .unwrap();
-    assert_eq!(status, 200, "Search failed: {}", body);
+    assert_eq!(status, 200, "Search failed: {body}");
 
     let response: serde_json::Value = serde_json::from_str(&body).unwrap();
     let hits = response.get("hits").and_then(|v| v.as_array()).unwrap();
@@ -906,7 +890,7 @@ async fn test_node_failure_rf2() {
     // Stop meili-1 (a node in replica group 0)
     // This simulates a node failure - RF=2 means we still have 1 replica in group 0
     let output = std::process::Command::new("docker")
-        .args(&["stop", "miroir-meili-1"])
+        .args(["stop", "miroir-meili-1"])
         .output()
         .expect("Failed to stop container");
 
@@ -925,7 +909,7 @@ async fn test_node_failure_rf2() {
         .post("/indexes/node_failure_test/search", &search_body)
         .await
         .unwrap();
-    assert_eq!(status, 200, "Search failed after node failure: {}", body);
+    assert_eq!(status, 200, "Search failed after node failure: {body}");
 
     let response: serde_json::Value = serde_json::from_str(&body).unwrap();
     let hits_after = response.get("hits").and_then(|v| v.as_array()).unwrap();
@@ -935,13 +919,13 @@ async fn test_node_failure_rf2() {
     // Since we stopped a node in group 0, documents with replicas on that node
     // should still be accessible via the other replica in group 1
     assert!(
-        hits_after.len() > 0,
+        !hits_after.is_empty(),
         "Expected some results after node failure"
     );
 
     // Restart the node
     let output = std::process::Command::new("docker")
-        .args(&["start", "miroir-meili-1"])
+        .args(["start", "miroir-meili-1"])
         .output()
         .expect("Failed to start container");
 
@@ -959,7 +943,7 @@ async fn test_node_failure_rf2() {
         .post("/indexes/node_failure_test/search", &search_body)
         .await
         .unwrap();
-    assert_eq!(status, 200, "Search failed after node recovery: {}", body);
+    assert_eq!(status, 200, "Search failed after node recovery: {body}");
 
     let response: serde_json::Value = serde_json::from_str(&body).unwrap();
     let hits_recovered = response.get("hits").and_then(|v| v.as_array()).unwrap();

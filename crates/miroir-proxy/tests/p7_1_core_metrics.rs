@@ -74,8 +74,8 @@ fn test_all_core_metrics_registered() {
 
     for name in &expected_metrics {
         // Check for HELP or TYPE line (metadata) OR data line for the metric
-        let has_metadata = output.contains(&format!("# HELP {}", name))
-            || output.contains(&format!("# TYPE {}", name));
+        let has_metadata = output.contains(&format!("# HELP {name}"))
+            || output.contains(&format!("# TYPE {name}"));
         let has_data = output.lines().any(|line| line.starts_with(name));
         assert!(
             has_metadata || has_data,
@@ -111,8 +111,7 @@ fn test_scatter_fan_out_metric_records_correctly() {
                 .lines()
                 .any(|line| line.contains("miroir_scatter_fan_out_size_count")
                     && !line.contains(" 0")),
-        "Expected histogram with non-zero count not found. Output:\n{}",
-        output
+        "Expected histogram with non-zero count not found. Output:\n{output}"
     );
 }
 
@@ -133,15 +132,13 @@ fn test_node_health_metrics_have_correct_labels() {
         output.contains("miroir_node_healthy")
             && output.contains("node-1")
             && output.contains(" 1"),
-        "Expected node-1 healthy metric not found. Output:\n{}",
-        output
+        "Expected node-1 healthy metric not found. Output:\n{output}"
     );
     assert!(
         output.contains("miroir_node_healthy")
             && output.contains("node-2")
             && output.contains(" 0"),
-        "Expected node-2 unhealthy metric not found. Output:\n{}",
-        output
+        "Expected node-2 unhealthy metric not found. Output:\n{output}"
     );
 }
 
@@ -161,8 +158,7 @@ fn test_node_request_duration_has_operation_label() {
         output.contains("miroir_node_request_duration_seconds") &&
         output.contains("node-1") &&
         output.contains("search"),
-        "Expected node request duration metric with node_id and operation labels not found. Output:\n{}",
-        output
+        "Expected node request duration metric with node_id and operation labels not found. Output:\n{output}"
     );
 }
 
@@ -183,7 +179,6 @@ fn test_task_metrics_have_status_label() {
         output.contains("miroir_tasks_total")
             && output.contains("completed")
             && output.contains("failed"),
-        "Expected tasks_total metric with status labels not found. Output:\n{}",
-        output
+        "Expected tasks_total metric with status labels not found. Output:\n{output}"
     );
 }
