@@ -14,9 +14,7 @@ use miroir_core::topology::{Node, NodeId, Topology};
 use std::time::Duration;
 
 fn create_test_documents(count: usize) -> Vec<String> {
-    (0..count)
-        .map(|i| format!("product_{}", i))
-        .collect()
+    (0..count).map(|i| format!("product_{i}")).collect()
 }
 
 fn create_test_topology(node_count: u32, shards: u32, rf: usize, rg: u32) -> Topology {
@@ -24,7 +22,7 @@ fn create_test_topology(node_count: u32, shards: u32, rf: usize, rg: u32) -> Top
     for g in 0..rg {
         for i in 0..node_count {
             topo.add_node(Node::new(
-                NodeId::new(format!("node-g{}-{}", g, i)),
+                NodeId::new(format!("node-g{g}-{i}")),
                 format!("http://localhost:{}", 7701 + (g * node_count + i) as u16),
                 g,
             ));
@@ -76,10 +74,14 @@ fn bench_single_node_ingest(c: &mut Criterion) {
 
     for doc_count in [100, 500, 1000, 5000].iter() {
         group.throughput(Throughput::Elements(*doc_count as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(doc_count), doc_count, |b, count| {
-            let docs = create_test_documents(*count);
-            b.iter(|| black_box(simulate_single_node_ingest(black_box(&docs))));
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(doc_count),
+            doc_count,
+            |b, count| {
+                let docs = create_test_documents(*count);
+                b.iter(|| black_box(simulate_single_node_ingest(black_box(&docs))));
+            },
+        );
     }
 
     group.finish();
