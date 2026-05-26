@@ -3925,9 +3925,11 @@ pub async fn execute_reshard(
     .map_err(|e| {
         // Rollback: delete shadow index
         tracing::error!(error = %e, "Phase 3 backfill failed, rolling back");
-        // TODO: spawn background task to actually run the rollback
-        let rollback = rollback_shadow_orchestrator(&shadow_index, &config);
-        std::mem::drop(rollback);
+        spawn_rollback_task(
+            shadow_index.clone(),
+            config.clone(),
+            "Phase 3 backfill failed".to_string(),
+        );
         format!("Phase 3 backfill failed: {e}")
     })?;
 
@@ -3958,9 +3960,11 @@ pub async fn execute_reshard(
     .map_err(|e| {
         // Rollback: delete shadow index
         tracing::error!(error = %e, "Phase 4 verify failed, rolling back");
-        // TODO: spawn background task to actually run the rollback
-        let rollback = rollback_shadow_orchestrator(&shadow_index, &config);
-        std::mem::drop(rollback);
+        spawn_rollback_task(
+            shadow_index.clone(),
+            config.clone(),
+            "Phase 4 verify failed".to_string(),
+        );
         format!("Phase 4 verify failed: {e}")
     })?;
 
@@ -3973,9 +3977,11 @@ pub async fn execute_reshard(
             verify_result.mismatched_pks.len()
         );
         tracing::error!(error);
-        // TODO: spawn background task to actually run the rollback
-        let rollback = rollback_shadow_orchestrator(&shadow_index, &config);
-        std::mem::drop(rollback);
+        spawn_rollback_task(
+            shadow_index.clone(),
+            config.clone(),
+            "Phase 4 verification failed".to_string(),
+        );
         return Err(error);
     }
 
@@ -4039,6 +4045,39 @@ pub async fn execute_reshard(
 }
 
 /// Rollback shadow index deletion (used on failure before Phase 5).
+/// Spawn a background task to execute rollback asynchronously.
+///
+/// This function spawns a tokio task that runs the rollback operation
+/// in the background, allowing the main resharding flow to return an error
+/// immediately without waiting for rollback to complete.
+fn spawn_rollback_task(shadow_index: String, config: ReshardOrchestratorConfig, reason: String) {
+    tokio::spawn(async move {
+        tracing::info!(
+            shadow_index = %shadow_index,
+            reason,
+            "spawning background rollback task"
+        );
+
+        let result = rollback_shadow_orchestrator(&shadow_index, &config).await;
+
+        match result {
+            Ok(()) => {
+                tracing::info!(
+                    shadow_index = %shadow_index,
+                    "background rollback completed successfully"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    shadow_index = %shadow_index,
+                    error = %e,
+                    "background rollback failed"
+                );
+            }
+        }
+    });
+}
+
 async fn rollback_shadow_orchestrator(
     shadow_index: &str,
     config: &ReshardOrchestratorConfig,
