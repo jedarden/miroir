@@ -321,6 +321,13 @@ fn print_explain_result(result: &Value) {
                                     obj.get("commitIn").and_then(|v| v.as_str()).unwrap_or("?")
                                 );
                             }
+                            "IncompleteIntegration" => {
+                                println!(
+                                    "  • Incomplete integration: {} ({})",
+                                    obj.get("feature").and_then(|v| v.as_str()).unwrap_or("?"),
+                                    obj.get("reason").and_then(|v| v.as_str()).unwrap_or("?")
+                                );
+                            }
                             _ => {
                                 println!(
                                     "  • {}",
