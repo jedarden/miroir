@@ -67,6 +67,12 @@ pub enum NodeStatus {
     Joining,
     /// Node is active — fully operational after joining.
     Active,
+    /// Node is restoring replication factor after recovery.
+    ///
+    /// The node has recovered from failure and is receiving replicated data
+    /// from surviving replicas. Writes are fanned out to this node, but reads
+    /// may not yet be routed here until restoration completes.
+    Restoring,
     /// Node has been removed from the cluster.
     Removed,
 }
@@ -80,7 +86,8 @@ impl NodeStatus {
     /// - Active → Draining        (admin API: POST /_miroir/nodes/{id}/drain)
     /// - Draining → Removed       (migration complete)
     /// - Active/Draining → Failed (health check detects failure)
-    /// - Failed → Active          (health check recovery)
+    /// - Failed → Restoring       (RF restoration starts on recovery)
+    /// - Restoring → Active       (RF restoration complete)
     /// - Active/Failed → Degraded (partial health: timeouts)
     /// - Degraded → Active        (health restored)
     pub fn transition_to(self, target: NodeStatus) -> Result<NodeStatus> {
@@ -96,8 +103,9 @@ impl NodeStatus {
             (Active, Failed) => true,
             (Draining, Failed) => true,
 
-            // Recovery
-            (Failed, Active) => true,
+            // Recovery with RF restoration
+            (Failed, Restoring) => true,
+            (Restoring, Active) => true,
 
             // Degraded
             (Active, Degraded) => true,
@@ -109,7 +117,8 @@ impl NodeStatus {
             | (Failed, Failed)
             | (Degraded, Degraded)
             | (Joining, Joining)
-            | (Draining, Draining) => true,
+            | (Draining, Draining)
+            | (Restoring, Restoring) => true,
 
             // Healthy is an alias for Active in transitions
             (Healthy, _) | (_, Healthy) => false,
@@ -140,6 +149,13 @@ impl NodeStatus {
             self,
             NodeStatus::Active | NodeStatus::Healthy | NodeStatus::Degraded
         )
+    }
+
+    /// Check if a node can receive writes during RF restoration.
+    ///
+    /// Restoring nodes accept writes as part of dual-write during RF restoration.
+    pub fn is_write_eligible_during_restoration(self) -> bool {
+        matches!(self, NodeStatus::Restoring)
     }
 }
 
@@ -186,19 +202,27 @@ impl Node {
     /// `shard_affected` is true when the shard is being migrated away from this
     /// node during a drain. Draining nodes still accept writes for shards they
     /// still own (`shard_affected = false`).
+    ///
+    /// Restoring nodes accept writes as part of dual-write during RF restoration.
     pub fn is_write_eligible_for(&self, shard_affected: bool) -> bool {
         match self.status {
-            NodeStatus::Active | NodeStatus::Healthy | NodeStatus::Degraded => true,
+            NodeStatus::Active
+            | NodeStatus::Healthy
+            | NodeStatus::Degraded
+            | NodeStatus::Restoring => true,
             NodeStatus::Draining => !shard_affected,
             NodeStatus::Joining | NodeStatus::Failed | NodeStatus::Removed => false,
         }
     }
 
     /// Check if the node is healthy (can serve traffic).
+    ///
+    /// Restoring nodes are considered healthy for write eligibility
+    /// (they accept dual-writes during RF restoration) but not for reads.
     pub fn is_healthy(&self) -> bool {
         matches!(
             self.status,
-            NodeStatus::Active | NodeStatus::Healthy | NodeStatus::Degraded
+            NodeStatus::Active | NodeStatus::Healthy | NodeStatus::Degraded | NodeStatus::Restoring
         )
     }
 
@@ -664,7 +688,8 @@ nodes:
             (Draining, Removed),
             (Active, Failed),
             (Draining, Failed),
-            (Failed, Active),
+            (Failed, Restoring),
+            (Restoring, Active),
             (Active, Degraded),
             (Failed, Degraded),
             (Degraded, Active),
@@ -674,6 +699,7 @@ nodes:
             (Degraded, Degraded),
             (Joining, Joining),
             (Draining, Draining),
+            (Restoring, Restoring),
         ];
 
         for (from, to) in cases {
@@ -709,6 +735,7 @@ nodes:
             (Removed, Failed),
             (Removed, Degraded),
             (Removed, Draining),
+            (Removed, Restoring),
             // Healthy not used in transitions
             (Healthy, Active),
             (Active, Healthy),
@@ -718,6 +745,16 @@ nodes:
             (Degraded, Failed),
             (Degraded, Draining),
             (Degraded, Removed),
+            // Restoring-specific illegal transitions
+            (Joining, Restoring),
+            (Active, Restoring),
+            (Degraded, Restoring),
+            (Draining, Restoring),
+            (Restoring, Draining),
+            (Restoring, Failed),
+            (Restoring, Degraded),
+            (Restoring, Joining),
+            (Restoring, Removed),
         ];
 
         for (from, to) in cases {

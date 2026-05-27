@@ -169,6 +169,11 @@ pub struct RebalanceJob {
     pub total_docs_migrated: u64,
     /// Whether the job is paused.
     pub paused: bool,
+    /// If this is an RF restoration job, the node being restored.
+    ///
+    /// When set, the job completion will transition the node from `Restoring` to `Active`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restoring_node: Option<String>,
 }
 
 /// Configuration for the rebalancer worker.
@@ -658,6 +663,7 @@ impl RebalancerWorker {
             completed_at: None,
             total_docs_migrated: 0,
             paused: false,
+            restoring_node: None,
         };
 
         // Persist job to task store
@@ -758,6 +764,7 @@ impl RebalancerWorker {
             completed_at: None,
             total_docs_migrated: 0,
             paused: false,
+            restoring_node: None,
         };
 
         // Persist job to task store
@@ -824,12 +831,12 @@ impl RebalancerWorker {
             "handling node recovery with RF-restore"
         );
 
-        // Mark node as active in topology
+        // Mark node as Restoring in topology (RF restoration in progress)
         let node_id_obj = TopologyNodeId::new(node_id.to_string());
         {
             let mut topo = self.topology.write().await;
             if let Some(node) = topo.node_mut(&node_id_obj) {
-                node.status = crate::topology::NodeStatus::Active;
+                node.status = crate::topology::NodeStatus::Restoring;
             }
         }
 
@@ -916,6 +923,7 @@ impl RebalancerWorker {
             completed_at: None,
             total_docs_migrated: 0,
             paused: false,
+            restoring_node: Some(node_id.to_string()),
         };
 
         // Persist job to task store
@@ -1411,6 +1419,22 @@ impl RebalancerWorker {
             // Call metrics callback for rebalance completion with duration
             if let Some(ref callback) = self.metrics_callback {
                 callback(false, None, Some(duration));
+            }
+
+            // If this is an RF restoration job, transition the node from Restoring to Active
+            if let Some(ref restoring_node_id) = job.restoring_node {
+                let node_id_obj = TopologyNodeId::new(restoring_node_id.to_string());
+                let mut topo = self.topology.write().await;
+                if let Some(node) = topo.node_mut(&node_id_obj) {
+                    if node.status == crate::topology::NodeStatus::Restoring {
+                        node.transition_to(crate::topology::NodeStatus::Active)
+                            .map_err(|e| format!("failed to transition node to Active: {e}"))?;
+                        info!(
+                            node_id = %restoring_node_id,
+                            "RF restoration complete, node transitioned to Active"
+                        );
+                    }
+                }
             }
 
             // Update job in memory
