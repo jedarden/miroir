@@ -133,6 +133,8 @@ pub enum Warning {
     NarrowingNotPossible { reason: String },
     /// Settings broadcast in flight.
     SettingsBroadcastInFlight { commit_in: String },
+    /// Incomplete integration - feature using fallback behavior.
+    IncompleteIntegration { feature: String, reason: String },
 }
 
 /// Explainer for queries.
@@ -269,6 +271,10 @@ impl Explainer {
         // Broadcast pending
         let broadcast_pending = broadcast_pending.cloned();
 
+        // Add warnings for incomplete integrations
+        #[allow(clippy::needless_borrow)]
+        self.add_integration_warnings(&resolved_uid, query, &mut warnings);
+
         // Add warnings based on query characteristics
         self.add_query_warnings(query, &mut warnings);
 
@@ -344,6 +350,10 @@ impl Explainer {
 
         // Broadcast pending
         let broadcast_pending = broadcast_pending.cloned();
+
+        // Add warnings for incomplete integrations
+        #[allow(clippy::needless_borrow)]
+        self.add_integration_warnings(&resolved_uid, query, &mut warnings);
 
         // Add warnings based on query characteristics
         self.add_query_warnings(query, &mut warnings);
@@ -587,6 +597,42 @@ impl Explainer {
             if q == "*" || q == "%" {
                 warnings.push(Warning::UnboundedWildcard { query: q.clone() });
             }
+        }
+    }
+
+    /// Add warnings for incomplete integrations.
+    fn add_integration_warnings(
+        &self,
+        index_uid: &str,
+        query: &SearchQueryExplanation,
+        warnings: &mut Vec<Warning>,
+    ) {
+        // Check if task store is missing (affects alias resolution)
+        if self.task_store.is_none() {
+            // Check if the index looks like an alias (heuristic: contains "alias" or is different from resolved_uid)
+            // Since we can't resolve without task_store, just warn that alias resolution is unavailable
+            warnings.push(Warning::IncompleteIntegration {
+                feature: "alias resolution".to_string(),
+                reason: "task store not configured - aliases will not be resolved".to_string(),
+            });
+        }
+
+        // Check if replica selector is missing (affects latency estimates)
+        if self.replica_selector.is_none() {
+            warnings.push(Warning::IncompleteIntegration {
+                feature: "EWMA latency estimates".to_string(),
+                reason: "replica selector not configured - using default latency estimate (50ms)"
+                    .to_string(),
+            });
+        }
+
+        // Check if tenant affinity manager is missing (affects tenant affinity)
+        if self.tenant_affinity_manager.is_none() && query.tenant_id.is_some() {
+            warnings.push(Warning::IncompleteIntegration {
+                feature: "tenant affinity manager".to_string(),
+                reason: "tenant affinity manager not configured - using hash-based fallback"
+                    .to_string(),
+            });
         }
     }
 }
@@ -1305,12 +1351,19 @@ mod tests {
 
         // Should warn about large offset+limit
         assert!(!explanation.warnings.is_empty());
-        match &explanation.warnings[0] {
-            Warning::LargeOffsetLimit { offset, limit, .. } => {
+        match explanation
+            .warnings
+            .iter()
+            .find(|w| matches!(w, Warning::LargeOffsetLimit { .. }))
+        {
+            Some(Warning::LargeOffsetLimit { offset, limit, .. }) => {
                 assert_eq!(*offset, 10000);
                 assert_eq!(*limit, 500);
             }
-            _ => panic!("Expected LargeOffsetLimit warning"),
+            _ => panic!(
+                "Expected LargeOffsetLimit warning, got: {:?}",
+                explanation.warnings
+            ),
         }
     }
 
@@ -1334,11 +1387,155 @@ mod tests {
 
         // Should warn about unbounded wildcard
         assert!(!explanation.warnings.is_empty());
-        match &explanation.warnings[0] {
-            Warning::UnboundedWildcard { query } => {
+        match explanation
+            .warnings
+            .iter()
+            .find(|w| matches!(w, Warning::UnboundedWildcard { .. }))
+        {
+            Some(Warning::UnboundedWildcard { query }) => {
                 assert_eq!(query, "*");
             }
-            _ => panic!("Expected UnboundedWildcard warning"),
+            _ => panic!(
+                "Expected UnboundedWildcard warning, got: {:?}",
+                explanation.warnings
+            ),
         }
+    }
+
+    #[test]
+    fn test_warnings_incomplete_integration_task_store() {
+        let config = MiroirConfig::default();
+        let query_planner = Arc::new(QueryPlanner::default());
+        // Explainer created without task store
+        let explainer = Explainer::new(config, query_planner);
+
+        let topology = Topology::new(64, 2, 1);
+        let query = SearchQueryExplanation {
+            q: Some("test".to_string()),
+            filter: None,
+            sort: None,
+            offset: None,
+            limit: None,
+            tenant_id: None,
+        };
+
+        let explanation = explainer.explain("products", &query, &topology, 1, None);
+
+        // Should warn about missing task store (alias resolution)
+        let has_task_store_warning = explanation
+            .warnings
+            .iter()
+            .any(|w| matches!(w, Warning::IncompleteIntegration { feature, .. } if feature == "alias resolution"));
+        assert!(
+            has_task_store_warning,
+            "Should warn about missing task store"
+        );
+    }
+
+    #[test]
+    fn test_warnings_incomplete_integration_replica_selector() {
+        let config = MiroirConfig::default();
+        let query_planner = Arc::new(QueryPlanner::default());
+        // Explainer created without replica selector
+        let explainer = Explainer::new(config, query_planner);
+
+        let topology = Topology::new(64, 2, 1);
+        let query = SearchQueryExplanation {
+            q: Some("test".to_string()),
+            filter: None,
+            sort: None,
+            offset: None,
+            limit: None,
+            tenant_id: None,
+        };
+
+        let explanation = explainer.explain("products", &query, &topology, 1, None);
+
+        // Should warn about missing replica selector (EWMA latency)
+        let has_selector_warning = explanation
+            .warnings
+            .iter()
+            .any(|w| matches!(w, Warning::IncompleteIntegration { feature, .. } if feature == "EWMA latency estimates"));
+        assert!(
+            has_selector_warning,
+            "Should warn about missing replica selector"
+        );
+    }
+
+    #[test]
+    fn test_warnings_incomplete_integration_tenant_affinity_manager() {
+        let config = MiroirConfig::default();
+        let query_planner = Arc::new(QueryPlanner::default());
+        // Explainer created without tenant affinity manager
+        let explainer = Explainer::new(config, query_planner);
+
+        let topology = Topology::new(64, 2, 1);
+        let query = SearchQueryExplanation {
+            q: Some("test".to_string()),
+            filter: None,
+            sort: None,
+            offset: None,
+            limit: None,
+            tenant_id: Some("tenant-a".to_string()), // With tenant ID
+        };
+
+        let explanation = explainer.explain("products", &query, &topology, 1, None);
+
+        // Should warn about missing tenant affinity manager
+        let has_affinity_warning = explanation
+            .warnings
+            .iter()
+            .any(|w| matches!(w, Warning::IncompleteIntegration { feature, .. } if feature == "tenant affinity manager"));
+        assert!(
+            has_affinity_warning,
+            "Should warn about missing tenant affinity manager when tenant_id is provided"
+        );
+    }
+
+    #[test]
+    fn test_no_warnings_with_full_integrations() {
+        let config = MiroirConfig::default();
+        let query_planner = Arc::new(QueryPlanner::default());
+
+        // Create mock task store
+        let store = MockTaskStore::new();
+
+        // Create replica selector
+        let replica_selector = Arc::new(crate::replica_selection::ReplicaSelector::default());
+
+        // Create tenant affinity manager with default config
+        let tenant_config = crate::config::advanced::TenantAffinityConfig::default();
+        let tenant_affinity_manager =
+            Arc::new(crate::tenant::TenantAffinityManager::new(tenant_config));
+
+        let explainer = Explainer::new_with_integrations(
+            config,
+            query_planner,
+            Some(Arc::new(store)),
+            Some(replica_selector),
+            Some(tenant_affinity_manager),
+        );
+
+        let topology = Topology::new(64, 2, 1);
+        let query = SearchQueryExplanation {
+            q: Some("test".to_string()),
+            filter: None,
+            sort: None,
+            offset: None,
+            limit: None,
+            tenant_id: Some("tenant-a".to_string()),
+        };
+
+        let explanation = explainer.explain("products", &query, &topology, 1, None);
+
+        // Should NOT have incomplete integration warnings when all integrations are present
+        let has_incomplete_warning = explanation
+            .warnings
+            .iter()
+            .any(|w| matches!(w, Warning::IncompleteIntegration { .. }));
+        assert!(
+            !has_incomplete_warning,
+            "Should not warn about incomplete integrations when all are present"
+        );
     }
 }
