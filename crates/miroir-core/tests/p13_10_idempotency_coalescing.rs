@@ -86,7 +86,7 @@ async fn p5_10_a2_same_key_different_body_returns_conflict() {
 
 #[tokio::test]
 async fn p5_10_a3_hot_query_coalesces_scatters() {
-    let coalescer = QueryCoalescer::new(50, 10000, 1000); // 50ms window
+    let coalescer = QueryCoalescer::new(50, 10000, 2000); // 50ms window, larger channel
     let index = "products".to_string();
     let query_body = json!({"q": "laptop", "limit": 10});
     let settings_version = 1;
@@ -94,34 +94,43 @@ async fn p5_10_a3_hot_query_coalesces_scatters() {
     let fingerprint = QueryFingerprint::new(index.clone(), &query_body, settings_version);
 
     // Simulate hot query pattern: 1000 concurrent identical requests
-    // With 50ms window and assuming 20ms processing time, we expect ~2-3 windows
-    // Let's verify the coalescing mechanism works by tracking actual scatters
+    // Verify coalescing works by ensuring registration completes before tasks spawn
 
-    let mut tasks = Vec::new();
-
-    // First request: should register new scatter
+    // First request: register new scatter and wait for it to be fully registered
     let tx1 = coalescer.register(fingerprint.clone()).await.unwrap();
 
-    // Immediately launch 999 more concurrent requests
-    // These should all coalesce onto the first request's broadcast channel
+    // Small yield to ensure registration is fully visible to all spawned tasks
+    tokio::task::yield_now().await;
+
+    let (tx_done, mut rx_done) = tokio::sync::mpsc::channel::<()>(1000);
+    let mut tasks = Vec::new();
+
+    // Launch 999 more concurrent requests that should coalesce
     for _i in 0..999 {
-        let coalescer_clone = coalescer.clone(); // Clone doesn't exist, need Arc wrapper in real impl
+        let coalescer_clone = coalescer.clone();
         let fp = fingerprint.clone();
+        let tx_done_clone = tx_done.clone();
 
         let task = tokio::spawn(async move {
-            // Try to coalesce
+            // Try to coalesce - should succeed since registration is complete
             let rx = coalescer_clone.try_coalesce(fp).await;
 
-            // In this test, we expect most to coalesce since they're launched immediately
+            // Signal that we've attempted coalescing
+            let _ = tx_done_clone.send(()).await;
+
+            // Verify we actually got a receiver (coalesced successfully)
             rx.is_some()
         });
         tasks.push(task);
     }
+    drop(tx_done); // Close channel
 
-    // Simulate scatter completion after 20ms
-    sleep(Duration::from_millis(20)).await;
+    // Wait for all tasks to complete their try_coalesce call
+    while (rx_done.recv().await).is_some() {
+        // Just draining the channel
+    }
 
-    // Broadcast result
+    // Now broadcast and unregister
     let response = b"test response".to_vec();
     let _ = tx1.send(response.clone());
     coalescer.unregister(&fingerprint).await;
@@ -134,11 +143,10 @@ async fn p5_10_a3_hot_query_coalesces_scatters() {
         }
     }
 
-    // With 50ms window and immediate launching, most requests should coalesce
-    // At least 90% should have coalesced (they all hit within the window)
+    // With the yield_now() ensuring registration is visible, all tasks should coalesce
     assert!(
-        coalesced_count >= 900,
-        "expected at least 900 coalesced queries, got {coalesced_count}"
+        coalesced_count >= 950,
+        "expected at least 950 coalesced queries, got {coalesced_count}"
     );
 }
 
