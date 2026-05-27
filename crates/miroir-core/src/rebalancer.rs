@@ -1273,13 +1273,13 @@ impl Rebalancer {
             .next_op_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        // Mark node as active
+        // Mark node as Restoring (RF restoration in progress)
         {
             let mut topo = self.topology.write().await;
             let node = topo
                 .node_mut(&node_id_obj)
                 .ok_or_else(|| RebalancerError::NodeNotFound(node_id.to_string()))?;
-            node.status = NodeStatus::Active;
+            node.status = NodeStatus::Restoring;
         }
 
         // Compute shards that need RF restore (shards where this node should be a replica)
