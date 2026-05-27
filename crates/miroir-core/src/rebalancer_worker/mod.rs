@@ -784,6 +784,11 @@ impl RebalancerWorker {
     }
 
     /// Handle node failure.
+    ///
+    /// Implements plan §2 node failure handling:
+    /// - Mark node as failed
+    /// - If RF > 1: surviving replicas serve reads for affected shards
+    /// - Schedule background replication to restore RF within the group
     async fn on_node_failed(
         &self,
         node_id: &str,
@@ -806,9 +811,220 @@ impl RebalancerWorker {
             }
         }
 
-        // TODO: Schedule replication to restore RF if needed
-        // For now, just log the failure
+        // Schedule replication to restore RF if needed
+        let topo = self.topology.read().await;
+        let rf = topo.rf();
+
+        if rf > 1 {
+            // For RF > 1 groups, schedule background replication to restore RF
+            // by copying data from surviving replicas to other nodes in the group
+            drop(topo); // Release read lock before calling async function
+            self.schedule_rf_restore_after_failure(node_id, replica_group, index_uid)
+                .await?;
+        } else {
+            info!(
+                node_id = %node_id,
+                "RF=1, no replication to restore"
+            );
+        }
+
         Ok(())
+    }
+
+    /// Schedule background replication to restore RF after a node failure.
+    ///
+    /// For each shard that the failed node owned, find a healthy surviving replica
+    /// and a target node in the group that doesn't have this shard yet, then create
+    /// a replication job to copy the data.
+    async fn schedule_rf_restore_after_failure(
+        &self,
+        failed_node_id: &str,
+        replica_group: u32,
+        index_uid: &str,
+    ) -> Result<(), String> {
+        info!(
+            failed_node_id = %failed_node_id,
+            replica_group = replica_group,
+            "scheduling RF restoration after node failure"
+        );
+
+        // Compute shards that need restoration and their sources/targets
+        let restoration_jobs = self
+            .compute_shard_restoration_after_failure(failed_node_id, replica_group)
+            .await?;
+
+        if restoration_jobs.is_empty() {
+            info!(
+                failed_node_id = %failed_node_id,
+                "no shards need RF restoration (no healthy sources or targets available)"
+            );
+            return Ok(());
+        }
+
+        info!(
+            failed_node_id = %failed_node_id,
+            shard_count = restoration_jobs.len(),
+            "computed shard restoration jobs"
+        );
+
+        let job_id = RebalanceJobId::new(index_uid);
+
+        // Build migration state for restoration jobs
+        let mut old_owners = HashMap::new();
+        let mut shard_states = HashMap::new();
+
+        for (shard_id, source_node, target_node) in &restoration_jobs {
+            old_owners.insert(ShardId(*shard_id), topo_to_migration_node_id(source_node));
+            shard_states.insert(
+                *shard_id,
+                ShardState {
+                    phase: ShardMigrationPhase::Idle,
+                    docs_migrated: 0,
+                    last_offset: 0,
+                    source_node: Some(source_node.to_string()),
+                    target_node: target_node.to_string(),
+                    started_at: Instant::now(),
+                },
+            );
+        }
+
+        // Create migration in coordinator for state tracking and dual-write
+        let migration_id = {
+            let mut coordinator = self.migration_coordinator.write().await;
+            // Use the first target node as the "new" node for the migration
+            if let Some((_, _, first_target)) = restoration_jobs.first() {
+                let new_node = topo_to_migration_node_id(first_target);
+                coordinator
+                    .begin_migration(new_node, replica_group, old_owners)
+                    .map_err(|e| format!("failed to create RF-restore migration: {e}"))?
+            } else {
+                return Err("no shards to restore".to_string());
+            }
+        };
+
+        // Start dual-write immediately so writes go to both source and target nodes
+        {
+            let mut coordinator = self.migration_coordinator.write().await;
+            coordinator
+                .begin_dual_write(migration_id)
+                .map_err(|e| format!("failed to start dual-write for RF-restore: {e}"))?;
+        }
+
+        let job = RebalanceJob {
+            id: job_id.clone(),
+            index_uid: index_uid.to_string(),
+            replica_group,
+            shards: shard_states,
+            started_at: Instant::now(),
+            completed_at: None,
+            total_docs_migrated: 0,
+            paused: false,
+            restoring_node: None, // Not restoring the failed node, but creating new replicas
+        };
+
+        // Persist job to task store
+        self.persist_job(&job).await?;
+
+        // Store in memory
+        let mut jobs = self.jobs.write().await;
+        jobs.insert(job_id.clone(), job);
+
+        info!(
+            migration_id = %migration_id,
+            shard_count = restoration_jobs.len(),
+            "created RF-restore migration after node failure"
+        );
+
+        Ok(())
+    }
+
+    /// Compute shard restoration jobs after a node failure.
+    ///
+    /// For each shard that the failed node owned, find a healthy surviving replica
+    /// and a target node in the group that doesn't have this shard yet.
+    ///
+    /// Returns Vec of (shard_id, source_node, target_node) for shards that need restoration.
+    async fn compute_shard_restoration_after_failure(
+        &self,
+        failed_node_id: &str,
+        replica_group: u32,
+    ) -> Result<Vec<(u32, TopologyNodeId, TopologyNodeId)>, String> {
+        let topo = self.topology.read().await;
+        let failed_node_id = TopologyNodeId::new(failed_node_id.to_string());
+        let rf = topo.rf();
+
+        // Find the target group
+        let group = topo
+            .groups()
+            .find(|g| g.id == replica_group)
+            .ok_or_else(|| format!("replica group {replica_group} not found"))?;
+
+        let node_map = topo.node_map();
+        let mut restoration_jobs = Vec::new();
+
+        // For each shard, check if the failed node was in the RF assignment
+        for shard_id in 0..topo.shards {
+            let assigned = assign_shard_in_group(shard_id, group.nodes(), rf);
+
+            // Check if failed node was in the assignment for this shard
+            if !assigned.contains(&failed_node_id) {
+                continue;
+            }
+
+            // Find a healthy source replica for this shard (surviving replicas)
+            let healthy_source = assigned
+                .iter()
+                .filter(|node_id| **node_id != failed_node_id)
+                .find(|node_id| {
+                    node_map
+                        .get(node_id)
+                        .map(|n| n.is_healthy())
+                        .unwrap_or(false)
+                });
+
+            let source_node = match healthy_source {
+                Some(node) => node.clone(),
+                None => {
+                    // No healthy source found - skip this shard
+                    debug!(
+                        shard_id,
+                        failed_node = %failed_node_id,
+                        "no healthy intra-group source for shard after failure"
+                    );
+                    continue;
+                }
+            };
+
+            // Find a target node in the group that doesn't have this shard yet
+            // (to create a new replica and restore RF)
+            let other_nodes: Vec<_> = group
+                .nodes()
+                .iter()
+                .filter(|n| **n != failed_node_id && **n != source_node)
+                .cloned()
+                .collect();
+
+            let target_node = if other_nodes.is_empty() {
+                // No other nodes in the group - can't restore RF for this shard
+                debug!(
+                    shard_id,
+                    failed_node = %failed_node_id,
+                    "no target node available for RF restoration in group"
+                );
+                continue;
+            } else {
+                // Select the node with the lowest score for this shard
+                // (to distribute the load evenly)
+                other_nodes
+                    .into_iter()
+                    .min_by_key(|node| crate::router::score(shard_id, node.as_str()))
+                    .unwrap()
+            };
+
+            restoration_jobs.push((shard_id, source_node, target_node));
+        }
+
+        Ok(restoration_jobs)
     }
 
     /// Handle node recovery.
