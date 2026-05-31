@@ -89,6 +89,9 @@ pub struct SearchUiIndexConfig {
     /// Thumbnail field for images
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumbnail_field: Option<String>,
+    /// i18n locales (lang code -> translation object) for operator-supplied translations (plan §13.21)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locales: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -458,6 +461,7 @@ pub async fn get_config(
         primary_key_field: None,
         hit_url_template: None,
         thumbnail_field: None,
+        locales: None,
     }))
 }
 
