@@ -265,6 +265,7 @@ EOF
             rustup target add x86_64-unknown-linux-musl
 
             cargo build --release --target x86_64-unknown-linux-musl \
+              --features miroir-core/kafka-sink \
               -p miroir-proxy -p miroir-ctl
 
             mkdir -p /workspace/dist

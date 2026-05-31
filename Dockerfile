@@ -3,8 +3,8 @@
 # Build step (plan §7 cargo-build template):
 #   apt-get install -qy musl-tools
 #   rustup target add x86_64-unknown-linux-musl
-#   cargo build --release --target x86_64-unknown-linux-musl -p miroir-proxy
-#   cargo build --release --target x86_64-unknown-linux-musl -p miroir-ctl
+#   cargo build --release --target x86_64-unknown-linux-musl --features miroir-core/kafka-sink -p miroir-proxy
+#   cargo build --release --target x86_64-unknown-linux-musl --features miroir-core/kafka-sink -p miroir-ctl
 #   sha256sum miroir-proxy-linux-amd64 > miroir-proxy-linux-amd64.sha256
 FROM scratch
 ARG VERSION=0.1.0
