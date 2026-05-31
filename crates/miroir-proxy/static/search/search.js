@@ -183,6 +183,57 @@
         }).join('');
     }
 
+    // Canonicalize JSON by sorting object keys recursively (plan §13.10)
+    function canonicalJson(obj) {
+        if (obj === null || typeof obj !== 'object') {
+            return JSON.stringify(obj);
+        }
+        if (Array.isArray(obj)) {
+            return '[' + obj.map(canonicalJson).join(',') + ']';
+        }
+        const sortedKeys = Object.keys(obj).sort();
+        return '{' + sortedKeys.map(k => `"${k}":${canonicalJson(obj[k])}`).join(',') + '}';
+    }
+
+    // Generate per-query idempotency key (plan §13.10, §13.21)
+    // Hash of index + normalized query body for query coalescing
+    function generateIdempotencyKey(query, filters, page, sort, perPage) {
+        const requestBody = {
+            q: query,
+            limit: perPage || currentPerPage || RESULTS_PER_PAGE,
+            offset: page * (perPage || currentPerPage || RESULTS_PER_PAGE),
+            attributesToRetrieve: ['*'],
+            attributesToHighlight: config?.display_attributes || ['*'],
+            facets: config?.facets?.map(f => f.attribute) || []
+        };
+
+        // Add filters
+        const filterParts = [];
+        for (const [key, values] of Object.entries(filters)) {
+            if (Array.isArray(values) && values.length > 0) {
+                filterParts.push(`${key} IN ${JSON.stringify(values)}`);
+            }
+        }
+        if (filterParts.length > 0) {
+            requestBody.filter = filterParts.join(' AND ');
+        }
+
+        // Add sort
+        if (sort) {
+            requestBody.sort = [sort];
+        }
+
+        // Canonicalize and hash
+        const canonical = `${currentIndex}:${canonicalJson(requestBody)}`;
+        let hash = 0;
+        for (let i = 0; i < canonical.length; i++) {
+            const char = canonical.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32-bit integer
+        }
+        return `search-${Math.abs(hash).toString(16)}`;
+    }
+
     // API helper
     async function search(query, filters = {}, page = 0, sort = null, perPage = null) {
         const requestBody = {
@@ -210,11 +261,15 @@
             requestBody.sort = [sort];
         }
 
+        // Generate idempotency key for query coalescing (plan §13.10, §13.21)
+        const idempotencyKey = generateIdempotencyKey(query, filters, page, sort, perPage);
+
         const response = await fetch(`/indexes/${currentIndex}/search`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${sessionToken}`
+                'Authorization': `Bearer ${sessionToken}`,
+                'Idempotency-Key': idempotencyKey
             },
             body: JSON.stringify(requestBody)
         });
