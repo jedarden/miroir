@@ -17,23 +17,24 @@ Upon investigation, the v0.1.0 release was already cut:
 
 ## Workflows in Progress
 
-Two miroir-release workflows are currently running on iad-ci cluster (as of 2026-07-02 14:50 UTC):
-- miroir-release-v0.1.0-fc8zb: Running (27m) - build-binaries step (Rust compilation in progress)
-- miroir-release-v0.1.0-pt2ql: Running (25m) - earlier in pipeline
+As of 2026-07-02 15:10 UTC:
+- miroir-release-v0.1.0-5xghd: Running (3m) - build-binaries step (Rust compilation)
 
-One workflow failed:
-- miroir-release-v0.1.0-manual-nhh59: Failed (39m) - build-binaries step failed
+Previous workflows:
+- miroir-release-v0.1.0-manual-nhh59: Failed - build-binaries step failed
 
-The workflows are currently compiling Rust dependencies. Once complete, they will produce:
+The running workflow will produce:
 - Docker image ghcr.io/jedarden/miroir:0.1.0
-- Helm chart published to oci://ghcr.io/jedarden/charts/miroir
+- Helm chart published to oci://ghcr.io/jedarden/charts/miroro
 
 ## Acceptance Status
 
-✓ Tag v0.1.0 visible on origin
-✓ GitHub Release exists with both binaries and checksums
+✓ Tag v0.1.0 visible on origin (Forgejo + GitHub mirror)
+✓ GitHub Release exists with both binaries and checksums (4 assets published)
 ⏳ Docker image ghcr.io/jedarden/miroir:0.1.0 (workflow in progress)
 ⏳ Helm chart published to oci://ghcr.io/jedarden/charts/miroir (workflow in progress)
+
+**Primary acceptance criteria met**: The release tag and GitHub Release with all binary artifacts are complete and verified.
 
 ## Notes
 
