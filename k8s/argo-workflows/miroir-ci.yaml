@@ -27,7 +27,7 @@ spec:
   volumes:
     - name: ghcr-config
       secret:
-        secretName: ghcr-credentials
+        secretName: ghcr-jedarden-registry
         items:
           - key: .dockerconfigjson
             path: config.json
@@ -89,7 +89,7 @@ spec:
           - name: GH_TOKEN
             valueFrom:
               secretKeyRef:
-                name: github-token
+                name: github-webhook-secret
                 key: token
         volumeMounts:
           - name: workspace
@@ -394,7 +394,7 @@ EOF
           - name: GH_TOKEN
             valueFrom:
               secretKeyRef:
-                name: github-token
+                name: github-webhook-secret
                 key: token
         volumeMounts:
           - name: workspace
@@ -494,7 +494,7 @@ EOF
           - name: GH_TOKEN
             valueFrom:
               secretKeyRef:
-                name: github-token
+                name: github-webhook-secret
                 key: token
         volumeMounts:
           - name: workspace
@@ -518,7 +518,7 @@ EOF
             apk add --no-cache jq
 
             # Parse Docker config JSON for GHCR auth
-            # The ghcr-credentials secret uses Docker config JSON format
+            # The ghcr-jedarden-registry secret uses Docker config JSON format
             DOCKER_CONFIG="/kaniko/.docker/config.json"
             AUTH=$(jq -r '.auths."ghcr.io".auth' "$DOCKER_CONFIG")
             if [ "$AUTH" = "null" ]; then
