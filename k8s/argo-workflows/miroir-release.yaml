@@ -95,7 +95,7 @@ spec:
           - name: tag
       container:
         image: rust:1.87-slim
-        command: [sh, -c]
+        command: [bash, -c]
         args:
           - |
             set -e
