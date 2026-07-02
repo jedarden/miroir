@@ -101,9 +101,9 @@ spec:
             set -e
             TAG="{{inputs.parameters.tag}}"
 
-            # Clone the repo at the tag
-            git clone --depth 1 --branch "$TAG" https://github.com/jedarden/miroir.git /src
-            cd /src
+            # Clone the repo at the tag to workspace for sharing with later steps
+            git clone --depth 1 --branch "$TAG" https://github.com/jedarden/miroir.git /workspace/src
+            cd /workspace/src
 
             # Install musl target
             apt-get update -qq && apt-get install -y -qq pkg-config libssl-dev musl-tools >/dev/null 2>&1
@@ -116,15 +116,15 @@ spec:
 
             # Copy binaries to source dir for Docker context
             cp target/x86_64-unknown-linux-musl/release/miroir-proxy \
-              /src/miroir-proxy-linux-amd64
+              /workspace/src/miroir-proxy-linux-amd64
             cp target/x86_64-unknown-linux-musl/release/miroir-ctl \
-              /src/miroir-ctl-linux-amd64
+              /workspace/src/miroir-ctl-linux-amd64
 
-            sha256sum /src/miroir-proxy-linux-amd64 > /src/miroir-proxy-linux-amd64.sha256
-            sha256sum /src/miroir-ctl-linux-amd64 > /src/miroir-ctl-linux-amd64.sha256
+            sha256sum /workspace/src/miroir-proxy-linux-amd64 > /workspace/src/miroir-proxy-linux-amd64.sha256
+            sha256sum /workspace/src/miroir-ctl-linux-amd64 > /workspace/src/miroir-ctl-linux-amd64.sha256
 
             echo "=== Binaries built successfully ==="
-            ls -la /src/miroir-*linux-amd64*
+            ls -la /workspace/src/miroir-*linux-amd64*
         volumeMounts:
           - name: workspace
             mountPath: /workspace
