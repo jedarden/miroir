@@ -89,7 +89,7 @@ spec:
       volumes:
         - name: docker-config
           secret:
-            secretName: ghcr-credentials
+            secretName: ghcr-jedarden-registry
             items:
               - key: .dockerconfigjson
                 path: config.json
@@ -177,12 +177,12 @@ spec:
           - name: GHCR_TOKEN
             valueFrom:
               secretKeyRef:
-                name: ghcr-credentials
+                name: github-webhook-secret
                 key: token
           - name: GITHUB_TOKEN
             valueFrom:
               secretKeyRef:
-                name: github-token
+                name: github-webhook-secret
                 key: token
 
     # ------------------------------------------------------------------ #
@@ -258,7 +258,7 @@ spec:
           - name: GH_TOKEN
             valueFrom:
               secretKeyRef:
-                name: github-token
+                name: github-webhook-secret
                 key: token
         resources:
           requests:

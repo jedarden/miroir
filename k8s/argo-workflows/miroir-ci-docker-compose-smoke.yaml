@@ -50,7 +50,7 @@ spec:
           - name: GH_TOKEN
             valueFrom:
               secretKeyRef:
-                name: github-token
+                name: github-webhook-secret
                 key: token
         volumeMounts:
           - name: workspace

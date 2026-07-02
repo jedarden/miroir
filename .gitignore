@@ -12,3 +12,6 @@ tests/benches/score-comparability/results/*.jsonl
 miroir-proxy-linux-amd64
 miroir-proxy-linux-amd64.sha256
 .beads/.br_recovery/
+coverage/
+lcov.info
+*.rlib
