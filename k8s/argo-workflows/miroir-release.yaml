@@ -24,7 +24,7 @@ spec:
         accessModes: [ReadWriteOnce]
         resources:
           requests:
-            storage: 4Gi
+            storage: 6G
 
   templates:
 
@@ -35,6 +35,13 @@ spec:
       steps:
         - - name: check-release-ready
             template: release-ready
+            arguments:
+              parameters:
+                - name: tag
+                  value: "{{workflow.parameters.tag}}"
+
+        - - name: build-binaries
+            template: build-binaries
             arguments:
               parameters:
                 - name: tag
@@ -80,7 +87,50 @@ spec:
             sh scripts/release-ready-check.sh "{{inputs.parameters.tag}}"
 
     # ------------------------------------------------------------------ #
-    # 2. Build Docker image and push
+    # 2. Build Rust binaries (needed for Docker image context)
+    # ------------------------------------------------------------------ #
+    - name: build-binaries
+      inputs:
+        parameters:
+          - name: tag
+      container:
+        image: rust:1.87-slim
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            TAG="{{inputs.parameters.tag}}"
+
+            # Clone the repo at the tag
+            git clone --depth 1 --branch "$TAG" https://github.com/jedarden/miroir.git /src
+            cd /src
+
+            # Install musl target
+            apt-get update -qq && apt-get install -y -qq pkg-config libssl-dev musl-tools >/dev/null 2>&1
+            rustup target add x86_64-unknown-linux-musl
+
+            # Build the binaries
+            cargo build --release --target x86_64-unknown-linux-musl \
+              --features miroir-core/kafka-sink \
+              -p miroir-proxy -p miroir-ctl
+
+            # Copy binaries to source dir for Docker context
+            cp target/x86_64-unknown-linux-musl/release/miroir-proxy \
+              /src/miroir-proxy-linux-amd64
+            cp target/x86_64-unknown-linux-musl/release/miroir-ctl \
+              /src/miroir-ctl-linux-amd64
+
+            sha256sum /src/miroir-proxy-linux-amd64 > /src/miroir-proxy-linux-amd64.sha256
+            sha256sum /src/miroir-ctl-linux-amd64 > /src/miroir-ctl-linux-amd64.sha256
+
+            echo "=== Binaries built successfully ==="
+            ls -la /src/miroir-*linux-amd64*
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+
+    # ------------------------------------------------------------------ #
+    # 3. Build Docker image and push
     # ------------------------------------------------------------------ #
     - name: build-image
       inputs:
@@ -114,9 +164,10 @@ spec:
               DESTS="${DESTS} --destination=${REGISTRY}:latest"
             fi
 
+            # Build from workspace context where binaries were just built
             /kaniko/executor \
-              --context=git://github.com/jedarden/miroir#refs/tags/${TAG} \
-              --dockerfile=Dockerfile \
+              --context=/workspace/src \
+              --dockerfile=/workspace/src/Dockerfile \
               --build-arg=VERSION=${VERSION} \
               $DESTS \
               --cache=true \
@@ -126,6 +177,8 @@ spec:
         volumeMounts:
           - name: docker-config
             mountPath: /kaniko/.docker
+          - name: workspace
+            mountPath: /workspace
 
     # ------------------------------------------------------------------ #
     # 3. Helm chart: gh-pages + OCI
@@ -186,7 +239,7 @@ spec:
                 key: token
 
     # ------------------------------------------------------------------ #
-    # 4. GitHub release with CHANGELOG notes
+    # 5. GitHub release with CHANGELOG notes
     # ------------------------------------------------------------------ #
     - name: create-github-release
       inputs:
@@ -201,8 +254,7 @@ spec:
             TAG="{{inputs.parameters.tag}}"
             VER="${TAG#v}"
 
-            git clone --depth 1 --branch "$TAG" https://github.com/jedarden/miroir.git /src
-            cd /src
+            cd /workspace/src
 
             # Extract release notes from CHANGELOG.md
             NOTES=$(awk -v ver="$VER" '
@@ -227,31 +279,16 @@ spec:
               PRERELEASE_FLAG="--prerelease"
             fi
 
-            # Build binaries for release assets
-            apk add --no-cache musl-dev gcc 2>/dev/null || true
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            . "$HOME/.cargo/env"
-            rustup target add x86_64-unknown-linux-musl
-            cargo build --release --target x86_64-unknown-linux-musl -p miroir-proxy -p miroir-ctl
-
-            strip -s target/x86_64-unknown-linux-musl/release/miroir-proxy
-            strip -s target/x86_64-unknown-linux-musl/release/miroir-ctl
-
-            cp target/x86_64-unknown-linux-musl/release/miroir-proxy miroir-proxy-linux-amd64
-            cp target/x86_64-unknown-linux-musl/release/miroir-ctl miroir-ctl-linux-amd64
-            sha256sum miroir-proxy-linux-amd64 > miroir-proxy-linux-amd64.sha256
-            sha256sum miroir-ctl-linux-amd64 > miroir-ctl-linux-amd64.sha256
-
             gh release create "${TAG}" \
               --repo jedarden/miroir \
               --title "miroir ${TAG}" \
               --notes "${NOTES}" \
               ${PRERELEASE_FLAG} \
               --target "$TAG" \
-              miroir-proxy-linux-amd64 \
-              miroir-proxy-linux-amd64.sha256 \
-              miroir-ctl-linux-amd64 \
-              miroir-ctl-linux-amd64.sha256
+              /workspace/src/miroir-proxy-linux-amd64 \
+              /workspace/src/miroir-proxy-linux-amd64.sha256 \
+              /workspace/src/miroir-ctl-linux-amd64 \
+              /workspace/src/miroir-ctl-linux-amd64.sha256
 
             echo "Release ${TAG} created successfully."
         env:
@@ -260,6 +297,9 @@ spec:
               secretKeyRef:
                 name: github-webhook-secret
                 key: token
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
         resources:
           requests:
             cpu: 2000m
