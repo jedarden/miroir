@@ -101,6 +101,9 @@ spec:
             set -e
             TAG="{{inputs.parameters.tag}}"
 
+            # Ensure PATH includes cargo
+            export PATH="/usr/local/cargo/bin:$PATH"
+
             # Clone the repo at the tag to workspace for sharing with later steps
             git clone --depth 1 --branch "$TAG" https://github.com/jedarden/miroir.git /workspace/src
             cd /workspace/src
