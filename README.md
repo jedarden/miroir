@@ -82,7 +82,10 @@ services:
     environment:
       - MEILI_MASTER_KEY=dev-node-key
   miroir:
-    image: ronaldraygun/miroir:latest
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: miroir-dev:latest
     environment:
       - MIROIR_MASTER_KEY=dev-key
       - MIROIR_NODE_MASTER_KEY=dev-node-key
