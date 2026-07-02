@@ -9,8 +9,9 @@ k8s/
 scripts/
 tests/
 benches/
-miroir-proxy-linux-amd64
-miroir-proxy-linux-amd64.sha256
+# miroir-proxy-linux-amd64 and miroir-ctl-linux-amd64 are needed for CI builds
+# miroir-proxy-linux-amd64
+# miroir-proxy-linux-amd64.sha256
 tarpaulin-report.json
 .claude/
 .beads/
