@@ -104,12 +104,14 @@ spec:
             # Ensure PATH includes cargo
             export PATH="/usr/local/cargo/bin:$PATH"
 
+            # Install git and build dependencies
+            apt-get update -qq && apt-get install -y -qq git pkg-config libssl-dev musl-tools >/dev/null 2>&1
+
             # Clone the repo at the tag to workspace for sharing with later steps
             git clone --depth 1 --branch "$TAG" https://github.com/jedarden/miroir.git /workspace/src
             cd /workspace/src
 
             # Install musl target
-            apt-get update -qq && apt-get install -y -qq pkg-config libssl-dev musl-tools >/dev/null 2>&1
             rustup target add x86_64-unknown-linux-musl
 
             # Build the binaries
