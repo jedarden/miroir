@@ -55,6 +55,7 @@ use async_nats::Client;
 
 #[cfg(feature = "kafka-sink")]
 use rdkafka::{
+    message::OwnedHeaders,
     producer::{FutureProducer, FutureRecord},
     ClientConfig,
 };
@@ -1742,7 +1743,7 @@ impl CdcManager {
                     .set("acks", "all") // Wait for all in-sync replicas
                     .set("delivery.timeout.ms", "60000"); // 60 second delivery timeout
 
-                let producer = client_config.create().map_err(|e| {
+                let producer: FutureProducer = client_config.create().map_err(|e| {
                     CdcError::SinkError(format!("Kafka producer create error: {e}"))
                 })?;
 
@@ -1779,10 +1780,8 @@ impl CdcManager {
                 .payload(&payload);
 
             // Add event_id header for consumer-side deduplication
-            record = record.headers(rdkafka::message::Headers::own(vec![(
-                "event_id",
-                event.event_id.as_bytes(),
-            )]));
+            let headers = OwnedHeaders::new().insert(("event_id", event.event_id.as_bytes()));
+            record = record.headers(headers);
 
             // Send with timeout
             producer
