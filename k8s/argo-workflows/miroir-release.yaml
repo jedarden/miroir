@@ -105,7 +105,9 @@ spec:
             export PATH="/usr/local/cargo/bin:$PATH"
 
             # Install git and build dependencies
-            apt-get update -qq && apt-get install -y -qq git pkg-config libssl-dev musl-tools >/dev/null 2>&1
+            apt-get update -qq && apt-get install -y -qq g++ git pkg-config libssl-dev musl-tools >/dev/null 2>&1
+            # Ensure c++ symlink exists (required by librdkafka configure)
+            update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++ 50 || ln -sf /usr/bin/g++ /usr/bin/c++
 
             # Clone the repo at the tag to workspace for sharing with later steps
             git clone --depth 1 --branch "$TAG" https://github.com/jedarden/miroir.git /workspace/src
