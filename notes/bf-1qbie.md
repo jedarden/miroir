@@ -1,63 +1,93 @@
-# Bead bf-1qbie: Cut first tagged release v0.1.0
+# v0.1.0 Release Status (bf-1qbie)
 
-## Discovery
+## Completed Components
 
-Upon investigation, the v0.1.0 release was already cut:
+### ✅ Git Tag
+- Tag `v0.1.0` exists on origin (Forgejo)
+- Tag `v0.1.0` synced to GitHub
+- Tag points to commit 9c61700 (fix(ci): add make to build dependencies)
 
-- **Tag**: v0.1.0 exists on both origin (Forgejo/git.ardenone.com) and GitHub mirror
-- **Tag creation**: 2026-07-02 09:19:00 -0400 (today)
-- **GitHub Release**: v0.1.0 published 2026-07-02T13:47:38Z with all required binaries:
-  - miroir-proxy-linux-amd64 (32.7 MB)
-  - miroir-proxy-linux-amd64.sha256 (91 bytes)
-  - miroir-ctl-linux-amd64 (7.5 MB)  
-  - miroir-ctl-linux-amd64.sha256 (89 bytes)
-- **CHANGELOG**: Already contains [0.1.0] section (dated 2026-04-19)
-- **Unreleased section**: Empty - no entries to reconcile
-- **Version**: Cargo.toml has version = "0.1.0" - matches tag
+### ✅ GitHub Release
+- Release `v0.1.0` exists on GitHub (jedarden/miroir)
+- Includes all required binaries:
+  - miroir-proxy-linux-amd64 (32 MB)
+  - miroir-ctl-linux-amd64 (7.3 MB)
+  - miroir-proxy-linux-amd64.sha256
+  - miroir-ctl-linux-amd64.sha256
+- Release is not draft, not prerelease
+- Release notes extracted from CHANGELOG.md
 
-## Workflows in Progress
+### ✅ Local Artifacts
+- Binaries built locally and match release checksums
+- Docker image built locally: ghcr.io/jedarden/miroir:0.1.0 (32.7 MB)
+- Additional tags: 0, 0.1, latest, v0.1.0
 
-As of 2026-07-02 15:10 UTC:
-- miroir-release-v0.1.0-5xghd: Running (3m) - build-binaries step (Rust compilation)
+## Incomplete Components
 
-Previous workflows:
-- miroir-release-v0.1.0-manual-nhh59: Failed - build-binaries step failed
+### ❌ Docker Image on Registry
+- **Status**: Image exists locally but NOT pushed to ghcr.io
+- **Issue**: GitHub token lacks `write:packages` scope
+- **Error**: `denied: permission_denied: The token provided does not match expected scopes`
+- **Required**: GitHub PAT with `write:packages` scope to push to ghcr.io
 
-The running workflow will produce:
-- Docker image ghcr.io/jedarden/miroir:0.1.0
-- Helm chart published to oci://ghcr.io/jedarden/charts/miroro
+### ❌ Helm Chart Publication
+- **Status**: Chart not published to GitHub Pages or OCI
+- **GitHub Pages**: Returns 404 (no GitHub Pages site configured)
+- **OCI**: Not published to oci://ghcr.io/jedarden/charts/miroir
+- **Issues**:
+  - No `helm` command available in local environment
+  - GitHub Pages site not created/initialized
+  - Requires GitHub token with proper scopes
 
-## Acceptance Status
+### ❌ CI/CD Workflow Status
+- **Workflow**: miroir-release on iad-ci cluster
+- **Status**: All recent runs FAILED at build-binaries step (exit code 101)
+- **Last 5 runs**: All failed
+- **Issue**: Build step failing in cargo build
 
-✓ Tag v0.1.0 visible on origin (Forgejo + GitHub mirror)
-✓ GitHub Release exists with both binaries and checksums (4 assets published)
-⏳ Docker image ghcr.io/jedarden/miroir:0.1.0 (workflow in progress)
-⏳ Helm chart published to oci://ghcr.io/jedarden/charts/miroir (workflow in progress)
+## Verification Summary
 
-**Primary acceptance criteria met**: The release tag and GitHub Release with all binary artifacts are complete and verified.
+| Artifact | Status | Location |
+|----------|--------|----------|
+| Git tag v0.1.0 | ✅ Complete | origin, GitHub |
+| GitHub release | ✅ Complete | github.com/jedarden/miroir |
+| Binaries | ✅ Complete | Attached to release |
+| Checksums | ✅ Complete | Attached to release |
+| Docker image | ❌ Incomplete | Local only, not on ghcr.io |
+| Helm chart | ❌ Incomplete | Not published to Pages or OCI |
 
-## Notes
+## Next Steps
 
-The task description indicated "origin has ZERO git tags and GitHub has zero releases" but this was outdated information - the release infrastructure was already triggered and the tag/release were created before this bead was assigned.
+To complete the release:
 
-The CHANGELOG date discrepancy (2026-04-19 in CHANGELOG vs 2026-07-02 actual release) suggests the changelog was prepared in advance for a planned April release that was delayed until July.
+1. **Fix GitHub Token Scopes**:
+   - Update GitHub PAT to include `write:packages` scope
+   - Token currently has: `[REDACTED]`
 
-## Retrospective
+2. **Push Docker Image**:
+   ```bash
+   docker login ghcr.io -u jedarden --password-stdin < token_with_write_packages
+   docker push ghcr.io/jedarden/miroir:0.1.0
+   ```
 
-### What worked
-- Investigation revealed the release was already completed (tag + GitHub release with binaries)
-- All acceptance criteria checked and verified
-- Workflows are running to complete remaining artifacts (Docker image, Helm chart)
+3. **Publish Helm Chart**:
+   - Initialize GitHub Pages site for the repo
+   - Package and push chart to OCI
+   - Publish to GitHub Pages
 
-### What didn't
-- Task description was outdated - indicated no tags/releases existed when they were already created
-- Manual investigation was needed to discover current state
+4. **Fix CI Workflow** (optional):
+   - Debug why build-binaries step fails with exit code 101
+   - May be related to cargo build failures
 
-### Surprise
-- The v0.1.0 release was cut before this bead was assigned
-- CHANGELOG date (2026-04-19) predates actual release (2026-07-02) by ~2.5 months
+## Task Acceptance Criteria
 
-### Reusable pattern
-- Always verify current git state and remote status before starting release tasks
-- Check GitHub API and kubectl workflows to understand what's already been done
-- For release tasks: `git ls-remote --tags`, `gh release list`, `kubectl get workflows`
+Per bead bf-1qbie requirements:
+- ✅ Tag v0.1.0 visible on origin
+- ✅ GitHub Release exists with both binaries and checksums
+- ❌ Image ghcr.io/jedarden/miroir:0.1.0 exists (local only)
+- ❌ Helm chart published to oci://ghcr.io/jedarden/charts/miroir
+
+**Overall Status**: 50% complete (2/4 criteria met)
+
+## Date
+2026-07-02
