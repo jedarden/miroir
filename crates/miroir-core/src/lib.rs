@@ -34,6 +34,7 @@ pub mod group_sync_worker;
 pub mod hedging;
 pub mod idempotency;
 pub mod ilm;
+pub mod index_stats;
 pub mod leader_election;
 pub mod merger;
 pub mod migration;
