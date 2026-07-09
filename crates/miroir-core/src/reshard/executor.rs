@@ -529,6 +529,36 @@ impl<C: NodeClient> ReshardExecutor<C> {
         Ok(())
     }
 
+    /// Aggregate the source index's real document count across all source nodes.
+    ///
+    /// This is the reshard backfill denominator described in plan §13.1 step 3
+    /// (bf-2ynu5). It delegates to the shared [`crate::index_stats`] module so
+    /// that reshard and ILM rollover (plan §13.17) compute an index's document
+    /// count the *same* way: iterate the source `node_addresses`,
+    /// `GET /indexes/{uid}/stats`, and reduce `numberOfDocuments` with `max`
+    /// (each address hosts a full replica, so `sum` would over-count by the
+    /// replication factor).
+    ///
+    /// The aggregation is infallible from the caller's perspective — a node that
+    /// fails to respond (network / non-2xx / parse error) is logged and skipped,
+    /// and the count is `0` only if every node fails or reports zero — but this
+    /// returns [`Result`] to match the executor's method conventions and leave
+    /// the `start_backfill` caller (wired in a sibling bead) free to propagate a
+    /// future failure mode.
+    ///
+    /// Pure additive helper: this method is *not* called from the reshard state
+    /// machine in this bead.
+    pub async fn compute_source_document_count(&self, index_uid: &str) -> Result<u64> {
+        let stats = crate::index_stats::aggregate_index_stats(
+            &self.http_client,
+            &self.node_addresses,
+            &self.master_key,
+            index_uid,
+        )
+        .await;
+        Ok(stats.total_documents)
+    }
+
     /// Check if backfill is complete.
     async fn is_backfill_complete(&self, state: &ReshardState) -> Result<bool> {
         Ok(state
