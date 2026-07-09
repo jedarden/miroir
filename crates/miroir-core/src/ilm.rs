@@ -172,32 +172,6 @@ pub struct TriggerEvaluation {
     pub fired_triggers: Vec<String>,
 }
 
-/// Index stats for a single node.
-#[derive(Debug, Clone, Deserialize)]
-#[allow(non_snake_case)]
-struct NodeIndexStats {
-    #[serde(default)]
-    #[serde(rename = "numberOfDocuments")]
-    pub number_of_documents: u64,
-    /// Size in bytes (may not be present in all Meilisearch versions).
-    #[serde(rename = "stats", default)]
-    pub stats: Option<NodeStatsDetail>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-struct NodeStatsDetail {
-    #[serde(rename = "databaseSize", default)]
-    pub database_size: u64,
-}
-
-/// Aggregated index stats across all nodes.
-#[derive(Debug, Clone)]
-pub struct IndexStats {
-    pub total_documents: u64,
-    pub total_size_bytes: u64,
-    pub created_at_ms: u64,
-}
-
 /// Rollover phase for execution state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RolloverPhase {
@@ -720,13 +694,27 @@ impl IlmWorker {
         // Get the current index from the write alias
         let current_index = self.resolve_write_alias(&policy.write_alias).await?;
 
-        // Fetch stats from all nodes
-        let stats = self.fetch_index_stats(&current_index).await?;
+        // Fetch stats from all nodes via the shared aggregator (max-reduction for
+        // documents, sum for size). The shared `IndexStats` does not carry
+        // `created_at_ms`, so preserve the prior placeholder behavior here:
+        // default to 1 day ago when any node responded, else 0.
+        let stats = crate::index_stats::aggregate_index_stats(
+            &self.client,
+            &self.node_addresses,
+            &self.master_key,
+            &current_index,
+        )
+        .await;
+        let created_at_ms = if stats.nodes_responded > 0 {
+            millis_now() - (86400 * 1000)
+        } else {
+            0
+        };
 
         // Calculate age
         let now_ms = millis_now();
-        let age_seconds = if now_ms > stats.created_at_ms {
-            (now_ms - stats.created_at_ms) / 1000
+        let age_seconds = if now_ms > created_at_ms {
+            (now_ms - created_at_ms) / 1000
         } else {
             0
         };
@@ -789,84 +777,6 @@ impl IlmWorker {
             // Not an alias, treat as concrete index UID
             Ok(write_alias.to_string())
         }
-    }
-
-    /// Fetch aggregated stats for an index across all nodes.
-    async fn fetch_index_stats(
-        &self,
-        index_uid: &str,
-    ) -> std::result::Result<IndexStats, IlmError> {
-        let mut total_documents = 0u64;
-        let mut total_size_bytes = 0u64;
-        let mut created_at_ms = 0u64;
-
-        for address in self.node_addresses.iter() {
-            let url = format!(
-                "{}/indexes/{}/stats",
-                address.trim_end_matches('/'),
-                index_uid
-            );
-
-            match self.fetch_node_stats(&url).await {
-                Ok(node_stats) => {
-                    total_documents = total_documents.max(node_stats.number_of_documents);
-                    if let Some(ref stats) = node_stats.stats {
-                        total_size_bytes += stats.database_size;
-                    }
-                    // Use the earliest created_at we see (this is a placeholder;
-                    // in production we'd fetch this from index creation metadata)
-                    if created_at_ms == 0 {
-                        created_at_ms = millis_now() - (86400 * 1000); // Default to 1 day ago
-                    }
-                }
-                Err(e) => {
-                    // Log but continue - one node failing shouldn't block ILM
-                    warn!("ILM: failed to fetch stats from node {}: {}", address, e);
-                }
-            }
-        }
-
-        Ok(IndexStats {
-            total_documents,
-            total_size_bytes,
-            created_at_ms,
-        })
-    }
-
-    /// Fetch stats from a single node.
-    async fn fetch_node_stats(&self, url: &str) -> std::result::Result<NodeIndexStats, IlmError> {
-        let response = self
-            .client
-            .get(url)
-            .header("Authorization", format!("Bearer {}", &*self.master_key))
-            .send()
-            .await
-            .map_err(|e| IlmError::CoordinatorError(format!("request failed: {e}")))?;
-
-        let status = response.status();
-        let body_text = response
-            .text()
-            .await
-            .map_err(|e| IlmError::CoordinatorError(format!("failed to read response: {e}")))?;
-
-        if status.as_u16() == 404 {
-            // Index doesn't exist on this node
-            return Ok(NodeIndexStats {
-                number_of_documents: 0,
-                stats: None,
-            });
-        }
-
-        if !status.is_success() {
-            return Err(IlmError::CoordinatorError(format!(
-                "HTTP {}: {}",
-                status.as_u16(),
-                body_text
-            )));
-        }
-
-        serde_json::from_str(&body_text)
-            .map_err(|e| IlmError::CoordinatorError(format!("failed to parse stats: {e}")))
     }
 
     /// Execute a rollover operation for a policy.
@@ -1151,17 +1061,17 @@ impl IlmWorker {
                     continue;
                 }
 
-                // Fetch document count before deletion
-                let doc_count = match self.fetch_index_stats(index_uid).await {
-                    Ok(stats) => stats.total_documents,
-                    Err(e) => {
-                        warn!(
-                            "ILM: failed to fetch stats for '{}': {}, using 0",
-                            index_uid, e
-                        );
-                        0
-                    }
-                };
+                // Fetch document count before deletion. The shared aggregator
+                // logs per-node failures internally and never fails overall,
+                // yielding 0 documents only when every node fails or reports 0.
+                let doc_count = crate::index_stats::aggregate_index_stats(
+                    &self.client,
+                    &self.node_addresses,
+                    &self.master_key,
+                    index_uid,
+                )
+                .await
+                .total_documents;
 
                 match self.delete_index(index_uid).await {
                     Ok(()) => {
