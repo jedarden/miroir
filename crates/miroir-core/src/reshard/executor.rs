@@ -966,3 +966,173 @@ pub enum Phase {
     Cleanup,
     Complete,
 }
+
+#[cfg(test)]
+mod tests {
+    //! Executor-level coverage for `compute_source_document_count`.
+    //!
+    //! The pure reduction policy (`index_stats::reduce_document_counts`) is
+    //! already unit-tested directly. These tests cover the *other* seam: the
+    //! executor helper that drives the real reqwest transport against
+    //! `/indexes/{uid}/stats` via `index_stats::aggregate_index_stats`. Each
+    //! "node" is a mockito server returning a known `numberOfDocuments`, so we
+    //! assert the executor reduces them with `max`, tolerates a failing node,
+    //! and falls back to `0` when every node fails — matching how the
+    //! `miroir-proxy` ILM acceptance tests drive the same endpoint.
+
+    use super::*;
+    use crate::scatter::MockNodeClient;
+
+    /// Index uid every stats mock is mounted under.
+    const INDEX_UID: &str = "test-idx";
+    /// Stats endpoint path every mock is mounted on (`/indexes/{INDEX_UID}/stats`).
+    const STATS_PATH: &str = "/indexes/test-idx/stats";
+
+    /// Build an executor pointed at the given mockito node addresses.
+    ///
+    /// Only `node_addresses` (and the reqwest `http_client`) matter for
+    /// `compute_source_document_count`; the `node_client`/`topology`/`config`/
+    /// `task_store` are required by the constructor but untouched by the helper,
+    /// so they get inert defaults.
+    fn executor_with_nodes(node_addresses: Vec<String>) -> ReshardExecutor<MockNodeClient> {
+        ReshardExecutor::new(
+            INDEX_UID.to_string(),
+            2,
+            4,
+            Arc::new(RwLock::new(Topology::new(2, 1, 1))),
+            ReshardConfig {
+                backfill_concurrency: 4,
+                backfill_batch_size: 100,
+                throttle_docs_per_sec: 0,
+                verify_before_swap: false,
+                retain_old_index_hours: 24,
+            },
+            Arc::new(MockNodeClient::default()),
+            None,
+            Arc::new(Client::new()),
+            Arc::new(node_addresses),
+            Arc::new("test-master-key".to_string()),
+        )
+    }
+
+    /// Mount one `GET /indexes/{uid}/stats` mock returning `body` at `status`,
+    /// expected to be hit exactly once.
+    async fn mock_stats(
+        server: &mut mockito::Server,
+        status: usize,
+        body: serde_json::Value,
+    ) -> mockito::Mock {
+        server
+            .mock("GET", STATS_PATH)
+            .with_status(status)
+            .with_body(body.to_string())
+            .expect(1)
+            .create_async()
+            .await
+    }
+
+    // (a) Multiple healthy nodes returning different counts → result is the max.
+    #[tokio::test]
+    async fn compute_source_doc_count_returns_max_across_healthy_nodes() {
+        let mut server_a = mockito::Server::new_async().await;
+        let mut server_b = mockito::Server::new_async().await;
+        let mut server_c = mockito::Server::new_async().await;
+
+        let mocks: Vec<mockito::Mock> = vec![
+            mock_stats(&mut server_a, 200, json!({"numberOfDocuments": 100})).await,
+            mock_stats(&mut server_b, 200, json!({"numberOfDocuments": 250})).await,
+            mock_stats(&mut server_c, 200, json!({"numberOfDocuments": 180})).await,
+        ];
+
+        let executor =
+            executor_with_nodes(vec![server_a.url(), server_b.url(), server_c.url()]);
+
+        let count = executor.compute_source_document_count(INDEX_UID).await.unwrap();
+        assert_eq!(count, 250, "denominator is the max responder, not the sum");
+
+        // Prove we drove the real HTTP path: every node's stats endpoint was hit.
+        for m in &mocks {
+            m.assert_async().await;
+        }
+    }
+
+    // (b) One node failing (HTTP 5xx) → logged and skipped; max of the rest wins.
+    #[tokio::test]
+    async fn compute_source_doc_count_ignores_failing_node() {
+        let mut server_a = mockito::Server::new_async().await;
+        let mut server_dead = mockito::Server::new_async().await;
+        let mut server_c = mockito::Server::new_async().await;
+
+        let mocks: Vec<mockito::Mock> = vec![
+            mock_stats(&mut server_a, 200, json!({"numberOfDocuments": 100})).await,
+            mock_stats(&mut server_dead, 500, json!({"message": "internal error"})).await,
+            mock_stats(&mut server_c, 200, json!({"numberOfDocuments": 250})).await,
+        ];
+
+        let executor = executor_with_nodes(vec![
+            server_a.url(),
+            server_dead.url(),
+            server_c.url(),
+        ]);
+
+        let count = executor.compute_source_document_count(INDEX_UID).await.unwrap();
+        assert_eq!(
+            count, 250,
+            "a single failing node must not block the denominator"
+        );
+
+        for m in &mocks {
+            m.assert_async().await;
+        }
+    }
+
+    // (b') A node that 404s (index absent on that replica) is treated as zero
+    // documents rather than a failure — the healthy max still wins.
+    #[tokio::test]
+    async fn compute_source_doc_count_tolerates_404_absent_index() {
+        let mut server_a = mockito::Server::new_async().await;
+        let mut server_missing = mockito::Server::new_async().await;
+
+        let mocks: Vec<mockito::Mock> = vec![
+            mock_stats(&mut server_a, 200, json!({"numberOfDocuments": 180})).await,
+            mock_stats(&mut server_missing, 404, json!({"message": "index not found"})).await,
+        ];
+
+        let executor =
+            executor_with_nodes(vec![server_a.url(), server_missing.url()]);
+
+        let count = executor.compute_source_document_count(INDEX_UID).await.unwrap();
+        assert_eq!(
+            count, 180,
+            "a 404 (absent replica) counts as zero, not a failure"
+        );
+
+        for m in &mocks {
+            m.assert_async().await;
+        }
+    }
+
+    // (c) Every node failing → returns 0 (no responder → no denominator).
+    #[tokio::test]
+    async fn compute_source_doc_count_zero_when_all_nodes_fail() {
+        let mut server_a = mockito::Server::new_async().await;
+        let mut server_b = mockito::Server::new_async().await;
+        let mut server_c = mockito::Server::new_async().await;
+
+        let mocks: Vec<mockito::Mock> = vec![
+            mock_stats(&mut server_a, 500, json!({"message": "down"})).await,
+            mock_stats(&mut server_b, 503, json!({"message": "unavailable"})).await,
+            mock_stats(&mut server_c, 500, json!({"message": "down"})).await,
+        ];
+
+        let executor =
+            executor_with_nodes(vec![server_a.url(), server_b.url(), server_c.url()]);
+
+        let count = executor.compute_source_document_count(INDEX_UID).await.unwrap();
+        assert_eq!(count, 0, "all nodes failing yields a zero denominator");
+
+        for m in &mocks {
+            m.assert_async().await;
+        }
+    }
+}
