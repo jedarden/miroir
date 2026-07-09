@@ -2464,6 +2464,7 @@ dependencies = [
  "indexmap 2.14.0",
  "meilisearch-sdk",
  "mockall",
+ "mockito",
  "proptest",
  "rand 0.8.6",
  "rdkafka",
