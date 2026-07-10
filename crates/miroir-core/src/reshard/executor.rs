@@ -42,6 +42,22 @@ pub struct ReshardState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackfillProgress {
     pub total_documents: u64,
+    /// Whether `total_documents` was seeded up front from the source-index
+    /// stats (plan §13.1 step 3, bf-2tddo), rather than accumulated shard by
+    /// shard.
+    ///
+    /// When `true`, [`ReshardExecutor::incorporate_shard_total`] is a no-op:
+    /// the denominator is already the full-index count, so folding in
+    /// per-shard totals would double-count and push the progress ratio past
+    /// 1.0. When `false` (the legacy fallback), per-shard totals still
+    /// accumulate into the denominator as each shard's first page is read.
+    ///
+    /// `#[serde(default)]` deserializes previously-serialized `ReshardState`s
+    /// to `false` — a state persisted before this flag existed was using the
+    /// per-shard accumulation, so it must keep doing so instead of suddenly
+    /// suppressing the denominator.
+    #[serde(default)]
+    pub upfront_total_known: bool,
     pub processed_documents: u64,
     pub current_shard: Option<u32>,
     pub last_cursor: Option<String>,
@@ -119,6 +135,7 @@ impl<C: NodeClient> ReshardExecutor<C> {
             updated_at: now,
             backfill_progress: BackfillProgress {
                 total_documents: 0,
+                upfront_total_known: false,
                 processed_documents: 0,
                 current_shard: None,
                 last_cursor: None,
@@ -525,8 +542,21 @@ impl<C: NodeClient> ReshardExecutor<C> {
             .await
             .unwrap_or(0);
 
+        // A non-zero up-front count means the denominator is already the full
+        // index total, so per-shard accumulation would double-count. We record
+        // that with `upfront_total_known` and let `incorporate_shard_total`
+        // short-circuit. A zero count (every stats node failed or reported
+        // zero) leaves the flag `false` and falls back to per-shard
+        // accumulation as before. Keying the switch on the flag rather than on
+        // `total_documents == 0` is deliberate: once the legacy fallback folds
+        // in the first shard the denominator is non-zero, and gating on zero
+        // would then silently drop every subsequent shard and stall the ratio
+        // mid-backfill.
+        let upfront_total_known = total_documents > 0;
+
         state.backfill_progress = BackfillProgress {
             total_documents,
+            upfront_total_known,
             processed_documents: 0,
             current_shard: Some(0),
             last_cursor: None,
@@ -535,6 +565,7 @@ impl<C: NodeClient> ReshardExecutor<C> {
         tracing::info!(
             index = %state.index_uid,
             total_documents,
+            upfront_total_known,
             "Started backfill"
         );
 
@@ -582,6 +613,25 @@ impl<C: NodeClient> ReshardExecutor<C> {
             .current_shard
             .map(|s| s >= state.old_shards)
             .unwrap_or(false))
+    }
+
+    /// Fold a shard's document count into the backfill denominator.
+    ///
+    /// The reconciliation that prevents bf-2tddo's up-front
+    /// [`BackfillProgress::total_documents`] from being double-counted. The
+    /// mode switch keys on [`BackfillProgress::upfront_total_known`], NOT on
+    /// `total_documents == 0`: once the legacy fallback folds in the first
+    /// shard the denominator is non-zero, and gating on zero would then
+    /// silently drop every subsequent shard and stall the ratio mid-backfill.
+    /// The flag, set once in `start_backfill`, is immune to that drift.
+    fn incorporate_shard_total(&self, state: &mut ReshardState, shard_total: u64) {
+        if state.backfill_progress.upfront_total_known {
+            // Denominator already holds the full-index count from
+            // `start_backfill`; adding per-shard totals would double-count and
+            // push the progress ratio past 1.0.
+            return;
+        }
+        state.backfill_progress.total_documents += shard_total;
     }
 
     /// Advance backfill by processing one shard.
@@ -653,7 +703,7 @@ impl<C: NodeClient> ReshardExecutor<C> {
             // Update total count on first page
             if offset == 0 {
                 total_docs_in_shard = fetch_response.total;
-                state.backfill_progress.total_documents += total_docs_in_shard;
+                self.incorporate_shard_total(state, total_docs_in_shard);
             }
 
             let docs = fetch_response.results;
@@ -1150,5 +1200,111 @@ mod tests {
         for m in &mocks {
             m.assert_async().await;
         }
+    }
+
+    // ---- incorporate_shard_total mode switch (bf-1rodg) ----
+    //
+    // The reconciliation that keeps the backfill progress ratio in [0,1] once
+    // bf-2tddo's up-front denominator exists. Three assertions mirror the
+    // acceptance criteria: (1) serde compat with pre-flag state, (2) an
+    // up-front total makes the fold a no-op, (3) its absence still accumulates
+    // per-shard totals across a multi-shard index.
+
+    /// Build a backfill `ReshardState` in `Phase::Backfill` with the given
+    /// progress, so `incorporate_shard_total` has realistic input.
+    fn backfill_state(progress: BackfillProgress) -> ReshardState {
+        ReshardState {
+            id: Uuid::nil(),
+            index_uid: INDEX_UID.to_string(),
+            old_shards: 2,
+            new_shards: 4,
+            phase: Phase::Backfill,
+            shadow_index: Some("test-idx__reshard_4".to_string()),
+            started_at: 0,
+            updated_at: 0,
+            backfill_progress: progress,
+            verify_result: None,
+        }
+    }
+
+    /// An executor whose `node_addresses`/client/topology are never touched by
+    /// `incorporate_shard_total` — it's pure progress bookkeeping, so empty
+    /// nodes are fine.
+    fn bookkeeping_executor() -> ReshardExecutor<MockNodeClient> {
+        executor_with_nodes(vec![])
+    }
+
+    // (1) A pre-flag ReshardState serialized without `upfront_total_known`
+    // deserializes to the legacy fallback (false), so per-shard accumulation
+    // resumes for state persisted before this flag existed.
+    #[test]
+    fn backfill_progress_serde_defaults_upfront_total_known_to_false() {
+        let legacy_json = json!({
+            "total_documents": 0,
+            "processed_documents": 0,
+            "current_shard": null,
+            "last_cursor": null,
+        });
+        let progress: BackfillProgress = serde_json::from_value(legacy_json).unwrap();
+        assert!(
+            !progress.upfront_total_known,
+            "pre-flag serialized state must fall back to per-shard accumulation"
+        );
+    }
+
+    // (2) With an up-front total, folding in per-shard totals is a no-op: the
+    // denominator never grows, so the progress ratio can't exceed 1.0.
+    #[test]
+    fn incorporate_shard_total_is_noop_when_upfront_total_known() {
+        let executor = bookkeeping_executor();
+        let mut state = backfill_state(BackfillProgress {
+            total_documents: 1000,
+            upfront_total_known: true,
+            processed_documents: 0,
+            current_shard: Some(0),
+            last_cursor: None,
+        });
+
+        // Each shard reports a count; none may be folded in.
+        for shard_total in [400u64, 350, 250] {
+            executor.incorporate_shard_total(&mut state, shard_total);
+        }
+
+        assert_eq!(
+            state.backfill_progress.total_documents, 1000,
+            "up-front total must not be double-counted by per-shard totals"
+        );
+
+        // Processing every document keeps the ratio at (not above) 1.0.
+        state.backfill_progress.processed_documents = 1000;
+        let ratio = state.backfill_progress.processed_documents as f64
+            / state.backfill_progress.total_documents as f64;
+        assert!(ratio <= 1.0, "ratio {ratio} must never exceed 1.0");
+    }
+
+    // (3) Without an up-front total, per-shard totals still accumulate into the
+    // denominator across a multi-shard index. This is exactly the case the key-
+    // correctness note warns about: keying on `total_documents == 0` would drop
+    // shards 1 and 2 once shard 0 makes the denominator non-zero (→ 400, not
+    // 1000); keying on the flag instead accumulates all three.
+    #[test]
+    fn incorporate_shard_total_accumulates_when_upfront_unknown() {
+        let executor = bookkeeping_executor();
+        let mut state = backfill_state(BackfillProgress {
+            total_documents: 0,
+            upfront_total_known: false,
+            processed_documents: 0,
+            current_shard: Some(0),
+            last_cursor: None,
+        });
+
+        for shard_total in [400u64, 350, 250] {
+            executor.incorporate_shard_total(&mut state, shard_total);
+        }
+
+        assert_eq!(
+            state.backfill_progress.total_documents, 1000,
+            "per-shard totals must accumulate even after the denominator is non-zero"
+        );
     }
 }
