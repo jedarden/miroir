@@ -468,10 +468,6 @@ pub struct AntiEntropyWorker {
     mode_a_coordinator: Option<Arc<ModeACoordinator>>,
     /// Total shards in the cluster (for Mode A scaling).
     _total_shards: u32,
-    /// This pod's replica group ID (for Mode A scaling).
-    replica_group_id: Option<u32>,
-    /// Total number of pods in Mode A scaling.
-    num_pods: Option<u32>,
     /// RF (replication factor) for Mode A scaling.
     _rf: usize,
     /// Whether TTL is enabled for expired document handling (plan §13.14 interaction).
@@ -520,8 +516,6 @@ impl AntiEntropyWorker {
             pod_id,
             mode_a_coordinator: None,
             _total_shards: 0, // Will be set when Mode A is enabled
-            replica_group_id: None,
-            num_pods: None,
             _rf: 2, // Default RF
             ttl_enabled: false,
             metrics_shards_scanned: None,
@@ -534,20 +528,6 @@ impl AntiEntropyWorker {
     /// Set the Mode A coordinator for shard-partitioned ownership (plan §14.5 Mode A).
     pub fn with_mode_a_coordinator(mut self, coordinator: Arc<ModeACoordinator>) -> Self {
         self.mode_a_coordinator = Some(coordinator);
-        self
-    }
-
-    /// Set Mode A scaling parameters (plan §14.6).
-    ///
-    /// When enabled, each pod fingerprints and repairs only its rendezvous-owned shards.
-    ///
-    /// # Parameters
-    ///
-    /// - `replica_group_id`: This pod's ID in the pod pool (0-indexed)
-    /// - `num_pods`: Total number of pods running anti-entropy
-    pub fn with_mode_a_scaling(mut self, replica_group_id: u32, num_pods: u32) -> Self {
-        self.replica_group_id = Some(replica_group_id);
-        self.num_pods = Some(num_pods);
         self
     }
 
