@@ -511,11 +511,22 @@ impl<C: NodeClient> ReshardExecutor<C> {
 
     /// Phase 3: Start backfill from live to shadow.
     async fn start_backfill(&self, state: &mut ReshardState) -> Result<()> {
-        // Get total document count for progress tracking
-        // TODO: Query nodes for document counts
+        // Backfill denominator (plan §13.1 step 3, bf-2tddo): query the source
+        // index's real document count up front via the shared `index_stats`
+        // aggregation, so the progress ratio has a non-zero denominator from the
+        // very first shard instead of the legacy `0` placeholder.
+        //
+        // Progress-reporting only: a stats failure must never abort a reshard
+        // over a mere progress signal, so on error the denominator falls back to
+        // `0` and `advance_backfill`'s per-shard accumulation fills it in
+        // incrementally as the legacy fallback.
+        let total_documents = self
+            .compute_source_document_count(&state.index_uid)
+            .await
+            .unwrap_or(0);
 
         state.backfill_progress = BackfillProgress {
-            total_documents: 0, // Will be updated
+            total_documents,
             processed_documents: 0,
             current_shard: Some(0),
             last_cursor: None,
@@ -523,6 +534,7 @@ impl<C: NodeClient> ReshardExecutor<C> {
 
         tracing::info!(
             index = %state.index_uid,
+            total_documents,
             "Started backfill"
         );
 
@@ -542,12 +554,16 @@ impl<C: NodeClient> ReshardExecutor<C> {
     /// The aggregation is infallible from the caller's perspective — a node that
     /// fails to respond (network / non-2xx / parse error) is logged and skipped,
     /// and the count is `0` only if every node fails or reports zero — but this
-    /// returns [`Result`] to match the executor's method conventions and leave
-    /// the `start_backfill` caller (wired in a sibling bead) free to propagate a
-    /// future failure mode.
+    /// returns [`Result`] to match the executor's method conventions: the only
+    /// caller (`start_backfill`, wired in bf-2tddo) maps an error to a `0`
+    /// denominator so a stats failure never aborts a reshard, after which the
+    /// per-shard accumulation in `advance_backfill` fills the denominator in
+    /// incrementally as the legacy fallback.
     ///
-    /// Pure additive helper: this method is *not* called from the reshard state
-    /// machine in this bead.
+    /// Wired into `start_backfill` (bf-2tddo) as the backfill denominator; it
+    /// was introduced as a pure additive helper in bf-2ynu5 and is now the
+    /// source of the non-zero `total_documents` that backfill progress divides
+    /// by.
     pub async fn compute_source_document_count(&self, index_uid: &str) -> Result<u64> {
         let stats = crate::index_stats::aggregate_index_stats(
             &self.http_client,
