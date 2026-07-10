@@ -1796,3 +1796,248 @@ mod tests_mode_a_acceptance {
         // (Full integration test would require running the pass which involves more setup)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Mode A minimal-reshuffling tests (plan §14.5)
+//
+// These pin the *minimal-reshuffling* property of rendezvous hashing that the
+// pod-reassignment test above does NOT assert: on a peer-set resize, surviving
+// pods keep the shards they already owned — only the departed pod's shards
+// (scale-down) or the new pod's fair share (scale-up) may move. This is the
+// regression the parent bead (bf-30m2j) is actually worried about: two pods
+// churning ownership, or shards bouncing, in a multi-replica HA deployment.
+//
+// Pure coordinator test: `ModeACoordinator` + `PeerSet` only, driven through
+// the synthetic peer-set injector `set_peer_set_for_test` (no `peer-discovery`
+// feature, no SRV lookup, no docker). Runs in plain `cargo test -p miroir-core`.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod mode_a_minimal_reshuffling_tests {
+    use super::*;
+    use crate::mode_a_coordinator::ModeACoordinator;
+    use crate::peer_discovery::{PeerDiscovery, PeerSet};
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    /// Build a coordinator for `pod_id` (same construction style as the
+    /// `tests_mode_a_acceptance` tests at line ~1541).
+    fn make_coordinator(pod_id: &str) -> Arc<ModeACoordinator> {
+        let peer_discovery = Arc::new(PeerDiscovery::new(
+            pod_id.to_string(),
+            "default".to_string(),
+            "miroir-headless".to_string(),
+        ));
+        Arc::new(ModeACoordinator::new(pod_id.to_string(), peer_discovery))
+    }
+
+    /// Which of `shards` does `coordinator` currently own.
+    async fn owned_shards_set(coordinator: &ModeACoordinator, shards: &[u32]) -> HashSet<u32> {
+        let mut owned = HashSet::new();
+        for &shard_id in shards {
+            if coordinator.owns_shard(&shard_id.to_string()).await.unwrap() {
+                owned.insert(shard_id);
+            }
+        }
+        owned
+    }
+
+    /// Minimal-reshuffling on a 3→2 scale-**down** (plan §14.5): survivor
+    /// stability. When pod-3 leaves, pod-1 and pod-2 must retain every shard
+    /// they already owned — only pod-3's departed shards may change hands. A
+    /// buggy partitioner that reshuffled all shards on every resize (while
+    /// still giving exactly-one-owner + full coverage) would fail this.
+    #[tokio::test]
+    async fn test_mode_a_minimal_reshuffling_scale_down_survivor_stability() {
+        let pod1 = make_coordinator("pod-1");
+        let pod2 = make_coordinator("pod-2");
+        let pod3 = make_coordinator("pod-3");
+
+        let peers_3 = PeerSet::new(vec![
+            "pod-1".to_string(),
+            "pod-2".to_string(),
+            "pod-3".to_string(),
+        ]);
+        pod1.set_peer_set_for_test(peers_3.clone()).await;
+        pod2.set_peer_set_for_test(peers_3.clone()).await;
+        pod3.set_peer_set_for_test(peers_3.clone()).await;
+
+        let shards: Vec<u32> = (0..64).collect();
+
+        // Record initial ownership at 3 pods.
+        let pod1_initial = owned_shards_set(&pod1, &shards).await;
+        let pod2_initial = owned_shards_set(&pod2, &shards).await;
+        let pod3_initial = owned_shards_set(&pod3, &shards).await;
+
+        // Sanity: exactly-one-owner + full coverage at 3 pods.
+        assert_eq!(
+            pod1_initial.len() + pod2_initial.len() + pod3_initial.len(),
+            64,
+            "all 64 shards should be owned by exactly one pod at 3 pods"
+        );
+
+        // pod-3 dies: peer set shrinks to the two survivors.
+        let peers_2 = PeerSet::new(vec!["pod-1".to_string(), "pod-2".to_string()]);
+        pod1.set_peer_set_for_test(peers_2.clone()).await;
+        pod2.set_peer_set_for_test(peers_2.clone()).await;
+
+        // SURVIVOR STABILITY: pod-1 and pod-2 keep every shard they already
+        // owned. Only pod-3's old shards are free to move.
+        for &shard_id in &shards {
+            if pod1_initial.contains(&shard_id) {
+                assert!(
+                    pod1.owns_shard(&shard_id.to_string()).await.unwrap(),
+                    "survivor instability on 3→2: pod-1 lost shard {shard_id} it \
+                     owned at 3 pods — rendezvous minimal-reshuffling violated \
+                     (a surviving pod must never lose a shard it already owned)"
+                );
+            }
+            if pod2_initial.contains(&shard_id) {
+                assert!(
+                    pod2.owns_shard(&shard_id.to_string()).await.unwrap(),
+                    "survivor instability on 3→2: pod-2 lost shard {shard_id} it \
+                     owned at 3 pods — rendezvous minimal-reshuffling violated"
+                );
+            }
+        }
+
+        // pod-3's departed shards are re-homed to exactly one survivor, and all
+        // 64 shards stay owned (the existing pod-reassignment invariant,
+        // restated here so this test is self-contained).
+        let mut total_owned = 0usize;
+        for &shard_id in &shards {
+            let p1 = pod1.owns_shard(&shard_id.to_string()).await.unwrap();
+            let p2 = pod2.owns_shard(&shard_id.to_string()).await.unwrap();
+            let owner_count = [p1, p2].iter().filter(|&&x| x).count();
+            assert_eq!(
+                owner_count, 1,
+                "shard {shard_id} should be owned by exactly one survivor after \
+                 3→2 resize, but {owner_count} pods claim it"
+            );
+            total_owned += owner_count;
+        }
+        assert_eq!(
+            total_owned, 64,
+            "all 64 shards must still be owned after 3→2 resize"
+        );
+    }
+
+    /// Minimal-reshuffling on a 3→4 scale-**up** (plan §14.5, the canonical
+    /// elasticity example): (a) exactly-one-owner + full coverage at 4 pods;
+    /// (b) survivor stability on growth — each of the original 3 pods keeps
+    /// every shard it owned except those the new pod-4 takes over. No shard may
+    /// move *between* the original pods; only pod-4 can pull shards toward
+    /// itself.
+    #[tokio::test]
+    async fn test_mode_a_minimal_reshuffling_scale_up_survivor_stability() {
+        let pod1 = make_coordinator("pod-1");
+        let pod2 = make_coordinator("pod-2");
+        let pod3 = make_coordinator("pod-3");
+        let pod4 = make_coordinator("pod-4");
+
+        let peers_3 = PeerSet::new(vec![
+            "pod-1".to_string(),
+            "pod-2".to_string(),
+            "pod-3".to_string(),
+        ]);
+        pod1.set_peer_set_for_test(peers_3.clone()).await;
+        pod2.set_peer_set_for_test(peers_3.clone()).await;
+        pod3.set_peer_set_for_test(peers_3.clone()).await;
+
+        let shards: Vec<u32> = (0..64).collect();
+
+        // Record the original pods' ownership at 3 pods.
+        let pod1_initial = owned_shards_set(&pod1, &shards).await;
+        let pod2_initial = owned_shards_set(&pod2, &shards).await;
+        let pod3_initial = owned_shards_set(&pod3, &shards).await;
+        assert_eq!(
+            pod1_initial.len() + pod2_initial.len() + pod3_initial.len(),
+            64,
+            "all 64 shards should be owned by exactly one pod at 3 pods"
+        );
+
+        // Grow to 4 pods.
+        let peers_4 = PeerSet::new(vec![
+            "pod-1".to_string(),
+            "pod-2".to_string(),
+            "pod-3".to_string(),
+            "pod-4".to_string(),
+        ]);
+        pod1.set_peer_set_for_test(peers_4.clone()).await;
+        pod2.set_peer_set_for_test(peers_4.clone()).await;
+        pod3.set_peer_set_for_test(peers_4.clone()).await;
+        pod4.set_peer_set_for_test(peers_4.clone()).await;
+
+        // (a) exactly-one-owner + full coverage at 4 pods.
+        let mut total_owned = 0usize;
+        for &shard_id in &shards {
+            let owners = [
+                pod1.owns_shard(&shard_id.to_string()).await.unwrap(),
+                pod2.owns_shard(&shard_id.to_string()).await.unwrap(),
+                pod3.owns_shard(&shard_id.to_string()).await.unwrap(),
+                pod4.owns_shard(&shard_id.to_string()).await.unwrap(),
+            ];
+            let owner_count = owners.iter().filter(|&&x| x).count();
+            assert_eq!(
+                owner_count, 1,
+                "shard {shard_id} should be owned by exactly one pod at 4 pods, \
+                 but {owner_count} pods claim it"
+            );
+            total_owned += owner_count;
+        }
+        assert_eq!(total_owned, 64, "all 64 shards must be owned at 4 pods");
+
+        // (b) survivor stability on growth: each original pod keeps its shards
+        // unless the new pod-4 took them. A shard owned by pod-1 at 3 pods must
+        // still be owned by pod-1 at 4 pods OR have moved to pod-4 — never to
+        // pod-2 or pod-3.
+        for &shard_id in &shards {
+            let p4_owns = pod4.owns_shard(&shard_id.to_string()).await.unwrap();
+            if pod1_initial.contains(&shard_id) {
+                assert!(
+                    pod1.owns_shard(&shard_id.to_string()).await.unwrap() || p4_owns,
+                    "scale-up instability: shard {shard_id} owned by pod-1 at 3 \
+                     pods moved to another original pod (not pod-4) at 4 pods — \
+                     rendezvous minimal-reshuffling violated"
+                );
+            }
+            if pod2_initial.contains(&shard_id) {
+                assert!(
+                    pod2.owns_shard(&shard_id.to_string()).await.unwrap() || p4_owns,
+                    "scale-up instability: shard {shard_id} owned by pod-2 at 3 \
+                     pods moved to another original pod (not pod-4) at 4 pods"
+                );
+            }
+            if pod3_initial.contains(&shard_id) {
+                assert!(
+                    pod3.owns_shard(&shard_id.to_string()).await.unwrap() || p4_owns,
+                    "scale-up instability: shard {shard_id} owned by pod-3 at 3 \
+                     pods moved to another original pod (not pod-4) at 4 pods"
+                );
+            }
+        }
+
+        // The new pod-4 must have actually taken some shards (it is not a
+        // no-op), and it cannot take more than all of them.
+        let pod4_owned = owned_shards_set(&pod4, &shards).await;
+        assert!(
+            !pod4_owned.is_empty(),
+            "pod-4 should own some shards after scale-up (rendezvous must \
+             distribute to the new peer)"
+        );
+        assert!(
+            pod4_owned.len() < 64,
+            "pod-4 should not own all 64 shards after scale-up"
+        );
+
+        // Sanity: the assertion above would FAIL under a round-robin
+        // partitioner (`owner(s) = peers[s % N]`). Round-robin re-indexes every
+        // shard on a resize, so surviving pods churn ownership:
+        //   - 3→2: shard 4 is `4 % 3 = 1 → pod-2` at 3 pods but `4 % 2 = 0 →
+        //     pod-1` at 2 pods — pod-2 loses a shard it owned to pod-1.
+        //   - 3→4: shard 5 is `5 % 3 = 2 → pod-3` at 3 pods but `5 % 4 = 1 →
+        //     pod-2` at 4 pods — pod-3 loses a shard to pod-2 (a surviving
+        //     original pod, not the new pod-4).
+        // Rendezvous (top-1 of `hash(s‖pid)`) is what guarantees survivors keep
+        // their shards; these tests pin exactly that.
+    }
+}

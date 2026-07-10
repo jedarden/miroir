@@ -38,7 +38,6 @@ pub mod index_stats;
 pub mod leader_election;
 pub mod merger;
 pub mod migration;
-#[cfg(feature = "peer-discovery")]
 pub mod mode_a_coordinator;
 #[cfg(test)]
 mod mode_b_acceptance_tests;
@@ -48,7 +47,11 @@ mod mode_c_acceptance_tests;
 pub mod mode_c_coordinator;
 pub mod mode_c_worker;
 pub mod multi_search;
-#[cfg(feature = "peer-discovery")]
+// `peer_discovery` is always compiled: only the DNS `refresh()` path needs the
+// optional `trust-dns-resolver` dep (gated inside the function), so the types
+// `PeerSet`/`PeerId`/`PeerDiscovery` and `ModeACoordinator` (which needs only
+// `set_peer_set_for_test`, never SRV) are usable in plain `cargo test` without
+// the feature. This lets the Mode A partitioning tests run in the default config.
 pub mod peer_discovery;
 pub mod query_planner;
 pub mod rebalancer;

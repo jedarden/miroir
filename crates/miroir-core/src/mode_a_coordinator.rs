@@ -297,8 +297,12 @@ impl ModeACoordinator {
     /// Set the peer set directly (test-only).
     ///
     /// This method is only intended for use in tests to simulate different
-    /// peer configurations without going through peer discovery.
-    #[cfg(test)]
+    /// peer configurations without going through peer discovery. It is reachable
+    /// from in-crate unit tests (`cfg(test)`) and from integration tests / other
+    /// crates that enable the `test-helpers` feature — integration tests link
+    /// against the non-test build of the library, so `cfg(test)` alone would
+    /// strip it.
+    #[cfg(any(test, feature = "test-helpers"))]
     pub async fn set_peer_set_for_test(&self, peer_set: PeerSet) {
         let mut cached = self.cached_peer_set.write().await;
         *cached = peer_set;
