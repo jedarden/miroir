@@ -227,3 +227,35 @@ make test
       `[covered by <test>:<line>]` / `[PARTIALLY COVERED]` / `[NOT DONE]`.
 - [x] Enumerated gaps (a/b/c) confirmed, recorded as comments on bf-30m2j and
       bf-1zn8a.
+
+## Session completion (retry — re-verified + comments posted)
+
+This bead had been left `in_progress` after a prior attempt that wrote these notes
+and committed them (`1e207ed`, confirmed pushed to `origin/main`) but **did not post
+the required comments** (acceptance criterion 4) and **did not close**. This session:
+
+1. **Independently re-verified every core claim** rather than trusting the prior notes:
+   - `cargo test -p miroir-core mode_a` (default) → `0 passed ... filtered out` (the 3
+     tests are feature-gated, do NOT run in plain default config — premise corrected).
+   - `cargo test -p miroir-core anti_entropy` (default) → only the non-Mode-A tests run.
+   - `--list` confirms the 3 tests exist only under `--features peer-discovery`
+     (1026 vs 1006 total tests).
+   - `cargo test -p miroir-core --features peer-discovery -- tests_mode_a_acceptance`
+     → `running 3 tests ... 3 passed; 0 failed; 0 ignored`.
+   - Confirmed gaps (a)/(b)/(c) by line: survivor-stability not asserted (no
+     `pod1_owned_initial`/`pod2_owned_initial` capture), only 3→2 (no 3→4),
+     `rendezvous_score` private (`mode_a_coordinator.rs:112`), only property tests.
+   - Cross-checked the notes' extra citations — all accurate: `make test` =
+     `cargo test --all --all-features` (`Makefile:8`); `set_peer_set_for_test` is
+     `#[cfg(any(test, feature = "test-helpers"))]` (`:306`) and the `test-helpers`
+     feature *does* exist (`Cargo.toml:74`); CI runs `--all --all-features`
+     (`k8s/argo-workflows/miroir-ci.yaml:140`).
+2. **Posted the coverage map + enumerated gaps** as the required comments:
+   comment 22 on bf-30m2j (parent), comment 23 on bf-1zn8a (this child).
+3. Confirmed `with_mode_a_scaling` is **not** fully removed — a different one remains
+   at `rebalancer_worker/anti_entropy_worker.rs:548` (added to the comments as a note
+   that the parent's "API drift" framing is partly wrong).
+
+Net: the disabled `acceptance_4` is confirmed **redundant**; the narrow real gaps are
+(a) survivor-stability, (b) scale-up 3→4, (c) golden hash-vector — to be addressed by
+child beads, not by rewriting the disabled test.
