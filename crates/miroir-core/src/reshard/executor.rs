@@ -10,6 +10,7 @@
 
 use crate::anti_entropy::{AntiEntropyConfig, AntiEntropyReconciler};
 use crate::error::{MiroirError, Result};
+use crate::reshard::ReshardOperation;
 use crate::scatter::{FetchDocumentsRequest, NodeClient, WriteRequest};
 use crate::task_store::TaskStore;
 use crate::topology::Topology;
@@ -93,6 +94,15 @@ pub struct ReshardExecutor<C: NodeClient> {
     node_addresses: Arc<Vec<String>>,
     /// Master key for node authentication.
     master_key: Arc<String>,
+    /// Optional persisted [`ReshardOperation`] (bf-1q4wa) that backfill
+    /// progress is mirrored into via [`Self::report_progress`], so the admin
+    /// status endpoint's `ReshardOperation::backfill_progress()` reads a real
+    /// denominator (and, as each shard completes, a real numerator) instead of
+    /// the unset `0`.
+    ///
+    /// `None` on the default executor path — [`Self::report_progress`] is then
+    /// a no-op, leaving that path unchanged.
+    progress_operation: Option<Arc<RwLock<ReshardOperation>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,7 +162,28 @@ impl<C: NodeClient> ReshardExecutor<C> {
             http_client,
             node_addresses,
             master_key,
+            progress_operation: None,
         }
+    }
+
+    /// Attach a persisted [`ReshardOperation`] that backfill progress is
+    /// mirrored into (bf-1q4wa).
+    ///
+    /// When attached, [`Self::report_progress`] — called at the end of
+    /// [`Self::start_backfill`] (propagating the seeded denominator) and at the
+    /// end of [`Self::advance_backfill`] (propagating the numerator as each
+    /// shard completes) — writes the executor's `BackfillProgress` into the
+    /// persisted operation via
+    /// [`ReshardOperation::update_backfill_progress`], so the admin status
+    /// endpoint's [`ReshardOperation::backfill_progress`] returns a real ratio
+    /// from the very first shard instead of the `0.0` an unset denominator
+    /// yields.
+    ///
+    /// Leaving this unset (the default) keeps [`Self::report_progress`] a
+    /// no-op, so the default executor path is unchanged.
+    pub fn with_progress_operation(mut self, op: Arc<RwLock<ReshardOperation>>) -> Self {
+        self.progress_operation = Some(op);
+        self
     }
 
     /// Get the current state.
@@ -569,6 +600,12 @@ impl<C: NodeClient> ReshardExecutor<C> {
             "Started backfill"
         );
 
+        // bf-1q4wa: propagate the just-seeded denominator to the persisted
+        // ReshardOperation so the admin status endpoint's backfill_progress()
+        // reads a real ratio from the very first shard instead of the unset 0.
+        // No-op when no progress_operation is attached.
+        self.report_progress(state).await;
+
         Ok(())
     }
 
@@ -632,6 +669,35 @@ impl<C: NodeClient> ReshardExecutor<C> {
             return;
         }
         state.backfill_progress.total_documents += shard_total;
+    }
+
+    /// Mirror the executor's backfill progress into the attached persisted
+    /// [`ReshardOperation`] (bf-1q4wa).
+    ///
+    /// When a `progress_operation` was attached via
+    /// [`with_progress_operation`](Self::with_progress_operation), this writes
+    /// the executor's `BackfillProgress` numerator (`processed_documents`) and
+    /// denominator (`total_documents`) into the persisted operation through
+    /// [`ReshardOperation::update_backfill_progress`]. Called at the end of
+    /// [`start_backfill`](Self::start_backfill) — so the real denominator
+    /// seeded by child 1 (bf-2tddo) and reconciled by child 2 (bf-1rodg)
+    /// reaches `ReshardOperation.total_documents` — and again at the end of
+    /// [`advance_backfill`](Self::advance_backfill) as each shard completes, so
+    /// the numerator tracks real progress and
+    /// [`ReshardOperation::backfill_progress`] returns a non-`0.0` ratio from
+    /// the very first shard.
+    ///
+    /// When no operation is attached, this is a no-op and the default executor
+    /// path is unchanged.
+    async fn report_progress(&self, state: &ReshardState) {
+        if let Some(op) = &self.progress_operation {
+            op.write()
+                .await
+                .update_backfill_progress(
+                    state.backfill_progress.processed_documents,
+                    state.backfill_progress.total_documents,
+                );
+        }
     }
 
     /// Advance backfill by processing one shard.
@@ -810,6 +876,13 @@ impl<C: NodeClient> ReshardExecutor<C> {
         // Move to next shard
         state.backfill_progress.current_shard = Some(shard_id + 1);
         state.backfill_progress.last_cursor = Some(format!("shard_{shard_id}"));
+
+        // bf-1q4wa: mirror this shard's processed count into the persisted
+        // ReshardOperation so documents_backfilled (the numerator) tracks real
+        // progress. Without this the admin endpoint would read the denominator
+        // from start_backfill but a numerator stuck at 0. No-op when no
+        // progress_operation is attached.
+        self.report_progress(state).await;
 
         Ok(())
     }
@@ -1305,6 +1378,120 @@ mod tests {
         assert_eq!(
             state.backfill_progress.total_documents, 1000,
             "per-shard totals must accumulate even after the denominator is non-zero"
+        );
+    }
+
+    // ---- progress_operation propagation seam (bf-1q4wa) ----
+    //
+    // The seam that mirrors the executor's `BackfillProgress` into a persisted
+    // `ReshardOperation` so the admin status endpoint reads a real denominator
+    // (seeded in `start_backfill`) and numerator (reported as each shard
+    // completes). Three tests mirror the acceptance criteria: (1) the no-op
+    // default path, (2) `report_progress` drives a non-0.0 ratio, (3)
+    // `start_backfill` propagates the real denominator end-to-end.
+
+    /// Build an executor with an attached persisted `ReshardOperation`, so we
+    /// can assert progress is mirrored through the bf-1q4wa seam.
+    fn executor_with_progress(
+        node_addresses: Vec<String>,
+        op: Arc<RwLock<ReshardOperation>>,
+    ) -> ReshardExecutor<MockNodeClient> {
+        executor_with_nodes(node_addresses).with_progress_operation(op)
+    }
+
+    // (1) Default path: with no operation attached, `report_progress` is a
+    // no-op and must not panic or touch any external state (criterion 3).
+    #[tokio::test]
+    async fn report_progress_is_noop_without_operation() {
+        let executor = executor_with_nodes(vec![]);
+
+        let state = backfill_state(BackfillProgress {
+            total_documents: 1000,
+            upfront_total_known: true,
+            processed_documents: 250,
+            current_shard: Some(0),
+            last_cursor: None,
+        });
+
+        // Completes without panicking — there is no operation to write to.
+        executor.report_progress(&state).await;
+    }
+
+    // (2) With an operation attached, `report_progress` mirrors processed/total
+    // into it so `ReshardOperation::backfill_progress()` returns a real,
+    // non-0.0 ratio — the property the admin endpoint relies on "from the very
+    // first shard" (criterion 2).
+    #[tokio::test]
+    async fn report_progress_propagates_nonzero_ratio_to_operation() {
+        let op = Arc::new(RwLock::new(ReshardOperation::new(
+            INDEX_UID.to_string(),
+            2,
+            4,
+        )));
+        let executor = executor_with_progress(vec![], op.clone());
+
+        // Before any report, the persisted op has an unset denominator → 0.0.
+        assert_eq!(op.read().await.backfill_progress(), 0.0);
+
+        let state = backfill_state(BackfillProgress {
+            total_documents: 1000,
+            upfront_total_known: true,
+            processed_documents: 250, // first shard done → 25%
+            current_shard: Some(1),
+            last_cursor: Some("shard_0".to_string()),
+        });
+        executor.report_progress(&state).await;
+
+        let guarded = op.read().await;
+        assert_eq!(guarded.total_documents, 1000);
+        assert_eq!(guarded.documents_backfilled, 250);
+        let ratio = guarded.backfill_progress();
+        assert!(
+            (ratio - 0.25).abs() < f64::EPSILON,
+            "expected 0.25 from the first shard, got {ratio}"
+        );
+    }
+
+    // (3) End-to-end: `start_backfill` seeds the real denominator (bf-2tddo,
+    // bf-1rodg) and — via the bf-1q4wa seam — propagates it to the persisted
+    // `ReshardOperation.total_documents`, so the admin endpoint's denominator
+    // is the real count, not the unset `0` (criterion 1). `processed_documents`
+    // is 0 at backfill start; the numerator is reported as shards complete
+    // (covered by the test above).
+    #[tokio::test]
+    async fn start_backfill_propagates_real_denominator_to_operation() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = mock_stats(&mut server, 200, json!({"numberOfDocuments": 1000})).await;
+
+        let op = Arc::new(RwLock::new(ReshardOperation::new(
+            INDEX_UID.to_string(),
+            2,
+            4,
+        )));
+        let executor = executor_with_progress(vec![server.url()], op.clone());
+
+        // `start_backfill` seeds `total_documents` from the source stats and
+        // calls `report_progress` at its end.
+        let mut state = backfill_state(BackfillProgress {
+            total_documents: 0,
+            upfront_total_known: false,
+            processed_documents: 0,
+            current_shard: None,
+            last_cursor: None,
+        });
+        executor.start_backfill(&mut state).await.unwrap();
+
+        // We drove the real stats path.
+        mock.assert_async().await;
+
+        let guarded = op.read().await;
+        assert_eq!(
+            guarded.total_documents, 1000,
+            "start_backfill must propagate the real denominator to the persisted op"
+        );
+        assert_eq!(
+            guarded.documents_backfilled, 0,
+            "no documents processed yet at backfill start"
         );
     }
 }
