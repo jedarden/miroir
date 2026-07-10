@@ -238,10 +238,7 @@ async fn test_acceptance_3_cdc_suppression() {
     );
 }
 
-// NOTE: Test acceptance_4_mode_a_shard_partitioning is disabled because it requires
-// the peer-discovery feature and ModeACoordinator. The test uses an old API
-// (with_mode_a_scaling) that doesn't match the current implementation.
-// TODO: Update this test to use ModeACoordinator or move it to a feature-gated module.
+// Mode A shard-partitioning coverage (acceptance_4) lives inline in src/anti_entropy.rs.
 
 /// Test that bucket-based diff isolates divergence to ~1/256 of PK space.
 #[test]
