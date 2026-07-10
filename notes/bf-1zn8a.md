@@ -259,3 +259,28 @@ the required comments** (acceptance criterion 4) and **did not close**. This ses
 Net: the disabled `acceptance_4` is confirmed **redundant**; the narrow real gaps are
 (a) survivor-stability, (b) scale-up 3→4, (c) golden hash-vector — to be addressed by
 child beads, not by rewriting the disabled test.
+
+## Re-explore re-verification (2026-07-10, 3rd independent pass)
+
+Bead re-dispatched for re-explore while still `in_progress`. Re-ran the core commands
+fresh and re-confirmed every claim (no reliance on prior notes):
+
+- `cargo test -p miroir-core mode_a` (default) → every binary `running 0 tests` /
+  `0 passed ... filtered out`. Three acceptance tests do **not** execute in default config.
+- `cargo test -p miroir-core anti_entropy` (default) → 17 + 1 tests pass, **none** named
+  `test_mode_a_*` (feature-gated out).
+- `cargo test -p miroir-core --features peer-discovery mode_a` → all three
+  `tests_mode_a_acceptance::*` execute and pass (`16 passed; 0 failed; 0 ignored`).
+- Re-confirmed root cause of the premise error: `lib.rs:41` gates the entire
+  `mode_a_coordinator` module behind `#[cfg(feature = "peer-discovery")]` and
+  `default = []` (`Cargo.toml:67`); `rendezvous_score` is private (`mode_a_coordinator.rs:112`).
+- Re-confirmed CI gate runs the tests: `Makefile:8` and `k8s/argo-workflows/miroir-ci.yaml:140`
+  both use `cargo test --all --all-features`; `miroir-proxy` enables `peer-discovery`
+  (`crates/miroir-proxy/Cargo.toml:38`).
+- Confirmed comments already posted: **[22]** on parent bf-30m2j, **[23]** on bf-1zn8a —
+  both match this re-verification.
+
+Gaps (a)/(b)/(c) re-confirmed genuine by line (reassignment test captures only
+`pod3_owned_initial` at :1704-1711 with no survivor-stability assert; only 3→2 scale-down;
+no golden shard→owner vector). Conclusion unchanged: `acceptance_4` is redundant; address
+the three narrow gaps via child beads. All bf-1zn8a acceptance criteria met; closing.
