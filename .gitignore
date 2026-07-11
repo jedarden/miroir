@@ -15,3 +15,5 @@ miroir-proxy-linux-amd64.sha256
 coverage/
 lcov.info
 *.rlib
+node_modules/
+crates/miroir-proxy/admin-ui/dist/
