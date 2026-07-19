@@ -18,7 +18,6 @@
 use crate::cdc::ORIGIN_ANTIENTROPY;
 use crate::error::{MiroirError, Result};
 use crate::migration::{MigrationConfig, MigrationError};
-#[cfg(feature = "peer-discovery")]
 use crate::mode_a_coordinator::ModeACoordinator;
 use crate::router::assign_shard_in_group;
 use crate::scatter::{FetchDocumentsRequest, FetchDocumentsResponse, NodeClient, WriteRequest};
@@ -164,7 +163,6 @@ pub struct AntiEntropyReconciler<C: NodeClient> {
     /// Metrics callback.
     metrics_callback: Option<AntiEntropyMetricsCallback>,
     /// Mode A coordinator for shard-partitioned ownership (plan §14.5).
-    #[cfg(feature = "peer-discovery")]
     mode_a_coordinator: Option<Arc<ModeACoordinator>>,
 }
 
@@ -182,7 +180,6 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
             current_pass: Arc::new(RwLock::new(None)),
             node_client,
             metrics_callback: None,
-            #[cfg(feature = "peer-discovery")]
             mode_a_coordinator: None,
         }
     }
@@ -195,7 +192,6 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
     /// # Parameters
     ///
     /// - `coordinator`: Mode A coordinator that determines shard ownership
-    #[cfg(feature = "peer-discovery")]
     pub fn with_mode_a(mut self, coordinator: Arc<ModeACoordinator>) -> Self {
         self.mode_a_coordinator = Some(coordinator);
         self
@@ -561,51 +557,41 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         // Determine which shards to scan
         let all_shards: Vec<u32> = (0..shard_count).collect();
         let shards_to_scan = {
-            #[cfg(feature = "peer-discovery")]
-            {
-                if let Some(ref coordinator) = self.mode_a_coordinator {
-                    // Mode A scaling: filter to rendezvous-owned shards (plan §14.5)
-                    // Uses rendezvous hashing: owns(s, p) = p == top1_by_score(hash(s || pid) for pid in peers)
-                    let mut owned = Vec::new();
-                    for shard_id in all_shards {
-                        let shard_str = shard_id.to_string();
-                        match coordinator.owns_shard(&shard_str).await {
-                            Ok(true) => owned.push(shard_id),
-                            Ok(false) => continue, // Not owned by this pod
-                            Err(e) => {
-                                warn!(
-                                    shard_id,
-                                    error = %e,
-                                    "Failed to check shard ownership, skipping"
-                                );
-                                continue;
-                            }
+            // Mode A partitioning (plan §14.5) is independent of *how* the peer
+            // set is discovered: `ModeACoordinator` is always compiled, and a
+            // coordinator is only present when the caller opted in via
+            // `with_mode_a`. With no coordinator (single-pod / Mode A disabled)
+            // we fall through to the `shards_per_pass` throttling below — the
+            // exact behavior this build had before Mode A existed.
+            if let Some(ref coordinator) = self.mode_a_coordinator {
+                // Mode A scaling: filter to rendezvous-owned shards (plan §14.5)
+                // Uses rendezvous hashing: owns(s, p) = p == top1_by_score(hash(s || pid) for pid in peers)
+                let mut owned = Vec::new();
+                for shard_id in all_shards {
+                    let shard_str = shard_id.to_string();
+                    match coordinator.owns_shard(&shard_str).await {
+                        Ok(true) => owned.push(shard_id),
+                        Ok(false) => continue, // Not owned by this pod
+                        Err(e) => {
+                            warn!(
+                                shard_id,
+                                error = %e,
+                                "Failed to check shard ownership, skipping"
+                            );
+                            continue;
                         }
                     }
-                    owned
-                } else if self.config.shards_per_pass == 0 {
-                    // Scan all shards (single-pod deployment or Mode A disabled)
-                    all_shards
-                } else {
-                    // Scan a subset (for throttling)
-                    all_shards
-                        .into_iter()
-                        .take(self.config.shards_per_pass as usize)
-                        .collect()
                 }
-            }
-            #[cfg(not(feature = "peer-discovery"))]
-            {
-                if self.config.shards_per_pass == 0 {
-                    // Scan all shards
-                    all_shards
-                } else {
-                    // Scan a subset (for throttling)
-                    all_shards
-                        .into_iter()
-                        .take(self.config.shards_per_pass as usize)
-                        .collect()
-                }
+                owned
+            } else if self.config.shards_per_pass == 0 {
+                // Scan all shards (single-pod deployment or Mode A disabled)
+                all_shards
+            } else {
+                // Scan a subset (for throttling)
+                all_shards
+                    .into_iter()
+                    .take(self.config.shards_per_pass as usize)
+                    .collect()
             }
         };
 
@@ -1529,7 +1515,17 @@ mod tests {
 // Mode A acceptance tests (plan §14.5, P6.3)
 // ---------------------------------------------------------------------------
 
-#[cfg(all(test, feature = "peer-discovery"))]
+// NOTE(bf-1i588): ungated from `#[cfg(all(test, feature = "peer-discovery"))]`.
+// These acceptance tests construct a `PeerDiscovery` only to satisfy
+// `ModeACoordinator::new`, then inject the peer set directly via
+// `set_peer_set_for_test` — they never call the DNS-backed `refresh()`, which is
+// the *only* method behind the `peer-discovery` feature. `PeerDiscovery::new` /
+// `PeerSet::new` are always available (see peer_discovery.rs). Gating them left
+// the section-13.8 "exactly-one-owner" property unverified in the default CI
+// invocation (`cargo test -p miroir-core`, no features). The sibling
+// `mode_a_minimal_reshuffling_tests` module already runs the identical pattern
+// ungated — this matches it.
+#[cfg(test)]
 mod tests_mode_a_acceptance {
     use super::*;
     use crate::mode_a_coordinator::ModeACoordinator;
