@@ -1120,7 +1120,8 @@ mod tests {
     //! `miroir-proxy` ILM acceptance tests drive the same endpoint.
 
     use super::*;
-    use crate::scatter::MockNodeClient;
+    use crate::scatter::{FetchDocumentsResponse, MockNodeClient};
+    use crate::topology::{Node, NodeId, NodeStatus};
 
     /// Index uid every stats mock is mounted under.
     const INDEX_UID: &str = "test-idx";
@@ -1492,6 +1493,336 @@ mod tests {
         assert_eq!(
             guarded.documents_backfilled, 0,
             "no documents processed yet at backfill start"
+        );
+    }
+
+    // ---- end-to-end progress-ratio verification (bf-5aon3) ----
+    //
+    // The verification gate for the bf-67ki8 chain (children bf-2tddo,
+    // bf-1rodg, bf-1q4wa): drive a full multi-shard backfill through the real
+    // `advance_backfill` document-migration path and assert the progress ratio
+    // the admin status endpoint reads via `ReshardOperation::backfill_progress()`
+    // is (a) non-zero from the very first shard, (b) monotonically
+    // non-decreasing, and (c) never above 1.0. A second test confirms the seam
+    // is progress-reporting only — it does not alter the reshard state machine
+    // or document migration.
+
+    /// Mount the two HTTP endpoints a full backfill drives on a mockito server:
+    /// `GET /indexes/{uid}/stats` (hit once by `start_backfill`'s denominator
+    /// query) and `GET /indexes/{uid}` (hit once per shard by
+    /// `get_index_primary_key`). Returns the mocks so the caller can assert
+    /// they were hit exactly the expected number of times.
+    async fn mount_backfill_endpoints(
+        server: &mut mockito::Server,
+        shards: u32,
+    ) -> Vec<mockito::Mock> {
+        let stats = server
+            .mock("GET", STATS_PATH)
+            .with_status(200)
+            .with_body(json!({"numberOfDocuments": 1000}).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+        let index_info = server
+            .mock("GET", "/indexes/test-idx")
+            .with_status(200)
+            .with_body(json!({"uid": INDEX_UID, "primaryKey": "id"}).to_string())
+            .expect(shards as usize)
+            .create_async()
+            .await;
+        vec![stats, index_info]
+    }
+
+    /// Build an executor whose topology carries one healthy node ("node-0") and
+    /// whose `MockNodeClient` returns 100 documents at `total: 500` per fetch
+    /// page. With `backfill_batch_size: 100` each shard therefore processes
+    /// exactly 500 documents (5 pages × 100), and `old_shards: 2` shards
+    /// process 1000 — equal to the 1000-document denominator `start_backfill`
+    /// seeds from the stats mock, keeping the progress ratio in `(0.0, 1.0]`.
+    ///
+    /// `node_addresses` must point at a mockito server serving the stats and
+    /// index-info endpoints (see [`mount_backfill_endpoints`]).
+    fn make_backfill_executor(node_addresses: Vec<String>) -> ReshardExecutor<MockNodeClient> {
+        let node_id = NodeId::new("node-0".to_string());
+        let mut node_client = MockNodeClient::default();
+        node_client.fetch_responses.insert(
+            node_id.clone(),
+            FetchDocumentsResponse {
+                results: (0..100)
+                    .map(|i| json!({ "id": format!("doc-{i}") }))
+                    .collect(),
+                limit: 100,
+                offset: 0,
+                total: 500,
+            },
+        );
+
+        let mut topology = Topology::new(2, 1, 1);
+        let mut node = Node::new(
+            node_id,
+            node_addresses.first().cloned().unwrap_or_default(),
+            0,
+        );
+        node.status = NodeStatus::Healthy;
+        topology.add_node(node);
+
+        ReshardExecutor::new(
+            INDEX_UID.to_string(),
+            2,
+            4,
+            Arc::new(RwLock::new(topology)),
+            ReshardConfig {
+                backfill_concurrency: 4,
+                backfill_batch_size: 100,
+                throttle_docs_per_sec: 0,
+                verify_before_swap: false,
+                retain_old_index_hours: 24,
+            },
+            Arc::new(node_client),
+            None,
+            Arc::new(Client::new()),
+            Arc::new(node_addresses),
+            Arc::new("test-master-key".to_string()),
+        )
+    }
+
+    /// A clean backfill `ReshardState` — `Phase::Backfill`, shadow index set,
+    /// progress zeroed. `start_backfill` overwrites `backfill_progress`, but
+    /// still needs a valid starting state.
+    fn fresh_backfill_state() -> ReshardState {
+        backfill_state(BackfillProgress {
+            total_documents: 0,
+            upfront_total_known: false,
+            processed_documents: 0,
+            current_shard: None,
+            last_cursor: None,
+        })
+    }
+
+    /// Drive `start_backfill` then `advance_backfill` for every source shard,
+    /// returning the final `ReshardState` — the state machine's observable
+    /// output (migrated-document count, shard cursor, phase).
+    async fn drive_full_backfill(
+        executor: &ReshardExecutor<MockNodeClient>,
+        mut state: ReshardState,
+    ) -> ReshardState {
+        executor.start_backfill(&mut state).await.unwrap();
+        let old_shards = state.old_shards;
+        for _ in 0..old_shards {
+            executor.advance_backfill(&mut state).await.unwrap();
+        }
+        state
+    }
+
+    // (a/b/c) End-to-end: drive a full multi-shard backfill and assert the
+    // progress ratio read through `ReshardOperation::backfill_progress()` is
+    // non-zero from the first shard, monotonically non-decreasing, and never
+    // above 1.0. This is the property the admin status endpoint relies on once
+    // the denominator is seeded (bf-2tddo), reconciled (bf-1rodg), and mirrored
+    // (bf-1q4wa).
+    #[tokio::test]
+    async fn backfill_progress_ratio_is_nonzero_monotonic_and_bounded() {
+        let mut server = mockito::Server::new_async().await;
+        let mocks = mount_backfill_endpoints(&mut server, 2).await;
+
+        let op = Arc::new(RwLock::new(ReshardOperation::new(
+            INDEX_UID.to_string(),
+            2,
+            4,
+        )));
+        let executor =
+            make_backfill_executor(vec![server.url()]).with_progress_operation(op.clone());
+
+        let mut state = fresh_backfill_state();
+        executor.start_backfill(&mut state).await.unwrap();
+
+        // Sample the persisted op's ratio at start (denominator just seeded,
+        // numerator still 0) and after each shard completes.
+        let mut ratios = vec![op.read().await.backfill_progress()];
+        let old_shards = state.old_shards;
+        for _ in 0..old_shards {
+            executor.advance_backfill(&mut state).await.unwrap();
+            ratios.push(op.read().await.backfill_progress());
+        }
+
+        // (a) Non-zero from the very first shard — ratios[1] is post-first-shard.
+        assert!(
+            ratios[1] > 0.0,
+            "progress must be non-zero after the first shard, got {}",
+            ratios[1]
+        );
+
+        // (c) The ratio stays in [0.0, 1.0] at every observation point: the
+        // numerator never outruns the seeded denominator (no double-count via
+        // `incorporate_shard_total`, no suppressed accumulation).
+        for (i, &ratio) in ratios.iter().enumerate() {
+            assert!(
+                (0.0..=1.0).contains(&ratio),
+                "ratio at step {i} outside [0,1]: {ratio}"
+            );
+        }
+
+        // (b) Monotonically non-decreasing as each shard completes.
+        for window in ratios.windows(2) {
+            assert!(
+                window[1] >= window[0],
+                "progress ratio decreased: {} → {}",
+                window[0],
+                window[1]
+            );
+        }
+
+        // Completeness: every document migrated → ratio reaches exactly 1.0.
+        // This also fails both directions of a denominator bug — a double-count
+        // stalls below 1.0, a suppressed accumulation blows past it.
+        let final_ratio = *ratios.last().unwrap();
+        assert!(
+            (final_ratio - 1.0).abs() < f64::EPSILON,
+            "expected ratio 1.0 at completion, got {final_ratio}"
+        );
+
+        for m in &mocks {
+            m.assert_async().await;
+        }
+    }
+
+    // Progress-reporting only (criterion: no state-machine change). The
+    // bf-1q4wa `progress_operation` seam is `None` on the default path and a
+    // read-only mirror when attached, so it must not change the reshard state
+    // machine's observable behavior. Drive an identical multi-shard backfill
+    // with the default executor and with the seam attached and assert the
+    // migrated-document count, final shard cursor, and phase are identical.
+    #[tokio::test]
+    async fn progress_operation_seam_does_not_alter_state_machine() {
+        // Default executor — the pre-bf-1q4wa path, no progress_operation.
+        let mut server_a = mockito::Server::new_async().await;
+        let mocks_a = mount_backfill_endpoints(&mut server_a, 2).await;
+        let executor_a = make_backfill_executor(vec![server_a.url()]);
+        let state_a = drive_full_backfill(&executor_a, fresh_backfill_state()).await;
+
+        // Same backfill with the seam attached.
+        let mut server_b = mockito::Server::new_async().await;
+        let mocks_b = mount_backfill_endpoints(&mut server_b, 2).await;
+        let op = Arc::new(RwLock::new(ReshardOperation::new(
+            INDEX_UID.to_string(),
+            2,
+            4,
+        )));
+        let executor_b = make_backfill_executor(vec![server_b.url()]).with_progress_operation(op);
+        let state_b = drive_full_backfill(&executor_b, fresh_backfill_state()).await;
+
+        // The state machine migrated the same documents and advanced the shard
+        // cursor identically — the seam touched neither.
+        assert_eq!(
+            state_a.backfill_progress.processed_documents, 1000,
+            "sanity: both runs migrated every document (2 shards × 500)"
+        );
+        assert_eq!(
+            state_a.backfill_progress.processed_documents,
+            state_b.backfill_progress.processed_documents,
+            "seam must not change how many documents are migrated"
+        );
+        assert_eq!(
+            state_a.backfill_progress.current_shard,
+            Some(state_a.old_shards),
+            "sanity: shard cursor advanced past every source shard"
+        );
+        assert_eq!(
+            state_a.backfill_progress.current_shard,
+            state_b.backfill_progress.current_shard,
+            "seam must not change the shard cursor"
+        );
+        assert_eq!(
+            state_a.phase, state_b.phase,
+            "seam must not change the reshard phase"
+        );
+
+        for m in mocks_a.iter().chain(mocks_b.iter()) {
+            m.assert_async().await;
+        }
+    }
+
+    // ---- pure bookkeeping verification (bf-3q0yf) ----
+    //
+    // Verifies the backfill progress ratio is non-zero from the first shard and
+    // monotonically non-decreasing, using only the bookkeeping path
+    // (report_progress) without exercising the HTTP fetch logic. This is the
+    // cheap, high-confidence slice of the bf-5aon3 verification gate.
+
+    /// Simulate a multi-shard backfill by manually advancing processed_documents
+    /// and calling report_progress after each shard. Returns the sequence of
+    /// ratios observed via the attached ReshardOperation.
+    async fn simulate_bookkeeping_backfill(
+        executor: &ReshardExecutor<MockNodeClient>,
+        op: &Arc<RwLock<ReshardOperation>>,
+        shard_doc_counts: Vec<u64>,
+    ) -> Vec<f64> {
+        let mut state = backfill_state(BackfillProgress {
+            total_documents: 1000, // seeded upfront denominator
+            upfront_total_known: true,
+            processed_documents: 0,
+            current_shard: Some(0),
+            last_cursor: None,
+        });
+
+        let mut ratios = Vec::new();
+
+        // Simulate each shard completing: advance processed_documents by that
+        // shard's doc count, report progress, and snapshot the ratio.
+        for (shard_idx, doc_count) in shard_doc_counts.iter().enumerate() {
+            state.backfill_progress.processed_documents += doc_count;
+            state.backfill_progress.current_shard = Some(shard_idx as u32 + 1);
+            state.backfill_progress.last_cursor = Some(format!("shard_{shard_idx}"));
+
+            executor.report_progress(&state).await;
+            ratios.push(op.read().await.backfill_progress());
+        }
+
+        ratios
+    }
+
+    // (a/b) Pure bookkeeping: the ratio is non-zero from the first shard and
+    // monotonically non-decreasing across a synthetic >=3-shard sequence, with
+    // no HTTP transport exercised.
+    #[tokio::test]
+    async fn backfill_ratio_nonzero_and_monotonic_at_bookkeeping_level() {
+        let op = Arc::new(RwLock::new(ReshardOperation::new(
+            INDEX_UID.to_string(),
+            2,
+            4,
+        )));
+
+        // bookkeeping_executor has no nodes, so report_progress cannot make
+        // any HTTP calls — we're testing pure bookkeeping.
+        let executor = bookkeeping_executor().with_progress_operation(op.clone());
+
+        // A 3-shard sequence: shard 0 processes 400 docs, shard 1 processes 350,
+        // shard 2 processes 250 (total = 1000, matching our seeded denominator).
+        let shard_doc_counts = vec![400u64, 350, 250];
+        let ratios = simulate_bookkeeping_backfill(&executor, &op, shard_doc_counts).await;
+
+        // (a) The ratio is > 0.0 from the very first shard (ratios[0]).
+        assert!(
+            ratios[0] > 0.0,
+            "ratio must be non-zero from the first shard, got {}",
+            ratios[0]
+        );
+
+        // (b) The sampled ratios are monotonically non-decreasing across shards.
+        for window in ratios.windows(2) {
+            assert!(
+                window[1] >= window[0],
+                "progress ratio decreased: {} → {}",
+                window[0],
+                window[1]
+            );
+        }
+
+        // Final ratio should reach 1.0 (all 1000 docs processed).
+        let final_ratio = *ratios.last().unwrap();
+        assert!(
+            (final_ratio - 1.0).abs() < f64::EPSILON,
+            "expected ratio 1.0 after all shards complete, got {final_ratio}"
         );
     }
 }
