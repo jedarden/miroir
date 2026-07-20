@@ -3753,3 +3753,55 @@ These are documented constraints, not blockers. Initial release ships with known
    - **Phase 9 testing:** Add arm64 test runs once the CI pipeline supports cross-compilation.
 
    **Trigger for prioritization:** A concrete use case emerges — e.g., deploying to Hetzner Ampere, AWS Graviton, GCP Tau T2A, or Rackspace Spot ARM nodes.
+
+
+---
+
+## ADR-1: 2026-07-20 — Stop depending on a live external chart registry at ArgoCD sync time
+
+### Context
+
+This ADR was written during a deployed-artifact improvement audit (separate from the plan-vs-code gap audit filed 2026-07-19). The audit checked Miroir's actual live state — not just the plan — across every environment ArgoCD manages for it, and found the deployed artifact has been completely dark for months:
+
+- `miroir`, `miroir-dev` (namespace `miroir`/`miroir-dev` on ardenone-manager's own cluster) and `miroir-ardenone-cluster`, `miroir-dev-ardenone-cluster` (same namespaces on `ardenone-cluster`) — all four ArgoCD Applications are stuck with `sync.status: Unknown` and a `ComparisonError` condition:
+  ```
+  failed to pull OCI chart: ... GET https://ghcr.io/v2/jedarden/charts/miroir/manifests/0.1.0 ...
+  response status code 403: denied: requested access to the resource is denied
+  ```
+  Confirmed independently: an anonymous `curl` to `ghcr.io/v2/jedarden/charts/miroir/tags/list` returns `401`, and the `helm pull` token exchange returns `{"errors":[{"code":"DENIED", ...}]}`.
+- The alternative published channel is no better: `https://jedarden.github.io/miroir/index.yaml` returns `404` (GitHub Pages site not found) — the `gh-pages` branch/publish path documented in `docs/notes/helm-chart-publication-ci.md` is not actually live either.
+- `kubectl get pods,svc,deploy -n miroir` / `-n miroir-dev` on both `ardenone-manager` and `ardenone-cluster` return **no resources at all** — Miroir has never had a single pod running via GitOps in any of these four environments.
+- The ArgoCD `health.status` field for these Applications still reads `"Healthy"`, with `lastTransitionTime` frozen at 2026-04-19 / 2026-05-27 — a stale cached value from whenever the chart last resolved, unrelated to the current `ComparisonError`. Nothing pages or alerts on this: the failure has been silent for roughly three months.
+- Root cause is architectural, not incidental: `k8s/argocd/miroir-application.yaml` and `k8s/argocd/miroir-dev-application.yaml` (copied by hand into `declarative-config`, per the header comment in those files) define `spec.source.repoURL: ghcr.io/jedarden/charts` with `chart: miroir` — i.e. ArgoCD fetches the packaged Helm chart from a remote OCI registry **at every sync**, rather than the chart living in a git repo ArgoCD already trusts. That registry pull is unauthenticated in the Application spec, so it depends on the GHCR package being public and always reachable — a dependency nothing in this fleet currently verifies.
+
+This is also inconsistent with this workspace's own GitOps convention (see root `CLAUDE.md`): "the ONLY sanctioned way to change desired state is: edit the manifest in declarative-config → commit → push → let ArgoCD sync." Every other app in the fleet keeps its desired-state manifests directly in `declarative-config`; Miroir's chart is the exception, resolved from a network call to a third-party-style registry ArgoCD doesn't own or monitor.
+
+### Decision
+
+Stop sourcing the Miroir Helm chart from a remote OCI/HTTP registry at ArgoCD sync time. Instead:
+
+1. In the `miroir-release` Argo Workflow (declarative-config's `k8s/iad-ci/argo-workflows/`), after `helm package`, run `helm template` with each environment's values (prod/dev × ardenone-manager/ardenone-cluster) and commit the **rendered manifests** into `declarative-config` under `k8s/<cluster>/miroir/` and `k8s/<cluster>/miroir-dev/`, replacing the current hand-copied `Application` files that point at `ghcr.io/jedarden/charts`.
+2. Point each ArgoCD `Application.spec.source` at the rendered-manifest path in `declarative-config` (`repoURL: <declarative-config>`, `path: k8s/<cluster>/miroir[-dev]`) instead of `repoURL: ghcr.io/jedarden/charts`.
+3. Keep packaging and publishing the `.tgz` to GHCR OCI and GitHub Pages as-is for external/air-gapped consumers (per `docs/notes/helm-chart-publication-ci.md`) — that audience is legitimate — but the fleet's own GitOps sync no longer depends on either channel being reachable.
+4. Chart version bumps become a normal `declarative-config` commit (regenerated manifests), which ArgoCD picks up the same way it does for every other app — no separate "did the registry accept and stay reachable" failure mode.
+
+### Alternatives Considered
+
+- **Fix GHCR auth and move on.** Add registry credentials to the ArgoCD `Application`s (`repositories` / `helm.registries` with a pull secret) and make the GHCR package visibility explicit. Rejected as the *sole* fix: it repairs today's specific 403, but keeps a live external-registry fetch as a hard dependency of every future sync, and does nothing about GitHub Pages also being down — the underlying fragility (two independently-flaky publish targets, neither monitored) remains.
+- **Fix GitHub Pages instead (make it the primary source).** Point ArgoCD at `https://jedarden.github.io/miroir` as a Helm HTTP repo. Rejected for the same reason as above — still a live external dependency at sync time, plus GH Pages has already demonstrated it silently stops working (branch/publish drift) with nothing to notice.
+- **Vendor the packaged `.tgz` into `declarative-config` and reference it via a local Helm chart path.** Viable and considered a fallback if rendered-manifest drift ever becomes a maintenance burden. Rejected as the first move because rendered manifests are simpler to diff/review in PRs (plain YAML, not a tarball) and match how the rest of the fleet already does GitOps.
+- **Do nothing / just re-fix the immediate 403.** Rejected — it was already silently broken for ~3 months once; without changing the mechanism, a similar external-dependency failure is a when, not an if, and next time it may again go unnoticed for months since nothing currently monitors chart-registry reachability (see the follow-up beads below for the interim detection option, which is a mitigation, not a substitute for this decision).
+
+### Consequences
+
+**Positive:**
+- Removes GHCR/GitHub Pages reachability as a runtime dependency of ArgoCD sync — the same category of external-registry outage cannot silently blank out the deployment again.
+- Brings Miroir in line with how every other app in this fleet does GitOps (manifests live in `declarative-config`, reviewed via git diff, applied by ArgoCD sync — no live registry fetch).
+- Rendered manifests are directly diffable in `declarative-config` PRs, making chart/values changes visible in code review instead of hidden inside a packaged `.tgz`.
+- Unblocks actually turning Miroir on: this is a prerequisite, not a full fix — the `miroir-keys` / `miroir-dev-keys` `ExternalSecret`s are separately failing (`SecretSyncedError`: OpenBao path does not exist) and must be populated before pods can start even once the chart resolves (tracked as a follow-up bead).
+- External consumers keep working exactly as documented — GHCR OCI and GitHub Pages remain valid installation paths once their own publish issues are separately fixed.
+
+**Negative / costs:**
+- `miroir-release` gains a `helm template` + multi-environment render + commit-to-`declarative-config` step, increasing CI complexity and coupling the release workflow to `declarative-config`'s write access (same pattern `telegram-claude-bridge-build` and `news-trader-build` already use, per the WorkflowTemplates table in root `CLAUDE.md`, so this is a known, supported pattern in this fleet, not a novel one).
+- Rendered manifests must be regenerated and re-committed for every values change (not just chart-logic changes) — slightly more CI-visible churn in `declarative-config` than a single `targetRevision` bump.
+- Four environments' worth of rendered manifests (`miroir`/`miroir-dev` × 2 clusters) adds ~4x the reviewed YAML compared to today's compact `valuesObject` blocks, though this is offset by making drift between environments visible instead of implicit in per-app `valuesObject` overrides.
