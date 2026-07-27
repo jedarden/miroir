@@ -28,6 +28,7 @@ This directory contains runbooks for each `miroir-ctl` subcommand. Each runbook 
 | `tenant` | [tenant.md](tenant.md) | Manage multi-tenancy |
 | `explain` | [explain.md](explain.md) | Analyze query plans |
 | `key` | [key.md](key.md) | Manage API keys |
+| `doctor` | [doctor.md](doctor.md) | Diagnose deployment and runtime issues |
 
 ## Quick Reference
 
@@ -47,6 +48,9 @@ miroir-ctl task status
 # Data operations
 miroir-ctl dump export --index myindex --output myindex.dump
 miroir-ctl verify --index myindex
+
+# Pre-deployment checks
+miroir-ctl doctor deploy-preflight --config values.yaml
 
 # Admin UI
 miroir-ctl ui

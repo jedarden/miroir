@@ -97,6 +97,10 @@ enum Commands {
     /// Manage Meilisearch keys
     #[command(subcommand)]
     Key(commands::key::KeySubcommand),
+
+    /// Diagnose deployment and runtime issues
+    #[command(subcommand)]
+    Doctor(commands::doctor::DoctorSubcommand),
 }
 
 #[tokio::main]
@@ -141,5 +145,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Tenant(cmd) => commands::tenant::run(cmd, &admin_key, &api_url).await,
         Commands::Explain(cmd) => commands::explain::run(cmd, &admin_key, &api_url).await,
         Commands::Key(cmd) => commands::key::run(cmd, &admin_key, &api_url).await,
+        Commands::Doctor(cmd) => commands::doctor::run(cmd, &admin_key, &api_url).await,
     }
 }

@@ -2500,6 +2500,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "serde_yaml",
  "serial_test",
  "tempfile",
  "tokio 1.52.3",
