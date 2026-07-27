@@ -226,6 +226,10 @@ pub struct Metrics {
     scatter_partial_responses: Counter,
     scatter_retries: Counter,
 
+    // ── §13.10 Result cache metrics ──
+    result_cache_hits_total: Counter,
+    result_cache_misses_total: Counter,
+
     // ── Rebalancer metrics ──
     rebalance_in_progress: Gauge,
     rebalance_documents_migrated: Counter,
@@ -380,6 +384,8 @@ impl Clone for Metrics {
             scatter_fan_out_size: self.scatter_fan_out_size.clone(),
             scatter_partial_responses: self.scatter_partial_responses.clone(),
             scatter_retries: self.scatter_retries.clone(),
+            result_cache_hits_total: self.result_cache_hits_total.clone(),
+            result_cache_misses_total: self.result_cache_misses_total.clone(),
             rebalance_in_progress: self.rebalance_in_progress.clone(),
             rebalance_documents_migrated: self.rebalance_documents_migrated.clone(),
             rebalance_duration: self.rebalance_duration.clone(),
@@ -606,6 +612,19 @@ impl Metrics {
         ))
         .expect("failed to create scatter_retries counter");
 
+        // ── §13.10 Result cache metrics ──
+        let result_cache_hits_total = Counter::with_opts(Opts::new(
+            "miroir_result_cache_hits_total",
+            "Total number of result cache hits",
+        ))
+        .expect("failed to create result_cache_hits_total counter");
+
+        let result_cache_misses_total = Counter::with_opts(Opts::new(
+            "miroir_result_cache_misses_total",
+            "Total number of result cache misses",
+        ))
+        .expect("failed to create result_cache_misses_total counter");
+
         // ── Rebalancer metrics ──
         let rebalance_in_progress = Gauge::with_opts(Opts::new(
             "miroir_rebalance_in_progress",
@@ -654,6 +673,8 @@ impl Metrics {
         reg!(scatter_fan_out_size);
         reg!(scatter_partial_responses);
         reg!(scatter_retries);
+        reg!(result_cache_hits_total);
+        reg!(result_cache_misses_total);
         reg!(rebalance_in_progress);
         reg!(rebalance_documents_migrated);
         reg!(rebalance_duration);
@@ -1438,6 +1459,8 @@ impl Metrics {
             scatter_fan_out_size,
             scatter_partial_responses,
             scatter_retries,
+            result_cache_hits_total,
+            result_cache_misses_total,
             rebalance_in_progress,
             rebalance_documents_migrated,
             rebalance_duration,
@@ -1798,6 +1821,16 @@ impl Metrics {
 
     pub fn inc_scatter_retries(&self) {
         self.scatter_retries.inc();
+    }
+
+    // ── §13.10 Result cache ──
+
+    pub fn inc_result_cache_hits(&self) {
+        self.result_cache_hits_total.inc();
+    }
+
+    pub fn inc_result_cache_misses(&self) {
+        self.result_cache_misses_total.inc();
     }
 
     // ── Node health ──

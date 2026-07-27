@@ -469,6 +469,101 @@ async fn search_handler(
         }
     }
 
+    // Result cache lookup (plan §13.10): Check for cached completed results
+    // Skip for multi-target aliases (each target is different)
+    if state.config.result_cache.enabled && resolved_targets.len() == 1 {
+        // Get settings version for cache key invalidation
+        let settings_version = state.settings_broadcast.current_version().await;
+
+        // Canonicalize query body for consistent hashing
+        let canonicalized_query = match miroir_core::result_cache::canonicalize_query(
+            &serde_json::to_value(&body).unwrap_or_default(),
+        ) {
+            Ok(canon) => canon,
+            Err(e) => {
+                debug!(error = %e, "failed to canonicalize query for cache lookup");
+                // Continue without cache lookup on canonicalization failure
+                String::new()
+            }
+        };
+
+        if !canonicalized_query.is_empty() {
+            // Create cache key and attempt lookup
+            let cache_key = miroir_core::result_cache::CacheKey::new(
+                &effective_index,
+                &canonicalized_query,
+                settings_version,
+            );
+
+            match state.result_cache.get(&cache_key).await {
+                Ok(Some(cached_bytes)) => {
+                    // Cache hit - deserialize and return
+                    match serde_json::from_slice::<serde_json::Value>(&cached_bytes) {
+                        Ok(response_body) => {
+                            // Cache hit successful - return cached response
+                            state.metrics.inc_result_cache_hits();
+                            debug!(
+                                index = %effective_index,
+                                "result cache hit"
+                            );
+
+                            let mut response = Response::builder()
+                                .status(StatusCode::OK)
+                                .header("content-type", "application/json");
+
+                            // Add settings headers
+                            if state
+                                .settings_broadcast
+                                .is_in_flight(&effective_index)
+                                .await
+                            {
+                                response = response.header("X-Miroir-Settings-Inconsistent", "true");
+                            }
+                            if settings_version > 0 {
+                                response = response.header(
+                                    "X-Miroir-Settings-Version",
+                                    settings_version.to_string(),
+                                );
+                            }
+
+                            let response = response
+                                .body(axum::body::Body::from(
+                                    serde_json::to_string(&response_body).unwrap(),
+                                ))
+                                .unwrap();
+
+                            tracing::info!(
+                                target: "miroir.search_cache_hit",
+                                index = %effective_index,
+                                duration_ms = start.elapsed().as_millis() as u64,
+                                "cached search completed"
+                            );
+
+                            return response;
+                        }
+                        Err(e) => {
+                            // Failed to deserialize cached data - treat as cache miss
+                            debug!(error = %e, "failed to deserialize cached result");
+                            state.metrics.inc_result_cache_misses();
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Cache miss - continue with normal scatter
+                    state.metrics.inc_result_cache_misses();
+                    debug!(
+                        index = %effective_index,
+                        "result cache miss"
+                    );
+                }
+                Err(e) => {
+                    // Cache error - log and continue
+                    debug!(error = %e, "result cache lookup error");
+                }
+            }
+        }
+    }
+
     // Extract X-Miroir-Min-Settings-Version header (plan §13.5)
     // Extract early for multi-target search path
     let min_settings_version = headers
@@ -701,8 +796,9 @@ async fn search_handler(
     state.metrics.record_scatter_fan_out(node_count);
 
     // Build search request
-    // Clone facets for fingerprinting before moving into SearchRequest
+    // Clone facets for fingerprinting and cache storage before moving into SearchRequest
     let facets_clone = body.facets.clone();
+    let facets_for_cache = body.facets.clone(); // Additional clone for cache storage
     let rest_body = body.rest.clone(); // Clone before body is partially moved
 
     // Detect vector search mode from request body (plan §13.12)
@@ -724,6 +820,7 @@ async fn search_handler(
     // Capture query data for canary creation before search_req is moved (plan §13.18)
     let capture_query = body.q.clone().unwrap_or_default();
     let capture_body = rest_body.clone();
+    let capture_body_for_cache = rest_body.clone(); // Additional clone for cache storage
 
     let search_req = SearchRequest {
         index_uid: effective_index.clone(),
@@ -822,6 +919,59 @@ async fn search_handler(
     let mut body = response_body.clone();
     if let Some(facets) = &result.facet_distribution {
         body["facetDistribution"] = serde_json::to_value(facets).unwrap_or(Value::Null);
+    }
+
+    // Store result in cache (plan §13.10): Cache successful scatter-gather results
+    // Only cache single-target queries (multi-target aliases have different results per target)
+    if state.config.result_cache.enabled && resolved_targets.len() == 1 {
+        // Get settings version for cache key
+        let settings_version = state.settings_broadcast.current_version().await;
+
+        // Reconstruct the canonicalized query for caching (same as cache lookup)
+        // Use the original request body components that were cloned earlier
+        let cache_body = SearchRequestBody {
+            q: capture_body_for_cache.get("q").and_then(|v| v.as_str()).map(String::from),
+            offset: capture_body_for_cache.get("offset").and_then(|v| v.as_u64()).map(|v| v as usize),
+            limit: capture_body_for_cache.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize),
+            filter: capture_body_for_cache.get("filter").cloned(),
+            facets: facets_for_cache,
+            ranking_score: Some(client_requested_score),
+            rest: capture_body_for_cache,
+        };
+
+        let canonicalized_query = match miroir_core::result_cache::canonicalize_query(
+            &serde_json::to_value(&cache_body).unwrap_or_default(),
+        ) {
+            Ok(canon) => canon,
+            Err(e) => {
+                debug!(error = %e, "failed to canonicalize query for cache storage");
+                String::new()
+            }
+        };
+
+        if !canonicalized_query.is_empty() {
+            // Create cache key and store the result
+            let cache_key = miroir_core::result_cache::CacheKey::new(
+                &effective_index,
+                &canonicalized_query,
+                settings_version,
+            );
+
+            // Serialize the response body for caching
+            if let Ok(response_bytes) = serde_json::to_vec(&body) {
+                match state.result_cache.insert(cache_key, response_bytes).await {
+                    Ok(_) => {
+                        debug!(
+                            index = %effective_index,
+                            "result cached successfully"
+                        );
+                    }
+                    Err(e) => {
+                        debug!(error = %e, "failed to store result in cache");
+                    }
+                }
+            }
+        }
     }
 
     // Capture query for canary creation if a capture session is active (plan §13.18)
