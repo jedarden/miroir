@@ -2679,6 +2679,33 @@ miroir:
 
 **Metrics.** `miroir_idempotency_hits_total{outcome="dedup"|"conflict"|"miss"}`, `miroir_idempotency_cache_size` (gauge), `miroir_query_coalesce_subscribers_total`, `miroir_query_coalesce_hits_total`.
 
+#### 13.10.1 Result cache
+
+**Problem.** Query coalescing (13.10) helps with in-flight requests, but many repeat-query patterns occur outside the 50ms coalescing window: users paginating through results, re-issuing the same query from different browser tabs, retrying after a timeout, or polling facet counts. Each repeat forces a full scatter-gather cycle to Meilisearch nodes.
+
+**Mechanism.** Short-TTL LRU cache of completed scatter-gather results, keyed by `(index_name, canonicalized_query_body, settings_version)`. When a matching query arrives within the TTL window, Miroir returns the cached merged response without any node fan-out.
+
+The cache key composition ensures correctness:
+- `index_name` — scoped to a single index
+- `canonicalized_query_body` — JSON canonicalization (sorted keys, normalized whitespace) makes `{"q":"a","filter":"b"}` and `{"filter":"b","q":"a"}` identical
+- `settings_version` — cache invalidates on any index setting change (ranking rules, searchable fields, etc.)
+
+**Cache semantics.**
+- LRU eviction when `max_size` is reached
+- TTL-based expiration (default 500ms, range 250–2000ms)
+- Cache is per-pod (no cross-pod sharing — acceptable hit-rate given short TTL)
+- Disabled by default for write endpoints (reads only)
+
+**Config.**
+```yaml
+result_cache:
+  enabled: true
+  ttl_ms: 500            # range: 250-2000
+  max_size: 1000         # LRU eviction limit
+```
+
+**Metrics.** `miroir_result_cache_hits_total`, `miroir_result_cache_misses_total`, `miroir_result_cache_size` (gauge), `miroir_result_cache_evictions_total`.
+
 ---
 
 ### 13.11 Multi-search batch API

@@ -34,6 +34,8 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(cfg.session_pinning.max_sessions, 100_000);
 /// assert_eq!(cfg.query_coalescing.max_subscribers, 1_000);
 /// assert_eq!(cfg.query_coalescing.max_pending_queries, 10_000);
+/// assert_eq!(cfg.result_cache.ttl_ms, 500);
+/// assert_eq!(cfg.result_cache.max_cached_results, 10_000);
 /// assert_eq!(cfg.anti_entropy.max_read_concurrency, 2);
 /// assert_eq!(cfg.anti_entropy.fingerprint_batch_size, 1_000);
 /// assert_eq!(cfg.resharding.backfill_concurrency, 4);
@@ -84,6 +86,7 @@ pub struct MiroirConfig {
     pub dump_import: advanced::DumpImportConfig,
     pub idempotency: advanced::IdempotencyConfig,
     pub query_coalescing: advanced::QueryCoalescingConfig,
+    pub result_cache: advanced::ResultCacheConfig,
     pub multi_search: advanced::MultiSearchConfig,
     pub vector_search: advanced::VectorSearchConfig,
     pub cdc: advanced::CdcConfig,
@@ -135,6 +138,7 @@ impl Default for MiroirConfig {
             dump_import: advanced::DumpImportConfig::default(),
             idempotency: advanced::IdempotencyConfig::default(),
             query_coalescing: advanced::QueryCoalescingConfig::default(),
+            result_cache: advanced::ResultCacheConfig::default(),
             multi_search: advanced::MultiSearchConfig::default(),
             vector_search: advanced::VectorSearchConfig::default(),
             cdc: advanced::CdcConfig::default(),
@@ -619,6 +623,7 @@ leader_election:
         assert!(cfg.dump_import.mode == "streaming");
         assert!(cfg.idempotency.enabled);
         assert!(cfg.query_coalescing.enabled);
+        assert!(cfg.result_cache.enabled);
         assert!(cfg.multi_search.enabled);
         assert!(cfg.vector_search.enabled);
         assert!(cfg.cdc.enabled);
@@ -747,6 +752,16 @@ task_store:
         assert_eq!(
             cfg.query_coalescing.max_pending_queries, 10_000,
             "query_coalescing.max_pending_queries"
+        );
+
+        // §14.8 result_cache defaults
+        assert_eq!(
+            cfg.result_cache.ttl_ms, 500,
+            "result_cache.ttl_ms"
+        );
+        assert_eq!(
+            cfg.result_cache.max_size, 1000,
+            "result_cache.max_size"
         );
 
         // §14.8 anti_entropy defaults

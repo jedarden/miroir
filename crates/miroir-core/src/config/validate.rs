@@ -198,6 +198,16 @@ pub fn validate(cfg: &MiroirConfig) -> Result<(), ConfigError> {
         }
     }
 
+    // Result cache ttl_ms must be in range 250-2000
+    if cfg.result_cache.enabled {
+        if cfg.result_cache.ttl_ms < 250 || cfg.result_cache.ttl_ms > 2000 {
+            return Err(ConfigError::Validation(format!(
+                "result_cache.ttl_ms must be between 250 and 2000 (inclusive), got {}",
+                cfg.result_cache.ttl_ms
+            )));
+        }
+    }
+
     // Admin UI allowed_origins must not contain wildcard when admin UI is enabled (plan §9).
     // Use "same-origin" (the default) or list specific origins.
     if cfg.admin_ui.enabled {
@@ -414,6 +424,58 @@ mod tests {
         let mut cfg = dev_config();
         cfg.search_ui.scoped_key_max_age_days = 60;
         cfg.search_ui.scoped_key_rotate_before_expiry_days = 30;
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn rejects_result_cache_ttl_ms_below_250() {
+        let mut cfg = dev_config();
+        cfg.result_cache.enabled = true;
+        cfg.result_cache.ttl_ms = 249;
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("result_cache.ttl_ms"));
+        assert!(err.to_string().contains("250"));
+    }
+
+    #[test]
+    fn rejects_result_cache_ttl_ms_above_2000() {
+        let mut cfg = dev_config();
+        cfg.result_cache.enabled = true;
+        cfg.result_cache.ttl_ms = 2001;
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("result_cache.ttl_ms"));
+        assert!(err.to_string().contains("2000"));
+    }
+
+    #[test]
+    fn allows_result_cache_ttl_ms_within_range() {
+        let mut cfg = dev_config();
+        cfg.result_cache.enabled = true;
+        cfg.result_cache.ttl_ms = 500;
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn allows_result_cache_ttl_ms_at_lower_bound() {
+        let mut cfg = dev_config();
+        cfg.result_cache.enabled = true;
+        cfg.result_cache.ttl_ms = 250;
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn allows_result_cache_ttl_ms_at_upper_bound() {
+        let mut cfg = dev_config();
+        cfg.result_cache.enabled = true;
+        cfg.result_cache.ttl_ms = 2000;
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn skips_result_cache_validation_when_disabled() {
+        let mut cfg = dev_config();
+        cfg.result_cache.enabled = false;
+        cfg.result_cache.ttl_ms = 5000; // Invalid but should be skipped
         assert!(validate(&cfg).is_ok());
     }
 }
