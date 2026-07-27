@@ -1846,11 +1846,11 @@ The families below are registered by each advanced-capability subsystem when its
 - `miroir_search_ui_click_through_total{index}` — counter (emitted only when `search_ui.analytics.enabled: true`)
 - `miroir_search_ui_p95_ms{index}` — gauge (end-user-observed latency, reported via client beacon)
 
-Grafana dashboard panels for these families will be added to `dashboards/miroir-overview.json` when the relevant feature flag is enabled; until then they are scrape-only.
+Grafana dashboard panels for these families will be added to `charts/miroir/dashboards/miroir-overview.json` when the relevant feature flag is enabled; until then they are scrape-only.
 
 ### Grafana dashboard
 
-Provided at `dashboards/miroir-overview.json`. Panels:
+Provided at `charts/miroir/dashboards/miroir-overview.json` (shipped via Helm chart; a copy at `dashboards/miroir-overview.json` is kept in sync). Panels:
 1. Cluster health — degraded shards, node healthy table
 2. Request rate — by path template
 3. p50/p95/p99 latency
