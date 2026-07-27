@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(cfg.query_coalescing.max_subscribers, 1_000);
 /// assert_eq!(cfg.query_coalescing.max_pending_queries, 10_000);
 /// assert_eq!(cfg.result_cache.ttl_ms, 500);
-/// assert_eq!(cfg.result_cache.max_cached_results, 10_000);
+/// assert_eq!(cfg.result_cache.max_size, 1000);
 /// assert_eq!(cfg.anti_entropy.max_read_concurrency, 2);
 /// assert_eq!(cfg.anti_entropy.fingerprint_batch_size, 1_000);
 /// assert_eq!(cfg.resharding.backfill_concurrency, 4);
