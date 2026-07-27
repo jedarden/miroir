@@ -1032,34 +1032,6 @@ pub async fn csrf_middleware(State(state): State<CsrfState>, req: Request, next:
 }
 
 // ---------------------------------------------------------------------------
-// Rate-limit hook types (Phase 2 in-memory stub, Phase 6 multi-pod)
-// ---------------------------------------------------------------------------
-
-/// Rate-limit bucket key types wired into the dispatch chain.
-/// Phase 2 keeps these as in-memory counters; Phase 6 will back them
-/// with the task store (Redis/SQLite).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum RateLimitBucket {
-    /// `miroir:ratelimit:adminlogin:<ip>`
-    AdminLogin(String),
-    /// `miroir:ratelimit:searchui:<ip>`
-    SearchUi(String),
-}
-
-/// In-memory rate limiter (Phase 2 stub). Always returns `Ok(())` — actual
-/// enforcement is deferred to Phase 6 multi-pod. The hook is wired here so
-/// handlers can call `limiter.check()` without cfg-gating.
-#[derive(Debug, Clone, Default)]
-pub struct RateLimiter;
-
-impl RateLimiter {
-    #[allow(clippy::result_unit_err)]
-    pub fn check(&self, _bucket: &RateLimitBucket) -> Result<(), ()> {
-        Ok(()) // Phase 2: always allow
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -1946,17 +1918,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // Rate limiter stub
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn rate_limiter_always_allows() {
-        let limiter = RateLimiter;
-        assert!(limiter
-            .check(&RateLimitBucket::AdminLogin("127.0.0.1".into()))
-            .is_ok());
-        assert!(limiter
-            .check(&RateLimitBucket::SearchUi("10.0.0.1".into()))
-            .is_ok());
-    }
 
     // -----------------------------------------------------------------------
     // AuthVerdict helpers
