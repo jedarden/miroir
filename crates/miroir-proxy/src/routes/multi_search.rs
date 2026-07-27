@@ -355,11 +355,12 @@ where
                                     // Cache hit - deserialize and check if valid search response
                                     match serde_json::from_slice::<SearchResponse>(&cached_bytes) {
                                         Ok(cached_response) => {
-                                            // Cache hit successful
+                                            // Cache hit successful - bypassing scatter-gather
                                             metrics.inc_result_cache_hits();
-                                            debug!(
+                                            tracing::info!(
+                                                target: "miroir.multi_search_cache_hit",
                                                 index = %query.index_uid,
-                                                "multi-search result cache hit"
+                                                "multi-search result cache hit - bypassing scatter-gather"
                                             );
 
                                             Some(Ok(SearchResultData {
