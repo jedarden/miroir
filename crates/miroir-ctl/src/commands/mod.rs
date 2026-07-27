@@ -1,6 +1,7 @@
 pub mod alias;
 pub mod canary;
 pub mod cdc;
+pub mod doctor;
 pub mod dump;
 pub mod explain;
 pub mod key;
