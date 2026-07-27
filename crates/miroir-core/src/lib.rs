@@ -60,6 +60,7 @@ pub mod replica_selection;
 pub mod reshard;
 pub mod reshard_chunking;
 pub mod resource_pressure;
+pub mod result_cache;
 pub mod router;
 pub mod scatter;
 pub mod schema_migrations;
