@@ -17,3 +17,5 @@ lcov.info
 *.rlib
 node_modules/
 crates/miroir-proxy/admin-ui/dist/
+tmp-secrets/
+*.env
