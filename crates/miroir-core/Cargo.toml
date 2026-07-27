@@ -51,6 +51,7 @@ rdkafka = { version = "0.37", features = ["tokio"], optional = true }
 indexmap = "2"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
+lru = "0.12"
 
 # DNS peer discovery (optional)
 trust-dns-resolver = { version = "0.12", optional = true }
