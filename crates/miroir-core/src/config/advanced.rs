@@ -302,6 +302,36 @@ impl Default for QueryCoalescingConfig {
 }
 
 // ---------------------------------------------------------------------------
+// 13.10  Result cache (merged-query cache, sits alongside query coalescing)
+// ---------------------------------------------------------------------------
+
+/// Result cache configuration for completed scatter-gather queries.
+///
+/// Short-TTL LRU cache of merged search results, keyed by (index, canonicalized
+/// query, settings_version). Reduces redundant fan-out to Meilisearch nodes under
+/// bursty repeat-query traffic (pagination, retries, facet-count polling).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResultCacheConfig {
+    /// Enable or disable the result cache.
+    pub enabled: bool,
+    /// TTL for cached results in milliseconds (range: 250-2000, default: 500).
+    pub ttl_ms: u64,
+    /// Maximum number of cached results (LRU eviction, default: 1000).
+    pub max_size: usize,
+}
+
+impl Default for ResultCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ttl_ms: 500, // 500ms default TTL (balances freshness with hit rate)
+            max_size: 1000,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 13.11  Multi-search batch API
 // ---------------------------------------------------------------------------
 
