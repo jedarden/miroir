@@ -479,6 +479,8 @@ pub struct AppState {
     pub ilm_worker: Option<Arc<tokio::sync::RwLock<IlmWorker>>>,
     /// Query capture for canary creation from production traffic (plan §13.18).
     pub query_capture: Arc<QueryCapture>,
+    /// Result cache for completed scatter-gather results (plan §13.10).
+    pub result_cache: Arc<miroir_core::result_cache::ResultCache>,
 }
 
 impl AppState {
@@ -1038,6 +1040,9 @@ impl AppState {
             ilm_manager,
             ilm_worker: None, // Will be created after leader_election is available
             query_capture: Arc::new(QueryCapture::new(1000)),
+            result_cache: Arc::new(miroir_core::result_cache::ResultCache::new(
+                config.result_cache.clone(),
+            )),
         }
     }
 

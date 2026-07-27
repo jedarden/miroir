@@ -10,6 +10,7 @@ use miroir_core::{
     config::UnavailableShardPolicy,
     merger::{MergeStrategy, ScoreMergeStrategy},
     multi_search::{MultiSearchExecutor, MultiSearchResponse, SearchResultData},
+    result_cache,
     scatter::{
         dfs_query_then_fetch_search, plan_search_scatter_with_narrowing, NodeClient, SearchRequest,
     },
@@ -34,6 +35,8 @@ pub struct MultiSearchState {
     pub replica_selector: Arc<miroir_core::replica_selection::ReplicaSelector>,
     pub query_planner: Arc<miroir_core::query_planner::QueryPlanner>,
     pub shadow_manager: Option<Arc<miroir_core::shadow::ShadowManager>>,
+    pub result_cache: Arc<miroir_core::result_cache::ResultCache>,
+    pub settings_broadcast: Arc<miroir_core::settings::SettingsBroadcast>,
 }
 
 /// Multi-search request (plan §13.11).
@@ -65,7 +68,7 @@ pub struct SingleSearchQuery {
 }
 
 /// Search response (matches Meilisearch response format).
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SearchResponse {
     pub hits: Vec<serde_json::Value>,
     pub estimated_total_hits: u64,
@@ -313,9 +316,94 @@ where
             let query_planner = query_planner_for_executor.clone();
             let metrics = metrics_for_executor.clone();
             let over_fetch_factor = over_fetch_factor_for_executor;
+            let result_cache = state.result_cache.clone();
+            let settings_broadcast = state.settings_broadcast.clone();
 
             async move {
                 let start = Instant::now();
+
+                // Result cache lookup (plan §13.10): Check for cached completed results
+                // Skip cache lookup for multi-target aliases (handled at query level)
+                let cache_result = if config.result_cache.enabled {
+                    // Get settings version for cache key invalidation
+                    let settings_version = {
+                        let sb = settings_broadcast.clone();
+                        sb.current_version().await
+                    };
+
+                    // Build query JSON for canonicalization
+                    let query_json = serde_json::json!({
+                        "q": query.q,
+                        "filter": query.filter,
+                        "limit": query.limit,
+                        "offset": query.offset,
+                        "other": query.other
+                    });
+
+                    // Canonicalize query for consistent hashing
+                    match result_cache::canonicalize_query(&query_json) {
+                        Ok(canonicalized_query) => {
+                            // Create cache key and attempt lookup
+                            let cache_key = result_cache::CacheKey::new(
+                                &query.index_uid,
+                                &canonicalized_query,
+                                settings_version,
+                            );
+
+                            match result_cache.get(&cache_key).await {
+                                Ok(Some(cached_bytes)) => {
+                                    // Cache hit - deserialize and check if valid search response
+                                    match serde_json::from_slice::<SearchResponse>(&cached_bytes) {
+                                        Ok(cached_response) => {
+                                            // Cache hit successful
+                                            metrics.inc_result_cache_hits();
+                                            debug!(
+                                                index = %query.index_uid,
+                                                "multi-search result cache hit"
+                                            );
+
+                                            Some(Ok(SearchResultData {
+                                                body: serde_json::to_value(cached_response).unwrap(),
+                                            }))
+                                        }
+                                        Err(e) => {
+                                            // Failed to deserialize - treat as cache miss
+                                            debug!(error = %e, "failed to deserialize cached multi-search result");
+                                            metrics.inc_result_cache_misses();
+                                            None
+                                        }
+                                    }
+                                }
+                                Ok(None) => {
+                                    // Cache miss - continue with normal scatter
+                                    metrics.inc_result_cache_misses();
+                                    debug!(
+                                        index = %query.index_uid,
+                                        "multi-search result cache miss"
+                                    );
+                                    None
+                                }
+                                Err(e) => {
+                                    // Cache error - log and continue (fail-open)
+                                    debug!(error = %e, "multi-search result cache lookup error");
+                                    None
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // Canonicalization failed - continue without cache lookup
+                            debug!(error = %e, "failed to canonicalize multi-search query for cache lookup");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                // If we got a cache hit, return it immediately
+                if let Some(result) = cache_result {
+                    return result;
+                }
 
                 // Determine if we should use adaptive selection
                 let use_adaptive = config.replica_selection.strategy == "adaptive";
@@ -360,6 +448,8 @@ where
                 .await;
 
                 // Build search request
+                // Clone query components for cache storage before they're moved
+                let query_for_cache = query.clone();
                 let filter_value = query
                     .filter
                     .as_ref()
@@ -436,6 +526,56 @@ where
                             hits = search_response.hits.len(),
                             "multi-search query completed"
                         );
+
+                        // Store result in cache (plan §13.10): Cache successful scatter-gather results
+                        if config.result_cache.enabled {
+                            // Get settings version for cache key
+                            let settings_version = {
+                                let sb = settings_broadcast.clone();
+                                sb.current_version().await
+                            };
+
+                            // Reconstruct the canonicalized query for caching
+                            let query_json = serde_json::json!({
+                                "q": query_for_cache.q,
+                                "filter": query_for_cache.filter,
+                                "limit": query_for_cache.limit,
+                                "offset": query_for_cache.offset,
+                                "other": query_for_cache.other
+                            });
+
+                            let canonicalized_query = match result_cache::canonicalize_query(&query_json) {
+                                Ok(canon) => canon,
+                                Err(e) => {
+                                    debug!(error = %e, "failed to canonicalize multi-search query for cache storage");
+                                    String::new()
+                                }
+                            };
+
+                            if !canonicalized_query.is_empty() {
+                                // Create cache key and store the result
+                                let cache_key = result_cache::CacheKey::new(
+                                    &query_for_cache.index_uid,
+                                    &canonicalized_query,
+                                    settings_version,
+                                );
+
+                                // Serialize the search response for caching
+                                if let Ok(response_bytes) = serde_json::to_vec(&search_response) {
+                                    match result_cache.insert(cache_key, response_bytes).await {
+                                        Ok(_) => {
+                                            debug!(
+                                                index = %query_for_cache.index_uid,
+                                                "multi-search result cached successfully"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            debug!(error = %e, "failed to store multi-search result in cache");
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
                         Ok(SearchResultData {
                             body: serde_json::to_value(search_response).unwrap(),

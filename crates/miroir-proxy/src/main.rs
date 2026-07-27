@@ -199,6 +199,7 @@ impl FromRef<UnifiedState> for admin_endpoints::AppState {
             ilm_manager: state.admin.ilm_manager.clone(),
             ilm_worker: state.admin.ilm_worker.clone(),
             query_capture: state.query_capture.clone(),
+            result_cache: state.admin.result_cache.clone(),
         }
     }
 }
@@ -275,6 +276,8 @@ impl FromRef<UnifiedState> for routes::multi_search::MultiSearchState {
             replica_selector: state.admin.replica_selector.clone(),
             query_planner: state.admin.query_planner.clone(),
             shadow_manager: state.admin.shadow_manager.clone(),
+            result_cache: state.admin.result_cache.clone(),
+            settings_broadcast: state.admin.settings_broadcast.clone(),
         }
     }
 }

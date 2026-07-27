@@ -1,0 +1,130 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: populate-miroir-openbao-secrets
+  namespace: external-secrets
+spec:
+  template:
+    spec:
+      serviceAccountName: external-secrets-ardenone-cluster
+      restartPolicy: OnFailure
+      backoffLimit: 3
+      containers:
+      - name: populate-secrets
+        image: ghcr.io/openbao/openbao:1.12.0
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          set -x
+
+          # Configure OpenBao address
+          export BAO_ADDR="http://openbao-ardenone-cluster.openbao.svc.cluster.local:8200"
+
+          echo "Testing OpenBao connectivity..."
+          if ! curl -sf ${BAO_ADDR}/v1/sys/health > /dev/null; then
+            echo "Error: Cannot reach OpenBao at ${BAO_ADDR}"
+            exit 1
+          fi
+          echo "OpenBao is reachable"
+
+          echo "Attempting Kubernetes authentication..."
+          # Login using Kubernetes authentication (same method as ESO)
+          TOKEN=$(curl -sf --request POST \
+            ${BAO_ADDR}/v1/auth/kubernetes/login \
+            -H "Content-Type: application/json" \
+            -d '{
+              "role": "eso",
+              "jwt": '"$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"'
+            }' | jq -r '.auth.client_token')
+
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "Error: Failed to authenticate to OpenBao"
+            exit 1
+          fi
+
+          echo "Successfully authenticated to OpenBao"
+
+          # Set token for bao CLI
+          export BAO_TOKEN="$TOKEN"
+
+          # Function to generate random secret
+          generate_secret() {
+            openssl rand -base64 32
+          }
+
+          # Function to populate secrets for a namespace
+          populate_secrets() {
+            NAMESPACE=$1
+            echo "Populating secrets for ${NAMESPACE}..."
+
+            # Check if secret already exists
+            if bao kv get secret/ardenone-cluster/${NAMESPACE}/keys 2>/dev/null; then
+              echo "Secret secret/ardenone-cluster/${NAMESPACE}/keys already exists, updating..."
+
+              # Update with new random values
+              bao kv patch secret/ardenone-cluster/${NAMESPACE}/keys \
+                masterKey="$(generate_secret)" \
+                nodeMasterKey="$(generate_secret)" \
+                adminApiKey="$(generate_secret)" \
+                adminSessionSealKey="$(openssl rand -base64 64)" \
+                searchUiJwtSecret="$(openssl rand -base64 64)" \
+                searchUiSharedKey="$(generate_secret)" \
+                redis-password="$(generate_secret)"
+            else
+              echo "Creating new secret secret/ardenone-cluster/${NAMESPACE}/keys..."
+
+              # Create with all required secrets
+              bao kv put secret/ardenone-cluster/${NAMESPACE}/keys \
+                masterKey="$(generate_secret)" \
+                nodeMasterKey="$(generate_secret)" \
+                adminApiKey="$(generate_secret)" \
+                adminSessionSealKey="$(openssl rand -base64 64)" \
+                searchUiJwtSecret="$(openssl rand -base64 64)" \
+                searchUiJwtSecretPrevious="" \
+                searchUiSharedKey="$(generate_secret)" \
+                redis-password="$(generate_secret)"
+            fi
+
+            echo "Successfully populated secrets for ${NAMESPACE}"
+
+            # Verify the secret
+            echo "Verifying secret secret/ardenone-cluster/${NAMESPACE}/keys..."
+            bao kv get secret/ardenone-cluster/${NAMESPACE}/keys
+          }
+
+          # Populate secrets for both namespaces
+          populate_secrets "miroir"
+          populate_secrets "miroir-dev"
+
+          echo ""
+          echo "=========================================="
+          echo "All secrets populated successfully!"
+          echo "=========================================="
+
+        env:
+        - name: BAO_ADDR
+          value: "http://openbao-ardenone-cluster.openbao.svc.cluster.local:8200"
+        volumeMounts:
+        - name: service-account-token
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
+      volumes:
+      - name: service-account-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: openbao
+              path: token
+              expirationSeconds: 3600
+          - configMap:
+              name: kube-root-ca.crt
+              items:
+              - key: ca.crt
+                path: ca.crt
+          - downwardAPI:
+              items:
+              - fieldRef:
+                  fieldPath: metadata.namespace
+                path: namespace
