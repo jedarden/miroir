@@ -502,9 +502,11 @@ async fn search_handler(
                         Ok(response_body) => {
                             // Cache hit successful - return cached response
                             state.metrics.inc_result_cache_hits();
-                            debug!(
+                            tracing::info!(
+                                target: "miroir.search_cache_hit",
                                 index = %effective_index,
-                                "result cache hit"
+                                duration_ms = start.elapsed().as_millis() as u64,
+                                "result cache hit - bypassing scatter-gather"
                             );
 
                             let mut response = Response::builder()
@@ -531,13 +533,6 @@ async fn search_handler(
                                     serde_json::to_string(&response_body).unwrap(),
                                 ))
                                 .unwrap();
-
-                            tracing::info!(
-                                target: "miroir.search_cache_hit",
-                                index = %effective_index,
-                                duration_ms = start.elapsed().as_millis() as u64,
-                                "cached search completed"
-                            );
 
                             return response;
                         }
