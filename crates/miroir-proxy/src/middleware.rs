@@ -229,6 +229,8 @@ pub struct Metrics {
     // ── §13.10 Result cache metrics ──
     result_cache_hits_total: Counter,
     result_cache_misses_total: Counter,
+    result_cache_size: Gauge,
+    result_cache_evictions_total: Counter,
 
     // ── Rebalancer metrics ──
     rebalance_in_progress: Gauge,
@@ -386,6 +388,8 @@ impl Clone for Metrics {
             scatter_retries: self.scatter_retries.clone(),
             result_cache_hits_total: self.result_cache_hits_total.clone(),
             result_cache_misses_total: self.result_cache_misses_total.clone(),
+            result_cache_size: self.result_cache_size.clone(),
+            result_cache_evictions_total: self.result_cache_evictions_total.clone(),
             rebalance_in_progress: self.rebalance_in_progress.clone(),
             rebalance_documents_migrated: self.rebalance_documents_migrated.clone(),
             rebalance_duration: self.rebalance_duration.clone(),
@@ -625,6 +629,18 @@ impl Metrics {
         ))
         .expect("failed to create result_cache_misses_total counter");
 
+        let result_cache_size = Gauge::with_opts(Opts::new(
+            "miroir_result_cache_size",
+            "Current number of entries in the result cache",
+        ))
+        .expect("failed to create result_cache_size gauge");
+
+        let result_cache_evictions_total = Counter::with_opts(Opts::new(
+            "miroir_result_cache_evictions_total",
+            "Total number of result cache LRU evictions",
+        ))
+        .expect("failed to create result_cache_evictions_total counter");
+
         // ── Rebalancer metrics ──
         let rebalance_in_progress = Gauge::with_opts(Opts::new(
             "miroir_rebalance_in_progress",
@@ -675,6 +691,8 @@ impl Metrics {
         reg!(scatter_retries);
         reg!(result_cache_hits_total);
         reg!(result_cache_misses_total);
+        reg!(result_cache_size);
+        reg!(result_cache_evictions_total);
         reg!(rebalance_in_progress);
         reg!(rebalance_documents_migrated);
         reg!(rebalance_duration);
@@ -1461,6 +1479,8 @@ impl Metrics {
             scatter_retries,
             result_cache_hits_total,
             result_cache_misses_total,
+            result_cache_size,
+            result_cache_evictions_total,
             rebalance_in_progress,
             rebalance_documents_migrated,
             rebalance_duration,
@@ -1831,6 +1851,14 @@ impl Metrics {
 
     pub fn inc_result_cache_misses(&self) {
         self.result_cache_misses_total.inc();
+    }
+
+    pub fn set_result_cache_size(&self, size: usize) {
+        self.result_cache_size.set(size as f64);
+    }
+
+    pub fn inc_result_cache_evictions(&self) {
+        self.result_cache_evictions_total.inc();
     }
 
     // ── Node health ──
