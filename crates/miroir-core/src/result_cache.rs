@@ -107,6 +107,8 @@ pub struct ResultCache {
     hits: Arc<RwLock<u64>>,
     /// Cache miss count (for metrics).
     misses: Arc<RwLock<u64>>,
+    /// Cache eviction count (for metrics).
+    evictions: Arc<RwLock<u64>>,
 }
 
 impl ResultCache {
@@ -120,6 +122,7 @@ impl ResultCache {
             config,
             hits: Arc::new(RwLock::new(0)),
             misses: Arc::new(RwLock::new(0)),
+            evictions: Arc::new(RwLock::new(0)),
         }
     }
 
@@ -167,8 +170,17 @@ impl ResultCache {
         let entry = CacheEntry::new(data, ttl);
 
         let mut cache = self.cache.write().await;
+        let size_before = cache.len();
         debug!("Cache insert for key {:?} (TTL: {:?})", key, ttl);
         cache.put(key, entry);
+        let size_after = cache.len();
+
+        // Track evictions: if size decreased, an entry was evicted
+        if size_after < size_before {
+            let evicted = size_before.saturating_sub(size_after);
+            *self.evictions.write().await += evicted as u64;
+            trace!("Cache evicted {} entries (LRU)", evicted);
+        }
 
         Ok(())
     }
@@ -203,6 +215,7 @@ impl ResultCache {
     pub async fn stats(&self) -> CacheStats {
         let hits = *self.hits.read().await;
         let misses = *self.misses.read().await;
+        let evictions = *self.evictions.read().await;
         let total = hits + misses;
         let hit_rate = if total > 0 {
             Some(hits as f64 / total as f64)
@@ -215,6 +228,7 @@ impl ResultCache {
             misses,
             hit_rate,
             entries: self.len().await,
+            evictions,
         }
     }
 
@@ -241,6 +255,8 @@ pub struct CacheStats {
     pub hit_rate: Option<f64>,
     /// Current number of entries in the cache.
     pub entries: usize,
+    /// Number of cache evictions (LRU).
+    pub evictions: u64,
 }
 
 /// Clone implementation for ResultCache.
@@ -255,6 +271,7 @@ impl Clone for ResultCache {
             config: self.config.clone(),
             hits: self.hits.clone(),
             misses: self.misses.clone(),
+            evictions: self.evictions.clone(),
         }
     }
 }
