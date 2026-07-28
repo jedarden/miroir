@@ -1,4 +1,4 @@
-Running as unit: run-p2363920-i253903333.scope; invocation ID: 429654a4075a481584d57a68d30be2cb
+Running as unit: run-p2653082-i254192360.scope; invocation ID: c29e037d7e3e47f28cd54c34fad8aaeb
 ⚠ claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login · Unset it to load your organization's connectors
 SessionEnd hook [/home/coding/.ccdash/hooks/session-end.sh] failed: /bin/sh: line 1: /home/coding/.ccdash/hooks/session-end.sh: cannot execute: required file not found
 
