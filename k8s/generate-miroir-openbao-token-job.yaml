@@ -1,0 +1,134 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: generate-miroir-openbao-token
+  namespace: openbao
+spec:
+  template:
+    spec:
+      serviceAccountName: openbao-ardenone-cluster
+      restartPolicy: OnFailure
+      backoffLimit: 1
+      containers:
+      - name: generate-token
+        image: ghcr.io/openbao/openbao:1.12.0
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          set -x
+
+          # Configure OpenBao address
+          export BAO_ADDR="http://openbao-ardenone-cluster.openbao.svc.cluster.local:8200"
+
+          echo "Testing OpenBao connectivity..."
+          if ! curl -sf ${BAO_ADDR}/v1/sys/health > /dev/null; then
+            echo "Error: Cannot reach OpenBao at ${BAO_ADDR}"
+            exit 1
+          fi
+          echo "OpenBao is reachable"
+
+          echo "Attempting Kubernetes authentication with admin role..."
+          # Login using Kubernetes authentication with admin role
+          # Note: This requires that an admin role exists in OpenBao Kubernetes auth
+          TOKEN=$(curl -sf --request POST \
+            ${BAO_ADDR}/v1/auth/kubernetes/login \
+            -H "Content-Type: application/json" \
+            -d '{
+              "role": "openbao-ardenone-cluster",
+              "jwt": '"$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"'
+            }' | jq -r '.auth.client_token')
+
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "Error: Failed to authenticate to OpenBao with role 'openbao-ardenone-cluster'"
+            echo "Checking available roles..."
+            curl -sf ${BAO_ADDR}/v1/auth/kubernetes/role 2>&1 | head -20 || true
+            exit 1
+          fi
+
+          echo "Successfully authenticated to OpenBao"
+
+          # Set token for bao CLI
+          export BAO_TOKEN="$TOKEN"
+
+          echo "Checking if KV v2 secrets engine is enabled at 'kv' path..."
+          if ! bao secrets list | grep -q "^kv/$"; then
+            echo "KV v2 secrets engine not found at 'kv' path. Checking current mounts..."
+            bao secrets list
+            echo ""
+            echo "Enabling KV v2 secrets engine at 'kv' path..."
+            bao secrets enable -path=kv kv-v2
+          else
+            echo "KV v2 secrets engine already enabled at 'kv' path"
+          fi
+
+          echo "Creating write-enabled policy: miroir-policy-write..."
+          cat > /tmp/policy.hcl <<'EOF'
+          # OpenBao Write Policy for Miroir Setup (bf-4h67m)
+          path "kv/data/search/miroir" {
+            capabilities = ["create", "update", "delete", "read"]
+          }
+          path "kv/metadata/search/miroir" {
+            capabilities = ["create", "update", "delete", "read"]
+          }
+          path "kv/metadata/search" {
+            capabilities = ["list"]
+          }
+          EOF
+
+          bao policy write miroir-policy-write /tmp/policy.hcl
+          echo "Policy created successfully"
+
+          echo "Generating token with miroir-policy-write policy (TTL: 24h)..."
+          TOKEN_OUTPUT=$(bao token create -policy=miroir-policy-write -ttl=24h -format=json)
+
+          # Extract token and display it
+          TOKEN_VALUE=$(echo "$TOKEN_OUTPUT" | jq -r '.auth.client_token')
+          TOKEN_TTL=$(echo "$TOKEN_OUTPUT" | jq -r '.auth.lease_duration')
+          TOKEN_POLICIES=$(echo "$TOKEN_OUTPUT" | jq -r '.auth.policies | join(", ")')
+
+          echo ""
+          echo "=========================================="
+          echo "Token Generated Successfully!"
+          echo "=========================================="
+          echo "Token: $TOKEN_VALUE"
+          echo "TTL: $TOKEN_TTL seconds ($(($TOKEN_TTL / 3600)) hours)"
+          echo "Policies: $TOKEN_POLICIES"
+          echo ""
+          echo "Token stored in Kubernetes secret: miroir-openbao-token"
+          echo "=========================================="
+
+          # Create a Kubernetes secret to store the token
+          kubectl create secret generic miroir-openbao-token \
+            --from-literal=token="$TOKEN_VALUE" \
+            --from-literal=policies="$TOKEN_POLICIES" \
+            --from-literal=ttl="$TOKEN_TTL" \
+            --namespace=openbao \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+        env:
+        - name: BAO_ADDR
+          value: "http://openbao-ardenone-cluster.openbao.svc.cluster.local:8200"
+        volumeMounts:
+        - name: service-account-token
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
+      volumes:
+      - name: service-account-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: openbao
+              path: token
+              expirationSeconds: 3600
+          - configMap:
+              name: kube-root-ca.crt
+              items:
+              - key: ca.crt
+                path: ca.crt
+          - downwardAPI:
+              items:
+              - fieldRef:
+                  fieldPath: metadata.namespace
+                path: namespace
