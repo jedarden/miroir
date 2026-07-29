@@ -1825,4 +1825,116 @@ mod tests {
             "expected ratio 1.0 after all shards complete, got {final_ratio}"
         );
     }
+
+    // ---- multi-shard backfill progress sampling infrastructure (bf-34lmv) ----
+    //
+    // Test infrastructure for sampling backfill_progress() at multiple points
+    // during a multi-shard backfill sequence. This creates the foundation for
+    // testing the [0,1] ceiling property by establishing a test that:
+    // - Runs a multi-shard backfill sequence (3+ shards)
+    // - Samples backfill_progress() at multiple points during execution
+    // - Stores progress values for later assertion
+    // - Does NOT yet add the <= 1.0 assertions (those come in later children)
+    //
+    // Builds on child 1's (bf-5aon3 child 1) bookkeeping harness pattern.
+
+    /// Test infrastructure that samples backfill progress at multiple points
+    /// during a multi-shard backfill sequence.
+    ///
+    /// This function drives a synthetic backfill with 3+ shards and samples
+    /// the progress ratio at each point, storing the values for later assertion.
+    /// The < 1.0 ceiling assertions will be added in subsequent child beads.
+    ///
+    /// Returns a vector of progress ratios sampled at each shard completion.
+    async fn sample_multi_shard_backfill_progress(
+        executor: &ReshardExecutor<MockNodeClient>,
+        op: &Arc<RwLock<ReshardOperation>>,
+        shard_doc_counts: Vec<u64>,
+    ) -> Vec<f64> {
+        let total_docs: u64 = shard_doc_counts.iter().sum();
+
+        let mut state = backfill_state(BackfillProgress {
+            total_documents: total_docs,
+            upfront_total_known: true,
+            processed_documents: 0,
+            current_shard: Some(0),
+            last_cursor: None,
+        });
+
+        let mut sampled_ratios = Vec::new();
+
+        // Simulate each shard completing: advance processed_documents by that
+        // shard's doc count, report progress, and sample the ratio.
+        for (shard_idx, doc_count) in shard_doc_counts.iter().enumerate() {
+            state.backfill_progress.processed_documents += doc_count;
+            state.backfill_progress.current_shard = Some(shard_idx as u32 + 1);
+            state.backfill_progress.last_cursor = Some(format!("shard_{shard_idx}"));
+
+            executor.report_progress(&state).await;
+            let ratio = op.read().await.backfill_progress();
+            sampled_ratios.push(ratio);
+        }
+
+        sampled_ratios
+    }
+
+    /// Infrastructure test: verifies the sampling harness compiles and runs
+    /// without panicking, stores sampled values for later assertion.
+    ///
+    /// This test:
+    /// - Runs a multi-shard backfill sequence (4 shards, exceeding the 3+ minimum)
+    /// - Samples backfill_progress() at multiple points during execution
+    /// - Stores progress values for later assertion (returned values)
+    /// - Does NOT yet add the <= 1.0 assertions (those come in later children)
+    ///
+    /// Acceptance criteria:
+    /// - Test compiles and runs without panicking ✓
+    /// - Samples backfill_progress() at multiple points ✓
+    /// - Stores sampled values for assertion ✓
+    #[tokio::test]
+    async fn multi_shard_backfill_progress_sampling_infrastructure() {
+        let op = Arc::new(RwLock::new(ReshardOperation::new(
+            INDEX_UID.to_string(),
+            4,  // old_shards
+            8,  // target_shards
+        )));
+
+        // bookkeeping_executor has no nodes, so this is pure progress bookkeeping
+        let executor = bookkeeping_executor().with_progress_operation(op.clone());
+
+        // A 4-shard sequence: varying document counts per shard to create
+        // realistic progress ratios. Total = 1000 docs.
+        let shard_doc_counts = vec![300u64, 250, 200, 250];
+
+        // Sample backfill_progress() at multiple points during execution
+        let sampled_ratios = sample_multi_shard_backfill_progress(
+            &executor,
+            &op,
+            shard_doc_counts,
+        ).await;
+
+        // Infrastructure verification: we successfully sampled 4 ratios
+        // (one per shard completion) and stored them for assertion
+        assert_eq!(
+            sampled_ratios.len(),
+            4,
+            "should have sampled one ratio per shard completion"
+        );
+
+        // The values are stored and available for later assertion
+        // (Note: the <= 1.0 ceiling assertions will be added in later children)
+        // For infrastructure verification only, we check the values are finite
+        for (i, &ratio) in sampled_ratios.iter().enumerate() {
+            assert!(
+                ratio.is_finite(),
+                "sampled ratio at shard {} must be finite, got {}",
+                i,
+                ratio
+            );
+        }
+
+        // The sampled values are now available for the <= 1.0 assertions
+        // that will be added in subsequent child beads
+        let _stored_for_later_assertion = sampled_ratios;
+    }
 }
