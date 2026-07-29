@@ -1937,4 +1937,113 @@ mod tests {
         // that will be added in subsequent child beads
         let _stored_for_later_assertion = sampled_ratios;
     }
+
+    // ---- legacy path ceiling assertion (bf-2ki61) ----
+    //
+    // Test that verifies the [0,1] ceiling property for the legacy path where
+    // upfront_total_known=false and the denominator accumulates per-shard totals
+    // incrementally.
+
+    /// Test infrastructure that samples backfill progress at multiple points
+    /// during a multi-shard backfill sequence for the legacy path.
+    ///
+    /// Unlike sample_multi_shard_backfill_progress which tests the new path
+    /// (upfront_total_known=true), this function tests the legacy path where:
+    /// - upfront_total_known=false
+    /// - total_documents starts at 0
+    /// - Denominator accumulates per-shard totals via incorporate_shard_total
+    ///
+    /// Returns a vector of progress ratios sampled at each shard completion.
+    async fn sample_legacy_multi_shard_backfill_progress(
+        executor: &ReshardExecutor<MockNodeClient>,
+        op: &Arc<RwLock<ReshardOperation>>,
+        shard_doc_counts: Vec<u64>,
+    ) -> Vec<f64> {
+        // Legacy path: start with zero denominator and upfront_total_known=false
+        let mut state = backfill_state(BackfillProgress {
+            total_documents: 0,
+            upfront_total_known: false,
+            processed_documents: 0,
+            current_shard: Some(0),
+            last_cursor: None,
+        });
+
+        let mut sampled_ratios = Vec::new();
+
+        // Simulate each shard completing in the legacy path:
+        // 1. Incorporate the shard total into the denominator (legacy accumulation)
+        // 2. Advance processed_documents by that shard's doc count
+        // 3. Report progress and sample the ratio
+        for (shard_idx, doc_count) in shard_doc_counts.iter().enumerate() {
+            // Legacy path: accumulate denominator as each shard completes
+            executor.incorporate_shard_total(&mut state, *doc_count);
+
+            // Advance numerator
+            state.backfill_progress.processed_documents += doc_count;
+            state.backfill_progress.current_shard = Some(shard_idx as u32 + 1);
+            state.backfill_progress.last_cursor = Some(format!("shard_{shard_idx}"));
+
+            executor.report_progress(&state).await;
+            let ratio = op.read().await.backfill_progress();
+            sampled_ratios.push(ratio);
+        }
+
+        sampled_ratios
+    }
+
+    /// Legacy path ceiling test: verifies that backfill_progress() never exceeds
+    /// 1.0 + epsilon when upfront_total_known=false (the legacy per-shard
+    /// accumulation path).
+    ///
+    /// This test specifically covers the executor.rs:671 branch where the
+    /// denominator grows as each shard completes.
+    ///
+    /// Acceptance criteria:
+    /// - Asserts every sampled backfill_progress() <= 1.0 + epsilon
+    /// - Covers the upfront_total_known=false path specifically
+    /// - Uses epsilon (1e-9) to handle floating point precision
+    /// - cargo test passes
+    #[tokio::test]
+    async fn legacy_path_backfill_progress_never_exceeds_one() {
+        let op = Arc::new(RwLock::new(ReshardOperation::new(
+            INDEX_UID.to_string(),
+            4,  // old_shards
+            8,  // target_shards
+        )));
+
+        // bookkeeping_executor has no nodes, so this is pure progress bookkeeping
+        let executor = bookkeeping_executor().with_progress_operation(op.clone());
+
+        // A 4-shard sequence: varying document counts per shard to create
+        // realistic progress ratios. Total = 1000 docs.
+        let shard_doc_counts = vec![300u64, 250, 200, 250];
+
+        // Sample backfill_progress() at multiple points during execution
+        // in the legacy path (upfront_total_known=false)
+        let sampled_ratios = sample_legacy_multi_shard_backfill_progress(
+            &executor,
+            &op,
+            shard_doc_counts,
+        ).await;
+
+        const EPSILON: f64 = 1e-9;
+
+        // Legacy path ceiling assertion: every sampled ratio must be <= 1.0 + epsilon
+        for (shard_idx, &ratio) in sampled_ratios.iter().enumerate() {
+            assert!(
+                ratio <= 1.0 + EPSILON,
+                "legacy path: backfill_progress() at shard {} must not exceed 1.0 + epsilon, got {}",
+                shard_idx,
+                ratio
+            );
+        }
+
+        // Final ratio should be exactly 1.0 (all shards complete)
+        let final_ratio = sampled_ratios.last().expect("should have final ratio");
+        assert!(
+            (final_ratio - 1.0).abs() < EPSILON,
+            "legacy path: final ratio after all shards complete should be 1.0, got {}",
+            final_ratio
+        );
+    }
 }
