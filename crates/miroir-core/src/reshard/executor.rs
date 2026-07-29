@@ -2046,4 +2046,67 @@ mod tests {
             final_ratio
         );
     }
+
+    // ---- new path ceiling assertion (bf-1rkrm) ----
+    //
+    // Test that verifies the [0,1] ceiling property for the new path where
+    // upfront_total_known=true and the denominator is fixed upfront from
+    // start_backfill, with per-shard totals NOT added to prevent double-counting.
+
+    /// New path ceiling test: verifies that backfill_progress() never exceeds
+    /// 1.0 + epsilon when upfront_total_known=true (the new upfront denominator
+    /// path).
+    ///
+    /// This test specifically covers the executor.rs:665 branch where
+    /// incorporate_shard_total short-circuits to avoid double-counting, since
+    /// the denominator already holds the full total from start_backfill.
+    ///
+    /// Acceptance criteria:
+    /// - Asserts every sampled backfill_progress() <= 1.0 + epsilon
+    /// - Covers the upfront_total_known=true path specifically
+    /// - Verifies denominator is NOT inflated by per-shard totals
+    /// - cargo test passes
+    #[tokio::test]
+    async fn new_path_backfill_progress_never_exceeds_one() {
+        let op = Arc::new(RwLock::new(ReshardOperation::new(
+            INDEX_UID.to_string(),
+            4,  // old_shards
+            8,  // target_shards
+        )));
+
+        // bookkeeping_executor has no nodes, so this is pure progress bookkeeping
+        let executor = bookkeeping_executor().with_progress_operation(op.clone());
+
+        // A 4-shard sequence: varying document counts per shard to create
+        // realistic progress ratios. Total = 1000 docs.
+        let shard_doc_counts = vec![300u64, 250, 200, 250];
+
+        // Sample backfill_progress() at multiple points during execution
+        // in the new path (upfront_total_known=true, denominator fixed upfront)
+        let sampled_ratios = sample_multi_shard_backfill_progress(
+            &executor,
+            &op,
+            shard_doc_counts,
+        ).await;
+
+        const EPSILON: f64 = 1e-9;
+
+        // New path ceiling assertion: every sampled ratio must be <= 1.0 + epsilon
+        for (shard_idx, &ratio) in sampled_ratios.iter().enumerate() {
+            assert!(
+                ratio <= 1.0 + EPSILON,
+                "new path: backfill_progress() at shard {} must not exceed 1.0 + epsilon, got {}",
+                shard_idx,
+                ratio
+            );
+        }
+
+        // Final ratio should be exactly 1.0 (all shards complete)
+        let final_ratio = sampled_ratios.last().expect("should have final ratio");
+        assert!(
+            (final_ratio - 1.0).abs() < EPSILON,
+            "new path: final ratio after all shards complete should be 1.0, got {}",
+            final_ratio
+        );
+    }
 }
