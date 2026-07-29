@@ -1686,6 +1686,102 @@ mod tests {
         }
     }
 
+    // Regression guard: the backfill ratio ceiling property (c) must hold
+    // across BOTH branches of `incorporate_shard_total` (executor.rs:665):
+    //
+    // 1. upfront_total_known=true: denominator seeded from stats, per-shard
+    //    totals suppressed (tested in
+    //    backfill_progress_ratio_is_nonzero_monotonic_and_bounded above).
+    // 2. upfront_total_known=false: legacy fallback accumulates per-shard
+    //    totals into denominator (tested here).
+    //
+    // This test forces the legacy path by mocking a stats endpoint that
+    // returns 0 documents, triggering upfront_total_known=false and the
+    // per-shard accumulation in incorporate_shard_total. Even with this
+    // gradual denominator build-up, the ratio must never exceed 1.0.
+    #[tokio::test]
+    async fn backfill_progress_ratio_ceiling_holds_with_legacy_per_shard_accumulation() {
+        // Mount a stats endpoint that returns 0 documents to force
+        // upfront_total_known=false (the legacy fallback path).
+        let mut server = mockito::Server::new_async().await;
+
+        // Stats endpoint returns 0 -> upfront_total_known=false
+        let stats_mock = server
+            .mock("GET", STATS_PATH)
+            .with_status(200)
+            .with_body(json!({"numberOfDocuments": 0}).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+
+        // Index info endpoint (unchanged)
+        let index_info_mock = server
+            .mock("GET", "/indexes/test-idx")
+            .with_status(200)
+            .with_body(json!({"uid": INDEX_UID, "primaryKey": "id"}).to_string())
+            .expect(2)  // 2 shards, each queries index info
+            .create_async()
+            .await;
+
+        let op = Arc::new(RwLock::new(ReshardOperation::new(
+            INDEX_UID.to_string(),
+            2,
+            4,
+        )));
+        let executor =
+            make_backfill_executor(vec![server.url()]).with_progress_operation(op.clone());
+
+        let mut state = fresh_backfill_state();
+        executor.start_backfill(&mut state).await.unwrap();
+
+        // Verify we're on the legacy path
+        assert!(
+            !state.backfill_progress.upfront_total_known,
+            "stats returned 0, so upfront_total_known must be false"
+        );
+        assert_eq!(
+            state.backfill_progress.total_documents, 0,
+            "denominator starts at 0 on legacy path"
+        );
+
+        // Sample the persisted op's ratio at each step.
+        // With upfront_total_known=false, the denominator builds up
+        // shard-by-shard as incorporate_shard_total adds per-shard totals.
+        let mut ratios = vec![op.read().await.backfill_progress()];
+        let old_shards = state.old_shards;
+        for _ in 0..old_shards {
+            executor.advance_backfill(&mut state).await.unwrap();
+            ratios.push(op.read().await.backfill_progress());
+        }
+
+        // Ceiling property (c): the ratio stays in [0.0, 1.0] at every
+        // observation point, even with gradual denominator build-up.
+        for (i, &ratio) in ratios.iter().enumerate() {
+            assert!(
+                (0.0..=1.0).contains(&ratio),
+                "legacy path: ratio at step {i} outside [0,1]: {ratio}"
+            );
+        }
+
+        // Completeness: with per-shard accumulation, the final denominator
+        // equals the sum of all shard totals (2 shards × 500 = 1000), so the
+        // ratio must reach exactly 1.0 at completion.
+        let final_ratio = *ratios.last().unwrap();
+        assert!(
+            (final_ratio - 1.0).abs() < f64::EPSILON,
+            "legacy path: expected ratio 1.0 at completion, got {final_ratio}"
+        );
+
+        // Verify the denominator accumulated correctly
+        assert_eq!(
+            state.backfill_progress.total_documents, 1000,
+            "legacy path: denominator must accumulate all shard totals (2 × 500)"
+        );
+
+        stats_mock.assert_async().await;
+        index_info_mock.assert_async().await;
+    }
+
     // Progress-reporting only (criterion: no state-machine change). The
     // bf-1q4wa `progress_operation` seam is `None` on the default path and a
     // read-only mirror when attached, so it must not change the reshard state
