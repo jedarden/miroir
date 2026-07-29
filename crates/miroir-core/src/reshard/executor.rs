@@ -1826,6 +1826,96 @@ mod tests {
         );
     }
 
+    // ---- comprehensive ceiling property coverage (bf-ommg4) ----
+    //
+    // Consolidated test coverage for the [0,1] ceiling property across BOTH
+    // code paths: upfront_total_known=true (new path) and upfront_total_known=false
+    // (legacy path).
+    //
+    // WHY THE CEILING PROPERTY MATTERS:
+    //
+    // Backfill progress is a ratio: processed_documents / total_documents.
+    // For this ratio to be meaningful, it MUST stay within [0, 1]. A ratio > 1.0
+    // indicates a bug in denominator accounting that will mislead operators about
+    // reshard progress.
+    //
+    // Why each path must respect the ceiling:
+    //
+    // 1. Legacy path (upfront_total_known=false):
+    //    - Denominator starts at 0 and accumulates per-shard totals
+    //    - Risk: If per-shard totals are accumulated more than once, denominator
+    //      inflates and ratio goes to 0 (not > 1.0, but still wrong)
+    //    - Risk: If numerator accumulates documents not counted in denominator,
+    //      ratio can exceed 1.0
+    //    - The ceiling assertion catches the second risk
+    //
+    // 2. New path (upfront_total_known=true):
+    //    - Denominator is seeded upfront from source index stats
+    //    - incorporate_shard_total becomes a no-op to prevent double-counting
+    //    - Risk: If the no-op is bypassed or removed, per-shard totals accumulate
+    //      into an already-seeded denominator, inflating it beyond the true total
+    //    - This would make ratio < 1.0 at completion (not > 1.0), but the ceiling
+    //      assertion is part of a broader correctness contract
+    //
+    // EPSILON HANDLING:
+    //
+    // Floating-point division of integers can produce values like 0.9999999999
+    // or 1.0000000001 due to binary representation limits. We use EPSILON=1e-9
+    // to tolerate these rounding errors while still catching real bugs.
+    //
+    // A ratio > 1.0 + EPSILON indicates a real accounting error, not FP noise.
+    //
+    // Builds on bf-34lmv sampling infrastructure and consolidates bf-2ki61
+    // (legacy path) and bf-1rkrm (new path) into a unified framework.
+
+    /// Epsilon tolerance for floating-point ceiling assertions.
+    ///
+    /// This value (1e-9) is large enough to tolerate floating-point rounding
+    /// errors from integer division (e.g., 1000/1000 = 0.9999999999 or 1.0000000001)
+    /// but small enough to catch real accounting bugs where the ratio exceeds
+    /// 1.0 by a meaningful margin.
+    const CEILING_EPSILON: f64 = 1e-9;
+
+    /// Unified assertion helper that verifies the [0,1] ceiling property.
+    ///
+    /// This function encapsulates the core assertion logic for both code paths,
+    /// ensuring consistent error messages and epsilon handling across all tests.
+    ///
+    /// # Arguments
+    /// * `ratios` - Progress ratios sampled during backfill (one per shard)
+    /// * `path_name` - Human-readable name for the code path being tested
+    ///                 (used in error messages for clarity)
+    ///
+    /// # What it asserts
+    /// 1. Every sampled ratio is ≤ 1.0 + EPSILON (respects ceiling)
+    /// 2. Final ratio is exactly 1.0 ± EPSILON (completion condition)
+    ///
+    /// # Why this matters
+    /// A ratio > 1.0 means we claim to have processed more documents than exist,
+    /// which is impossible and indicates a denominator accounting bug.
+    fn assert_backfill_ceiling_property(ratios: &[f64], path_name: &str) {
+        // Ceiling assertion: no ratio may exceed 1.0 + epsilon
+        for (shard_idx, &ratio) in ratios.iter().enumerate() {
+            assert!(
+                ratio <= 1.0 + CEILING_EPSILON,
+                "{} path: backfill_progress() at shard {} must not exceed 1.0 + epsilon ({}), got {}",
+                path_name,
+                shard_idx,
+                CEILING_EPSILON,
+                ratio
+            );
+        }
+
+        // Completion assertion: final ratio must be exactly 1.0 ± epsilon
+        let final_ratio = ratios.last().expect("should have final ratio");
+        assert!(
+            (*final_ratio - 1.0).abs() < CEILING_EPSILON,
+            "{} path: final ratio after all shards complete should be 1.0 ± epsilon, got {}",
+            path_name,
+            final_ratio
+        );
+    }
+
     // ---- multi-shard backfill progress sampling infrastructure (bf-34lmv) ----
     //
     // Test infrastructure for sampling backfill_progress() at multiple points
@@ -1834,9 +1924,8 @@ mod tests {
     // - Runs a multi-shard backfill sequence (3+ shards)
     // - Samples backfill_progress() at multiple points during execution
     // - Stores progress values for later assertion
-    // - Does NOT yet add the <= 1.0 assertions (those come in later children)
     //
-    // Builds on child 1's (bf-5aon3 child 1) bookkeeping harness pattern.
+    // The ceiling assertions are now in bf-ommg4's unified assertion helper.
 
     /// Test infrastructure that samples backfill progress at multiple points
     /// during a multi-shard backfill sequence.
@@ -1991,17 +2080,22 @@ mod tests {
         sampled_ratios
     }
 
-    /// Legacy path ceiling test: verifies that backfill_progress() never exceeds
-    /// 1.0 + epsilon when upfront_total_known=false (the legacy per-shard
-    /// accumulation path).
+    /// Legacy path ceiling test: verifies the [0,1] ceiling property for
+    /// upfront_total_known=false (legacy per-shard accumulation path).
     ///
     /// This test specifically covers the executor.rs:671 branch where the
-    /// denominator grows as each shard completes.
+    /// denominator grows as each shard completes via incorporate_shard_total.
+    ///
+    /// Legacy path ceiling rationale:
+    /// - Denominator starts at 0 and accumulates incrementally
+    /// - Risk: numerator can accumulate documents not yet counted in denominator
+    /// - This creates a temporary ratio > 1.0 until that shard's total is incorporated
+    /// - The ceiling assertion ensures this doesn't happen (or is caught if it does)
     ///
     /// Acceptance criteria:
-    /// - Asserts every sampled backfill_progress() <= 1.0 + epsilon
+    /// - Uses unified assertion framework for consistency
     /// - Covers the upfront_total_known=false path specifically
-    /// - Uses epsilon (1e-9) to handle floating point precision
+    /// - Epsilon handling documented (CEILING_EPSILON = 1e-9)
     /// - cargo test passes
     #[tokio::test]
     async fn legacy_path_backfill_progress_never_exceeds_one() {
@@ -2019,32 +2113,15 @@ mod tests {
         let shard_doc_counts = vec![300u64, 250, 200, 250];
 
         // Sample backfill_progress() at multiple points during execution
-        // in the legacy path (upfront_total_known=false)
+        // in the legacy path (upfront_total_known=false, denominator accumulates)
         let sampled_ratios = sample_legacy_multi_shard_backfill_progress(
             &executor,
             &op,
             shard_doc_counts,
         ).await;
 
-        const EPSILON: f64 = 1e-9;
-
-        // Legacy path ceiling assertion: every sampled ratio must be <= 1.0 + epsilon
-        for (shard_idx, &ratio) in sampled_ratios.iter().enumerate() {
-            assert!(
-                ratio <= 1.0 + EPSILON,
-                "legacy path: backfill_progress() at shard {} must not exceed 1.0 + epsilon, got {}",
-                shard_idx,
-                ratio
-            );
-        }
-
-        // Final ratio should be exactly 1.0 (all shards complete)
-        let final_ratio = sampled_ratios.last().expect("should have final ratio");
-        assert!(
-            (final_ratio - 1.0).abs() < EPSILON,
-            "legacy path: final ratio after all shards complete should be 1.0, got {}",
-            final_ratio
-        );
+        // Use unified ceiling assertion helper
+        assert_backfill_ceiling_property(&sampled_ratios, "legacy");
     }
 
     // ---- new path ceiling assertion (bf-1rkrm) ----
@@ -2053,18 +2130,26 @@ mod tests {
     // upfront_total_known=true and the denominator is fixed upfront from
     // start_backfill, with per-shard totals NOT added to prevent double-counting.
 
-    /// New path ceiling test: verifies that backfill_progress() never exceeds
-    /// 1.0 + epsilon when upfront_total_known=true (the new upfront denominator
-    /// path).
+    /// New path ceiling test: verifies the [0,1] ceiling property for
+    /// upfront_total_known=true (new upfront denominator path).
     ///
     /// This test specifically covers the executor.rs:665 branch where
     /// incorporate_shard_total short-circuits to avoid double-counting, since
     /// the denominator already holds the full total from start_backfill.
     ///
+    /// New path ceiling rationale:
+    /// - Denominator is seeded upfront from source index stats
+    /// - incorporate_shard_total is a no-op to prevent double-counting
+    /// - Risk: if the no-op is bypassed/removed, per-shard totals accumulate
+    ///   into an already-seeded denominator, inflating it
+    /// - This would make ratio < 1.0 at completion (not > 1.0), but violates
+    ///   the correctness contract that denominator = actual document count
+    ///
     /// Acceptance criteria:
-    /// - Asserts every sampled backfill_progress() <= 1.0 + epsilon
+    /// - Uses unified assertion framework for consistency
     /// - Covers the upfront_total_known=true path specifically
     /// - Verifies denominator is NOT inflated by per-shard totals
+    /// - Epsilon handling documented (CEILING_EPSILON = 1e-9)
     /// - cargo test passes
     #[tokio::test]
     async fn new_path_backfill_progress_never_exceeds_one() {
@@ -2089,24 +2174,7 @@ mod tests {
             shard_doc_counts,
         ).await;
 
-        const EPSILON: f64 = 1e-9;
-
-        // New path ceiling assertion: every sampled ratio must be <= 1.0 + epsilon
-        for (shard_idx, &ratio) in sampled_ratios.iter().enumerate() {
-            assert!(
-                ratio <= 1.0 + EPSILON,
-                "new path: backfill_progress() at shard {} must not exceed 1.0 + epsilon, got {}",
-                shard_idx,
-                ratio
-            );
-        }
-
-        // Final ratio should be exactly 1.0 (all shards complete)
-        let final_ratio = sampled_ratios.last().expect("should have final ratio");
-        assert!(
-            (final_ratio - 1.0).abs() < EPSILON,
-            "new path: final ratio after all shards complete should be 1.0, got {}",
-            final_ratio
-        );
+        // Use unified ceiling assertion helper
+        assert_backfill_ceiling_property(&sampled_ratios, "new");
     }
 }
