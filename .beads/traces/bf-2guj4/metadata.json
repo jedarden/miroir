@@ -11,6 +11,6 @@
   "cost_usd": null,
   "captured_at": "2026-07-19T16:19:10.189763268Z",
   "trace_format": "raw_text",
-  "pruned": false,
+  "pruned": true,
   "template_version": null
 }

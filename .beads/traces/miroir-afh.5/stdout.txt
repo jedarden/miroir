@@ -1,7 +1,0 @@
-All 16 P7.5 acceptance tests pass and the bead is closed. The implementation was already in the codebase from prior commits, with these key pieces:
-
-- **JSON subscriber** — `tracing_subscriber::fmt::layer().json().flatten_event(true)` makes every log line a flat JSON object parseable by `jq`
-- **`request_id_middleware`** — generates/preserves 8-char hex `X-Request-Id` response header, stores `RequestId` in request extensions for handler access
-- **`telemetry_middleware`** — creates a tracing span with `request_id` + `pod_id` fields; `with_current_span(true)` propagates them to every child log event automatically
-- **Log volume** — exactly 2 INFO entries per search request (middleware + search handler), more only at DEBUG
-- **No PII** — paths use route templates, query strings and document content are never logged
