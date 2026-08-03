@@ -3634,7 +3634,7 @@ Each row gives the orchestrator pod count (2 vCPU / 3.75 GB each) for the stated
 
 Orchestrator count scales with query throughput; Meilisearch node count scales with corpus size and RG/RF. They are orthogonal.
 
-**Task-store / Redis memory accounting.** When Redis is the task store, it also backs shared state for idempotency replay keys, session pinning rows, alias cache, background job queue, leader lease, CDC overflow buffer (when configured), and — new in §13.21 — search UI rate-limit buckets. Add **~20 MB for search UI rate-limit buckets at 10k active IPs** on top of the task-store baseline when `search_ui.rate_limit.backend: redis`. Bucket rows auto-expire per `redis_ttl_s` so the footprint stays bounded under IP-scan/spray attacks.
+**Task-store / Redis memory accounting.** When Redis is the task store, it also backs shared state for idempotency replay keys, session pinning rows, alias cache, background job queue, leader lease, CDC overflow buffer (when configured), and — new in §13.21 — search UI rate-limit buckets. Add **~20 MB for search UI rate-limit buckets at 10k active IPs** on top of the task-store baseline when `search_ui.rate_limit.backend: redis`. Bucket rows auto-expire per `redis_ttl_s` so the footprint stays bounded under IP-scan/spray attacks. See [Redis Memory Accounting](../../redis-memory-accounting.md) for detailed keyspace breakdown, per-table memory estimates, and sizing recommendations.
 
 ### 14.8 Resource-aware configuration defaults
 
