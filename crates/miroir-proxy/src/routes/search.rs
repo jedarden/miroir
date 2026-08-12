@@ -186,8 +186,15 @@ async fn search_handler(
         .map(|ext| ext.0)
         .filter(|s| !s.as_str().is_empty());
 
-    // TODO: Extract source IP from headers - need to add back HeaderMap extraction
-    let source_ip = "unknown".to_string();
+    // Extract source IP from X-Forwarded-For or X-Real-IP (trust proxy)
+    let source_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()))
+        .unwrap_or("unknown")
+        .trim()
+        .to_string();
 
     // Check rate limit for search UI (plan §4)
     let (limit, window_seconds) = match parse_rate_limit(&state.config.search_ui.rate_limit.per_ip)
@@ -588,6 +595,7 @@ async fn search_handler(
             sid.map(|s| s.as_str().to_string()),
             client_requested_score,
             min_settings_version,
+            headers,
         )
         .await;
     }
@@ -1165,11 +1173,19 @@ async fn search_multi_targets(
     session_id: Option<String>,
     client_requested_score: bool,
     min_settings_version: Option<u64>,
+    headers: HeaderMap,
 ) -> Response<Body> {
     let start = Instant::now();
 
-    // TODO: Extract source IP from headers
-    let source_ip = "unknown".to_string();
+    // Extract source IP from X-Forwarded-For or X-Real-IP (trust proxy)
+    let source_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()))
+        .unwrap_or("unknown")
+        .trim()
+        .to_string();
 
     // Check rate limit for search UI (plan §4)
     let (limit, window_seconds) = match parse_rate_limit(&state.config.search_ui.rate_limit.per_ip)

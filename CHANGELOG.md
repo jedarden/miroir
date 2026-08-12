@@ -17,10 +17,15 @@ See [`docs/versioning-policy.md`](docs/versioning-policy.md) for the full policy
 ## [Unreleased]
 
 ### Added
+- Search UI rate limiting per-IP isolation tests (p13_21_search_ui_rate_limit.rs) covering X-Forwarded-For parsing, X-Real-IP fallback, Redis multi-pod shared buckets, and hash uniqueness for abuse forensics.
+
 ### Changed
 ### Deprecated
 ### Removed
 ### Fixed
+- Fixed search UI rate limiting per-IP isolation: source IP is now correctly extracted from X-Forwarded-For or X-Real-IP headers instead of being hardcoded to "unknown". This means different clients now have independent rate-limit buckets instead of sharing a single bucket. Previously, all traffic shared one limit, allowing one abusive client to exhaust the budget for everyone. Deployments behind trusted proxies that already set these headers will see stricter per-client enforcement (plan §4, §13.21).
+- Added search_multi_targets per-IP rate limiting to match search_handler behavior for multi-target-alias / ILM read_alias queries (plan §13.7, §13.17).
+
 ### Security
 
 ## [0.1.0] - 2026-04-19
