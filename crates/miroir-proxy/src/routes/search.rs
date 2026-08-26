@@ -1600,4 +1600,63 @@ mod tests {
             "Debug output should show [redacted] for sensitive fields"
         );
     }
+
+    #[test]
+    fn hash_for_log_produces_different_values_for_different_ips() {
+        let ip1 = "192.168.1.100";
+        let ip2 = "192.168.1.101";
+        let ip3 = "10.0.0.1";
+
+        let hash1 = hash_for_log(ip1);
+        let hash2 = hash_for_log(ip2);
+        let hash3 = hash_for_log(ip3);
+
+        // Each hash should be a 16-character hex string
+        assert_eq!(hash1.len(), 16, "hash should be 16 hex characters");
+        assert_eq!(hash2.len(), 16, "hash should be 16 hex characters");
+        assert_eq!(hash3.len(), 16, "hash should be 16 hex characters");
+
+        // Different IPs should produce different hashes (avalanche effect)
+        assert_ne!(hash1, hash2, "different IPs should produce different hashes");
+        assert_ne!(hash2, hash3, "different IPs should produce different hashes");
+        assert_ne!(hash1, hash3, "different IPs should produce different hashes");
+
+        // Even IPs with small differences should produce vastly different hashes
+        let ip4 = "192.168.1.102";
+        let hash4 = hash_for_log(ip4);
+        assert_ne!(hash1, hash4, "IPs with different last octet should produce different hashes");
+
+        // Verify deterministic behavior - same input should produce same hash
+        let hash1_again = hash_for_log(ip1);
+        assert_eq!(hash1, hash1_again, "hash function should be deterministic");
+    }
+
+    #[test]
+    fn hash_for_log_handles_x_forwarded_for_first_ip() {
+        let xff_header = "192.168.1.100, 10.0.0.1, 172.16.0.1";
+        let first_ip = xff_header.split(',').next().unwrap().trim();
+        let hash = hash_for_log(first_ip);
+
+        assert_eq!(hash.len(), 16, "hash should be 16 hex characters");
+
+        // Should hash the same as directly hashing the first IP
+        let direct_hash = hash_for_log("192.168.1.100");
+        assert_eq!(hash, direct_hash, "X-Forwarded-For first IP should hash same as direct IP");
+    }
+
+    #[test]
+    fn hash_for_log_distinguishes_similar_ips() {
+        // Test that very similar IP addresses produce different hashes
+        let ip1 = "192.168.1.1";
+        let ip2 = "192.168.1.2";
+        let ip3 = "192.168.2.1";
+
+        let hash1 = hash_for_log(ip1);
+        let hash2 = hash_for_log(ip2);
+        let hash3 = hash_for_log(ip3);
+
+        assert_ne!(hash1, hash2, "IPs differing by one octet should produce different hashes");
+        assert_ne!(hash1, hash3, "IPs differing by one octet should produce different hashes");
+        assert_ne!(hash2, hash3, "IPs differing by one octet should produce different hashes");
+    }
 }
