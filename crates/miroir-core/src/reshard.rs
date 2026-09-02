@@ -2052,6 +2052,43 @@ mod tests_reshard_execution {
     }
 
     #[test]
+    fn operation_backfill_progress_monotonic_across_stages() {
+        // miroir-a761f948: as the backfill advances through its stages, the
+        // ratio reported by `backfill_progress()` must never go backwards —
+        // each stage must read >= the stage before it.
+        let mut op = ReshardOperation::new("test".into(), 16, 32);
+        op.advance_phase(ReshardPhase::BackfillInProgress);
+
+        let total = 1000u64;
+        // Backfill stages: 10%, 25%, 50%, 75%, 100%.
+        let stages = [100u64, 250, 500, 750, 1000];
+        let expected = [0.10, 0.25, 0.50, 0.75, 1.00];
+
+        let mut ratios = Vec::with_capacity(stages.len());
+        for (stage, expected_ratio) in stages.iter().zip(expected) {
+            op.update_backfill_progress(*stage, total);
+            let ratio = op.backfill_progress();
+            assert!(
+                (ratio - expected_ratio).abs() < 1e-9,
+                "at {stage}/{total} documents expected ratio ~{expected_ratio}, got {ratio}"
+            );
+            ratios.push(ratio);
+        }
+
+        // Captured ratios must be monotonically non-decreasing.
+        for pair in ratios.windows(2) {
+            let (earlier, later) = (pair[0], pair[1]);
+            assert!(
+                later >= earlier,
+                "progress went backwards: {earlier} -> {later} across stages {stages:?}"
+            );
+        }
+
+        // The final stage must read as complete.
+        assert_eq!(ratios.last().copied(), Some(1.0));
+    }
+
+    #[test]
     fn operation_terminal_states() {
         let mut op = ReshardOperation::new("test".into(), 16, 32);
         assert!(!op.is_terminal());
