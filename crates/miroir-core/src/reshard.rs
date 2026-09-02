@@ -2044,6 +2044,11 @@ mod tests_reshard_execution {
             (progress - 0.001).abs() < 1e-9,
             "expected 1/1000 = 0.001, got {progress}"
         );
+        // Started, not finished: one document of many must not read as complete.
+        assert!(
+            progress < 1.0,
+            "backfill that just started must not report completion, got {progress}"
+        );
     }
 
     #[test]
