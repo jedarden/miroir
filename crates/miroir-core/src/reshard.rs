@@ -2026,6 +2026,27 @@ mod tests_reshard_execution {
     }
 
     #[test]
+    fn operation_backfill_progress_nonzero_at_start() {
+        // miroir-8ce63226: once backfill has started (BackfillInProgress phase,
+        // documents migrating), the ratio must already be > 0 — even for the
+        // very first document out of many.
+        let mut op = ReshardOperation::new("test".into(), 16, 32);
+        op.advance_phase(ReshardPhase::BackfillInProgress);
+        op.update_backfill_progress(1, 1000);
+
+        let progress = op.backfill_progress();
+        assert!(
+            progress > 0.0,
+            "progress at start of backfill must be > 0, got {progress}"
+        );
+        // And it must be the ratio you'd expect: 1 document out of 1000.
+        assert!(
+            (progress - 0.001).abs() < 1e-9,
+            "expected 1/1000 = 0.001, got {progress}"
+        );
+    }
+
+    #[test]
     fn operation_terminal_states() {
         let mut op = ReshardOperation::new("test".into(), 16, 32);
         assert!(!op.is_terminal());
