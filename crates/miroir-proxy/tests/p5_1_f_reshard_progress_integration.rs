@@ -27,25 +27,27 @@ use tokio::time::sleep;
 // ---------------------------------------------------------------------------
 
 /// Check if Docker is available for testcontainers.
-fn check_docker_available() -> Result<(), String> {
+fn check_docker_available() -> anyhow::Result<()> {
     if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
-        return Err("Docker tests skipped via MIROIR_TEST_SKIP_DOCKER. \
+        anyhow::bail!(
+            "Docker tests skipped via MIROIR_TEST_SKIP_DOCKER. \
              Unset MIROIR_TEST_SKIP_DOCKER and ensure Docker is available."
-            .to_string());
+        );
     }
 
     let docker_sock = Path::new("/var/run/docker.sock");
     if !docker_sock.exists() {
-        return Err("Docker socket not found at /var/run/docker.sock. \
+        anyhow::bail!(
+            "Docker socket not found at /var/run/docker.sock. \
              Set MIROIR_TEST_SKIP_DOCKER=1 to skip, or ensure Docker is running."
-            .to_string());
+        );
     }
 
     if let Err(e) = std::fs::metadata(docker_sock) {
-        return Err(format!(
+        anyhow::bail!(
             "Cannot access Docker socket: {e}. \
              Set MIROIR_TEST_SKIP_DOCKER=1 to skip, or ensure Docker is running."
-        ));
+        );
     }
 
     Ok(())
@@ -59,22 +61,22 @@ async fn start_meilisearch_node(
         String,
         testcontainers::ContainerAsync<testcontainers_modules::meilisearch::Meilisearch>,
     ),
-    Box<dyn std::error::Error>,
+    anyhow::Error,
 > {
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::meilisearch::Meilisearch;
 
-    check_docker_available().map_err(|e| format!("{e}. Set MIROIR_TEST_SKIP_DOCKER=1 to skip."))?;
+    check_docker_available()?;
 
     let node = Meilisearch::default();
     let container = node
         .start()
         .await
-        .map_err(|e| format!("start meilisearch: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("start meilisearch: {e}"))?;
     let port = container
         .get_host_port_ipv4(7700)
         .await
-        .map_err(|e| format!("get port: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("get port: {e}"))?;
     let url = format!("http://localhost:{port}");
 
     // Wait for Meilisearch to be healthy
@@ -96,7 +98,7 @@ async fn start_meilisearch_node(
         sleep(Duration::from_millis(200)).await;
     }
 
-    Err("Meilisearch did not become healthy".into())
+    Err(anyhow::anyhow!("Meilisearch did not become healthy"))
 }
 
 /// Wait for an index to be ready.
@@ -341,7 +343,7 @@ async fn test_reshard_progress_structure_matches_api() -> anyhow::Result<()> {
             "total_documents": 1000,
             "backfill_progress": 0.5,
             "shadow_index": "products__reshard_4",
-            "started_at": 1234567890000,
+            "started_at": 1234567890000u64,
             "last_error": null,
             "verification_results": null
         }
@@ -352,15 +354,15 @@ async fn test_reshard_progress_structure_matches_api() -> anyhow::Result<()> {
     assert!(status_response["operation"].is_object());
 
     let op = &status_response["operation"];
-    assert!(op["id"].is_str());
-    assert!(op["index_uid"].is_str());
+    assert!(op["id"].is_string());
+    assert!(op["index_uid"].is_string());
     assert!(op["old_shards"].is_u64());
     assert!(op["new_shards"].is_u64());
-    assert!(op["phase"].is_str());
+    assert!(op["phase"].is_string());
     assert!(op["documents_backfilled"].is_u64());
     assert!(op["total_documents"].is_u64());
     assert!(op["backfill_progress"].is_f64());
-    assert!(op["shadow_index"].is_str());
+    assert!(op["shadow_index"].is_string());
     assert!(op["started_at"].is_u64());
 
     // Verify progress calculation matches expected formula
@@ -389,21 +391,33 @@ async fn test_reshard_progress_edge_cases() -> anyhow::Result<()> {
     } else {
         0.0
     };
-    assert!(!progress.is_nan(), "Progress should not be NaN for zero documents");
+    assert!(
+        !progress.is_nan(),
+        "Progress should not be NaN for zero documents"
+    );
     assert_eq!(progress, 0.0, "Progress should be 0.0 for zero documents");
 
     // Test 2: In progress (1 < progress < 1)
     let docs_backfilled = 500u64;
     let total_documents = 1000u64;
     let progress = docs_backfilled as f64 / total_documents as f64;
-    assert!(progress > 0.0 && progress < 1.0, "Progress should be between 0 and 1");
-    assert_eq!(progress, 0.5, "Progress should be exactly 0.5 for half completion");
+    assert!(
+        progress > 0.0 && progress < 1.0,
+        "Progress should be between 0 and 1"
+    );
+    assert_eq!(
+        progress, 0.5,
+        "Progress should be exactly 0.5 for half completion"
+    );
 
     // Test 3: Complete (progress = 1.0)
     let docs_backfilled = 1000u64;
     let total_documents = 1000u64;
     let progress = docs_backfilled as f64 / total_documents as f64;
-    assert_eq!(progress, 1.0, "Progress should be 1.0 for complete backfill");
+    assert_eq!(
+        progress, 1.0,
+        "Progress should be 1.0 for complete backfill"
+    );
 
     // Test 4: Partial progress (monotonic increase)
     let mut prev_progress = 0.0;
@@ -447,7 +461,7 @@ async fn test_existing_reshard_tests_still_pass() -> anyhow::Result<()> {
             "total_documents": 1000,
             "backfill_progress": 1.0,
             "shadow_index": "test__reshard_4",
-            "started_at": 1234567890000,
+            "started_at": 1234567890000u64,
             "last_error": null,
             "verification_results": null
         }
@@ -486,7 +500,10 @@ async fn test_reshard_progress_polling_pattern() -> anyhow::Result<()> {
     }
 
     // Verify we captured progress during the operation
-    assert!(progress_history.len() > 1, "Should have multiple progress samples");
+    assert!(
+        progress_history.len() > 1,
+        "Should have multiple progress samples"
+    );
 
     // Verify first sample is non-zero (assuming we start polling shortly after start)
     assert!(

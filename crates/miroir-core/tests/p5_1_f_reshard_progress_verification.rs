@@ -34,8 +34,47 @@ fn test_backfill_progress_after_first_update_is_nonzero() {
 
     // Progress should be > 0
     let progress = op.backfill_progress();
-    assert!(progress > 0.0, "Progress should be > 0 after first update, got {}", progress);
-    assert!((progress - 0.1).abs() < 0.001, "Progress should be ~0.1, got {}", progress);
+    assert!(
+        progress > 0.0,
+        "Progress should be > 0 after first update, got {}",
+        progress
+    );
+    assert!(
+        (progress - 0.1).abs() < 0.001,
+        "Progress should be ~0.1, got {}",
+        progress
+    );
+}
+
+#[test]
+fn test_backfill_progress_nonzero_once_backfill_in_progress() {
+    // miroir-8ce63226: in a started backfill state — operation advanced to the
+    // BackfillInProgress phase with documents migrating — the ratio must be > 0
+    // even for the very first document out of many.
+    let mut op = ReshardOperation::new("test-index".to_string(), 2, 4);
+
+    op.advance_phase(ReshardPhase::BackfillInProgress);
+    assert_eq!(op.phase, ReshardPhase::BackfillInProgress);
+    op.update_backfill_progress(1, 1000);
+
+    let progress = op.backfill_progress();
+    assert!(
+        progress > 0.0,
+        "Progress should be > 0 once backfill has started, got {}",
+        progress
+    );
+    // The ratio must be the expected 1/1000, not some sentinel value.
+    assert!(
+        (progress - 0.001).abs() < 1e-9,
+        "Expected 1/1000 = 0.001 once backfill has started, got {}",
+        progress
+    );
+    // A backfill that just started must never read as complete.
+    assert!(
+        progress < 1.0,
+        "Backfill that just started must not report completion, got {}",
+        progress
+    );
 }
 
 #[test]
@@ -66,7 +105,11 @@ fn test_backfill_progress_is_monotonic() {
     }
 
     // Final progress should be exactly 1.0
-    assert_eq!(previous_progress, 1.0, "Final progress should be 1.0, got {}", previous_progress);
+    assert_eq!(
+        previous_progress, 1.0,
+        "Final progress should be 1.0, got {}",
+        previous_progress
+    );
 }
 
 #[test]
@@ -80,7 +123,11 @@ fn test_backfill_progress_exactly_one_at_completion() {
     op.update_backfill_progress(total, total);
 
     let progress = op.backfill_progress();
-    assert_eq!(progress, 1.0, "Progress should be exactly 1.0 at completion, got {}", progress);
+    assert_eq!(
+        progress, 1.0,
+        "Progress should be exactly 1.0 at completion, got {}",
+        progress
+    );
 }
 
 #[test]
@@ -92,11 +139,11 @@ fn test_backfill_progress_with_partial_updates() {
 
     // Simulate various update patterns
     let updates = vec![
-        (50, 500),   // 10% complete
-        (150, 500),  // 30% complete
-        (250, 500),  // 50% complete
-        (400, 500),  // 80% complete
-        (500, 500),  // 100% complete
+        (50, total),  // 10% complete
+        (150, total), // 30% complete
+        (250, total), // 50% complete
+        (400, total), // 80% complete
+        (500, total), // 100% complete
     ];
 
     let mut previous_progress = 0.0;
@@ -177,13 +224,21 @@ fn test_backfill_progress_large_values() {
     op.update_backfill_progress(5_000_000, total);
     let progress = op.backfill_progress();
 
-    assert_eq!(progress, 0.5, "Progress should be 0.5 for 5M out of 10M, got {}", progress);
+    assert_eq!(
+        progress, 0.5,
+        "Progress should be 0.5 for 5M out of 10M, got {}",
+        progress
+    );
 
     // At completion
     op.update_backfill_progress(total, total);
     let final_progress = op.backfill_progress();
 
-    assert_eq!(final_progress, 1.0, "Final progress should be 1.0, got {}", final_progress);
+    assert_eq!(
+        final_progress, 1.0,
+        "Final progress should be 1.0, got {}",
+        final_progress
+    );
 }
 
 #[test]
@@ -197,5 +252,8 @@ fn test_backfill_progress_unchanged_when_no_update() {
     // Don't call update_backfill_progress - progress should remain the same
     let progress2 = op.backfill_progress();
 
-    assert_eq!(progress1, progress2, "Progress should remain unchanged when no update occurs");
+    assert_eq!(
+        progress1, progress2,
+        "Progress should remain unchanged when no update occurs"
+    );
 }
