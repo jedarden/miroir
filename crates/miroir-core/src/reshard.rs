@@ -2089,6 +2089,35 @@ mod tests_reshard_execution {
     }
 
     #[test]
+    fn operation_backfill_progress_one_at_completion() {
+        // miroir-8a7e8bac: a completed backfill — every document migrated and
+        // the operation advanced to the terminal Complete phase — must report
+        // a ratio of exactly 1.0, not something merely close to it.
+        let mut op = ReshardOperation::new("test".into(), 16, 32);
+        op.advance_phase(ReshardPhase::BackfillInProgress);
+        op.update_backfill_progress(1000, 1000);
+        // Walk the remaining lifecycle the way a finishing backfill does:
+        // all documents migrated -> verify -> swap -> clean up -> complete.
+        for phase in [
+            ReshardPhase::Verifying,
+            ReshardPhase::Swapped,
+            ReshardPhase::CleaningUp,
+            ReshardPhase::Complete,
+        ] {
+            op.advance_phase(phase);
+            let progress = op.backfill_progress();
+            assert_eq!(
+                progress, 1.0,
+                "at phase {phase:?} a fully backfilled operation must read exactly 1.0, got {progress}"
+            );
+        }
+
+        assert!(op.is_terminal());
+        // Exact bitwise equality: 1000/1000 must be precisely 1.0.
+        assert_eq!(op.backfill_progress(), 1.0_f64);
+    }
+
+    #[test]
     fn operation_terminal_states() {
         let mut op = ReshardOperation::new("test".into(), 16, 32);
         assert!(!op.is_terminal());
