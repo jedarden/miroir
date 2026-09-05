@@ -14,8 +14,7 @@
 //! # Usage
 //!
 //! ```no_run
-//! use miroir_core::peer_discovery::{PeerDiscovery, PeerId};
-//! use std::sync::Arc;
+//! use miroir_core::peer_discovery::PeerDiscovery;
 //!
 //! #[tokio::main]
 //! async fn main() {
@@ -30,7 +29,7 @@
 //!     );
 //!
 //!     // Refresh peers
-//!     let peers = discovery.refresh().await;
+//!     let peers = discovery.refresh().await.unwrap();
 //!     println!("Discovered {} peers", peers.peers.len());
 //! }
 //! ```
