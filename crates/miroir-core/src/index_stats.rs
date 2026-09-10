@@ -97,10 +97,7 @@ pub async fn fetch_node_stats(
         .map_err(FetchStatsError::Request)?;
 
     let status = response.status();
-    let body_text = response
-        .text()
-        .await
-        .map_err(FetchStatsError::Read)?;
+    let body_text = response.text().await.map_err(FetchStatsError::Read)?;
 
     if status.as_u16() == 404 {
         // Index doesn't exist on this node — count as zero, not an error.
@@ -148,7 +145,10 @@ pub async fn aggregate_index_stats(
             }
             Err(e) => {
                 // Log but continue - one node failing shouldn't block the count.
-                warn!("index_stats: failed to fetch stats from node {}: {}", address, e);
+                warn!(
+                    "index_stats: failed to fetch stats from node {}: {}",
+                    address, e
+                );
             }
         }
     }
@@ -171,11 +171,7 @@ pub fn reduce_document_counts<I, E>(counts: I) -> u64
 where
     I: IntoIterator<Item = Result<u64, E>>,
 {
-    counts
-        .into_iter()
-        .filter_map(Result::ok)
-        .max()
-        .unwrap_or(0)
+    counts.into_iter().filter_map(Result::ok).max().unwrap_or(0)
 }
 
 #[cfg(test)]

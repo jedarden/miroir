@@ -236,33 +236,49 @@ async fn run_deploy_preflight(
     _admin_key: &str,
     _api_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let http_client = Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()?;
+    let http_client = Client::builder().timeout(Duration::from_secs(10)).build()?;
 
     println!("=== Miroir Deploy Preflight Checks ===");
     println!();
 
     // Load the configuration file
-    let config_content = fs::read_to_string(&args.config).await
-        .map_err(|e| format!("Failed to read config file {}: {}", args.config.display(), e))?;
+    let config_content = fs::read_to_string(&args.config).await.map_err(|e| {
+        format!(
+            "Failed to read config file {}: {}",
+            args.config.display(),
+            e
+        )
+    })?;
 
     // Determine if it's an ArgoCD Application or Helm values file
     let (env_config, chart_source_info, namespace) = if config_content.contains("kind: Application")
-        && config_content.contains("argoproj.io/v1alpha1") {
+        && config_content.contains("argoproj.io/v1alpha1")
+    {
         // It's an ArgoCD Application
         let app: ArgoCDApplication = serde_yaml::from_str(&config_content)
             .map_err(|e| format!("Failed to parse ArgoCD Application: {e}"))?;
 
-        let ns = args.namespace
-            .or_else(|| app.spec.destination.as_ref().and_then(|d| d.namespace.clone()))
+        let ns = args
+            .namespace
+            .or_else(|| {
+                app.spec
+                    .destination
+                    .as_ref()
+                    .and_then(|d| d.namespace.clone())
+            })
             .clone()
             .unwrap_or_else(|| "miroir".to_string());
 
         let chart_info = if let Some(chart) = app.spec.source.chart {
-            let repo_url = app.spec.source.repo_url
+            let repo_url = app
+                .spec
+                .source
+                .repo_url
                 .unwrap_or_else(|| "unknown".to_string());
-            let version = app.spec.source.target_revision
+            let version = app
+                .spec
+                .source
+                .target_revision
                 .unwrap_or_else(|| "latest".to_string());
             Some(ChartSourceInfo::HelmRepo {
                 repo_url,
@@ -273,7 +289,10 @@ async fn run_deploy_preflight(
             None
         };
 
-        let env_cfg = app.spec.source.helm
+        let env_cfg = app
+            .spec
+            .source
+            .helm
             .and_then(|h| h.values_object)
             .unwrap_or(EnvConfig {
                 miroir: None,
@@ -288,7 +307,8 @@ async fn run_deploy_preflight(
         let env_cfg: EnvConfig = serde_yaml::from_str(&config_content)
             .map_err(|e| format!("Failed to parse Helm values: {e}"))?;
 
-        let ns = args.namespace
+        let ns = args
+            .namespace
             .clone()
             .unwrap_or_else(|| "miroir".to_string());
 
@@ -310,15 +330,17 @@ async fn run_deploy_preflight(
                 results.push(result);
             }
             Err(e) => {
-                let result = CheckResult::fail("chart_source",
-                    format!("Failed to check chart source: {e}"));
+                let result =
+                    CheckResult::fail("chart_source", format!("Failed to check chart source: {e}"));
                 println!("  {} {}", result.status.emoji(), result.message);
                 results.push(result);
             }
         }
     } else {
-        let result = CheckResult::warn("chart_source",
-            "No chart source information found in config (skipped)");
+        let result = CheckResult::warn(
+            "chart_source",
+            "No chart source information found in config (skipped)",
+        );
         println!("  {} {}", result.status.emoji(), result.message);
         results.push(result);
     }
@@ -327,13 +349,19 @@ async fn run_deploy_preflight(
     // Check 2: Secret/ExternalSecret sync status
     println!("Check 2: Secret Sync Status");
     println!("----------------------------");
-    let secret_name = env_config.miroir
+    let secret_name = env_config
+        .miroir
         .as_ref()
         .and_then(|m| m.existing_secret.clone())
         .or_else(|| env_config.existing_secret.clone())
         .unwrap_or_else(|| "miroir-keys".to_string());
 
-    if env_config.eso.as_ref().and_then(|e| e.enabled).unwrap_or(false) {
+    if env_config
+        .eso
+        .as_ref()
+        .and_then(|e| e.enabled)
+        .unwrap_or(false)
+    {
         // Check ExternalSecret
         match check_external_secret_sync(&secret_name, &args.context, &namespace).await {
             Ok(result) => {
@@ -344,8 +372,10 @@ async fn run_deploy_preflight(
                 results.push(result);
             }
             Err(e) => {
-                let result = CheckResult::fail("external_secret_sync",
-                    format!("Failed to check ExternalSecret: {e}"));
+                let result = CheckResult::fail(
+                    "external_secret_sync",
+                    format!("Failed to check ExternalSecret: {e}"),
+                );
                 println!("  {} {}", result.status.emoji(), result.message);
                 results.push(result);
             }
@@ -361,8 +391,8 @@ async fn run_deploy_preflight(
                 results.push(result);
             }
             Err(e) => {
-                let result = CheckResult::fail("secret_exists",
-                    format!("Failed to check Secret: {e}"));
+                let result =
+                    CheckResult::fail("secret_exists", format!("Failed to check Secret: {e}"));
                 println!("  {} {}", result.status.emoji(), result.message);
                 results.push(result);
             }
@@ -383,8 +413,8 @@ async fn run_deploy_preflight(
             results.push(result);
         }
         Err(e) => {
-            let result = CheckResult::fail("task_store",
-                format!("Failed to check task store: {e}"));
+            let result =
+                CheckResult::fail("task_store", format!("Failed to check task store: {e}"));
             println!("  {} {}", result.status.emoji(), result.message);
             results.push(result);
         }
@@ -393,9 +423,18 @@ async fn run_deploy_preflight(
 
     // Print summary
     println!("=== Summary ===");
-    let passed = results.iter().filter(|r| r.status == CheckStatus::Pass).count();
-    let failed = results.iter().filter(|r| r.status == CheckStatus::Fail).count();
-    let warned = results.iter().filter(|r| r.status == CheckStatus::Warn).count();
+    let passed = results
+        .iter()
+        .filter(|r| r.status == CheckStatus::Pass)
+        .count();
+    let failed = results
+        .iter()
+        .filter(|r| r.status == CheckStatus::Fail)
+        .count();
+    let warned = results
+        .iter()
+        .filter(|r| r.status == CheckStatus::Warn)
+        .count();
     let total = results.len();
 
     println!("Total checks: {total}");
@@ -432,7 +471,11 @@ async fn check_chart_source(
     chart_info: &ChartSourceInfo,
 ) -> Result<CheckResult, Box<dyn std::error::Error>> {
     match chart_info {
-        ChartSourceInfo::HelmRepo { repo_url, chart_name, version } => {
+        ChartSourceInfo::HelmRepo {
+            repo_url,
+            chart_name,
+            version,
+        } => {
             // Try to fetch chart metadata from Helm repo
             let index_url = format!("{}/index.yaml", repo_url.trim_end_matches('/'));
 
@@ -442,21 +485,39 @@ async fn check_chart_source(
                 let body = response.text().await?;
                 // Parse index.yaml and check for chart/version
                 if body.contains(chart_name) && body.contains(version) {
-                    Ok(CheckResult::pass("chart_source",
-                        format!("Helm repo reachable, chart {chart_name} version {version} found")))
+                    Ok(CheckResult::pass(
+                        "chart_source",
+                        format!("Helm repo reachable, chart {chart_name} version {version} found"),
+                    ))
                 } else if body.contains(chart_name) {
-                    Ok(CheckResult::fail("chart_source",
-                        format!("Chart {chart_name} found but version {version} not available in repo")))
+                    Ok(CheckResult::fail(
+                        "chart_source",
+                        format!(
+                            "Chart {chart_name} found but version {version} not available in repo"
+                        ),
+                    ))
                 } else {
-                    Ok(CheckResult::fail("chart_source",
-                        format!("Chart {chart_name} not found in repo {repo_url}")))
+                    Ok(CheckResult::fail(
+                        "chart_source",
+                        format!("Chart {chart_name} not found in repo {repo_url}"),
+                    ))
                 }
             } else {
-                Ok(CheckResult::fail("chart_source",
-                    format!("Failed to reach Helm repo {}: HTTP {}", repo_url, response.status())))
+                Ok(CheckResult::fail(
+                    "chart_source",
+                    format!(
+                        "Failed to reach Helm repo {}: HTTP {}",
+                        repo_url,
+                        response.status()
+                    ),
+                ))
             }
         }
-        ChartSourceInfo::Oci { registry, chart_name, version } => {
+        ChartSourceInfo::Oci {
+            registry,
+            chart_name,
+            version,
+        } => {
             // For OCI, we'd typically use `helm pull` or `crane` commands
             // For now, check if the registry is reachable
             let check_url = format!("{}/v2/", registry.trim_end_matches('/'));
@@ -467,8 +528,14 @@ async fn check_chart_source(
                 Ok(CheckResult::pass("chart_source",
                     format!("OCI registry {registry} reachable (chart {chart_name} version {version} not verified - requires helm/crane)")))
             } else {
-                Ok(CheckResult::fail("chart_source",
-                    format!("Failed to reach OCI registry {}: HTTP {}", registry, response.status())))
+                Ok(CheckResult::fail(
+                    "chart_source",
+                    format!(
+                        "Failed to reach OCI registry {}: HTTP {}",
+                        registry,
+                        response.status()
+                    ),
+                ))
             }
         }
     }
@@ -483,8 +550,11 @@ async fn check_secret_exists(
     // Note: This requires kubectl to be installed and configured
     let output = tokio::process::Command::new("kubectl")
         .args([
-            "get", "secret", secret_name,
-            "-n", namespace,
+            "get",
+            "secret",
+            secret_name,
+            "-n",
+            namespace,
             "--ignore-not-found",
         ])
         .output()
@@ -493,15 +563,21 @@ async fn check_secret_exists(
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if stdout.contains(secret_name) {
-            Ok(CheckResult::pass("secret_exists",
-                format!("Secret {secret_name} exists in namespace {namespace}")))
+            Ok(CheckResult::pass(
+                "secret_exists",
+                format!("Secret {secret_name} exists in namespace {namespace}"),
+            ))
         } else {
-            Ok(CheckResult::fail("secret_exists",
-                format!("Secret {secret_name} not found in namespace {namespace}")))
+            Ok(CheckResult::fail(
+                "secret_exists",
+                format!("Secret {secret_name} not found in namespace {namespace}"),
+            ))
         }
     } else {
-        Ok(CheckResult::fail("secret_exists",
-            format!("Failed to check secret {secret_name} in namespace {namespace}: kubectl error")))
+        Ok(CheckResult::fail(
+            "secret_exists",
+            format!("Failed to check secret {secret_name} in namespace {namespace}: kubectl error"),
+        ))
     }
 }
 
@@ -513,23 +589,33 @@ async fn check_external_secret_sync(
     // First check if ExternalSecret exists
     let eso_output = tokio::process::Command::new("kubectl")
         .args([
-            "get", "externalsecret", secret_name,
-            "-n", namespace,
+            "get",
+            "externalsecret",
+            secret_name,
+            "-n",
+            namespace,
             "--ignore-not-found",
         ])
         .output()
         .await?;
 
-    if !eso_output.status.success() || !String::from_utf8_lossy(&eso_output.stdout).contains(secret_name) {
-        return Ok(CheckResult::fail("external_secret_sync",
-            format!("ExternalSecret {secret_name} not found in namespace {namespace}")));
+    if !eso_output.status.success()
+        || !String::from_utf8_lossy(&eso_output.stdout).contains(secret_name)
+    {
+        return Ok(CheckResult::fail(
+            "external_secret_sync",
+            format!("ExternalSecret {secret_name} not found in namespace {namespace}"),
+        ));
     }
 
     // Check the synced Secret status
     let secret_output = tokio::process::Command::new("kubectl")
         .args([
-            "get", "secret", secret_name,
-            "-n", namespace,
+            "get",
+            "secret",
+            secret_name,
+            "-n",
+            namespace,
             "--ignore-not-found",
         ])
         .output()
@@ -538,8 +624,12 @@ async fn check_external_secret_sync(
     if secret_output.status.success() {
         let stdout = String::from_utf8_lossy(&secret_output.stdout);
         if stdout.contains(secret_name) {
-            Ok(CheckResult::pass("external_secret_sync",
-                format!("ExternalSecret {secret_name} synced successfully in namespace {namespace}")))
+            Ok(CheckResult::pass(
+                "external_secret_sync",
+                format!(
+                    "ExternalSecret {secret_name} synced successfully in namespace {namespace}"
+                ),
+            ))
         } else {
             Ok(CheckResult::fail("external_secret_sync",
                 format!("ExternalSecret {secret_name} exists but target Secret not synced in namespace {namespace}")))
@@ -556,7 +646,10 @@ async fn check_task_store(
     let store = match task_store {
         Some(s) => s,
         None => {
-            return Ok(CheckResult::warn("task_store", "No task_store configuration found"))
+            return Ok(CheckResult::warn(
+                "task_store",
+                "No task_store configuration found",
+            ))
         }
     };
 
@@ -567,7 +660,10 @@ async fn check_task_store(
             let url = match &store.url {
                 Some(u) => u,
                 None => {
-                    return Ok(CheckResult::fail("task_store", "Redis backend configured but no URL provided"))
+                    return Ok(CheckResult::fail(
+                        "task_store",
+                        "Redis backend configured but no URL provided",
+                    ))
                 }
             };
 
@@ -575,8 +671,10 @@ async fn check_task_store(
             // Parse Redis URL to extract host and port
             let url_parts: Vec<&str> = url.split("://").collect();
             if url_parts.len() < 2 {
-                return Ok(CheckResult::fail("task_store",
-                    format!("Invalid Redis URL format: {url}")));
+                return Ok(CheckResult::fail(
+                    "task_store",
+                    format!("Invalid Redis URL format: {url}"),
+                ));
             }
 
             let host_port = url_parts[1].split('/').next().unwrap_or("");
@@ -590,21 +688,24 @@ async fn check_task_store(
             // Try a simple TCP connection to verify reachability
             use tokio::net::TcpStream;
             match TcpStream::connect((host, port.parse::<u16>().unwrap_or(6379))).await {
-                Ok(_) => {
-                    Ok(CheckResult::pass("task_store",
-                        format!("Redis at {url} reachable (authentication not verified)")))
-                }
-                Err(e) => {
-                    Ok(CheckResult::fail("task_store",
-                        format!("Redis at {url} not reachable: {e}")))
-                }
+                Ok(_) => Ok(CheckResult::pass(
+                    "task_store",
+                    format!("Redis at {url} reachable (authentication not verified)"),
+                )),
+                Err(e) => Ok(CheckResult::fail(
+                    "task_store",
+                    format!("Redis at {url} not reachable: {e}"),
+                )),
             }
         }
         "sqlite" => {
             let path = match &store.path {
                 Some(p) => p,
                 None => {
-                    return Ok(CheckResult::fail("task_store", "SQLite backend configured but no path provided"))
+                    return Ok(CheckResult::fail(
+                        "task_store",
+                        "SQLite backend configured but no path provided",
+                    ))
                 }
             };
 
@@ -617,26 +718,32 @@ async fn check_task_store(
                     match std::fs::File::create(&test_path) {
                         Ok(_) => {
                             std::fs::remove_file(&test_path).ok();
-                            Ok(CheckResult::pass("task_store",
-                                format!("SQLite path {path} directory exists and is writable")))
+                            Ok(CheckResult::pass(
+                                "task_store",
+                                format!("SQLite path {path} directory exists and is writable"),
+                            ))
                         }
-                        Err(e) => {
-                            Ok(CheckResult::fail("task_store",
-                                format!("SQLite path {path} directory exists but not writable: {e}")))
-                        }
+                        Err(e) => Ok(CheckResult::fail(
+                            "task_store",
+                            format!("SQLite path {path} directory exists but not writable: {e}"),
+                        )),
                     }
                 } else {
-                    Ok(CheckResult::fail("task_store",
-                        format!("SQLite path {path} directory does not exist")))
+                    Ok(CheckResult::fail(
+                        "task_store",
+                        format!("SQLite path {path} directory does not exist"),
+                    ))
                 }
             } else {
-                Ok(CheckResult::fail("task_store",
-                    format!("Invalid SQLite path: {path}")))
+                Ok(CheckResult::fail(
+                    "task_store",
+                    format!("Invalid SQLite path: {path}"),
+                ))
             }
         }
-        _ => {
-            Ok(CheckResult::warn("task_store",
-                format!("Unknown task store backend: {backend}")))
-        }
+        _ => Ok(CheckResult::warn(
+            "task_store",
+            format!("Unknown task store backend: {backend}"),
+        )),
     }
 }

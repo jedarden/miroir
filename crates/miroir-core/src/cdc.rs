@@ -1780,7 +1780,10 @@ impl CdcManager {
                 .payload(&payload);
 
             // Add event_id header for consumer-side deduplication
-            let headers = OwnedHeaders::new().insert(Header { key: "event_id", value: Some(event.event_id.as_bytes()) });
+            let headers = OwnedHeaders::new().insert(Header {
+                key: "event_id",
+                value: Some(event.event_id.as_bytes()),
+            });
             record = record.headers(headers);
 
             // Send with timeout

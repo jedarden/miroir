@@ -22,8 +22,8 @@ use crate::config::ResultCacheConfig;
 use crate::Result;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{debug, trace};
 
@@ -115,7 +115,8 @@ impl ResultCache {
     /// Create a new result cache with the given configuration.
     pub fn new(config: ResultCacheConfig) -> Self {
         use std::num::NonZeroUsize;
-        let capacity = NonZeroUsize::new(config.max_size).unwrap_or_else(|| NonZeroUsize::new(1).unwrap());
+        let capacity =
+            NonZeroUsize::new(config.max_size).unwrap_or_else(|| NonZeroUsize::new(1).unwrap());
         let cache = lru::LruCache::new(capacity);
         Self {
             cache: Arc::new(RwLock::new(cache)),
@@ -297,7 +298,7 @@ pub fn canonicalize_query(query: &serde_json::Value) -> Result<String> {
                 if let Some(value) = map.get(key) {
                     sorted_map.insert(
                         key.clone(),
-                        serde_json::from_str(&canonicalize_query(value)?)?
+                        serde_json::from_str(&canonicalize_query(value)?)?,
                     );
                 }
             }
@@ -306,10 +307,7 @@ pub fn canonicalize_query(query: &serde_json::Value) -> Result<String> {
         }
         serde_json::Value::Array(arr) => {
             // Canonicalize array elements
-            let canonicalized: Result<Vec<String>> = arr
-                .iter()
-                .map(canonicalize_query)
-                .collect();
+            let canonicalized: Result<Vec<String>> = arr.iter().map(canonicalize_query).collect();
             let canonical_arr: Vec<serde_json::Value> = canonicalized?
                 .iter()
                 .map(|s| serde_json::from_str(s).unwrap())
@@ -554,7 +552,10 @@ mod tests {
 
         // Last entry should still be present
         let last_key = CacheKey::new("test", "query_3", 1);
-        assert_eq!(cache.get(&last_key).await.unwrap(), Some(b"data_3".to_vec()));
+        assert_eq!(
+            cache.get(&last_key).await.unwrap(),
+            Some(b"data_3".to_vec())
+        );
     }
 
     #[tokio::test]

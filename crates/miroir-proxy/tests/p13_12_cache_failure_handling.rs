@@ -9,9 +9,9 @@
 
 use miroir_core::config::ResultCacheConfig;
 use miroir_core::result_cache::{CacheKey, ResultCache};
+use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use serde_json::json;
 
 // ---------------------------------------------------------------------------
 // Mock cache that simulates failures
@@ -54,29 +54,43 @@ impl FailingResultCache {
 
     /// Enable or disable get failures.
     fn set_fail_get(&self, fail: bool) {
-        self.fail_mode.fail_get.store(fail, std::sync::atomic::Ordering::SeqCst);
+        self.fail_mode
+            .fail_get
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Enable or disable insert failures.
     fn set_fail_insert(&self, fail: bool) {
-        self.fail_mode.fail_insert.store(fail, std::sync::atomic::Ordering::SeqCst);
+        self.fail_mode
+            .fail_insert
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Get the number of get calls.
     fn get_count(&self) -> usize {
-        self.fail_mode.get_count.load(std::sync::atomic::Ordering::SeqCst)
+        self.fail_mode
+            .get_count
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Get the number of insert calls.
     fn insert_count(&self) -> usize {
-        self.fail_mode.insert_count.load(std::sync::atomic::Ordering::SeqCst)
+        self.fail_mode
+            .insert_count
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Simulate a cache get with potential failure.
     async fn mock_get(&self, key: &CacheKey) -> Result<Option<Vec<u8>>, String> {
-        self.fail_mode.get_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.fail_mode
+            .get_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        if self.fail_mode.fail_get.load(std::sync::atomic::Ordering::SeqCst) {
+        if self
+            .fail_mode
+            .fail_get
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
             // Simulate a cache connection failure
             Err("cache connection failed".to_string())
         } else {
@@ -87,14 +101,23 @@ impl FailingResultCache {
 
     /// Simulate a cache insert with potential failure.
     async fn mock_insert(&self, key: CacheKey, data: Vec<u8>) -> Result<(), String> {
-        self.fail_mode.insert_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.fail_mode
+            .insert_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        if self.fail_mode.fail_insert.load(std::sync::atomic::Ordering::SeqCst) {
+        if self
+            .fail_mode
+            .fail_insert
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
             // Simulate a cache storage failure
             Err("cache storage failed".to_string())
         } else {
             // Delegate to real cache
-            self.inner.insert(key, data).await.map_err(|e| e.to_string())
+            self.inner
+                .insert(key, data)
+                .await
+                .map_err(|e| e.to_string())
         }
     }
 
@@ -124,18 +147,25 @@ async fn acceptance_1_cache_get_failure_continues_with_scatter() {
 
     // Create a cache key
     let query = r#"{"q":"laptop","limit":10}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("products", &canonical, 1);
 
     // Attempt cache lookup (should fail)
     let result = cache.mock_get(&key).await;
-    assert!(result.is_err(), "Cache get should fail when failure mode is enabled");
+    assert!(
+        result.is_err(),
+        "Cache get should fail when failure mode is enabled"
+    );
     assert_eq!(result.unwrap_err(), "cache connection failed");
 
     // Verify the failure was tracked
-    assert_eq!(cache.get_count(), 1, "Should have tracked the failed get call");
+    assert_eq!(
+        cache.get_count(),
+        1,
+        "Should have tracked the failed get call"
+    );
 
     // The system should continue with scatter-gather despite cache failure
     // (In the actual implementation, errors are logged and execution continues)
@@ -157,9 +187,9 @@ async fn acceptance_2_cache_insert_failure_doesnt_affect_response() {
 
     // Create a cache key and data
     let query = r#"{"q":"laptop","limit":10}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("products", &canonical, 1);
 
     let response_data = json!({
@@ -173,11 +203,18 @@ async fn acceptance_2_cache_insert_failure_doesnt_affect_response() {
 
     // Attempt cache storage (should fail)
     let result = cache.mock_insert(key, response_bytes).await;
-    assert!(result.is_err(), "Cache insert should fail when failure mode is enabled");
+    assert!(
+        result.is_err(),
+        "Cache insert should fail when failure mode is enabled"
+    );
     assert_eq!(result.unwrap_err(), "cache storage failed");
 
     // Verify the failure was tracked
-    assert_eq!(cache.insert_count(), 1, "Should have tracked the failed insert call");
+    assert_eq!(
+        cache.insert_count(),
+        1,
+        "Should have tracked the failed insert call"
+    );
 
     // The response data should still be valid and returned to the client
     // (In the actual implementation, cache errors don't prevent response delivery)
@@ -199,9 +236,9 @@ async fn acceptance_3_cache_disabled_no_operations_attempted() {
     cache.set_fail_insert(true);
 
     let query = r#"{"q":"test"}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("test", &canonical, 1);
 
     // Try to use the cache (should short-circuit because disabled)
@@ -209,8 +246,10 @@ async fn acceptance_3_cache_disabled_no_operations_attempted() {
     let result = cache.mock_get(&key).await;
 
     // The mock still tracks calls, but in real implementation disabled cache skips operations
-    assert!(result.is_err() || result.is_ok(),
-            "Disabled cache should either short-circuit or handle gracefully");
+    assert!(
+        result.is_err() || result.is_ok(),
+        "Disabled cache should either short-circuit or handle gracefully"
+    );
 }
 
 #[tokio::test]
@@ -228,9 +267,9 @@ async fn acceptance_4_transient_cache_failure_recovery() {
     cache.set_fail_get(true);
 
     let query = r#"{"q":"test"}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("test", &canonical, 1);
 
     // First request should fail
@@ -246,7 +285,10 @@ async fn acceptance_4_transient_cache_failure_recovery() {
 
     // Second request should succeed
     let result2 = cache.mock_get(&key).await;
-    assert!(result2.is_ok(), "Second request should succeed after recovery");
+    assert!(
+        result2.is_ok(),
+        "Second request should succeed after recovery"
+    );
     assert_eq!(result2.unwrap(), Some(data), "Should retrieve cached data");
 }
 
@@ -269,8 +311,9 @@ async fn acceptance_5_cache_failure_during_high_concurrency() {
         let handle = tokio::spawn(async move {
             let query = format!(r#"{{"q":"test{i}"}}"#);
             let canonical = miroir_core::result_cache::canonicalize_query(
-                &serde_json::from_str(&query).unwrap()
-            ).unwrap();
+                &serde_json::from_str(&query).unwrap(),
+            )
+            .unwrap();
             let key = CacheKey::new("test", &canonical, 1);
 
             // Randomly fail some operations
@@ -350,9 +393,9 @@ async fn acceptance_6_cache_error_doesnt_corrupt_search_results() {
     });
 
     let query = r#"{"q":"search","limit":10}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("products", &canonical, 1);
 
     // Try to cache the results (but fail)
@@ -384,16 +427,18 @@ async fn acceptance_7_partial_cache_failure_mixed_operations() {
     let cache = FailingResultCache::new(config);
 
     // Scenario: Multiple cache operations where some fail and some succeed
-    let queries = [r#"{"q":"query1"}"#,
+    let queries = [
+        r#"{"q":"query1"}"#,
         r#"{"q":"query2"}"#,
-        r#"{"q":"query3"}"#];
+        r#"{"q":"query3"}"#,
+    ];
 
     let mut results = Vec::new();
 
     for (i, query) in queries.iter().enumerate() {
-        let canonical = miroir_core::result_cache::canonicalize_query(
-            &serde_json::from_str(query).unwrap()
-        ).unwrap();
+        let canonical =
+            miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+                .unwrap();
         let key = CacheKey::new("test", &canonical, 1);
 
         // Alternate between success and failure
@@ -442,9 +487,9 @@ async fn acceptance_8_cache_timeout_simulation() {
     let short_cache = ResultCache::new(short_ttl_config);
 
     let query = r#"{"q":"test"}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("test", &canonical, 1);
 
     // Insert data
@@ -464,7 +509,10 @@ async fn acceptance_8_cache_timeout_simulation() {
 
     // System should handle expiration gracefully (treat as cache miss)
     let stats = short_cache.stats().await;
-    assert!(stats.misses >= 1, "Should track the expired entry as a miss");
+    assert!(
+        stats.misses >= 1,
+        "Should track the expired entry as a miss"
+    );
 }
 
 #[tokio::test]
@@ -480,9 +528,9 @@ async fn acceptance_9_cache_error_metrics_tracked_correctly() {
 
     // Perform a mix of successful and failed operations
     let query = r#"{"q":"test"}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("test", &canonical, 1);
 
     // Successful insert
@@ -510,7 +558,10 @@ async fn acceptance_9_cache_error_metrics_tracked_correctly() {
     // get). (The old `stats.entries >= 0` was always true — entries is
     // unsigned.)
     let stats = cache.stats().await;
-    assert_eq!(stats.entries, 1, "Should maintain valid stats despite errors");
+    assert_eq!(
+        stats.entries, 1,
+        "Should maintain valid stats despite errors"
+    );
     assert_eq!(stats.hits, 1, "Recovered get should count as a hit");
 }
 
@@ -528,8 +579,9 @@ async fn acceptance_10_cache_failure_doesnt_block_critical_operations() {
     // Simulate a critical search that must complete despite cache failure
     let critical_query = r#"{"q":"urgent_search","limit":10}"#;
     let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(critical_query).unwrap()
-    ).unwrap();
+        &serde_json::from_str(critical_query).unwrap(),
+    )
+    .unwrap();
     let key = CacheKey::new("critical_index", &canonical, 1);
 
     // Cache lookup fails
