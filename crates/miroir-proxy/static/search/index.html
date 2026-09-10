@@ -5,8 +5,40 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Search</title>
     <link rel="stylesheet" href="/ui/search/static/search.css">
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.3.1",
+            "react-dom": "https://esm.sh/react-dom@18.3.1",
+            "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+            "agentation": "https://esm.sh/agentation@3.0.2?external=react,react-dom"
+        }
+    }
+    </script>
+    <script type="module">
+        // Agentation visual-feedback toolbar (agentation.dev), mounted into
+        // #agentation-root. The import map above must precede this script.
+        // Dynamic import inside try/catch: if the CDN is unreachable or the
+        // CSP blocks it, the page degrades to a console warning instead of a
+        // broken bootstrap. Serving the toolbar requires allowing
+        // https://esm.sh in search_ui.csp (script-src/connect-src).
+        (async () => {
+            try {
+                const [{ Agentation }, React, { createRoot }] = await Promise.all([
+                    import('agentation'),
+                    import('react'),
+                    import('react-dom/client'),
+                ]);
+                createRoot(document.getElementById('agentation-root'))
+                    .render(React.createElement(Agentation));
+            } catch (err) {
+                console.warn('Agentation toolbar unavailable:', err);
+            }
+        })();
+    </script>
 </head>
 <body>
+    <div id="agentation-root"></div>
     <div id="app">
         <header class="header" role="banner">
             <div class="header-content">
