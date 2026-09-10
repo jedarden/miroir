@@ -19,6 +19,17 @@ UIs, and this file is the authoritative list of what is live versus dead.
 | **Auth** | `X-Admin-Key` / `Authorization: Bearer` admin API key, or the session cookie set by `POST /_miroir/admin/login` |
 | **SPA fallback** | Any `*path` without a `.` serves `index.html`; paths with an extension serve the embedded file directly |
 
+These files are **hand-maintained source, not build output**. There is no
+build step for them anywhere in this repo — no `package.json`, bundler,
+`build.rs`, script, or CI/Dockerfile stage produces them — so `index.html`,
+`app.js`, and `styles.css` are edited in place and committed directly. An
+earlier hygiene pass (6b70509, 2026-07-11) untracked the folder as
+"regenerable build artifacts"; that rationale was wrong, and it broke fresh
+clones outright: `AdminUiAssets` embeds the folder via `RustEmbed`, which
+fails to compile when the folder is missing. The files were re-tracked on
+2026-09-10 (miroir-d4b67ff6) and the `.gitignore` rule excluding the folder
+was removed.
+
 Admin login is **not** an HTML page: `POST /_miroir/admin/login`
 (`routes/session.rs::admin_login`) returns JSON plus a CSRF/session cookie.
 
