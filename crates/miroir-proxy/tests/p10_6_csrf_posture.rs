@@ -279,6 +279,67 @@ async fn csp_builder_handles_multiple_sources() {
     assert!(csp.contains("connect-src 'self' https://api.example.com https://cdn.example.com"));
 }
 
+/// Both UI CSP defaults allow the Agentation toolbar's esm.sh module loads
+/// while keeping every other directive intact (bead miroir-7f7605d1).
+#[tokio::test]
+async fn csp_defaults_allow_agentation_esm_sh() {
+    use miroir_core::config::MiroirConfig;
+    use miroir_proxy::auth::build_csp_header;
+
+    let cfg = MiroirConfig::default();
+
+    let admin = build_csp_header(&cfg.admin_ui.csp, &cfg.admin_ui.csp_overrides);
+    let search = build_csp_header(&cfg.search_ui.csp, &cfg.search_ui.csp_overrides);
+
+    for (label, csp) in [("admin_ui", &admin), ("search_ui", &search)] {
+        assert!(
+            csp.contains("script-src 'self' https://esm.sh"),
+            "{label} csp: {csp}"
+        );
+        assert!(
+            csp.contains("connect-src 'self' https://esm.sh"),
+            "{label} csp: {csp}"
+        );
+        // esm.sh is scoped to script-src/connect-src; default-src must stay
+        // 'self' so the grant does not leak into every other fetch type.
+        assert!(csp.contains("default-src 'self'"), "{label} csp: {csp}");
+        assert!(
+            !csp.contains("default-src 'self' https://esm.sh"),
+            "{label} csp: {csp}"
+        );
+        assert!(!csp.contains("default-src *"), "{label} csp: {csp}");
+    }
+
+    // Pre-existing directives are untouched by the esm.sh addition.
+    assert!(
+        admin.contains("frame-ancestors 'none'"),
+        "admin_ui csp: {admin}"
+    );
+    assert!(
+        admin.contains("img-src 'self' data:"),
+        "admin_ui csp: {admin}"
+    );
+    assert!(
+        admin.contains("style-src 'self' 'unsafe-inline'"),
+        "admin_ui csp: {admin}"
+    );
+    assert!(
+        search.contains("img-src 'self' https:"),
+        "search_ui csp: {search}"
+    );
+    assert!(
+        search.contains("style-src 'self' 'unsafe-inline'"),
+        "search_ui csp: {search}"
+    );
+    // frame-ancestors 'none' stays the final admin directive (template order is
+    // preserved by build_csp_header; search_ui intentionally has no such
+    // directive and relies on default-src).
+    assert!(
+        admin.ends_with("frame-ancestors 'none'"),
+        "admin_ui csp: {admin}"
+    );
+}
+
 /// CSP config validation rejects wildcard in overrides.
 /// This test verifies the validation function is accessible via MiroirConfig::validate.
 /// Note: The detailed validation tests are in miroir-core/src/config/validate.rs.

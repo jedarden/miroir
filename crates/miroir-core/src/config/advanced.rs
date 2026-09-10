@@ -674,7 +674,11 @@ impl Default for AdminUiConfig {
             read_only_mode: false,
             allowed_origins: vec!["same-origin".into()],
             cors_allowed_origins: Vec::new(),
-            csp: "default-src 'self'; script-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'".into(),
+            // `https://esm.sh` is required by the Agentation visual-feedback toolbar
+            // (react / react-dom / agentation are loaded as ES modules from there);
+            // `search_ui.csp` below carries the same grant.
+            // Additional sources belong in `csp_overrides.*`, never edited in here.
+            csp: "default-src 'self'; script-src 'self' https://esm.sh; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' https://esm.sh; frame-ancestors 'none'".into(),
             csp_overrides: CspOverridesConfig::default(),
             theme: AdminUiThemeConfig::default(),
             features: AdminUiFeaturesConfig::default(),
@@ -786,7 +790,10 @@ impl Default for SearchUiConfig {
             rate_limit: SearchUiRateLimitConfig::default(),
             cors_allowed_origins: Vec::new(),
             csp_overrides: CspOverridesConfig::default(),
-            csp: "default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'"
+            // `default-src 'self'` stays strict; `script-src` / `connect-src` are added
+            // explicitly so the Agentation toolbar (loaded from `https://esm.sh`) works.
+            // Additional sources belong in `csp_overrides.*`, never edited in here.
+            csp: "default-src 'self'; script-src 'self' https://esm.sh; img-src 'self' https:; style-src 'self' 'unsafe-inline'; connect-src 'self' https://esm.sh"
                 .into(),
             analytics: SearchUiAnalyticsConfig::default(),
         }

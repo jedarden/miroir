@@ -2360,4 +2360,64 @@ mod tests {
         assert!(csp.contains("script-src 'self' https://cdn.example.com"));
         assert!(csp.contains("img-src data:"));
     }
+
+    /// The Agentation toolbar loads react/react-dom/agentation from
+    /// https://esm.sh, so both UI defaults must allow it in script-src and
+    /// connect-src (bead miroir-7f7605d1).
+    #[test]
+    fn csp_defaults_allow_agentation_esm_sh() {
+        for (label, cfg) in [
+            (
+                "admin",
+                build_csp_header(
+                    &miroir_core::config::advanced::AdminUiConfig::default().csp,
+                    &Default::default(),
+                ),
+            ),
+            (
+                "search",
+                build_csp_header(
+                    &miroir_core::config::SearchUiConfig::default().csp,
+                    &Default::default(),
+                ),
+            ),
+        ] {
+            assert!(
+                cfg.contains("script-src 'self' https://esm.sh"),
+                "{label}: {cfg}"
+            );
+            assert!(
+                cfg.contains("connect-src 'self' https://esm.sh"),
+                "{label}: {cfg}"
+            );
+            // esm.sh is scoped to script-src/connect-src; default-src must stay
+            // 'self' so the grant does not leak into every other fetch type.
+            assert!(cfg.contains("default-src 'self'"), "{label}: {cfg}");
+            assert!(
+                !cfg.contains("default-src 'self' https://esm.sh"),
+                "{label}: {cfg}"
+            );
+            assert!(!cfg.contains("default-src *"), "{label}: {cfg}");
+            assert!(!cfg.contains("script-src *"), "{label}: {cfg}");
+            assert!(!cfg.contains("connect-src *"), "{label}: {cfg}");
+        }
+
+        // Admin-only directives survive the esm.sh addition.
+        let admin = miroir_core::config::advanced::AdminUiConfig::default();
+        let csp = build_csp_header(&admin.csp, &admin.csp_overrides);
+        assert!(csp.contains("frame-ancestors 'none'"), "admin: {csp}");
+        assert!(csp.contains("img-src 'self' data:"), "admin: {csp}");
+        assert!(
+            csp.contains("style-src 'self' 'unsafe-inline'"),
+            "admin: {csp}"
+        );
+
+        let search = miroir_core::config::SearchUiConfig::default();
+        let csp = build_csp_header(&search.csp, &search.csp_overrides);
+        assert!(csp.contains("img-src 'self' https:"), "search: {csp}");
+        assert!(
+            csp.contains("style-src 'self' 'unsafe-inline'"),
+            "search: {csp}"
+        );
+    }
 }
