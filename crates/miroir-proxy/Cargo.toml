@@ -9,6 +9,13 @@ repository.workspace = true
 default = []
 tracing = ["opentelemetry", "opentelemetry-otlp", "opentelemetry_sdk", "tracing-opentelemetry"]
 peer-discovery = []
+# Forward to miroir-core, where the sink itself is cfg-gated. Without this
+# feature, production builds passed `--features miroir-core/kafka-sink`, which
+# compiled the sink into core but never satisfied this crate's own
+# `cfg(feature = "kafka-sink")` gates (tests/kafka_sink_feature.rs). With it,
+# `--features miroir-proxy/kafka-sink` compiles the sink in AND satisfies the
+# gates, unifying both binaries in a single cargo invocation.
+kafka-sink = ["miroir-core/kafka-sink"]
 
 [[bin]]
 name = "miroir-proxy"
