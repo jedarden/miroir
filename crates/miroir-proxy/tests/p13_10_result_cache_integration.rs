@@ -9,14 +9,11 @@
 //! - Cache invalidation on settings version change
 //! - Cache hit bypass reduces upstream calls
 
-use miroir_core::config::{MiroirConfig, ResultCacheConfig};
+use miroir_core::config::ResultCacheConfig;
 use miroir_core::result_cache::{CacheKey, ResultCache};
-use miroir_core::scatter::{MockNodeClient, NodeClient, SearchRequest};
+use miroir_core::scatter::MockNodeClient;
 use miroir_core::topology::{Node, NodeId, Topology};
-use miroir_core::merger::RrfStrategy;
-use std::sync::Arc;
 use std::time::Duration;
-use std::collections::HashMap;
 use serde_json::json;
 
 #[tokio::test]
@@ -147,18 +144,18 @@ async fn acceptance_4_metrics_recorded_correctly() {
 
     // Insert some entries
     for i in 0..5 {
-        let query = format!(r#"{{"q":"test{}"}}"#, i);
+        let query = format!(r#"{{"q":"test{i}"}}"#);
         let canonical = miroir_core::result_cache::canonicalize_query(
             &serde_json::from_str(&query).unwrap()
         ).unwrap();
         let key = CacheKey::new("test", &canonical, 1);
-        let data = format!(r#"{{"id":{}}}"#, i);
+        let data = format!(r#"{{"id":{i}}}"#);
         cache.insert(key, data.into_bytes()).await.unwrap();
     }
 
     // Generate some hits
     for i in 0..3 {
-        let query = format!(r#"{{"q":"test{}"}}"#, i);
+        let query = format!(r#"{{"q":"test{i}"}}"#);
         let canonical = miroir_core::result_cache::canonicalize_query(
             &serde_json::from_str(&query).unwrap()
         ).unwrap();
@@ -168,7 +165,7 @@ async fn acceptance_4_metrics_recorded_correctly() {
 
     // Generate some misses
     for i in 5..8 {
-        let query = format!(r#"{{"q":"test{}"}}"#, i);
+        let query = format!(r#"{{"q":"test{i}"}}"#);
         let canonical = miroir_core::result_cache::canonicalize_query(
             &serde_json::from_str(&query).unwrap()
         ).unwrap();
@@ -225,7 +222,7 @@ async fn acceptance_6_multi_target_alias_bypassed() {
 
     // Simulate a multi-target alias scenario
     // The cache should only be used for single-target queries
-    let targets = vec!["logs-2026-01-01".to_string(), "logs-2026-01-02".to_string()];
+    let targets = ["logs-2026-01-01".to_string(), "logs-2026-01-02".to_string()];
 
     // For multi-target, we should NOT cache (different results per target)
     if targets.len() > 1 {
@@ -337,12 +334,12 @@ async fn acceptance_9_lru_eviction_when_full() {
 
     // Insert 4 entries (should evict the first)
     for i in 0..4 {
-        let query = format!(r#"{{"q":"test{}"}}"#, i);
+        let query = format!(r#"{{"q":"test{i}"}}"#);
         let canonical = miroir_core::result_cache::canonicalize_query(
             &serde_json::from_str(&query).unwrap()
         ).unwrap();
         let key = CacheKey::new("test", &canonical, 1);
-        let data = format!("data{}", i);
+        let data = format!("data{i}");
         cache.insert(key, data.into_bytes()).await.unwrap();
     }
 
@@ -361,7 +358,7 @@ async fn acceptance_9_lru_eviction_when_full() {
     // Last entry should still be present
     let query = r#"{"q":"test3"}"#;
     let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(&query).unwrap()
+        &serde_json::from_str(query).unwrap()
     ).unwrap();
     let key = CacheKey::new("test", &canonical, 1);
     let result = cache.get(&key).await.unwrap();
@@ -435,10 +432,8 @@ async fn acceptance_11_cache_hit_bypass_reduces_upstream_calls() {
         g.set_state(miroir_core::topology::GroupState::Active);
     }
 
-    // Create a mock client that tracks calls
-    let mut mock_client = MockNodeClient::default();
-    let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-
+    // The bypass is verified through cache stats below: a hit short-circuits
+    // before scatter, so no node client is ever consulted.
     // Pre-populate cache with a result
     let query = r#"{"q":"laptop","limit":10}"#;
     let canonical = miroir_core::result_cache::canonicalize_query(

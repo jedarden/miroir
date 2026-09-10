@@ -199,13 +199,13 @@ pub fn validate(cfg: &MiroirConfig) -> Result<(), ConfigError> {
     }
 
     // Result cache ttl_ms must be in range 250-2000
-    if cfg.result_cache.enabled {
-        if cfg.result_cache.ttl_ms < 250 || cfg.result_cache.ttl_ms > 2000 {
-            return Err(ConfigError::Validation(format!(
-                "result_cache.ttl_ms must be between 250 and 2000 (inclusive), got {}",
-                cfg.result_cache.ttl_ms
-            )));
-        }
+    if cfg.result_cache.enabled
+        && (cfg.result_cache.ttl_ms < 250 || cfg.result_cache.ttl_ms > 2000)
+    {
+        return Err(ConfigError::Validation(format!(
+            "result_cache.ttl_ms must be between 250 and 2000 (inclusive), got {}",
+            cfg.result_cache.ttl_ms
+        )));
     }
 
     // Admin UI allowed_origins must not contain wildcard when admin UI is enabled (plan §9).

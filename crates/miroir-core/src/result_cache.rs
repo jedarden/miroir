@@ -308,7 +308,7 @@ pub fn canonicalize_query(query: &serde_json::Value) -> Result<String> {
             // Canonicalize array elements
             let canonicalized: Result<Vec<String>> = arr
                 .iter()
-                .map(|v| canonicalize_query(v))
+                .map(canonicalize_query)
                 .collect();
             let canonical_arr: Vec<serde_json::Value> = canonicalized?
                 .iter()

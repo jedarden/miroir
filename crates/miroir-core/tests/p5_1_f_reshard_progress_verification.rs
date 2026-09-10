@@ -36,13 +36,11 @@ fn test_backfill_progress_after_first_update_is_nonzero() {
     let progress = op.backfill_progress();
     assert!(
         progress > 0.0,
-        "Progress should be > 0 after first update, got {}",
-        progress
+        "Progress should be > 0 after first update, got {progress}"
     );
     assert!(
         (progress - 0.1).abs() < 0.001,
-        "Progress should be ~0.1, got {}",
-        progress
+        "Progress should be ~0.1, got {progress}"
     );
 }
 
@@ -60,20 +58,17 @@ fn test_backfill_progress_nonzero_once_backfill_in_progress() {
     let progress = op.backfill_progress();
     assert!(
         progress > 0.0,
-        "Progress should be > 0 once backfill has started, got {}",
-        progress
+        "Progress should be > 0 once backfill has started, got {progress}"
     );
     // The ratio must be the expected 1/1000, not some sentinel value.
     assert!(
         (progress - 0.001).abs() < 1e-9,
-        "Expected 1/1000 = 0.001 once backfill has started, got {}",
-        progress
+        "Expected 1/1000 = 0.001 once backfill has started, got {progress}"
     );
     // A backfill that just started must never read as complete.
     assert!(
         progress < 1.0,
-        "Backfill that just started must not report completion, got {}",
-        progress
+        "Backfill that just started must not report completion, got {progress}"
     );
 }
 
@@ -95,10 +90,7 @@ fn test_backfill_progress_is_monotonic() {
         // Progress should be >= previous progress (monotonically non-decreasing)
         assert!(
             progress >= previous_progress,
-            "Progress decreased from {} to {} at chunk {}",
-            previous_progress,
-            progress,
-            chunk
+            "Progress decreased from {previous_progress} to {progress} at chunk {chunk}"
         );
 
         previous_progress = progress;
@@ -107,8 +99,7 @@ fn test_backfill_progress_is_monotonic() {
     // Final progress should be exactly 1.0
     assert_eq!(
         previous_progress, 1.0,
-        "Final progress should be 1.0, got {}",
-        previous_progress
+        "Final progress should be 1.0, got {previous_progress}"
     );
 }
 
@@ -125,8 +116,7 @@ fn test_backfill_progress_exactly_one_at_completion() {
     let progress = op.backfill_progress();
     assert_eq!(
         progress, 1.0,
-        "Progress should be exactly 1.0 at completion, got {}",
-        progress
+        "Progress should be exactly 1.0 at completion, got {progress}"
     );
 }
 
@@ -156,16 +146,13 @@ fn test_backfill_progress_with_partial_updates() {
         // Verify monotonic increase
         assert!(
             progress >= previous_progress,
-            "Progress decreased from {} to {}",
-            previous_progress,
-            progress
+            "Progress decreased from {previous_progress} to {progress}"
         );
 
         // Verify progress is in valid range [0, 1]
         assert!(
-            progress >= 0.0 && progress <= 1.0,
-            "Progress {} is outside valid range [0, 1]",
-            progress
+            (0.0..=1.0).contains(&progress),
+            "Progress {progress} is outside valid range [0, 1]"
         );
 
         previous_progress = progress;
@@ -207,9 +194,7 @@ fn test_backfill_progress_no_decrease_on_total_change() {
     // Progress should not decrease (it should stay the same or increase)
     assert!(
         progress2 >= progress1,
-        "Progress decreased from {} to {} when total changed",
-        progress1,
-        progress2
+        "Progress decreased from {progress1} to {progress2} when total changed"
     );
 }
 
@@ -226,8 +211,7 @@ fn test_backfill_progress_large_values() {
 
     assert_eq!(
         progress, 0.5,
-        "Progress should be 0.5 for 5M out of 10M, got {}",
-        progress
+        "Progress should be 0.5 for 5M out of 10M, got {progress}"
     );
 
     // At completion
@@ -236,8 +220,7 @@ fn test_backfill_progress_large_values() {
 
     assert_eq!(
         final_progress, 1.0,
-        "Final progress should be 1.0, got {}",
-        final_progress
+        "Final progress should be 1.0, got {final_progress}"
     );
 }
 

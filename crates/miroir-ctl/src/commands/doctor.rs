@@ -77,6 +77,9 @@ impl CheckResult {
         }
     }
 
+    /// Builder form for attaching a detail line; reserved for checks that
+    /// need one.
+    #[allow(dead_code)]
     fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
         self
@@ -100,6 +103,8 @@ impl CheckStatus {
         }
     }
 
+    /// Color name for future colorized output; only `emoji` is printed today.
+    #[allow(dead_code)]
     fn color(self) -> &'static str {
         match self {
             CheckStatus::Pass => "green",
@@ -123,8 +128,11 @@ struct EnvConfig {
     existing_secret: Option<String>,
 }
 
+/// Parsed so the doctor can see the Helm schema; only some fields are
+/// acted on today.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct MiroirValues {
     #[serde(default)]
     existing_secret: Option<String>,
@@ -143,8 +151,11 @@ struct TaskStoreValues {
     path: Option<String>,
 }
 
+/// Parsed so the doctor can see the ExternalSecrets Helm schema; only some
+/// fields are acted on today.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct EsoValues {
     #[serde(default)]
     enabled: Option<bool>,
@@ -154,8 +165,11 @@ struct EsoValues {
     secret_path: Option<String>,
 }
 
+/// Shape of a `spec.secretStoreRef` in a ClusterExternalSecret; parsed for
+/// schema completeness.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct SecretStoreRef {
     #[serde(default)]
     name: Option<String>,
@@ -189,7 +203,9 @@ struct ApplicationSource {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ApplicationHelm {
+    /// Inline Helm values block; `valuesObject` is the form the doctor reads.
     #[serde(default)]
     values: Option<serde_yaml::Value>,
     #[serde(default)]
@@ -236,7 +252,7 @@ async fn run_deploy_preflight(
         && config_content.contains("argoproj.io/v1alpha1") {
         // It's an ArgoCD Application
         let app: ArgoCDApplication = serde_yaml::from_str(&config_content)
-            .map_err(|e| format!("Failed to parse ArgoCD Application: {}", e))?;
+            .map_err(|e| format!("Failed to parse ArgoCD Application: {e}"))?;
 
         let ns = args.namespace
             .or_else(|| app.spec.destination.as_ref().and_then(|d| d.namespace.clone()))
@@ -259,7 +275,7 @@ async fn run_deploy_preflight(
 
         let env_cfg = app.spec.source.helm
             .and_then(|h| h.values_object)
-            .unwrap_or_else(|| EnvConfig {
+            .unwrap_or(EnvConfig {
                 miroir: None,
                 task_store: None,
                 eso: None,
@@ -270,7 +286,7 @@ async fn run_deploy_preflight(
     } else {
         // Assume it's a Helm values file
         let env_cfg: EnvConfig = serde_yaml::from_str(&config_content)
-            .map_err(|e| format!("Failed to parse Helm values: {}", e))?;
+            .map_err(|e| format!("Failed to parse Helm values: {e}"))?;
 
         let ns = args.namespace
             .clone()
@@ -289,13 +305,13 @@ async fn run_deploy_preflight(
             Ok(result) => {
                 println!("  {} {}", result.status.emoji(), result.message);
                 if let Some(detail) = &result.detail {
-                    println!("     {}", detail);
+                    println!("     {detail}");
                 }
                 results.push(result);
             }
             Err(e) => {
                 let result = CheckResult::fail("chart_source",
-                    format!("Failed to check chart source: {}", e));
+                    format!("Failed to check chart source: {e}"));
                 println!("  {} {}", result.status.emoji(), result.message);
                 results.push(result);
             }
@@ -323,13 +339,13 @@ async fn run_deploy_preflight(
             Ok(result) => {
                 println!("  {} {}", result.status.emoji(), result.message);
                 if let Some(detail) = &result.detail {
-                    println!("     {}", detail);
+                    println!("     {detail}");
                 }
                 results.push(result);
             }
             Err(e) => {
                 let result = CheckResult::fail("external_secret_sync",
-                    format!("Failed to check ExternalSecret: {}", e));
+                    format!("Failed to check ExternalSecret: {e}"));
                 println!("  {} {}", result.status.emoji(), result.message);
                 results.push(result);
             }
@@ -340,13 +356,13 @@ async fn run_deploy_preflight(
             Ok(result) => {
                 println!("  {} {}", result.status.emoji(), result.message);
                 if let Some(detail) = &result.detail {
-                    println!("     {}", detail);
+                    println!("     {detail}");
                 }
                 results.push(result);
             }
             Err(e) => {
                 let result = CheckResult::fail("secret_exists",
-                    format!("Failed to check Secret: {}", e));
+                    format!("Failed to check Secret: {e}"));
                 println!("  {} {}", result.status.emoji(), result.message);
                 results.push(result);
             }
@@ -362,13 +378,13 @@ async fn run_deploy_preflight(
         Ok(result) => {
             println!("  {} {}", result.status.emoji(), result.message);
             if let Some(detail) = &result.detail {
-                println!("     {}", detail);
+                println!("     {detail}");
             }
             results.push(result);
         }
         Err(e) => {
             let result = CheckResult::fail("task_store",
-                format!("Failed to check task store: {}", e));
+                format!("Failed to check task store: {e}"));
             println!("  {} {}", result.status.emoji(), result.message);
             results.push(result);
         }
@@ -382,10 +398,10 @@ async fn run_deploy_preflight(
     let warned = results.iter().filter(|r| r.status == CheckStatus::Warn).count();
     let total = results.len();
 
-    println!("Total checks: {}", total);
-    println!("  Passed: {}", passed);
-    println!("  Failed: {}", failed);
-    println!("  Warnings: {}", warned);
+    println!("Total checks: {total}");
+    println!("  Passed: {passed}");
+    println!("  Failed: {failed}");
+    println!("  Warnings: {warned}");
     println!();
 
     if args.strict && failed > 0 {
@@ -402,6 +418,8 @@ enum ChartSourceInfo {
         chart_name: String,
         version: String,
     },
+    /// OCI-registry chart source; not produced by any caller yet.
+    #[allow(dead_code)]
     Oci {
         registry: String,
         chart_name: String,
@@ -425,13 +443,13 @@ async fn check_chart_source(
                 // Parse index.yaml and check for chart/version
                 if body.contains(chart_name) && body.contains(version) {
                     Ok(CheckResult::pass("chart_source",
-                        format!("Helm repo reachable, chart {} version {} found", chart_name, version)))
+                        format!("Helm repo reachable, chart {chart_name} version {version} found")))
                 } else if body.contains(chart_name) {
                     Ok(CheckResult::fail("chart_source",
-                        format!("Chart {} found but version {} not available in repo", chart_name, version)))
+                        format!("Chart {chart_name} found but version {version} not available in repo")))
                 } else {
                     Ok(CheckResult::fail("chart_source",
-                        format!("Chart {} not found in repo {}", chart_name, repo_url)))
+                        format!("Chart {chart_name} not found in repo {repo_url}")))
                 }
             } else {
                 Ok(CheckResult::fail("chart_source",
@@ -447,8 +465,7 @@ async fn check_chart_source(
 
             if response.status().is_success() {
                 Ok(CheckResult::pass("chart_source",
-                    format!("OCI registry {} reachable (chart {} version {} not verified - requires helm/crane)",
-                            registry, chart_name, version)))
+                    format!("OCI registry {registry} reachable (chart {chart_name} version {version} not verified - requires helm/crane)")))
             } else {
                 Ok(CheckResult::fail("chart_source",
                     format!("Failed to reach OCI registry {}: HTTP {}", registry, response.status())))
@@ -477,14 +494,14 @@ async fn check_secret_exists(
         let stdout = String::from_utf8_lossy(&output.stdout);
         if stdout.contains(secret_name) {
             Ok(CheckResult::pass("secret_exists",
-                format!("Secret {} exists in namespace {}", secret_name, namespace)))
+                format!("Secret {secret_name} exists in namespace {namespace}")))
         } else {
             Ok(CheckResult::fail("secret_exists",
-                format!("Secret {} not found in namespace {}", secret_name, namespace)))
+                format!("Secret {secret_name} not found in namespace {namespace}")))
         }
     } else {
         Ok(CheckResult::fail("secret_exists",
-            format!("Failed to check secret {} in namespace {}: kubectl error", secret_name, namespace)))
+            format!("Failed to check secret {secret_name} in namespace {namespace}: kubectl error")))
     }
 }
 
@@ -505,7 +522,7 @@ async fn check_external_secret_sync(
 
     if !eso_output.status.success() || !String::from_utf8_lossy(&eso_output.stdout).contains(secret_name) {
         return Ok(CheckResult::fail("external_secret_sync",
-            format!("ExternalSecret {} not found in namespace {}", secret_name, namespace)));
+            format!("ExternalSecret {secret_name} not found in namespace {namespace}")));
     }
 
     // Check the synced Secret status
@@ -522,14 +539,14 @@ async fn check_external_secret_sync(
         let stdout = String::from_utf8_lossy(&secret_output.stdout);
         if stdout.contains(secret_name) {
             Ok(CheckResult::pass("external_secret_sync",
-                format!("ExternalSecret {} synced successfully in namespace {}", secret_name, namespace)))
+                format!("ExternalSecret {secret_name} synced successfully in namespace {namespace}")))
         } else {
             Ok(CheckResult::fail("external_secret_sync",
-                format!("ExternalSecret {} exists but target Secret not synced in namespace {}", secret_name, namespace)))
+                format!("ExternalSecret {secret_name} exists but target Secret not synced in namespace {namespace}")))
         }
     } else {
         Ok(CheckResult::warn("external_secret_sync",
-            format!("ExternalSecret {} exists but sync status unknown in namespace {}", secret_name, namespace)))
+            format!("ExternalSecret {secret_name} exists but sync status unknown in namespace {namespace}")))
     }
 }
 
@@ -559,7 +576,7 @@ async fn check_task_store(
             let url_parts: Vec<&str> = url.split("://").collect();
             if url_parts.len() < 2 {
                 return Ok(CheckResult::fail("task_store",
-                    format!("Invalid Redis URL format: {}", url)));
+                    format!("Invalid Redis URL format: {url}")));
             }
 
             let host_port = url_parts[1].split('/').next().unwrap_or("");
@@ -575,11 +592,11 @@ async fn check_task_store(
             match TcpStream::connect((host, port.parse::<u16>().unwrap_or(6379))).await {
                 Ok(_) => {
                     Ok(CheckResult::pass("task_store",
-                        format!("Redis at {} reachable (authentication not verified)", url)))
+                        format!("Redis at {url} reachable (authentication not verified)")))
                 }
                 Err(e) => {
                     Ok(CheckResult::fail("task_store",
-                        format!("Redis at {} not reachable: {}", url, e)))
+                        format!("Redis at {url} not reachable: {e}")))
                 }
             }
         }
@@ -601,25 +618,25 @@ async fn check_task_store(
                         Ok(_) => {
                             std::fs::remove_file(&test_path).ok();
                             Ok(CheckResult::pass("task_store",
-                                format!("SQLite path {} directory exists and is writable", path)))
+                                format!("SQLite path {path} directory exists and is writable")))
                         }
                         Err(e) => {
                             Ok(CheckResult::fail("task_store",
-                                format!("SQLite path {} directory exists but not writable: {}", path, e)))
+                                format!("SQLite path {path} directory exists but not writable: {e}")))
                         }
                     }
                 } else {
                     Ok(CheckResult::fail("task_store",
-                        format!("SQLite path {} directory does not exist", path)))
+                        format!("SQLite path {path} directory does not exist")))
                 }
             } else {
                 Ok(CheckResult::fail("task_store",
-                    format!("Invalid SQLite path: {}", path)))
+                    format!("Invalid SQLite path: {path}")))
             }
         }
         _ => {
             Ok(CheckResult::warn("task_store",
-                format!("Unknown task store backend: {}", backend)))
+                format!("Unknown task store backend: {backend}")))
         }
     }
 }

@@ -91,7 +91,7 @@ pub async fn fetch_node_stats(
 
     let response = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", master_key))
+        .header("Authorization", format!("Bearer {master_key}"))
         .send()
         .await
         .map_err(FetchStatsError::Request)?;

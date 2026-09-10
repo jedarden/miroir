@@ -1980,7 +1980,7 @@ mod tests {
     /// # Arguments
     /// * `ratios` - Progress ratios sampled during backfill (one per shard)
     /// * `path_name` - Human-readable name for the code path being tested
-    ///                 (used in error messages for clarity)
+    ///   (used in error messages for clarity)
     ///
     /// # What it asserts
     /// 1. Every sampled ratio is ≤ 1.0 + EPSILON (respects ceiling)
