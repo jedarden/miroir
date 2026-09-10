@@ -7,27 +7,48 @@
 //! - Cache reduces upstream Meilisearch calls under repeated queries
 //! - Graceful handling of cache connection failures
 //!
-//! These tests use testcontainers to spin up real Meilisearch instances
-//! and make actual HTTP requests through the proxy to test cache behavior
-//! in a realistic environment.
+//! These tests use testcontainers to spin up real Meilisearch instances,
+//! spawn the compiled `miroir-proxy` binary against them, and make actual
+//! HTTP requests through the proxy to test cache behavior in a realistic
+//! environment.
 //!
 //! Prerequisites:
 //!   Option 1: Docker available for testcontainers Meilisearch
 //!   Option 2: Set MIROIR_TEST_SKIP_DOCKER=1 to skip these tests
+//!
+//! On the lab box there is no docker.sock; podman rootless works instead:
+//!   systemctl --user start podman.socket
+//!   DOCKER_HOST=unix:///run/user/1001/podman/podman.sock cargo test \
+//!     -p miroir-proxy --test p13_13_cache_flow_integration
+//! (`check_docker_available` trusts an explicit DOCKER_HOST and lets
+//! testcontainers surface any connection failure itself.)
 
-use miroir_core::config::{Config, NodeConfig, ResultCacheConfig};
+use anyhow::Context;
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 use testcontainers::{runners::AsyncRunner, ContainerAsync};
 use testcontainers_modules::meilisearch::Meilisearch;
+use tokio::process::{Child, Command};
+use tokio::sync::MutexGuard;
 use tokio::time::sleep;
 
 /// Master key shared by every Meilisearch node. `NodeConfig` carries no
-/// per-node credentials, so the nodes (and the helpers below that address
-/// them directly) must all authenticate with the same key.
+/// per-node credentials, so the proxy (`node_master_key`) and the helpers
+/// below that address the nodes directly must all use this same key.
 const NODE_MASTER_KEY: &str = "key0";
+
+/// Client-facing proxy key and port, mirrored into the generated config.
+const PROXY_MASTER_KEY: &str = "test_master_key";
+const PROXY_PORT: u16 = 17770;
+
+/// Serializes the whole suite: the proxy binary hard-binds its Prometheus
+/// metrics listener on port 9090 (`main.rs`), so at most one instance can run
+/// on this host. The guard lives inside `CacheFlowTestSetup`, so each test
+/// holds the slot from setup until teardown.
+static PROXY_SLOT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Check if Docker is available for testcontainers.
 fn check_docker_available() -> anyhow::Result<()> {
@@ -63,12 +84,92 @@ fn check_docker_available() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A proxy process spawned from the compiled `miroir-proxy` binary. The
+/// config file is resolved from the process CWD (`MiroirConfig::load` scans
+/// search paths relative to it), so the child runs inside its own temp dir
+/// with a generated `miroir.yaml`. `kill_on_drop` tears the process down and
+/// `TempDir` removes the config dir when the setup is dropped.
+struct SpawnedProxy {
+    /// Never read directly: `kill_on_drop` tears the proxy down on drop.
+    _child: Child,
+    _config_dir: tempfile::TempDir,
+}
+
+impl SpawnedProxy {
+    async fn spawn(node_urls: &[String]) -> anyhow::Result<Self> {
+        let config_dir = tempfile::TempDir::new()?;
+        let task_db_path: PathBuf = config_dir.path().join("miroir-tasks.db");
+        std::fs::write(
+            config_dir.path().join("miroir.yaml"),
+            proxy_config_yaml(node_urls, &task_db_path),
+        )?;
+
+        // Child logs go to files rather than pipes: nothing drains a pipe
+        // here, and a full pipe buffer would block the proxy mid-test. The
+        // files live in the config dir and vanish with it on drop.
+        let stdout = std::fs::File::create(config_dir.path().join("proxy.stdout.log"))?;
+        let stderr = std::fs::File::create(config_dir.path().join("proxy.stderr.log"))?;
+
+        let child = Command::new(env!("CARGO_BIN_EXE_miroir-proxy"))
+            .current_dir(config_dir.path())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
+            .kill_on_drop(true)
+            .spawn()
+            .context("failed to spawn miroir-proxy binary")?;
+
+        Ok(Self {
+            _child: child,
+            _config_dir: config_dir,
+        })
+    }
+}
+
+/// Render the proxy's `miroir.yaml`. Only overrides of `MiroirConfig`
+/// defaults are written; every other field keeps its default.
+///
+/// Topology note: `MiroirConfig::validate` requires a redis task store (plus
+/// leader election) once `replication_factor > 1` or `replica_groups > 1`,
+/// and the sqlite store this test can actually use is single-writer — so the
+/// proxy runs with RF 1 and a single replica group (all nodes in group 0).
+/// The sqlite db path is pointed inside the config dir because the default
+/// (`/data/miroir-tasks.db`) is not writable here, and `search_ui` is
+/// disabled because the real binary refuses to start with it enabled but no
+/// JWT secret configured.
+fn proxy_config_yaml(node_urls: &[String], task_db_path: &Path) -> String {
+    let nodes = node_urls
+        .iter()
+        .enumerate()
+        .map(|(i, url)| format!("  - id: node-{i}\n    address: {url}\n    replica_group: 0"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "master_key: {PROXY_MASTER_KEY}\n\
+         node_master_key: {NODE_MASTER_KEY}\n\
+         shards: 16\n\
+         replication_factor: 1\n\
+         replica_groups: 1\n\
+         nodes:\n{nodes}\n\
+         server:\n  bind: 127.0.0.1\n  port: {PROXY_PORT}\n\
+         health:\n  interval_ms: 200\n  timeout_ms: 1000\n\
+         task_store:\n  backend: sqlite\n  path: {}\n\
+         result_cache:\n  enabled: true\n  ttl_ms: 500\n  max_size: 1000\n\
+         search_ui:\n  enabled: false\n",
+        task_db_path.display(),
+    )
+}
+
 /// Test configuration helper.
 struct CacheFlowTestSetup {
+    /// Holds `PROXY_SLOT` for the whole test body (see its docs).
+    _proxy_slot: MutexGuard<'static, ()>,
     /// Container handles must be retained for the whole test: dropping a
     /// `ContainerAsync` removes the container, which would tear the nodes
     /// down before any request is made.
     _containers: Vec<ContainerAsync<Meilisearch>>,
+    /// The proxy under test; killed and cleaned up on drop.
+    _proxy: SpawnedProxy,
     meilisearch_urls: Vec<String>,
     proxy_url: String,
     master_key: String,
@@ -77,6 +178,10 @@ struct CacheFlowTestSetup {
 
 impl CacheFlowTestSetup {
     async fn new() -> anyhow::Result<Self> {
+        // Take the proxy slot first: with it held, no other test in this
+        // binary can race us for the metrics port while our containers start.
+        let proxy_slot = PROXY_SLOT.lock().await;
+
         // Bail with the skip reason when Docker is unavailable so callers can
         // skip instead of panicking on the first container start.
         check_docker_available()?;
@@ -85,9 +190,11 @@ impl CacheFlowTestSetup {
         let mut containers = Vec::new();
         let mut meilisearch_urls = Vec::new();
         for _ in 0..3 {
-            // Configure the key via the module's env API: with_cmd would
-            // REPLACE the image Cmd, leaving tini to exec the flag alone and
-            // the container dies at startup.
+            // Configure the key via the module's env API (it sets
+            // MEILI_MASTER_KEY). `with_cmd` is not an option here: it REPLACES
+            // the image Cmd, so the container runs `tini -- --master-key=key0`
+            // and tini dies with "[FATAL tini (2)] exec --master-key=...
+            // failed: No such file or directory" before meilisearch starts.
             let meilisearch = Meilisearch::default()
                 .with_master_key(NODE_MASTER_KEY)
                 .start()
@@ -99,51 +206,16 @@ impl CacheFlowTestSetup {
             containers.push(meilisearch);
         }
 
-        // Build topology config with cache enabled
-        let mut nodes = Vec::new();
-        for (i, url) in meilisearch_urls.iter().enumerate() {
-            nodes.push(NodeConfig {
-                id: format!("node-{i}"),
-                address: url.clone(),
-                replica_group: (i % 2) as u32, // 2 replica groups
-            });
-        }
-
-        // Documented intended topology; wired into the proxy once the proxy
-        // is spawned in-process (see note below).
-        let _config = Config {
-            shards: 16,
-            replication_factor: 2,
-            replica_groups: 2,
-            master_key: "test_master_key".to_string(),
-            admin: miroir_core::config::AdminConfig {
-                api_key: "test_admin_key".to_string(),
-                ..Default::default()
-            },
-            nodes,
-            server: miroir_core::config::ServerConfig {
-                bind: "127.0.0.1".to_string(),
-                port: 17770,
-                ..Default::default()
-            },
-            result_cache: ResultCacheConfig {
-                enabled: true,
-                ttl_ms: 500,
-                max_size: 1000,
-            },
-            ..Default::default()
-        };
-
-        // Start the proxy in a separate task
-        let proxy_url = "http://127.0.0.1:17770";
-        // Note: In a real test, we'd spawn the proxy with the config here
-        // For now, we'll assume it's already running
+        // Spawn the real proxy against the nodes
+        let proxy = SpawnedProxy::spawn(&meilisearch_urls).await?;
 
         Ok(Self {
+            _proxy_slot: proxy_slot,
             _containers: containers,
+            _proxy: proxy,
             meilisearch_urls,
-            proxy_url: proxy_url.to_string(),
-            master_key: "test_master_key".to_string(),
+            proxy_url: format!("http://127.0.0.1:{PROXY_PORT}"),
+            master_key: PROXY_MASTER_KEY.to_string(),
             client: Client::new(),
         })
     }
@@ -206,6 +278,29 @@ impl CacheFlowTestSetup {
         }
 
         // Wait for replication
+        sleep(Duration::from_millis(500)).await;
+        Ok(())
+    }
+
+    /// Update index settings on every node directly. Like `create_index` and
+    /// `add_documents`, index management bypasses the proxy.
+    async fn set_node_settings(&self, index_uid: &str, settings: Value) -> anyhow::Result<()> {
+        for url in &self.meilisearch_urls {
+            let resp = self
+                .client
+                .put(format!("{url}/indexes/{index_uid}/settings"))
+                .header("Authorization", format!("Bearer {NODE_MASTER_KEY}"))
+                .json(&settings)
+                .send()
+                .await?;
+
+            if !resp.status().is_success() {
+                anyhow::bail!("Failed to update settings on {}: {}", url, resp.status());
+            }
+        }
+
+        // Settings updates are async tasks in Meilisearch; give them a moment
+        // to apply before the first query that depends on them.
         sleep(Duration::from_millis(500)).await;
         Ok(())
     }
@@ -833,6 +928,16 @@ async fn acceptance_10_cache_with_complex_query() {
         {"id": 3, "name": "Tablet", "category": "electronics", "price": 449, "in_stock": false}
     ]);
     setup.add_documents("products", documents).await.unwrap();
+
+    // Filtered/faceted queries require filterableAttributes on the nodes; the
+    // proxy forwards the query verbatim, so the setting must exist upstream.
+    setup
+        .set_node_settings(
+            "products",
+            json!({"filterableAttributes": ["category", "in_stock"]}),
+        )
+        .await
+        .unwrap();
 
     // Execute a complex query with filters
     let query = json!({
