@@ -204,62 +204,10 @@ async fn create_populated_index(
     Ok(())
 }
 
-/// Get reshard status from admin endpoint.
-async fn get_reshard_status(
-    proxy_url: &str,
-    admin_key: &str,
-    index_uid: &str,
-) -> anyhow::Result<serde_json::Value> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .expect("client");
-
-    let resp = client
-        .get(format!("{proxy_url}/indexes/{index_uid}/reshard/status"))
-        .header("Authorization", format!("Bearer {admin_key}"))
-        .send()
-        .await?;
-
-    if !resp.status().is_success() {
-        anyhow::bail!("Failed to get reshard status: {}", resp.status());
-    }
-
-    let body: serde_json::Value = resp.json().await?;
-    Ok(body)
-}
-
-/// Start a reshard operation.
-async fn start_reshard(
-    proxy_url: &str,
-    admin_key: &str,
-    index_uid: &str,
-    new_shards: u32,
-) -> anyhow::Result<serde_json::Value> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .expect("client");
-
-    let resp = client
-        .post(format!("{proxy_url}/indexes/{index_uid}/reshard"))
-        .header("Authorization", format!("Bearer {admin_key}"))
-        .json(&json!({
-            "new_shards": new_shards,
-            "throttle_docs_per_sec": 10000
-        }))
-        .send()
-        .await?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Failed to start reshard: HTTP {status} - {body}");
-    }
-
-    let body: serde_json::Value = resp.json().await?;
-    Ok(body)
-}
+// NOTE: helpers to drive the real admin endpoints (POST
+// /indexes/{uid}/reshard, GET .../reshard/status) were removed as dead code —
+// these tests simulate progress locally and never start the proxy. Re-add
+// them when a test actually drives a running proxy (see git history).
 
 // ---------------------------------------------------------------------------
 // Integration Tests
@@ -271,7 +219,6 @@ async fn test_reshard_progress_non_zero_mid_backfill() -> anyhow::Result<()> {
     // and reaches 1.0 at completion (bead bf-4gdoc acceptance criteria)
 
     let master_key = "test_master_key";
-    let admin_key = "test_admin_key";
 
     // Start a Meilisearch node, skipping gracefully when Docker is
     // unavailable: the guard's Err is a skip signal, not a failure (repo

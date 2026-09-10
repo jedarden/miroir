@@ -9,10 +9,9 @@
 //! - Cache invalidation on settings version change
 //! - Cache hit bypass reduces upstream calls in batch
 
-use miroir_core::config::{MiroirConfig, ResultCacheConfig};
+use miroir_core::config::ResultCacheConfig;
 use miroir_core::result_cache::{CacheKey, ResultCache};
 use serde_json::json;
-use std::sync::Arc;
 
 #[tokio::test]
 async fn acceptance_1_multi_search_cache_hit_bypasses_fanout() {
@@ -303,12 +302,12 @@ async fn acceptance_7_multi_search_cache_ttl_expiration() {
 
     // Insert multiple entries
     for i in 0..3 {
-        let query = format!(r#"{{"q":"test{}"}}"#, i);
+        let query = format!(r#"{{"q":"test{i}"}}"#);
         let canonical = miroir_core::result_cache::canonicalize_query(
             &serde_json::from_str(&query).unwrap()
         ).unwrap();
         let key = CacheKey::new("test", &canonical, 1);
-        let data = format!("data{}", i);
+        let data = format!("data{i}");
         cache.insert(key, data.into_bytes()).await.unwrap();
     }
 
@@ -320,7 +319,7 @@ async fn acceptance_7_multi_search_cache_ttl_expiration() {
 
     // All should be expired now
     for i in 0..3 {
-        let query = format!(r#"{{"q":"test{}"}}"#, i);
+        let query = format!(r#"{{"q":"test{i}"}}"#);
         let canonical = miroir_core::result_cache::canonicalize_query(
             &serde_json::from_str(&query).unwrap()
         ).unwrap();

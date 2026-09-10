@@ -175,14 +175,14 @@ impl CacheFlowTestSetup {
         for url in &self.meilisearch_urls {
             let resp = self
                 .client
-                .post(format!("{}/indexes", url))
+                .post(format!("{url}/indexes"))
                 .header("Authorization", format!("Bearer {NODE_MASTER_KEY}"))
                 .json(&body)
                 .send()
                 .await?;
 
             if !resp.status().is_success() {
-                anyhow::bail!("Failed to create index on {}", url);
+                anyhow::bail!("Failed to create index on {url}");
             }
         }
 
@@ -195,14 +195,14 @@ impl CacheFlowTestSetup {
         let url = &self.meilisearch_urls[0];
         let resp = self
             .client
-            .post(format!("{}/indexes/{}/documents", url, index_uid))
+            .post(format!("{url}/indexes/{index_uid}/documents"))
             .header("Authorization", format!("Bearer {NODE_MASTER_KEY}"))
             .json(&documents)
             .send()
             .await?;
 
         if !resp.status().is_success() {
-            anyhow::bail!("Failed to add documents to index {}", index_uid);
+            anyhow::bail!("Failed to add documents to index {index_uid}");
         }
 
         // Wait for replication
@@ -702,8 +702,8 @@ async fn acceptance_8_concurrent_cache_access() {
 
         let handle = tokio::spawn(async move {
             let resp = client
-                .post(format!("{}/indexes/products/search", proxy_url))
-                .header("Authorization", format!("Bearer {}", master_key))
+                .post(format!("{proxy_url}/indexes/products/search"))
+                .header("Authorization", format!("Bearer {master_key}"))
                 .json(&query_clone)
                 .send()
                 .await

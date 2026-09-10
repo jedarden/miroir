@@ -1809,7 +1809,6 @@ mod tests_mode_a_acceptance {
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod mode_a_minimal_reshuffling_tests {
-    use super::*;
     use crate::mode_a_coordinator::ModeACoordinator;
     use crate::peer_discovery::{PeerDiscovery, PeerSet};
     use std::collections::HashSet;

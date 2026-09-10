@@ -380,7 +380,7 @@ fn header_extraction_produces_different_keys() {
     let extract_ip = |forwarded: Option<&str>, real: Option<&str>| -> String {
         forwarded
             .and_then(|s| s.split(',').next())
-            .or_else(|| real)
+            .or(real)
             .unwrap_or("unknown")
             .trim()
             .to_string()
@@ -405,7 +405,7 @@ fn unknown_ip_when_headers_missing() {
     let extract_ip = |forwarded: Option<&str>, real: Option<&str>| -> String {
         forwarded
             .and_then(|s| s.split(',').next())
-            .or_else(|| real)
+            .or(real)
             .unwrap_or("unknown")
             .trim()
             .to_string()

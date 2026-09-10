@@ -267,7 +267,7 @@ async fn acceptance_5_cache_failure_during_high_concurrency() {
     for i in 0..20 {
         let cache_clone = cache.clone();
         let handle = tokio::spawn(async move {
-            let query = format!(r#"{{"q":"test{}"}}"#, i);
+            let query = format!(r#"{{"q":"test{i}"}}"#);
             let canonical = miroir_core::result_cache::canonicalize_query(
                 &serde_json::from_str(&query).unwrap()
             ).unwrap();
@@ -291,7 +291,7 @@ async fn acceptance_5_cache_failure_during_high_concurrency() {
                 cache_clone.set_fail_insert(false);
             }
 
-            let data = format!("data{}", i).into_bytes();
+            let data = format!("data{i}").into_bytes();
             let _ = cache_clone.mock_insert(key, data).await;
         });
         handles.push(handle);
@@ -309,9 +309,21 @@ async fn acceptance_5_cache_failure_during_high_concurrency() {
     assert_eq!(total_gets, 20, "Should have 20 get operations");
     assert_eq!(total_inserts, 20, "Should have 20 insert operations");
 
-    // Cache stats should still be accessible
+    // Cache stats should still be accessible despite failures and stay
+    // coherent: each task performs at most one get (counted as a hit or a
+    // miss) and at most one insert, and the 20 keys are distinct with
+    // max_size well above 20, so no counter can exceed one per task. Exact
+    // hit/miss counts race because the fail flags are shared across tasks.
+    // (The old `stats.hits >= 0` was always true — hits is unsigned.)
     let stats = cache.stats().await;
-    assert!(stats.hits >= 0, "Stats should be accessible despite failures");
+    assert!(
+        stats.hits + stats.misses <= 20,
+        "Stats should remain coherent despite failures"
+    );
+    assert!(
+        stats.entries <= 20,
+        "Stats should remain coherent despite failures"
+    );
 }
 
 #[tokio::test]
@@ -372,11 +384,9 @@ async fn acceptance_7_partial_cache_failure_mixed_operations() {
     let cache = FailingResultCache::new(config);
 
     // Scenario: Multiple cache operations where some fail and some succeed
-    let queries = vec![
-        r#"{"q":"query1"}"#,
+    let queries = [r#"{"q":"query1"}"#,
         r#"{"q":"query2"}"#,
-        r#"{"q":"query3"}"#,
-    ];
+        r#"{"q":"query3"}"#];
 
     let mut results = Vec::new();
 
@@ -389,7 +399,7 @@ async fn acceptance_7_partial_cache_failure_mixed_operations() {
         // Alternate between success and failure
         if i % 2 == 0 {
             cache.set_fail_get(false);
-            let data = format!("data{}", i).into_bytes();
+            let data = format!("data{i}").into_bytes();
             cache.mock_insert(key.clone(), data).await.unwrap();
 
             let result = cache.mock_get(&key).await;
@@ -494,9 +504,14 @@ async fn acceptance_9_cache_error_metrics_tracked_correctly() {
     assert_eq!(cache.get_count(), 2, "Should track both get operations");
     assert_eq!(cache.insert_count(), 1, "Should track insert operation");
 
-    // Cache stats should still be accessible
+    // Cache stats should still be accessible and reflect only the operations
+    // that reached the cache: the failed get never did, so the stats show
+    // exactly one entry (the successful insert) and one hit (the recovered
+    // get). (The old `stats.entries >= 0` was always true — entries is
+    // unsigned.)
     let stats = cache.stats().await;
-    assert!(stats.entries >= 0, "Should maintain valid stats despite errors");
+    assert_eq!(stats.entries, 1, "Should maintain valid stats despite errors");
+    assert_eq!(stats.hits, 1, "Recovered get should count as a hit");
 }
 
 #[tokio::test]
