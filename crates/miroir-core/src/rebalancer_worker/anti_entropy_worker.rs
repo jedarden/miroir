@@ -516,7 +516,7 @@ impl AntiEntropyWorker {
             pod_id,
             mode_a_coordinator: None,
             _total_shards: 0, // Will be set when Mode A is enabled
-            _rf: 2, // Default RF
+            _rf: 2,           // Default RF
             ttl_enabled: false,
             metrics_shards_scanned: None,
             metrics_mismatches_found: None,

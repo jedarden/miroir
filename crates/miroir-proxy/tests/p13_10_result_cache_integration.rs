@@ -13,8 +13,8 @@ use miroir_core::config::ResultCacheConfig;
 use miroir_core::result_cache::{CacheKey, ResultCache};
 use miroir_core::scatter::MockNodeClient;
 use miroir_core::topology::{Node, NodeId, Topology};
-use std::time::Duration;
 use serde_json::json;
+use std::time::Duration;
 
 #[tokio::test]
 async fn acceptance_1_cache_hit_bypasses_fanout() {
@@ -29,9 +29,9 @@ async fn acceptance_1_cache_hit_bypasses_fanout() {
 
     // Create a cache key
     let query = r#"{"q":"laptop","limit":10}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("products", &canonical, 1);
 
     // Pre-populate cache with a result
@@ -72,9 +72,9 @@ async fn acceptance_2_cache_miss_executes_scatter() {
 
     // Create a cache key for a query that's not cached
     let query = r#"{"q":"phone","limit":20}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("products", &canonical, 1);
 
     // Verify cache miss
@@ -114,9 +114,9 @@ async fn acceptance_3_cache_storage_after_merge() {
 
     // Create cache key and store result
     let query = r#"{"q":"search","limit":20}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("products", &canonical, 1);
 
     let response_bytes = serde_json::to_vec(&merged_response).unwrap();
@@ -145,9 +145,9 @@ async fn acceptance_4_metrics_recorded_correctly() {
     // Insert some entries
     for i in 0..5 {
         let query = format!(r#"{{"q":"test{i}"}}"#);
-        let canonical = miroir_core::result_cache::canonicalize_query(
-            &serde_json::from_str(&query).unwrap()
-        ).unwrap();
+        let canonical =
+            miroir_core::result_cache::canonicalize_query(&serde_json::from_str(&query).unwrap())
+                .unwrap();
         let key = CacheKey::new("test", &canonical, 1);
         let data = format!(r#"{{"id":{i}}}"#);
         cache.insert(key, data.into_bytes()).await.unwrap();
@@ -156,9 +156,9 @@ async fn acceptance_4_metrics_recorded_correctly() {
     // Generate some hits
     for i in 0..3 {
         let query = format!(r#"{{"q":"test{i}"}}"#);
-        let canonical = miroir_core::result_cache::canonicalize_query(
-            &serde_json::from_str(&query).unwrap()
-        ).unwrap();
+        let canonical =
+            miroir_core::result_cache::canonicalize_query(&serde_json::from_str(&query).unwrap())
+                .unwrap();
         let key = CacheKey::new("test", &canonical, 1);
         cache.get(&key).await.unwrap();
     }
@@ -166,9 +166,9 @@ async fn acceptance_4_metrics_recorded_correctly() {
     // Generate some misses
     for i in 5..8 {
         let query = format!(r#"{{"q":"test{i}"}}"#);
-        let canonical = miroir_core::result_cache::canonicalize_query(
-            &serde_json::from_str(&query).unwrap()
-        ).unwrap();
+        let canonical =
+            miroir_core::result_cache::canonicalize_query(&serde_json::from_str(&query).unwrap())
+                .unwrap();
         let key = CacheKey::new("test", &canonical, 1);
         cache.get(&key).await.unwrap();
     }
@@ -194,9 +194,9 @@ async fn acceptance_5_cache_disabled_no_storage() {
 
     // Try to insert
     let query = r#"{"q":"test"}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("test", &canonical, 1);
     let data = b"test data".to_vec();
     cache.insert(key.clone(), data).await.unwrap();
@@ -229,9 +229,9 @@ async fn acceptance_6_multi_target_alias_bypassed() {
         // In the actual implementation, multi-target queries bypass the cache
         // This test verifies that behavior
         let query = r#"{"q":"test"}"#;
-        let canonical = miroir_core::result_cache::canonicalize_query(
-            &serde_json::from_str(query).unwrap()
-        ).unwrap();
+        let canonical =
+            miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+                .unwrap();
 
         // Even if we try to cache, the implementation should skip it
         // for multi-target aliases
@@ -243,7 +243,7 @@ async fn acceptance_6_multi_target_alias_bypassed() {
         // The implementation should check resolved_targets.len() == 1
         let result = cache.get(&key).await.unwrap();
         assert!(result.is_some()); // Cache would have it
-        // But the search handler should skip cache for multi-target
+                                   // But the search handler should skip cache for multi-target
     }
 }
 
@@ -259,17 +259,23 @@ async fn acceptance_7_settings_version_invalidates_cache() {
     let cache = ResultCache::new(config);
 
     let query = r#"{"q":"test"}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
 
     // Cache with settings version 1
     let key_v1 = CacheKey::new("products", &canonical, 1);
-    cache.insert(key_v1.clone(), b"version 1".to_vec()).await.unwrap();
+    cache
+        .insert(key_v1.clone(), b"version 1".to_vec())
+        .await
+        .unwrap();
 
     // Cache with settings version 2 (different key)
     let key_v2 = CacheKey::new("products", &canonical, 2);
-    cache.insert(key_v2.clone(), b"version 2".to_vec()).await.unwrap();
+    cache
+        .insert(key_v2.clone(), b"version 2".to_vec())
+        .await
+        .unwrap();
 
     // Verify they're different entries
     assert_ne!(key_v1, key_v2);
@@ -297,13 +303,16 @@ async fn acceptance_8_cache_ttl_expiration() {
     let cache = ResultCache::new(config);
 
     let query = r#"{"q":"test"}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("test", &canonical, 1);
 
     // Insert entry
-    cache.insert(key.clone(), b"test data".to_vec()).await.unwrap();
+    cache
+        .insert(key.clone(), b"test data".to_vec())
+        .await
+        .unwrap();
 
     // Should be present immediately
     let result = cache.get(&key).await.unwrap();
@@ -335,9 +344,9 @@ async fn acceptance_9_lru_eviction_when_full() {
     // Insert 4 entries (should evict the first)
     for i in 0..4 {
         let query = format!(r#"{{"q":"test{i}"}}"#);
-        let canonical = miroir_core::result_cache::canonicalize_query(
-            &serde_json::from_str(&query).unwrap()
-        ).unwrap();
+        let canonical =
+            miroir_core::result_cache::canonicalize_query(&serde_json::from_str(&query).unwrap())
+                .unwrap();
         let key = CacheKey::new("test", &canonical, 1);
         let data = format!("data{i}");
         cache.insert(key, data.into_bytes()).await.unwrap();
@@ -348,18 +357,18 @@ async fn acceptance_9_lru_eviction_when_full() {
 
     // First entry should have been evicted
     let query = r#"{"q":"test0"}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("test", &canonical, 1);
     let result = cache.get(&key).await.unwrap();
     assert!(result.is_none());
 
     // Last entry should still be present
     let query = r#"{"q":"test3"}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("test", &canonical, 1);
     let result = cache.get(&key).await.unwrap();
     assert_eq!(result, Some(b"data3".to_vec()));
@@ -436,9 +445,9 @@ async fn acceptance_11_cache_hit_bypass_reduces_upstream_calls() {
     // before scatter, so no node client is ever consulted.
     // Pre-populate cache with a result
     let query = r#"{"q":"laptop","limit":10}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("products", &canonical, 1);
 
     let cached_response = json!({
@@ -506,16 +515,15 @@ async fn acceptance_12_cache_miss_executes_upstream_calls() {
         "estimatedTotalHits": 1,
         "processingTimeMs": 5
     });
-    mock_client.responses.insert(
-        NodeId::new("node-0".to_string()),
-        response
-    );
+    mock_client
+        .responses
+        .insert(NodeId::new("node-0".to_string()), response);
 
     // Create a cache key that won't be in cache
     let query = r#"{"q":"nonexistent","limit":10}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("products", &canonical, 1);
 
     // Verify cache miss
@@ -558,9 +566,9 @@ async fn acceptance_13_cache_hit_response_format_matches_scatter_gather() {
     });
 
     let query = r#"{"q":"test","limit":20}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("products", &canonical, 1);
 
     let cached_bytes = serde_json::to_vec(&cached_response).unwrap();
@@ -586,6 +594,9 @@ async fn acceptance_13_cache_hit_response_format_matches_scatter_gather() {
 
     // Verify facet distribution is present
     assert!(retrieved["facetDistribution"].is_object());
-    assert_eq!(retrieved["facetDistribution"]["category"]["electronics"], 10);
+    assert_eq!(
+        retrieved["facetDistribution"]["category"]["electronics"],
+        10
+    );
     assert_eq!(retrieved["facetDistribution"]["category"]["books"], 5);
 }

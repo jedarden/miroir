@@ -26,15 +26,15 @@ async fn acceptance_1_multi_search_cache_hit_bypasses_fanout() {
 
     // Create cache keys for two queries in the batch
     let query1 = r#"{"q":"laptop","limit":10}"#;
-    let canonical1 = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query1).unwrap()
-    ).unwrap();
+    let canonical1 =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query1).unwrap())
+            .unwrap();
     let key1 = CacheKey::new("products", &canonical1, 1);
 
     let query2 = r#"{"q":"phone","limit":20}"#;
-    let canonical2 = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query2).unwrap()
-    ).unwrap();
+    let canonical2 =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query2).unwrap())
+            .unwrap();
     let key2 = CacheKey::new("products", &canonical2, 1);
 
     // Pre-populate cache with results
@@ -53,8 +53,14 @@ async fn acceptance_1_multi_search_cache_hit_bypasses_fanout() {
         "offset": 0
     });
 
-    cache.insert(key1.clone(), serde_json::to_vec(&cached_response1).unwrap()).await.unwrap();
-    cache.insert(key2.clone(), serde_json::to_vec(&cached_response2).unwrap()).await.unwrap();
+    cache
+        .insert(key1.clone(), serde_json::to_vec(&cached_response1).unwrap())
+        .await
+        .unwrap();
+    cache
+        .insert(key2.clone(), serde_json::to_vec(&cached_response2).unwrap())
+        .await
+        .unwrap();
 
     // Verify cache hits
     let result1 = cache.get(&key1).await.unwrap();
@@ -83,15 +89,15 @@ async fn acceptance_2_multi_search_cache_miss_executes_scatter() {
 
     // Create cache keys for queries that are not cached
     let query1 = r#"{"q":"tablet","limit":10}"#;
-    let canonical1 = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query1).unwrap()
-    ).unwrap();
+    let canonical1 =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query1).unwrap())
+            .unwrap();
     let key1 = CacheKey::new("products", &canonical1, 1);
 
     let query2 = r#"{"q":"monitor","limit":20}"#;
-    let canonical2 = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query2).unwrap()
-    ).unwrap();
+    let canonical2 =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query2).unwrap())
+            .unwrap();
     let key2 = CacheKey::new("products", &canonical2, 1);
 
     // Verify cache misses
@@ -121,9 +127,9 @@ async fn acceptance_3_multi_search_mixed_hit_miss() {
 
     // Cache only the first query
     let query1 = r#"{"q":"cached","limit":10}"#;
-    let canonical1 = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query1).unwrap()
-    ).unwrap();
+    let canonical1 =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query1).unwrap())
+            .unwrap();
     let key1 = CacheKey::new("products", &canonical1, 1);
 
     let cached_response1 = json!({
@@ -133,13 +139,16 @@ async fn acceptance_3_multi_search_mixed_hit_miss() {
         "limit": 10,
         "offset": 0
     });
-    cache.insert(key1.clone(), serde_json::to_vec(&cached_response1).unwrap()).await.unwrap();
+    cache
+        .insert(key1.clone(), serde_json::to_vec(&cached_response1).unwrap())
+        .await
+        .unwrap();
 
     // Second query is not cached
     let query2 = r#"{"q":"uncached","limit":20}"#;
-    let canonical2 = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query2).unwrap()
-    ).unwrap();
+    let canonical2 =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query2).unwrap())
+            .unwrap();
     let key2 = CacheKey::new("products", &canonical2, 1);
 
     // Verify mixed results
@@ -186,19 +195,25 @@ async fn acceptance_4_multi_search_cache_storage_after_merge() {
 
     // Create cache keys and store results
     let query1 = r#"{"q":"search1","limit":10}"#;
-    let canonical1 = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query1).unwrap()
-    ).unwrap();
+    let canonical1 =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query1).unwrap())
+            .unwrap();
     let key1 = CacheKey::new("products", &canonical1, 1);
 
     let query2 = r#"{"q":"search2","limit":20}"#;
-    let canonical2 = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query2).unwrap()
-    ).unwrap();
+    let canonical2 =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query2).unwrap())
+            .unwrap();
     let key2 = CacheKey::new("products", &canonical2, 1);
 
-    cache.insert(key1.clone(), serde_json::to_vec(&response1).unwrap()).await.unwrap();
-    cache.insert(key2.clone(), serde_json::to_vec(&response2).unwrap()).await.unwrap();
+    cache
+        .insert(key1.clone(), serde_json::to_vec(&response1).unwrap())
+        .await
+        .unwrap();
+    cache
+        .insert(key2.clone(), serde_json::to_vec(&response2).unwrap())
+        .await
+        .unwrap();
 
     // Verify results were cached
     let result1 = cache.get(&key1).await.unwrap();
@@ -224,16 +239,16 @@ async fn acceptance_5_multi_search_cache_disabled() {
 
     // Try to insert multi-search results
     let query1 = r#"{"q":"test1"}"#;
-    let canonical1 = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query1).unwrap()
-    ).unwrap();
+    let canonical1 =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query1).unwrap())
+            .unwrap();
     let key1 = CacheKey::new("test", &canonical1, 1);
     let data1 = b"result1".to_vec();
 
     let query2 = r#"{"q":"test2"}"#;
-    let canonical2 = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query2).unwrap()
-    ).unwrap();
+    let canonical2 =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query2).unwrap())
+            .unwrap();
     let key2 = CacheKey::new("test", &canonical2, 1);
     let data2 = b"result2".to_vec();
 
@@ -263,17 +278,23 @@ async fn acceptance_6_multi_search_settings_version_invalidates() {
     let cache = ResultCache::new(config);
 
     let query = r#"{"q":"test"}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
 
     // Cache with settings version 1
     let key_v1 = CacheKey::new("products", &canonical, 1);
-    cache.insert(key_v1.clone(), b"version 1".to_vec()).await.unwrap();
+    cache
+        .insert(key_v1.clone(), b"version 1".to_vec())
+        .await
+        .unwrap();
 
     // Cache with settings version 2 (different key)
     let key_v2 = CacheKey::new("products", &canonical, 2);
-    cache.insert(key_v2.clone(), b"version 2".to_vec()).await.unwrap();
+    cache
+        .insert(key_v2.clone(), b"version 2".to_vec())
+        .await
+        .unwrap();
 
     // Verify they're different entries
     assert_ne!(key_v1, key_v2);
@@ -303,9 +324,9 @@ async fn acceptance_7_multi_search_cache_ttl_expiration() {
     // Insert multiple entries
     for i in 0..3 {
         let query = format!(r#"{{"q":"test{i}"}}"#);
-        let canonical = miroir_core::result_cache::canonicalize_query(
-            &serde_json::from_str(&query).unwrap()
-        ).unwrap();
+        let canonical =
+            miroir_core::result_cache::canonicalize_query(&serde_json::from_str(&query).unwrap())
+                .unwrap();
         let key = CacheKey::new("test", &canonical, 1);
         let data = format!("data{i}");
         cache.insert(key, data.into_bytes()).await.unwrap();
@@ -320,9 +341,9 @@ async fn acceptance_7_multi_search_cache_ttl_expiration() {
     // All should be expired now
     for i in 0..3 {
         let query = format!(r#"{{"q":"test{i}"}}"#);
-        let canonical = miroir_core::result_cache::canonicalize_query(
-            &serde_json::from_str(&query).unwrap()
-        ).unwrap();
+        let canonical =
+            miroir_core::result_cache::canonicalize_query(&serde_json::from_str(&query).unwrap())
+                .unwrap();
         let key = CacheKey::new("test", &canonical, 1);
         let result = cache.get(&key).await.unwrap();
         assert!(result.is_none());
@@ -346,9 +367,9 @@ async fn acceptance_8_multi_search_batch_consistency() {
 
     // Create a batch with the same query twice
     let query = r#"{"q":"duplicate","limit":10}"#;
-    let canonical = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query).unwrap()
-    ).unwrap();
+    let canonical =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query).unwrap())
+            .unwrap();
     let key = CacheKey::new("products", &canonical, 1);
 
     // Cache the result once
@@ -359,7 +380,10 @@ async fn acceptance_8_multi_search_batch_consistency() {
         "limit": 10,
         "offset": 0
     });
-    cache.insert(key.clone(), serde_json::to_vec(&response).unwrap()).await.unwrap();
+    cache
+        .insert(key.clone(), serde_json::to_vec(&response).unwrap())
+        .await
+        .unwrap();
 
     // Both queries in the batch should hit the cache
     let result1 = cache.get(&key).await.unwrap();
@@ -387,15 +411,15 @@ async fn acceptance_9_multi_search_cache_hit_reduces_upstream_calls() {
 
     // Create cache keys for multiple queries in a batch
     let query1 = r#"{"q":"cached_query","limit":10}"#;
-    let canonical1 = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query1).unwrap()
-    ).unwrap();
+    let canonical1 =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query1).unwrap())
+            .unwrap();
     let key1 = CacheKey::new("products", &canonical1, 1);
 
     let query2 = r#"{"q":"uncached_query","limit":20}"#;
-    let canonical2 = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query2).unwrap()
-    ).unwrap();
+    let canonical2 =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query2).unwrap())
+            .unwrap();
     let key2 = CacheKey::new("products", &canonical2, 1);
 
     // Pre-populate only the first query in cache
@@ -406,7 +430,10 @@ async fn acceptance_9_multi_search_cache_hit_reduces_upstream_calls() {
         "limit": 10,
         "offset": 0
     });
-    cache.insert(key1.clone(), serde_json::to_vec(&cached_response1).unwrap()).await.unwrap();
+    cache
+        .insert(key1.clone(), serde_json::to_vec(&cached_response1).unwrap())
+        .await
+        .unwrap();
 
     // Simulate multi-search batch execution
     let mut upstream_calls = 0;
@@ -469,19 +496,25 @@ async fn acceptance_10_multi_search_batch_cache_hit_format_consistency() {
     });
 
     let query1 = r#"{"q":"test1","limit":10}"#;
-    let canonical1 = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query1).unwrap()
-    ).unwrap();
+    let canonical1 =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query1).unwrap())
+            .unwrap();
     let key1 = CacheKey::new("products", &canonical1, 1);
 
     let query2 = r#"{"q":"test2","limit":20}"#;
-    let canonical2 = miroir_core::result_cache::canonicalize_query(
-        &serde_json::from_str(query2).unwrap()
-    ).unwrap();
+    let canonical2 =
+        miroir_core::result_cache::canonicalize_query(&serde_json::from_str(query2).unwrap())
+            .unwrap();
     let key2 = CacheKey::new("products", &canonical2, 1);
 
-    cache.insert(key1.clone(), serde_json::to_vec(&cached_response1).unwrap()).await.unwrap();
-    cache.insert(key2.clone(), serde_json::to_vec(&cached_response2).unwrap()).await.unwrap();
+    cache
+        .insert(key1.clone(), serde_json::to_vec(&cached_response1).unwrap())
+        .await
+        .unwrap();
+    cache
+        .insert(key2.clone(), serde_json::to_vec(&cached_response2).unwrap())
+        .await
+        .unwrap();
 
     // Retrieve both cached responses
     let result1 = cache.get(&key1).await.unwrap();

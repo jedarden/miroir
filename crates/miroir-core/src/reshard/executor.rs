@@ -691,12 +691,10 @@ impl<C: NodeClient> ReshardExecutor<C> {
     /// path is unchanged.
     async fn report_progress(&self, state: &ReshardState) {
         if let Some(op) = &self.progress_operation {
-            op.write()
-                .await
-                .update_backfill_progress(
-                    state.backfill_progress.processed_documents,
-                    state.backfill_progress.total_documents,
-                );
+            op.write().await.update_backfill_progress(
+                state.backfill_progress.processed_documents,
+                state.backfill_progress.total_documents,
+            );
         }
     }
 
@@ -1184,10 +1182,12 @@ mod tests {
             mock_stats(&mut server_c, 200, json!({"numberOfDocuments": 180})).await,
         ];
 
-        let executor =
-            executor_with_nodes(vec![server_a.url(), server_b.url(), server_c.url()]);
+        let executor = executor_with_nodes(vec![server_a.url(), server_b.url(), server_c.url()]);
 
-        let count = executor.compute_source_document_count(INDEX_UID).await.unwrap();
+        let count = executor
+            .compute_source_document_count(INDEX_UID)
+            .await
+            .unwrap();
         assert_eq!(count, 250, "denominator is the max responder, not the sum");
 
         // Prove we drove the real HTTP path: every node's stats endpoint was hit.
@@ -1209,13 +1209,12 @@ mod tests {
             mock_stats(&mut server_c, 200, json!({"numberOfDocuments": 250})).await,
         ];
 
-        let executor = executor_with_nodes(vec![
-            server_a.url(),
-            server_dead.url(),
-            server_c.url(),
-        ]);
+        let executor = executor_with_nodes(vec![server_a.url(), server_dead.url(), server_c.url()]);
 
-        let count = executor.compute_source_document_count(INDEX_UID).await.unwrap();
+        let count = executor
+            .compute_source_document_count(INDEX_UID)
+            .await
+            .unwrap();
         assert_eq!(
             count, 250,
             "a single failing node must not block the denominator"
@@ -1235,13 +1234,20 @@ mod tests {
 
         let mocks: Vec<mockito::Mock> = vec![
             mock_stats(&mut server_a, 200, json!({"numberOfDocuments": 180})).await,
-            mock_stats(&mut server_missing, 404, json!({"message": "index not found"})).await,
+            mock_stats(
+                &mut server_missing,
+                404,
+                json!({"message": "index not found"}),
+            )
+            .await,
         ];
 
-        let executor =
-            executor_with_nodes(vec![server_a.url(), server_missing.url()]);
+        let executor = executor_with_nodes(vec![server_a.url(), server_missing.url()]);
 
-        let count = executor.compute_source_document_count(INDEX_UID).await.unwrap();
+        let count = executor
+            .compute_source_document_count(INDEX_UID)
+            .await
+            .unwrap();
         assert_eq!(
             count, 180,
             "a 404 (absent replica) counts as zero, not a failure"
@@ -1265,10 +1271,12 @@ mod tests {
             mock_stats(&mut server_c, 500, json!({"message": "down"})).await,
         ];
 
-        let executor =
-            executor_with_nodes(vec![server_a.url(), server_b.url(), server_c.url()]);
+        let executor = executor_with_nodes(vec![server_a.url(), server_b.url(), server_c.url()]);
 
-        let count = executor.compute_source_document_count(INDEX_UID).await.unwrap();
+        let count = executor
+            .compute_source_document_count(INDEX_UID)
+            .await
+            .unwrap();
         assert_eq!(count, 0, "all nodes failing yields a zero denominator");
 
         for m in &mocks {
@@ -1719,7 +1727,7 @@ mod tests {
             .mock("GET", "/indexes/test-idx")
             .with_status(200)
             .with_body(json!({"uid": INDEX_UID, "primaryKey": "id"}).to_string())
-            .expect(2)  // 2 shards, each queries index info
+            .expect(2) // 2 shards, each queries index info
             .create_async()
             .await;
 
@@ -1824,8 +1832,7 @@ mod tests {
             "sanity: shard cursor advanced past every source shard"
         );
         assert_eq!(
-            state_a.backfill_progress.current_shard,
-            state_b.backfill_progress.current_shard,
+            state_a.backfill_progress.current_shard, state_b.backfill_progress.current_shard,
             "seam must not change the shard cursor"
         );
         assert_eq!(
@@ -2080,8 +2087,8 @@ mod tests {
     async fn multi_shard_backfill_progress_sampling_infrastructure() {
         let op = Arc::new(RwLock::new(ReshardOperation::new(
             INDEX_UID.to_string(),
-            4,  // old_shards
-            8,  // target_shards
+            4, // old_shards
+            8, // target_shards
         )));
 
         // bookkeeping_executor has no nodes, so this is pure progress bookkeeping
@@ -2092,11 +2099,8 @@ mod tests {
         let shard_doc_counts = vec![300u64, 250, 200, 250];
 
         // Sample backfill_progress() at multiple points during execution
-        let sampled_ratios = sample_multi_shard_backfill_progress(
-            &executor,
-            &op,
-            shard_doc_counts,
-        ).await;
+        let sampled_ratios =
+            sample_multi_shard_backfill_progress(&executor, &op, shard_doc_counts).await;
 
         // Infrastructure verification: we successfully sampled 4 ratios
         // (one per shard completion) and stored them for assertion
@@ -2197,8 +2201,8 @@ mod tests {
     async fn legacy_path_backfill_progress_never_exceeds_one() {
         let op = Arc::new(RwLock::new(ReshardOperation::new(
             INDEX_UID.to_string(),
-            4,  // old_shards
-            8,  // target_shards
+            4, // old_shards
+            8, // target_shards
         )));
 
         // bookkeeping_executor has no nodes, so this is pure progress bookkeeping
@@ -2210,11 +2214,8 @@ mod tests {
 
         // Sample backfill_progress() at multiple points during execution
         // in the legacy path (upfront_total_known=false, denominator accumulates)
-        let sampled_ratios = sample_legacy_multi_shard_backfill_progress(
-            &executor,
-            &op,
-            shard_doc_counts,
-        ).await;
+        let sampled_ratios =
+            sample_legacy_multi_shard_backfill_progress(&executor, &op, shard_doc_counts).await;
 
         // Use unified ceiling assertion helper
         assert_backfill_ceiling_property(&sampled_ratios, "legacy");
@@ -2251,8 +2252,8 @@ mod tests {
     async fn new_path_backfill_progress_never_exceeds_one() {
         let op = Arc::new(RwLock::new(ReshardOperation::new(
             INDEX_UID.to_string(),
-            4,  // old_shards
-            8,  // target_shards
+            4, // old_shards
+            8, // target_shards
         )));
 
         // bookkeeping_executor has no nodes, so this is pure progress bookkeeping
@@ -2264,11 +2265,8 @@ mod tests {
 
         // Sample backfill_progress() at multiple points during execution
         // in the new path (upfront_total_known=true, denominator fixed upfront)
-        let sampled_ratios = sample_multi_shard_backfill_progress(
-            &executor,
-            &op,
-            shard_doc_counts,
-        ).await;
+        let sampled_ratios =
+            sample_multi_shard_backfill_progress(&executor, &op, shard_doc_counts).await;
 
         // Use unified ceiling assertion helper
         assert_backfill_ceiling_property(&sampled_ratios, "new");

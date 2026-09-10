@@ -141,14 +141,20 @@ async fn x_forwarded_for_uses_first_ip() {
         let (allowed, _) = store
             .check_rate_limit_search_ui(extracted_ip, limit, window_seconds)
             .expect("check rate limit");
-        assert!(allowed, "attempt {i} with X-Forwarded-For should be allowed");
+        assert!(
+            allowed,
+            "attempt {i} with X-Forwarded-For should be allowed"
+        );
     }
 
     // Should be blocked using the first IP as the key
     let (allowed, _) = store
         .check_rate_limit_search_ui(extracted_ip, limit, window_seconds)
         .expect("check rate limit");
-    assert!(!allowed, "should be blocked using first IP from X-Forwarded-For");
+    assert!(
+        !allowed,
+        "should be blocked using first IP from X-Forwarded-For"
+    );
 }
 
 /// X-Forwarded-For header with single IP works correctly.
@@ -297,7 +303,10 @@ async fn redis_backend_shares_bucket_across_instances() {
     let (allowed, _) = store_a
         .check_rate_limit_search_ui(ip, limit, window_seconds)
         .expect("pod A check rate limit");
-    assert!(!allowed, "pod A 11th request should be blocked (shared bucket)");
+    assert!(
+        !allowed,
+        "pod A 11th request should be blocked (shared bucket)"
+    );
 
     // Pod B also tries - should also be blocked
     let (allowed, _) = store_b
@@ -412,5 +421,8 @@ fn unknown_ip_when_headers_missing() {
     };
 
     let ip = extract_ip(None, None);
-    assert_eq!(ip, "unknown", "should fall back to 'unknown' when headers missing");
+    assert_eq!(
+        ip, "unknown",
+        "should fall back to 'unknown' when headers missing"
+    );
 }

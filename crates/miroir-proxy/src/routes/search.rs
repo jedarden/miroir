@@ -526,7 +526,8 @@ async fn search_handler(
                                 .is_in_flight(&effective_index)
                                 .await
                             {
-                                response = response.header("X-Miroir-Settings-Inconsistent", "true");
+                                response =
+                                    response.header("X-Miroir-Settings-Inconsistent", "true");
                             }
                             if settings_version > 0 {
                                 response = response.header(
@@ -933,9 +934,18 @@ async fn search_handler(
         // Reconstruct the canonicalized query for caching (same as cache lookup)
         // Use the original request body components that were cloned earlier
         let cache_body = SearchRequestBody {
-            q: capture_body_for_cache.get("q").and_then(|v| v.as_str()).map(String::from),
-            offset: capture_body_for_cache.get("offset").and_then(|v| v.as_u64()).map(|v| v as usize),
-            limit: capture_body_for_cache.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize),
+            q: capture_body_for_cache
+                .get("q")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            offset: capture_body_for_cache
+                .get("offset")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
+            limit: capture_body_for_cache
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
             filter: capture_body_for_cache.get("filter").cloned(),
             facets: facets_for_cache,
             ranking_score: Some(client_requested_score),
@@ -1617,14 +1627,26 @@ mod tests {
         assert_eq!(hash3.len(), 16, "hash should be 16 hex characters");
 
         // Different IPs should produce different hashes (avalanche effect)
-        assert_ne!(hash1, hash2, "different IPs should produce different hashes");
-        assert_ne!(hash2, hash3, "different IPs should produce different hashes");
-        assert_ne!(hash1, hash3, "different IPs should produce different hashes");
+        assert_ne!(
+            hash1, hash2,
+            "different IPs should produce different hashes"
+        );
+        assert_ne!(
+            hash2, hash3,
+            "different IPs should produce different hashes"
+        );
+        assert_ne!(
+            hash1, hash3,
+            "different IPs should produce different hashes"
+        );
 
         // Even IPs with small differences should produce vastly different hashes
         let ip4 = "192.168.1.102";
         let hash4 = hash_for_log(ip4);
-        assert_ne!(hash1, hash4, "IPs with different last octet should produce different hashes");
+        assert_ne!(
+            hash1, hash4,
+            "IPs with different last octet should produce different hashes"
+        );
 
         // Verify deterministic behavior - same input should produce same hash
         let hash1_again = hash_for_log(ip1);
@@ -1641,7 +1663,10 @@ mod tests {
 
         // Should hash the same as directly hashing the first IP
         let direct_hash = hash_for_log("192.168.1.100");
-        assert_eq!(hash, direct_hash, "X-Forwarded-For first IP should hash same as direct IP");
+        assert_eq!(
+            hash, direct_hash,
+            "X-Forwarded-For first IP should hash same as direct IP"
+        );
     }
 
     #[test]
@@ -1655,8 +1680,17 @@ mod tests {
         let hash2 = hash_for_log(ip2);
         let hash3 = hash_for_log(ip3);
 
-        assert_ne!(hash1, hash2, "IPs differing by one octet should produce different hashes");
-        assert_ne!(hash1, hash3, "IPs differing by one octet should produce different hashes");
-        assert_ne!(hash2, hash3, "IPs differing by one octet should produce different hashes");
+        assert_ne!(
+            hash1, hash2,
+            "IPs differing by one octet should produce different hashes"
+        );
+        assert_ne!(
+            hash1, hash3,
+            "IPs differing by one octet should produce different hashes"
+        );
+        assert_ne!(
+            hash2, hash3,
+            "IPs differing by one octet should produce different hashes"
+        );
     }
 }

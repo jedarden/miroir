@@ -755,14 +755,8 @@ task_store:
         );
 
         // §14.8 result_cache defaults
-        assert_eq!(
-            cfg.result_cache.ttl_ms, 500,
-            "result_cache.ttl_ms"
-        );
-        assert_eq!(
-            cfg.result_cache.max_size, 1000,
-            "result_cache.max_size"
-        );
+        assert_eq!(cfg.result_cache.ttl_ms, 500, "result_cache.ttl_ms");
+        assert_eq!(cfg.result_cache.max_size, 1000, "result_cache.max_size");
 
         // §14.8 anti_entropy defaults
         assert_eq!(
