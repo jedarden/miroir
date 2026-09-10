@@ -273,8 +273,16 @@ async fn test_reshard_progress_non_zero_mid_backfill() -> anyhow::Result<()> {
     let master_key = "test_master_key";
     let admin_key = "test_admin_key";
 
-    // Start a Meilisearch node
-    let (node_url, _container) = start_meilisearch_node(master_key).await?;
+    // Start a Meilisearch node, skipping gracefully when Docker is
+    // unavailable: the guard's Err is a skip signal, not a failure (repo
+    // convention — see docker_compose_integration.rs and p10_7).
+    let (node_url, _container) = match start_meilisearch_node(master_key).await {
+        Ok(started) => started,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return Ok(());
+        }
+    };
 
     // Create a populated index (1000 documents)
     let index_uid = "products";
@@ -461,7 +469,7 @@ async fn test_existing_reshard_tests_still_pass() -> anyhow::Result<()> {
             "total_documents": 1000,
             "backfill_progress": 1.0,
             "shadow_index": "test__reshard_4",
-            "started_at": 1234567890000u64,
+            "started_at": 1234567890000,
             "last_error": null,
             "verification_results": null
         }
