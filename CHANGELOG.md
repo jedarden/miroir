@@ -20,6 +20,7 @@ See [`docs/versioning-policy.md`](docs/versioning-policy.md) for the full policy
 - Search UI rate limiting per-IP isolation tests (p13_21_search_ui_rate_limit.rs) covering X-Forwarded-For parsing, X-Real-IP fallback, Redis multi-pod shared buckets, and hash uniqueness for abuse forensics.
 
 ### Changed
+- The `admin_ui.csp` and `search_ui.csp` defaults now allow `https://esm.sh` under `script-src` and `connect-src` so the Agentation visual-feedback toolbar (react / react-dom / agentation ES modules) loads without being blocked by CSP. For `search_ui`, whose base template previously had no `script-src`/`connect-src`, those directives are added explicitly and `default-src 'self'` stays strict — no other fetch type is loosened. Deployments that do not want the toolbar can strip `https://esm.sh` from the `csp` templates (or via `csp_overrides.script_src` / `csp_overrides.connect_src`); the UIs log a console warning and work unchanged without it.
 ### Deprecated
 ### Removed
 ### Fixed

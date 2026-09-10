@@ -3110,6 +3110,7 @@ admin_ui:
     script_src: []              # additional script-src domains
     img_src: []                 # additional img-src domains
     connect_src: []             # additional connect-src for XHR targets
+  csp: "default-src 'self'; script-src 'self' https://esm.sh; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' https://esm.sh; frame-ancestors 'none'"   # base template; https://esm.sh is required by the Agentation toolbar
   theme:
     accent_color: "#2563eb"
     default_mode: auto          # auto | light | dark
@@ -3120,6 +3121,8 @@ admin_ui:
 ```
 
 **CORS / CSP rationale.** Both UIs ship with strict same-origin defaults. Operators embedding the search widget on a third-party domain MUST add that domain to `search_ui.cors_allowed_origins`. Operators serving images from a CDN MUST add the CDN origin to `csp_overrides.img_src`. The admin UI should almost never need `cors_allowed_origins` populated — it is meant for first-party operator access; the knob exists for operators running a separate dashboard host that embeds admin views via iframe. `csp_overrides.*` values are merged into the corresponding CSP directives at render time; they are additive only, never permissive replacements of the base template.
+
+**Agentation toolbar CSP requirement.** Both UIs embed the Agentation visual-feedback toolbar, which loads `react`, `react-dom`, and `agentation` as ES modules from `https://esm.sh`. The default `csp` templates therefore list `https://esm.sh` under `script-src` and `connect-src` (for `search_ui`, whose base template historically had no `script-src`/`connect-src`, those directives are added explicitly rather than widening `default-src 'self'`). The templates live as the `csp` defaults in `crates/miroir-core/src/config/advanced.rs` (`AdminUiConfig` / `SearchUiConfig`). Operators who remove the toolbar (or who do not want the third-party origin) can strip `https://esm.sh` from `csp` or fold it back in via `csp_overrides.script_src` / `csp_overrides.connect_src` — with esm.sh absent, the toolbar fails to load and logs a console warning; the UI itself is unaffected.
 
 **Compatibility.** All UI actions hit Miroir's existing admin API surface. No new node-side endpoints. No Meilisearch modification.
 
@@ -3396,7 +3399,7 @@ search_ui:
     script_src: []                  # additional script-src domains
     img_src: []                     # additional img-src domains
     connect_src: []                 # additional connect-src for XHR targets
-  csp: "default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'"   # base template; any csp_overrides.* lists are merged into the corresponding directives at render time
+  csp: "default-src 'self'; script-src 'self' https://esm.sh; img-src 'self' https:; style-src 'self' 'unsafe-inline'; connect-src 'self' https://esm.sh"   # base template; any csp_overrides.* lists are merged into the corresponding directives at render time. script-src/connect-src exist for the Agentation toolbar (esm.sh); default-src stays strict
 
   analytics:
     enabled: false

@@ -77,7 +77,14 @@ miroir:
       script_src: []
       img_src: []
       connect_src: []
-    csp: "default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'"
+    # Base template; any csp_overrides.* lists are merged into the corresponding
+    # directives at render time. script-src/connect-src include https://esm.sh
+    # because the Agentation feedback toolbar loads react/react-dom/agentation
+    # from there; remove them if you do not want the toolbar. Extend sources via
+    # csp_overrides.script_src / csp_overrides.connect_src rather than editing
+    # this template. (The admin_ui.csp binary default carries the same esm.sh
+    # grant; this chart does not render the ui sections into config.yaml.)
+    csp: "default-src 'self'; script-src 'self' https://esm.sh; img-src 'self' https:; style-src 'self' 'unsafe-inline'; connect-src 'self' https://esm.sh"
     analytics:
       enabled: false
       sink: cdc
