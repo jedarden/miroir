@@ -10,19 +10,65 @@
 //! These tests use testcontainers to spin up real Meilisearch instances
 //! and make actual HTTP requests through the proxy to test cache behavior
 //! in a realistic environment.
+//!
+//! Prerequisites:
+//!   Option 1: Docker available for testcontainers Meilisearch
+//!   Option 2: Set MIROIR_TEST_SKIP_DOCKER=1 to skip these tests
 
 use miroir_core::config::{Config, NodeConfig, ResultCacheConfig};
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::path::Path;
 use std::time::Duration;
-use testcontainers::{runners::AsyncRunner, ImageExt};
+use testcontainers::{runners::AsyncRunner, ContainerAsync};
 use testcontainers_modules::meilisearch::Meilisearch;
 use tokio::time::sleep;
 
+/// Master key shared by every Meilisearch node. `NodeConfig` carries no
+/// per-node credentials, so the nodes (and the helpers below that address
+/// them directly) must all authenticate with the same key.
+const NODE_MASTER_KEY: &str = "key0";
+
+/// Check if Docker is available for testcontainers.
+fn check_docker_available() -> anyhow::Result<()> {
+    if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
+        anyhow::bail!(
+            "Docker tests skipped via MIROIR_TEST_SKIP_DOCKER. \
+             Unset MIROIR_TEST_SKIP_DOCKER and ensure Docker is available."
+        );
+    }
+
+    // An explicit DOCKER_HOST (podman service, TCP daemon, ...) overrides the
+    // default socket path; trust it and let testcontainers surface any
+    // connection failure itself.
+    if std::env::var("DOCKER_HOST").is_ok() {
+        return Ok(());
+    }
+
+    let docker_sock = Path::new("/var/run/docker.sock");
+    if !docker_sock.exists() {
+        anyhow::bail!(
+            "Docker socket not found at /var/run/docker.sock. \
+             Set MIROIR_TEST_SKIP_DOCKER=1 to skip, or ensure Docker is running."
+        );
+    }
+
+    if let Err(e) = std::fs::metadata(docker_sock) {
+        anyhow::bail!(
+            "Cannot access Docker socket: {e}. \
+             Set MIROIR_TEST_SKIP_DOCKER=1 to skip, or ensure Docker is running."
+        );
+    }
+
+    Ok(())
+}
+
 /// Test configuration helper.
 struct CacheFlowTestSetup {
-    #[allow(dead_code)]
+    /// Container handles must be retained for the whole test: dropping a
+    /// `ContainerAsync` removes the container, which would tear the nodes
+    /// down before any request is made.
+    _containers: Vec<ContainerAsync<Meilisearch>>,
     meilisearch_urls: Vec<String>,
     proxy_url: String,
     master_key: String,
@@ -31,17 +77,26 @@ struct CacheFlowTestSetup {
 
 impl CacheFlowTestSetup {
     async fn new() -> anyhow::Result<Self> {
+        // Bail with the skip reason when Docker is unavailable so callers can
+        // skip instead of panicking on the first container start.
+        check_docker_available()?;
+
         // Start 3 Meilisearch nodes for scatter-gather testing
+        let mut containers = Vec::new();
         let mut meilisearch_urls = Vec::new();
-        for i in 0..3 {
+        for _ in 0..3 {
+            // Configure the key via the module's env API: with_cmd would
+            // REPLACE the image Cmd, leaving tini to exec the flag alone and
+            // the container dies at startup.
             let meilisearch = Meilisearch::default()
-                .with_cmd([format!("--master-key=key{i}")])
+                .with_master_key(NODE_MASTER_KEY)
                 .start()
                 .await?;
 
             let port = meilisearch.get_host_port_ipv4(7700).await?;
             let url = format!("http://localhost:{port}");
             meilisearch_urls.push(url);
+            containers.push(meilisearch);
         }
 
         // Build topology config with cache enabled
@@ -54,7 +109,9 @@ impl CacheFlowTestSetup {
             });
         }
 
-        let config = Config {
+        // Documented intended topology; wired into the proxy once the proxy
+        // is spawned in-process (see note below).
+        let _config = Config {
             shards: 16,
             replication_factor: 2,
             replica_groups: 2,
@@ -83,6 +140,7 @@ impl CacheFlowTestSetup {
         // For now, we'll assume it's already running
 
         Ok(Self {
+            _containers: containers,
             meilisearch_urls,
             proxy_url: proxy_url.to_string(),
             master_key: "test_master_key".to_string(),
@@ -118,7 +176,7 @@ impl CacheFlowTestSetup {
             let resp = self
                 .client
                 .post(format!("{}/indexes", url))
-                .header("Authorization", format!("Bearer key0"))
+                .header("Authorization", format!("Bearer {NODE_MASTER_KEY}"))
                 .json(&body)
                 .send()
                 .await?;
@@ -138,7 +196,7 @@ impl CacheFlowTestSetup {
         let resp = self
             .client
             .post(format!("{}/indexes/{}/documents", url, index_uid))
-            .header("Authorization", format!("Bearer key0"))
+            .header("Authorization", format!("Bearer {NODE_MASTER_KEY}"))
             .json(&documents)
             .send()
             .await?;
@@ -164,7 +222,15 @@ async fn acceptance_1_cache_hit_bypasses_fan_out() {
     // This test verifies that when a query result is cached, subsequent identical queries
     // return the cached result immediately without making any upstream calls to Meilisearch nodes.
 
-    let setup = CacheFlowTestSetup::new().await.unwrap();
+    // Skip gracefully when Docker is unavailable: the setup's Err is a skip
+    // signal, not a failure (repo convention — see p5_1_f and p10_7).
+    let setup = match CacheFlowTestSetup::new().await {
+        Ok(setup) => setup,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
     setup.wait_for_ready().await.unwrap();
 
     // Create an index and add test documents
@@ -231,7 +297,15 @@ async fn acceptance_2_cache_miss_triggers_fan_out() {
     // This test verifies that when a query is not in cache, the system executes
     // the full scatter-gather flow and then caches the result for future use.
 
-    let setup = CacheFlowTestSetup::new().await.unwrap();
+    // Skip gracefully when Docker is unavailable: the setup's Err is a skip
+    // signal, not a failure (repo convention — see p5_1_f and p10_7).
+    let setup = match CacheFlowTestSetup::new().await {
+        Ok(setup) => setup,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
     setup.wait_for_ready().await.unwrap();
 
     // Create an index and add test documents
@@ -284,7 +358,15 @@ async fn acceptance_3_cache_stores_results_after_scatter_gather() {
     // This test verifies that after a successful scatter-gather operation,
     // the merged result is properly cached for future use.
 
-    let setup = CacheFlowTestSetup::new().await.unwrap();
+    // Skip gracefully when Docker is unavailable: the setup's Err is a skip
+    // signal, not a failure (repo convention — see p5_1_f and p10_7).
+    let setup = match CacheFlowTestSetup::new().await {
+        Ok(setup) => setup,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
     setup.wait_for_ready().await.unwrap();
 
     // Create an index with test data
@@ -340,7 +422,15 @@ async fn acceptance_4_cache_reduces_upstream_meilisearch_calls() {
     // This test verifies that repeated queries hit the cache instead of
     // making repeated calls to Meilisearch nodes, reducing upstream load.
 
-    let setup = CacheFlowTestSetup::new().await.unwrap();
+    // Skip gracefully when Docker is unavailable: the setup's Err is a skip
+    // signal, not a failure (repo convention — see p5_1_f and p10_7).
+    let setup = match CacheFlowTestSetup::new().await {
+        Ok(setup) => setup,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
     setup.wait_for_ready().await.unwrap();
 
     // Create an index with test data
@@ -391,7 +481,15 @@ async fn acceptance_5_different_queries_use_different_cache_keys() {
     // This test verifies that semantically different queries use different
     // cache entries and don't interfere with each other.
 
-    let setup = CacheFlowTestSetup::new().await.unwrap();
+    // Skip gracefully when Docker is unavailable: the setup's Err is a skip
+    // signal, not a failure (repo convention — see p5_1_f and p10_7).
+    let setup = match CacheFlowTestSetup::new().await {
+        Ok(setup) => setup,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
     setup.wait_for_ready().await.unwrap();
 
     // Create an index with test data
@@ -468,7 +566,15 @@ async fn acceptance_6_graceful_handling_of_cache_connection_failure() {
     // This test verifies that if the cache becomes unavailable, the system
     // degrades gracefully and continues to serve requests via scatter-gather.
 
-    let setup = CacheFlowTestSetup::new().await.unwrap();
+    // Skip gracefully when Docker is unavailable: the setup's Err is a skip
+    // signal, not a failure (repo convention — see p5_1_f and p10_7).
+    let setup = match CacheFlowTestSetup::new().await {
+        Ok(setup) => setup,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
     setup.wait_for_ready().await.unwrap();
 
     // Create an index with test data
@@ -506,10 +612,16 @@ async fn acceptance_7_cache_ttl_expiration() {
     // This test verifies that cached results expire after the configured TTL
     // and subsequent queries trigger fresh scatter-gather.
 
-    let setup = CacheFlowTestSetup::new().await
-        .expect("Failed to create test setup");
-    setup.wait_for_ready().await
-        .expect("Proxy did not become ready");
+    // Skip gracefully when Docker is unavailable: the setup's Err is a skip
+    // signal, not a failure (repo convention — see p5_1_f and p10_7).
+    let setup = match CacheFlowTestSetup::new().await {
+        Ok(setup) => setup,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
+    setup.wait_for_ready().await.unwrap();
 
     // Create an index with test data
     setup.create_index("products").await.unwrap();
@@ -560,7 +672,15 @@ async fn acceptance_8_concurrent_cache_access() {
     // This test verifies that multiple concurrent requests to the same
     // query are handled correctly and don't cause race conditions.
 
-    let setup = CacheFlowTestSetup::new().await.unwrap();
+    // Skip gracefully when Docker is unavailable: the setup's Err is a skip
+    // signal, not a failure (repo convention — see p5_1_f and p10_7).
+    let setup = match CacheFlowTestSetup::new().await {
+        Ok(setup) => setup,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
     setup.wait_for_ready().await.unwrap();
 
     // Create an index with test data
@@ -620,7 +740,15 @@ async fn acceptance_9_cache_invalidation_on_index_update() {
     // This test verifies that changing index settings invalidates
     // cached results for that index.
 
-    let setup = CacheFlowTestSetup::new().await.unwrap();
+    // Skip gracefully when Docker is unavailable: the setup's Err is a skip
+    // signal, not a failure (repo convention — see p5_1_f and p10_7).
+    let setup = match CacheFlowTestSetup::new().await {
+        Ok(setup) => setup,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
     setup.wait_for_ready().await.unwrap();
 
     // Create an index with test data
@@ -686,7 +814,15 @@ async fn acceptance_10_cache_with_complex_query() {
     // This test verifies that complex queries with filters, facets, and other
     // parameters are cached correctly.
 
-    let setup = CacheFlowTestSetup::new().await.unwrap();
+    // Skip gracefully when Docker is unavailable: the setup's Err is a skip
+    // signal, not a failure (repo convention — see p5_1_f and p10_7).
+    let setup = match CacheFlowTestSetup::new().await {
+        Ok(setup) => setup,
+        Err(e) => {
+            eprintln!("Skipping test: {e}");
+            return;
+        }
+    };
     setup.wait_for_ready().await.unwrap();
 
     // Create an index with test data
