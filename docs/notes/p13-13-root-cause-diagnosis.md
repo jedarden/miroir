@@ -265,3 +265,29 @@ anchors (all exact):
 
 Anchors in this file were additionally spot-checked against the working tree
 at documentation time by `miroir-2895fd73`; all matched.
+
+---
+
+## Addendum — final current-tree capture and final attribution (2026-09-11, post-consolidation)
+
+After this note was committed (`ea704b7`), the `miroir-b6b71143` 4-way split
+ran two more capture cycles and closed its final gate. The final re-capture
+(`miroir-d50d1a47`, 2026-09-11T20:42:35Z) reproduced signature A's fingerprint
+exactly against the current tree — HEAD `49deb4f` plus the uncommitted
+`search.rs` diff — with the native-path POST answering
+`HTTP/1.1 404 Not Found` (`x-request-id: 2617abe0`, `content-length: 0`,
+empty body) while the control POST `/search/products` on the same process
+answered `200 OK` with the full 55-byte degraded response. A third cycle
+(`miroir-2c2c095a`, 21:37:52Z) reproduced it again; the final attribution
+(child 4 `miroir-1b17291c`) and its refresh (`miroir-fc5fa7fd`) confirmed the
+verdict above with ZERO divergence on every axis, including the definitive
+route-table/git-history NO/NO for `POST /indexes/:index/search`.
+
+Both verbatim logs of the final capture and both attribution notes are
+preserved in
+[p13-13-final-signature-a-capture-2026-09-11.md](p13-13-final-signature-a-capture-2026-09-11.md)
+(task `miroir-3c9a5e90`); their scratch originals live at
+`~/scratch/p13_13_first_search_capture.logs/capture-20260911T204230Z.log` and
+`~/scratch/p13_13_first_search_capture.logs/proxy-logs-20260911T204230Z.log`
+(sha256-pinned in that file), and the attribution text on bead
+`miroir-b6b71143`. Nothing in this diagnosis changed as a result.
