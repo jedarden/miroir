@@ -929,6 +929,13 @@ async fn acceptance_5_different_queries_use_different_cache_keys() {
     let query2 = json!({"q": "desk", "limit": 10});
     let query3 = json!({"q": "chair", "limit": 20}); // Different limit too
 
+    // query4 shares query2's text and differs only by limit: the pair that
+    // makes the limit dimension of the cache key load-bearing. A key built
+    // from the query text alone collides these two, query4 arrives as a hit
+    // replayed from query2's entry, and the miss delta below falls short —
+    // no row truncation needed, the delta fires on the collision itself.
+    let query4 = json!({"q": "desk", "limit": 20});
+
     // Counter baselines: the distinct-key acceptance is pinned by deltas
     // against these. The row asserts below cannot see a collision that
     // serves equal rows, and the repeat bodies hold whether the entries
@@ -970,38 +977,53 @@ async fn acceptance_5_different_queries_use_different_cache_keys() {
         .await
         .unwrap();
 
+    let resp4 = setup
+        .client
+        .post(format!("{}/indexes/products/search", setup.proxy_url))
+        .header("Authorization", format!("Bearer {}", setup.master_key))
+        .json(&query4)
+        .send()
+        .await
+        .unwrap();
+
     assert!(resp1.status().is_success());
     assert!(resp2.status().is_success());
     assert!(resp3.status().is_success());
+    assert!(resp4.status().is_success());
 
     let result1: Value = resp1.json().await.unwrap();
     let result2: Value = resp2.json().await.unwrap();
     let result3: Value = resp3.json().await.unwrap();
+    let result4: Value = resp4.json().await.unwrap();
 
-    // Three distinct queries must each land as their own miss: the queries
-    // run sequentially, so under a key collision query 2 is a hit replayed
-    // from query 1's entry and this delta falls short. This is the bound
-    // that stays observable when a collision serves equal rows — the row
-    // asserts below go blind there.
-    let misses_after_third = proxy_counter(&setup.client, "miroir_result_cache_misses_total")
+    // Four distinct queries must each land as their own miss: the queries
+    // run sequentially, so under a key collision the colliding query is a
+    // hit replayed from the entry it merged with and this delta falls
+    // short — query 2 against query 1's entry under a text-ignoring key,
+    // query 4 against query 2's under a limit-ignoring key. This is the
+    // bound that stays observable when a collision serves equal rows
+    // (query 4's rows equal query 2's) — the row asserts below go blind
+    // there.
+    let misses_after_first_pass = proxy_counter(&setup.client, "miroir_result_cache_misses_total")
         .await
         .unwrap();
     assert_eq!(
-        misses_after_third,
-        misses_before + 3,
-        "each of the three distinct queries must be its own cache miss; a hit means a foreign entry was served"
+        misses_after_first_pass,
+        misses_before + 4,
+        "each of the four distinct queries must be its own cache miss; a hit means a foreign entry was served"
     );
 
     // Each distinct query must fan out exactly once: a flat count means one
-    // of the three short-circuited or the fan-out is unwired, a doubled one
+    // of the four short-circuited or the fan-out is unwired, a doubled one
     // a retry — either poisons the flat hit-bypass comparison at the end.
-    let scatter_after_third = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
-        .await
-        .unwrap();
+    let scatter_after_first_pass =
+        proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+            .await
+            .unwrap();
     assert_eq!(
-        scatter_after_third,
-        scatter_before + 3,
-        "each of the three uncached queries must fan out to the Meilisearch nodes exactly once"
+        scatter_after_first_pass,
+        scatter_before + 4,
+        "each of the four uncached queries must fan out to the Meilisearch nodes exactly once"
     );
 
     // Distinct queries must return distinct rows. A collision merging query
@@ -1010,8 +1032,12 @@ async fn acceptance_5_different_queries_use_different_cache_keys() {
     // miss delta above is the detector that survives equal rows.
     assert_ne!(result1["hits"], result2["hits"]);
     assert_ne!(result2["hits"], result3["hits"]);
+    // No row assert separates query 4 from query 2: one Desk document means
+    // neither limit truncates and the two row sets are equal by
+    // construction — the limit dimension of the key is pinned by the miss
+    // delta above alone.
 
-    // Repeat all three queries — each must be served from its own entry
+    // Repeat all four queries — each must be served from its own entry
     let resp1_cached = setup
         .client
         .post(format!("{}/indexes/products/search", setup.proxy_url))
@@ -1039,23 +1065,38 @@ async fn acceptance_5_different_queries_use_different_cache_keys() {
         .await
         .unwrap();
 
+    let resp4_cached = setup
+        .client
+        .post(format!("{}/indexes/products/search", setup.proxy_url))
+        .header("Authorization", format!("Bearer {}", setup.master_key))
+        .json(&query4)
+        .send()
+        .await
+        .unwrap();
+
     assert!(resp1_cached.status().is_success());
     assert!(resp2_cached.status().is_success());
     assert!(resp3_cached.status().is_success());
+    assert!(resp4_cached.status().is_success());
 
     let result1_cached: Value = resp1_cached.json().await.unwrap();
     let result2_cached: Value = resp2_cached.json().await.unwrap();
     let result3_cached: Value = resp3_cached.json().await.unwrap();
+    let result4_cached: Value = resp4_cached.json().await.unwrap();
 
     // The repeats must round-trip their stored bodies. Equality holds on
     // both paths for an identical repeat (a re-scatter reproduces the rows,
     // see acceptance_1); what this does catch is a repeat served out of a
-    // foreign entry — another query's rows fail the compare.
+    // foreign entry — another query's rows fail the compare. (For pair 4
+    // this is blind by construction: query 4's stored rows equal query 2's,
+    // so a serve out of query 2's entry reads identical — the first-pass
+    // miss delta is what keeps the two entries distinct.)
     assert_eq!(result1, result1_cached);
     assert_eq!(result2, result2_cached);
     assert_eq!(result3, result3_cached);
+    assert_eq!(result4, result4_cached);
 
-    // All three repeats must be recorded as hits: each query filed its own
+    // All four repeats must be recorded as hits: each query filed its own
     // entry in the first pass, and the 500 ms ttl_ms is load-bearing as in
     // acceptance_1 — hits never refresh an entry, so a host stall past the
     // TTL reads here exactly like a lookup regression.
@@ -1064,8 +1105,8 @@ async fn acceptance_5_different_queries_use_different_cache_keys() {
         .unwrap();
     assert_eq!(
         hits_after,
-        hits_before + 3,
-        "each of the three repeats must be served as a hit from its own cache entry"
+        hits_before + 4,
+        "each of the four repeats must be served as a hit from its own cache entry"
     );
 
     // A served hit must short-circuit the fan-out: a hit that still scatters
@@ -1075,7 +1116,7 @@ async fn acceptance_5_different_queries_use_different_cache_keys() {
         .await
         .unwrap();
     assert_eq!(
-        scatter_after_repeats, scatter_after_third,
+        scatter_after_repeats, scatter_after_first_pass,
         "a served cache hit must bypass the scatter-gather fan-out"
     );
 }
