@@ -149,13 +149,20 @@ impl SpawnedProxy {
             .into_iter()
             .map(|name| {
                 let path = self._config_dir.path().join(name);
-                let tail = std::fs::read_to_string(&path)
-                    .map(|content| {
+                let tail = match std::fs::read_to_string(&path) {
+                    // A spawn that died before logging leaves 0-byte files;
+                    // say so instead of emitting a bare header that reads like
+                    // the tail reader itself failed.
+                    Ok(content) if content.trim().is_empty() => {
+                        "<empty — the proxy wrote nothing>".to_string()
+                    }
+                    Ok(content) => {
                         let lines: Vec<&str> = content.lines().collect();
                         let start = lines.len().saturating_sub(LOG_TAIL_LINES);
                         lines[start..].join("\n")
-                    })
-                    .unwrap_or_else(|e| format!("<unreadable: {e}>"));
+                    }
+                    Err(e) => format!("<unreadable: {e}>"),
+                };
                 format!(
                     "--- {} (last {LOG_TAIL_LINES} lines) ---\n{tail}",
                     path.display()
