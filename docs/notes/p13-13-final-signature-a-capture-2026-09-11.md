@@ -143,9 +143,12 @@ gate of the 4-way split) and running through the
 capture cycle). It confirms the consolidated verdict in
 [p13-13-root-cause-diagnosis.md](p13-13-root-cause-diagnosis.md) with zero
 divergence and pins the NO/NO route-table/git-history answer. The third-cycle
-capture it quotes (21:37:52Z, `capture-20260911T213752Z.log` /
-`proxy-logs-20260911T213752Z.log`) exists only in ~/scratch and on the bead;
-its fingerprint is identical to the 20:42Z capture preserved above.
+capture it quotes (run 2026-09-11T21:37:57Z, `capture-20260911T213752Z.log` /
+`proxy-logs-20260911T213752Z.log`; capture bead `miroir-2c2c095a`, refresh
+bead `miroir-fc5fa7fd`) is preserved verbatim with sha256 pins in
+[p13-13-third-cycle-signature-a-capture-2026-09-11.md](p13-13-third-cycle-signature-a-capture-2026-09-11.md)
+(task `miroir-20f236c3`); its fingerprint is identical to the 20:42Z capture
+preserved above.
 
 <!-- BEGIN-NOTE: miroir-b6b71143 notes tail, revision 16 -->
 ```text

@@ -291,3 +291,9 @@ preserved in
 `~/scratch/p13_13_first_search_capture.logs/proxy-logs-20260911T204230Z.log`
 (sha256-pinned in that file), and the attribution text on bead
 `miroir-b6b71143`. Nothing in this diagnosis changed as a result.
+
+The third cycle's verbatim logs (run 2026-09-11T21:37:57Z; capture bead
+`miroir-2c2c095a`, refresh bead `miroir-fc5fa7fd`) are preserved with sha256
+pins in
+[p13-13-third-cycle-signature-a-capture-2026-09-11.md](p13-13-third-cycle-signature-a-capture-2026-09-11.md)
+(task `miroir-20f236c3`).
