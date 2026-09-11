@@ -929,6 +929,20 @@ async fn acceptance_5_different_queries_use_different_cache_keys() {
     let query2 = json!({"q": "desk", "limit": 10});
     let query3 = json!({"q": "chair", "limit": 20}); // Different limit too
 
+    // Counter baselines: the distinct-key acceptance is pinned by deltas
+    // against these. The row asserts below cannot see a collision that
+    // serves equal rows, and the repeat bodies hold whether the entries
+    // replay or the repeats re-run as second misses.
+    let misses_before = proxy_counter(&setup.client, "miroir_result_cache_misses_total")
+        .await
+        .unwrap();
+    let hits_before = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
+        .await
+        .unwrap();
+    let scatter_before = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+
     let resp1 = setup
         .client
         .post(format!("{}/indexes/products/search", setup.proxy_url))
@@ -964,11 +978,40 @@ async fn acceptance_5_different_queries_use_different_cache_keys() {
     let result2: Value = resp2.json().await.unwrap();
     let result3: Value = resp3.json().await.unwrap();
 
-    // Results should be different (different matches)
+    // Three distinct queries must each land as their own miss: the queries
+    // run sequentially, so under a key collision query 2 is a hit replayed
+    // from query 1's entry and this delta falls short. This is the bound
+    // that stays observable when a collision serves equal rows — the row
+    // asserts below go blind there.
+    let misses_after_third = proxy_counter(&setup.client, "miroir_result_cache_misses_total")
+        .await
+        .unwrap();
+    assert_eq!(
+        misses_after_third,
+        misses_before + 3,
+        "each of the three distinct queries must be its own cache miss; a hit means a foreign entry was served"
+    );
+
+    // Each distinct query must fan out exactly once: a flat count means one
+    // of the three short-circuited or the fan-out is unwired, a doubled one
+    // a retry — either poisons the flat hit-bypass comparison at the end.
+    let scatter_after_third = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+    assert_eq!(
+        scatter_after_third,
+        scatter_before + 3,
+        "each of the three uncached queries must fan out to the Meilisearch nodes exactly once"
+    );
+
+    // Distinct queries must return distinct rows. A collision merging query
+    // 2 into query 1's entry makes the first pair go equal, so this does
+    // fire — but only while the collided entries carry different rows; the
+    // miss delta above is the detector that survives equal rows.
     assert_ne!(result1["hits"], result2["hits"]);
     assert_ne!(result2["hits"], result3["hits"]);
 
-    // Repeat queries - should hit cache
+    // Repeat all three queries — each must be served from its own entry
     let resp1_cached = setup
         .client
         .post(format!("{}/indexes/products/search", setup.proxy_url))
@@ -978,8 +1021,63 @@ async fn acceptance_5_different_queries_use_different_cache_keys() {
         .await
         .unwrap();
 
+    let resp2_cached = setup
+        .client
+        .post(format!("{}/indexes/products/search", setup.proxy_url))
+        .header("Authorization", format!("Bearer {}", setup.master_key))
+        .json(&query2)
+        .send()
+        .await
+        .unwrap();
+
+    let resp3_cached = setup
+        .client
+        .post(format!("{}/indexes/products/search", setup.proxy_url))
+        .header("Authorization", format!("Bearer {}", setup.master_key))
+        .json(&query3)
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp1_cached.status().is_success());
+    assert!(resp2_cached.status().is_success());
+    assert!(resp3_cached.status().is_success());
+
     let result1_cached: Value = resp1_cached.json().await.unwrap();
+    let result2_cached: Value = resp2_cached.json().await.unwrap();
+    let result3_cached: Value = resp3_cached.json().await.unwrap();
+
+    // The repeats must round-trip their stored bodies. Equality holds on
+    // both paths for an identical repeat (a re-scatter reproduces the rows,
+    // see acceptance_1); what this does catch is a repeat served out of a
+    // foreign entry — another query's rows fail the compare.
     assert_eq!(result1, result1_cached);
+    assert_eq!(result2, result2_cached);
+    assert_eq!(result3, result3_cached);
+
+    // All three repeats must be recorded as hits: each query filed its own
+    // entry in the first pass, and the 500 ms ttl_ms is load-bearing as in
+    // acceptance_1 — hits never refresh an entry, so a host stall past the
+    // TTL reads here exactly like a lookup regression.
+    let hits_after = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
+        .await
+        .unwrap();
+    assert_eq!(
+        hits_after,
+        hits_before + 3,
+        "each of the three repeats must be served as a hit from its own cache entry"
+    );
+
+    // A served hit must short-circuit the fan-out: a hit that still scatters
+    // passes the hit delta and the identical bodies above, so only this flat
+    // counter exposes the bypass regression.
+    let scatter_after_repeats = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+    assert_eq!(
+        scatter_after_repeats, scatter_after_third,
+        "a served cache hit must bypass the scatter-gather fan-out"
+    );
 }
 
 #[tokio::test]
