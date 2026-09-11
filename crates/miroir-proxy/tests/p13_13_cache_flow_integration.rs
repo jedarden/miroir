@@ -716,6 +716,16 @@ async fn acceptance_3_cache_stores_results_after_scatter_gather() {
         "limit": 20
     });
 
+    // Counter baselines: the caching acceptance is pinned by deltas against
+    // these — identical bodies come back whether the scatter-gather result
+    // was stored and replayed or the repeat re-ran it as a second miss.
+    let hits_before = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
+        .await
+        .unwrap();
+    let scatter_before = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+
     let resp1 = setup
         .client
         .post(format!("{}/indexes/books/search", setup.proxy_url))
@@ -728,6 +738,20 @@ async fn acceptance_3_cache_stores_results_after_scatter_gather() {
     assert!(resp1.status().is_success());
     let result1: Value = resp1.json().await.unwrap();
     let hit_count = result1["hits"].as_array().unwrap().len();
+
+    // The scatter-gather must run exactly once before there is anything to
+    // cache: a flat count means the query short-circuited or the fan-out is
+    // unwired, a doubled one a retry — either poisons the repeat comparison
+    // below. Pinning this read also keeps the flat assert after the repeat
+    // from holding vacuously.
+    let scatter_after_first = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+    assert_eq!(
+        scatter_after_first,
+        scatter_before + 1,
+        "the query must trigger exactly one scatter-gather fan-out"
+    );
 
     // Verify the result was cached by querying again
     let resp2 = setup
@@ -742,9 +766,39 @@ async fn acceptance_3_cache_stores_results_after_scatter_gather() {
     assert!(resp2.status().is_success());
     let result2: Value = resp2.json().await.unwrap();
 
-    // Results should match exactly
+    // Results should match exactly; on its own this cannot detect a bypassed
+    // cache (both paths return the same rows) — the deltas below do.
     assert_eq!(result1, result2);
-    assert_eq!(hit_count, 3); // All 3 books contain "rust"
+    // All 3 books contain "rust": a scatter-gather merge that drops or
+    // duplicates rows changes this count on the very body being cached.
+    assert_eq!(hit_count, 3);
+
+    // The entry stored after the scatter-gather must serve the repeat as a
+    // hit: an insert that never landed or was evicted early leaves the
+    // repeat a second miss. The 500 ms ttl_ms is load-bearing as in
+    // acceptance_1 — the entry is written during query 1 and hits never
+    // refresh it, so a host stall past the TTL reads here exactly like a
+    // store regression.
+    let hits_after = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
+        .await
+        .unwrap();
+    assert_eq!(
+        hits_after,
+        hits_before + 1,
+        "the result stored after scatter-gather must serve the repeat query as a cache hit"
+    );
+
+    // A served hit must short-circuit the fan-out: a hit that still scatters
+    // passes every bound above (the hit is recorded, the bodies identical),
+    // so without this flat counter the bypass regression would surface only
+    // in acceptance_1's body.
+    let scatter_after_second = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+    assert_eq!(
+        scatter_after_second, scatter_after_first,
+        "a served cache hit must bypass the scatter-gather fan-out"
+    );
 }
 
 #[tokio::test]
@@ -780,6 +834,16 @@ async fn acceptance_4_cache_reduces_upstream_meilisearch_calls() {
         "limit": 10
     });
 
+    // Counter baselines: the upstream-load acceptance is pinned by deltas
+    // against these — the identical-bodies loop below holds whether or not
+    // the cache actually reduces the fan-outs.
+    let hits_before = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
+        .await
+        .unwrap();
+    let scatter_before = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+
     let mut results = Vec::new();
     for _ in 0..5 {
         let resp = setup
@@ -796,14 +860,41 @@ async fn acceptance_4_cache_reduces_upstream_meilisearch_calls() {
         results.push(result);
     }
 
-    // All results should be identical
+    // All results should be identical. Body equality holds on both paths
+    // (see acceptance_1): the repeats return the stored body, a re-scatter
+    // reproduces it — the deltas below are what count the upstream calls.
     for result in &results[1..] {
         assert_eq!(results[0], *result);
     }
 
-    // Without caching, this would make 5 * 3 = 15 upstream calls (5 queries * 3 nodes)
-    // With caching, it should make significantly fewer calls (only the first query does scatter)
-    // In a real test, we'd monitor actual upstream call counts
+    // Four of the five queries must be served as hits: query 1 misses and
+    // stores, queries 2-5 replay the entry. A repeat that leaks past the
+    // cache — entry never stored, evicted early, or a host stall past the
+    // 500 ms ttl_ms, which is anchored at the query-1 insert and never
+    // refreshed on a hit — is recorded as a miss instead and this delta
+    // falls short.
+    let hits_after = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
+        .await
+        .unwrap();
+    assert_eq!(
+        hits_after,
+        hits_before + 4,
+        "four of the five identical queries must be served as cache hits"
+    );
+
+    // Without caching this loop fans out five times (5 x 3 = 15 upstream node
+    // calls); with it, exactly once. This count pins the acceptance on its
+    // own: a hit that still scatters passes the hits delta above (the hit is
+    // recorded), and a short-circuited first query leaves the count flat —
+    // either moves this off the single fan-out.
+    let scatter_after = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+    assert_eq!(
+        scatter_after,
+        scatter_before + 1,
+        "only the first of the five identical queries may fan out to the Meilisearch nodes"
+    );
 }
 
 #[tokio::test]
