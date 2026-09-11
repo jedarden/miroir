@@ -18,3 +18,4 @@ lcov.info
 node_modules/
 tmp-secrets/
 *.env
+scripts/p13-13-first-search-capture.logs/
