@@ -8,7 +8,17 @@ checkpoint rotation. Companions:
 consolidated verdict, commit `ea704b7`) and
 [p13-13-live-run-logs-2026-09-11.md](p13-13-live-run-logs-2026-09-11.md) (the
 three original 0/10 suite-run logs, commit `e9c5702`). Copied into the repo by
-task `miroir-3c9a5e90`; nothing in the diagnosis changed.
+task `miroir-3c9a5e90`; nothing in the diagnosis changed. **Fourth-cycle
+addendum (2026-09-11 ~22:27Z, task `miroir-5ed697fa`):** the committed
+reproduction harness was run against the current tree and the native-path 404
+reproduced exactly, but the control POST diverged — see
+[Fourth cycle — committed-harness run and control-path divergence](#fourth-cycle--committed-harness-run-and-control-path-divergence-2026-09-11t222700z-below)
+at the bottom of this file. The signature-A router-404 verdict is NOT
+overturned; the reproducibility of the control-path 200 is. Two further
+committed-harness runs reproduced the divergence exactly — the same-task
+23:03Z retry, then run 23:26:22Z after the task was re-dispatched (its first
+dispatch died before committing) — and both runs' logs are archived in
+[p13-13-fourth-cycle-committed-harness-capture-2026-09-11.md](p13-13-fourth-cycle-committed-harness-capture-2026-09-11.md).
 
 What this file preserves, and who produced it:
 
@@ -225,3 +235,403 @@ CHILD 1 ROUTE VERDICT (miroir-3b6d614e, re-verified 2026-09-11 at HEAD 49deb4f +
 STATUS: this bead's two acceptance criteria are met a third time by the verbatim quotes above plus child 1's NO/NO. Fingerprint stable across three capture cycles and three route audits (miroir-ee6a1540, miroir-a9adebd8, miroir-3b6d614e); the consolidated verdict above stands as final. Umbrella decision (repoint the suite at /search/products vs register POST /indexes/:index/search) remains with miroir-1ec135a1.
 ```
 <!-- END-NOTE: miroir-b6b71143 notes tail, revision 16 -->
+
+## Fourth cycle — committed-harness run and control-path divergence (2026-09-11T22:27:00Z, below)
+
+Task `miroir-5ed697fa` (child 2's committed harness, fourth capture cycle of
+the `miroir-b6b71143` empirical program). Purpose of the cycle: prove that the
+**committed** script (`scripts/p13-13-first-search-capture.sh`, commit
+`9a145e4`) reproduces the three-cycle fingerprint from the repo — which is
+what the eventual remediator will rely on — instead of the scratch copy that
+drove cycles 1-3.
+
+**Result: DIVERGENCE — recorded verbatim; the cycle-1-3 verdict was not
+force-fit onto it.** The native-path half of the fingerprint reproduced
+exactly on every run. The control half did not: `POST /search/products`
+returned **no response at all** — curl aborts at its 15 s client cap with 0
+bytes received (`rc=28`), the proxy logs no `miroir.request` completion line
+and no `miroir.search` "search completed" line for it, and the script exits 1
+(its abort path) on every attempt. The wedge is terminal for the process and
+reproduced 7/7 across the four committed-harness runs (22:27:00Z, 22:28:50Z,
+the same-task retry 23:03:25Z, and the re-dispatch confirmation run
+23:26:22Z) and three manual
+diagnostic topologies, including a control fired ~15 ms into process life.
+
+**Retry confirmation (2026-09-11T23:03:25Z, same task):** the third
+committed-harness run reproduced the cycle's divergence exactly — native 404
+intact (`x-request-id: 2cec2b41`), control rc=28 with 0 bytes received, proxy
+log showing the identical no-completion shape — and its raw logs are
+preserved byte-identical, sha256-pinned, in
+[p13-13-fourth-cycle-committed-harness-capture-2026-09-11.md](p13-13-fourth-cycle-committed-harness-capture-2026-09-11.md).
+No force-fit either way: the retry was run to confirm the divergence finding
+before committing, and it did.
+
+**Re-dispatch confirmation (2026-09-11T23:26:22Z, same task):** the task's
+first dispatch died before committing any of this; on re-dispatch, a fresh
+committed-harness run reproduced the divergence a fourth time — native 404
+intact (`x-request-id: aa22ac8e`), control rc=28 with 0 bytes received, proxy
+log showing the identical no-completion shape (last `miroir.request` line =
+the native 404 at 23:26:23.404Z, request `aa22ac8e`; teardown SIGTERM at
+23:26:38.427Z) — and its raw logs are archived byte-identical, sha256-pinned,
+in
+[p13-13-fourth-cycle-committed-harness-capture-2026-09-11.md](p13-13-fourth-cycle-committed-harness-capture-2026-09-11.md).
+The old verdict was again not force-fit onto the fresh run, and the fresh run
+again did not overturn the divergence.
+
+### Runs produced by the committed script
+
+| Run (UTC) | Log | Bytes / lines | sha256 | Outcome |
+|---|---|---|---|---|
+| 22:27:00 | `capture-20260911T222700Z.log` | 1012 / 20 | `eec37d21141896382ad69ca0b79878e645e2a9b83c9e8acb6a801d6a74a03cc5` | native 404 OK; control rc=28; script exit 1 |
+| 22:27:00 | `proxy-logs-20260911T222700Z.log` | 8126 / 43 | `12bfb87309488d9410105485a12f41504907201f1662b1966d30dc9f10e52727` | no control completion line |
+| 22:28:50 | `capture-20260911T222850Z.log` | 1012 / 20 | `c72d25b4d6251e47a4265e521295b8108209f29bbe5dc03d08609c77359f72bb` | native 404 OK; control rc=28; script exit 1 |
+| 22:28:50 | `proxy-logs-20260911T222850Z.log` | 8126 / 43 | `277249a24a5b48cd3e90c97b0b243deaeea45f74936b9b470acc69af0a6b97ff` | no control completion line |
+| 23:03:25 (retry) | `capture-20260911T230325Z.log` | 1012 / 20 | `b7a8b64e5b01d9631d5912b04cc4233b17d4c0dd260477bbaab5c05af9e2f1f7` | native 404 OK; control rc=28; script exit 1 |
+| 23:03:25 (retry) | `proxy-logs-20260911T230325Z.log` | 8126 / 43 | `9aab23d3d797752bbb4dcd28abce6735ed3f65a2fc6c7799cc752e329371b11c` | no control completion line |
+| 23:26:22 (re-dispatch) | `capture-20260911T232622Z.log` | 1012 / 20 | `e3f1b7ae08eba8c842de44075fc94bb25cf638fd3df61cddf08500483787c5a9` | native 404 OK; control rc=28; script exit 1 |
+| 23:26:22 (re-dispatch) | `proxy-logs-20260911T232622Z.log` | 8126 / 43 | `09815163fc7dcd23f7a23b63f532ada8a7b937c9741bca2ab9e7cc9a8e5f861c` | no control completion line |
+
+Runs 3 and 4's raw logs are also committed under
+[docs/notes/p13-13-fourth-cycle-committed-harness-capture-2026-09-11.md](p13-13-fourth-cycle-committed-harness-capture-2026-09-11.md)
+(byte-identical between `BEGIN-LOG`/`END-LOG` markers; the live
+`scripts/p13-13-first-search-capture.logs/` dir is gitignored).
+
+All four runs: pre-flight `ss` clean on 17770/9090; topology =
+`target/debug/miroir-proxy` (pids 2360111 / 2361142 / 2390421 / 2411284,
+client 127.0.0.1:17770 /
+metrics 0.0.0.0:9090) + one `getmeili/meilisearch:v1.8.3` node (host ports
+33180 / 33181 / 33184 / 33185, key via `MEILI_MASTER_KEY` env only); tree = HEAD `9a145e4`
++ the same uncommitted `search.rs` diff (26 insertions / 58 deletions) cycles
+2-3 ran against; **binary = the identical `target/debug/miroir-proxy` binary
+cycles 2-3 used** (mtime `2026-09-11 16:42:12.400900244 -0400` in every one of
+the seven preserved capture headers — cycles 2 and 3, cycle-4 runs 1-4;
+source mtimes predate the build, no rebuild needed); request
+auth `Authorization: Bearer test_master_key`, body `{"q":"laptop","limit":10}`.
+The committed script is behaviorally identical to the scratch original that
+drove cycles 1-3 (`diff` shows only docblock/path-default refinements:
+`REPO_DIR` inference and the `P13_13_CAPTURE_LOG_DIR` override).
+
+### Verbatim fingerprint, expected vs observed
+
+Native path `POST /indexes/products/search` — **UNCHANGED, reproduced on every
+run** (run 1 verbatim; run 2 identical shape with `x-request-id: 1c83d8a7`,
+`date: Fri, 11 Sep 2026 22:28:51 GMT`; retry run 3 identical shape with
+`x-request-id: 2cec2b41`, `date: Fri, 11 Sep 2026 23:03:26 GMT`; re-dispatch
+run 4 identical shape with `x-request-id: aa22ac8e`, `date: Fri, 11 Sep 2026
+23:26:23 GMT`):
+
+```
+HTTP/1.1 404 Not Found
+x-request-id: 87b7dda1
+content-length: 0
+date: Fri, 11 Sep 2026 22:27:02 GMT
+```
+(body: empty — 0 bytes. Router-miss signature intact: auth passed first —
+`x-request-id` present; no content-type, no JSON envelope; no `allow`.)
+
+Control `POST /search/products` — **DIVERGED**. Expected (cycles 1-3, 20:17Z /
+20:42Z / 21:37Z):
+
+```
+HTTP/1.1 200 OK
+content-type: application/json
+x-miroir-degraded: shards=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+x-request-id: e7cbc303
+content-length: 55
+date: Fri, 11 Sep 2026 20:42:35 GMT
+
+{"estimatedTotalHits":0,"hits":[],"processingTimeMs":0}
+```
+
+Observed (cycle 4, all four runs): **no status line, no headers, no body — the
+request never completes.** Verbatim from the capture log:
+
+```
+--- POST /search/products (control: registered route, same process) ---
+
+--- capture summary ---
+curl rc /indexes/products/search: 0 (0 = HTTP response received, any status)
+curl rc /search/products:         28 (0 = HTTP response received, any status)
+```
+
+(`curl: (28) Operation timed out after 15002 milliseconds with 0 bytes
+received` — the TCP connection to the proxy was accepted, then no bytes ever
+came back; 15.002 s wall.)
+
+## Verbatim cycle-4 logs
+
+### Verbatim capture log — capture-20260911T222700Z.log
+
+<!-- BEGIN-LOG: capture-20260911T222700Z.log -->
+```text
+=== p13_13 first-search capture 2026-09-11T22:27:02Z ===
+proxy: pid 2360111  /home/coding/miroir/target/debug/miroir-proxy
+ports: client 17770, metrics 9090
+node:  getmeili/meilisearch:v1.8.3 cid=450ab3684c28e848fd25f81d76eb66b10f95faef92809559d11e8432298c649e host port 33180 (key via MEILI_MASTER_KEY env only)
+auth:  Authorization: Bearer test_master_key   body: {"q":"laptop","limit":10}
+git:   HEAD 9a145e409088338f0ab39dd7ac5e235e575b6631 search.rs:  M crates/miroir-proxy/src/routes/search.rs
+bin:   built 2026-09-11 16:42:12.400900244 -0400
+--- POST /indexes/products/search (path the p13_13 suite POSTs) ---
+HTTP/1.1 404 Not Found
+x-request-id: 87b7dda1
+content-length: 0
+date: Fri, 11 Sep 2026 22:27:02 GMT
+
+
+--- POST /search/products (control: registered route, same process) ---
+
+--- capture summary ---
+curl rc /indexes/products/search: 0 (0 = HTTP response received, any status)
+curl rc /search/products:         28 (0 = HTTP response received, any status)
+end of capture 2026-09-11T22:27:17Z
+```
+<!-- END-LOG: capture-20260911T222700Z.log -->
+
+### Verbatim proxy log — proxy-logs-20260911T222700Z.log
+
+Key reading: the control POST (`22:27:02.01+`) produces **no**
+`"target":"miroir.request"` line and no `miroir.search` completion line — the
+handler never returns before the teardown SIGTERM at `22:27:17.030`. The
+anti-entropy pass fingerprints shard 0 and shard 1 (both `index_not_found`
+against the node, ~100 ms apart) and then logs nothing further for the
+remaining 15 s; the startup health monitor's node poll is likewise absent
+after startup (see the node-side excerpt below — it polled exactly once).
+
+<!-- BEGIN-LOG: proxy-logs-20260911T222700Z.log -->
+```text
+{"timestamp":"2026-09-11T22:27:01.454529Z","level":"INFO","message":"miroir-proxy starting","shards":16,"replication_factor":1,"replica_groups":1,"target":"miroir_proxy","span":{"pod_id":"unknown","name":"runtime"}}
+{"timestamp":"2026-09-11T22:27:01.455305Z","level":"WARN","message":"generated random ADMIN_SESSION_SEAL_KEY; multi-pod deployments must set this manually to a shared value","target":"miroir_proxy::admin_session","span":{"pod_id":"unknown","name":"runtime"}}
+{"timestamp":"2026-09-11T22:27:01.497282Z","level":"INFO","message":"CDC: background publisher started","target":"miroir_core::cdc"}
+{"timestamp":"2026-09-11T22:27:01.497503Z","level":"INFO","message":"rebalancer worker task starting","pod_id":"unknown","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:27:01.497541Z","level":"INFO","message":"loading aliases from task store","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:27:01.497565Z","level":"INFO","message":"ILM worker starting","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:27:01.497519Z","level":"INFO","message":"peer discovery disabled (not running in Kubernetes)","target":"miroir_proxy","span":{"pod_id":"unknown","name":"runtime"}}
+{"timestamp":"2026-09-11T22:27:01.497602Z","level":"INFO","message":"drift reconciler started","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:27:01.497647Z","level":"INFO","message":"ILM worker: starting evaluation loop","target":"miroir_core::ilm"}
+{"timestamp":"2026-09-11T22:27:01.497623Z","level":"INFO","message":"anti-entropy worker started","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:27:01.497690Z","level":"INFO","message":"canary runner enabled but Redis not available - skipping","target":"miroir_proxy","span":{"pod_id":"unknown","name":"runtime"}}
+{"timestamp":"2026-09-11T22:27:01.497696Z","level":"INFO","message":"drift reconciler starting (Mode A coordination)","pod_id":"unknown","target":"miroir_core::rebalancer_worker::drift_reconciler"}
+{"timestamp":"2026-09-11T22:27:01.497683Z","level":"INFO","message":"Mode C worker started","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:27:01.497757Z","level":"INFO","message":"resource-pressure metrics collection started","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:27:01.497724Z","level":"INFO","message":"anti-entropy worker starting (Mode A coordination)","pod_id":"unknown","interval_s":21600,"target":"miroir_core::rebalancer_worker::anti_entropy_worker"}
+{"timestamp":"2026-09-11T22:27:01.497737Z","level":"INFO","message":"group sync worker started","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:27:01.497777Z","level":"INFO","message":"Starting Mode C worker loop","target":"miroir_core::mode_c_worker"}
+{"timestamp":"2026-09-11T22:27:01.497814Z","level":"INFO","message":"Starting group sync worker","target":"miroir_core::group_sync_worker"}
+{"timestamp":"2026-09-11T22:27:01.497822Z","level":"INFO","message":"loaded 0 aliases from task store","target":"miroir_core::alias"}
+{"timestamp":"2026-09-11T22:27:01.497883Z","level":"INFO","message":"aliases loaded successfully","count":0,"target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:27:01.497929Z","level":"INFO","message":"task registry TTL pruner started","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:27:01.498140Z","level":"INFO","message":"pruner: starting with interval=300s ttl=604800s","target":"miroir_core::task_pruner"}
+{"timestamp":"2026-09-11T22:27:01.499029Z","level":"INFO","message":"acquired Mode B leader lease","operation_type":"ilm","scope":"ilm","pod_id":"unknown","target":"miroir_core::mode_b_coordinator"}
+{"timestamp":"2026-09-11T22:27:01.499269Z","level":"INFO","message":"rebalancer worker starting","pod_id":"unknown","target":"miroir_core::rebalancer_worker"}
+{"timestamp":"2026-09-11T22:27:01.499718Z","level":"INFO","message":"pruner: deleted 0 tasks (Mode A), registry_size=0","target":"miroir_core::task_pruner"}
+{"timestamp":"2026-09-11T22:27:01.501141Z","level":"INFO","message":"acquired leader lease","scope":"rebalance:default","pod_id":"unknown","target":"miroir_core::rebalancer_worker"}
+{"timestamp":"2026-09-11T22:27:01.502087Z","level":"INFO","message":"node promoted to Active (was Joining)","node_id":"node-0","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:27:01.502495Z","level":"INFO","message":"ILM worker: acquired leadership, starting evaluation","target":"miroir_core::ilm"}
+{"timestamp":"2026-09-11T22:27:01.502753Z","level":"INFO","message":"Service marked as ready","target":"miroir_proxy::routes::admin_endpoints"}
+{"timestamp":"2026-09-11T22:27:01.510932Z","level":"INFO","message":"listening","main_addr":"127.0.0.1:17770","metrics_addr":"0.0.0.0:9090","target":"miroir_proxy","span":{"pod_id":"unknown","name":"runtime"}}
+{"timestamp":"2026-09-11T22:27:01.514148Z","level":"WARN","message":"peer discovery failed: discovery error: SRV lookup failed for _http._tcp.miroir-headless.default.svc.cluster.local: no record found for name: _http._tcp.miroir-headless.default.svc.cluster.local type: SRV class: IN","target":"miroir_core::mode_a_coordinator"}
+{"timestamp":"2026-09-11T22:27:01.514206Z","level":"WARN","message":"failed to refresh peer set, using cached peers","error":"no peers discovered","target":"miroir_core::rebalancer_worker::drift_reconciler"}
+{"timestamp":"2026-09-11T22:27:01.514720Z","level":"WARN","message":"peer discovery failed: discovery error: SRV lookup failed for _http._tcp.miroir-headless.default.svc.cluster.local: no record found for name: _http._tcp.miroir-headless.default.svc.cluster.local type: SRV class: IN","target":"miroir_core::mode_a_coordinator"}
+{"timestamp":"2026-09-11T22:27:01.514776Z","level":"WARN","message":"failed to refresh peer set, using cached peers","error":"no peers discovered","target":"miroir_core::rebalancer_worker::anti_entropy_worker"}
+{"timestamp":"2026-09-11T22:27:01.514799Z","level":"INFO","message":"starting anti-entropy pass","target":"miroir_core::rebalancer_worker::anti_entropy_worker"}
+{"timestamp":"2026-09-11T22:27:01.514848Z","level":"INFO","message":"Anti-entropy pass starting: 16 shards to scan","target":"miroir_core::anti_entropy"}
+{"timestamp":"2026-09-11T22:27:01.516835Z","level":"WARN","message":"Failed to fingerprint shard 0 on node node-0: topology error: fetch failed: HttpError { status: 404, body: \"{\\\"message\\\":\\\"Index `default` not found.\\\",\\\"code\\\":\\\"index_not_found\\\",\\\"type\\\":\\\"invalid_request\\\",\\\"link\\\":\\\"https://docs.meilisearch.com/errors#index_not_found\\\"}\" }","target":"miroir_core::anti_entropy"}
+{"timestamp":"2026-09-11T22:27:01.620346Z","level":"WARN","message":"Failed to fingerprint shard 1 on node node-0: topology error: fetch failed: HttpError { status: 404, body: \"{\\\"message\\\":\\\"Index `default` not found.\\\",\\\"code\\\":\\\"index_not_found\\\",\\\"type\\\":\\\"invalid_request\\\",\\\"link\\\":\\\"https://docs.meilisearch.com/errors#index_not_found\\\"}\" }","target":"miroir_core::anti_entropy"}
+{"timestamp":"2026-09-11T22:27:01.946213Z","level":"INFO","pod_id":"unknown","request_id":"8a511185","message":"GET 200 OK","duration_ms":0,"status":200,"method":"GET","path_template":"/health","target":"miroir.request","span":{"method":"GET","path_template":"/health","pod_id":"unknown","request_id":"8a511185","name":"request"}}
+{"timestamp":"2026-09-11T22:27:02.009706Z","level":"WARN","pod_id":"unknown","request_id":"87b7dda1","message":"POST 404 Not Found","duration_ms":0,"status":404,"method":"POST","path_template":"/indexes/products/search","target":"miroir.request","span":{"method":"POST","path_template":"/indexes/products/search","pod_id":"unknown","request_id":"87b7dda1","name":"request"}}
+{"timestamp":"2026-09-11T22:27:17.030200Z","level":"INFO","message":"shutdown signal received, draining in-flight requests...","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:27:17.030273Z","level":"INFO","message":"shutdown signal received, draining in-flight requests...","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:27:17.501110Z","level":"INFO","message":"pruner: stopping during sleep","target":"miroir_core::task_pruner"}
+```
+<!-- END-LOG: proxy-logs-20260911T222700Z.log -->
+
+### Verbatim capture log — capture-20260911T222850Z.log
+
+<!-- BEGIN-LOG: capture-20260911T222850Z.log -->
+```text
+=== p13_13 first-search capture 2026-09-11T22:28:51Z ===
+proxy: pid 2361142  /home/coding/miroir/target/debug/miroir-proxy
+ports: client 17770, metrics 9090
+node:  getmeili/meilisearch:v1.8.3 cid=f60a39257a23c07b75478f81908f94c5bb76798b79f0f7c07edfb3ee37099057 host port 33181 (key via MEILI_MASTER_KEY env only)
+auth:  Authorization: Bearer test_master_key   body: {"q":"laptop","limit":10}
+git:   HEAD 9a145e409088338f0ab39dd7ac5e235e575b6631 search.rs:  M crates/miroir-proxy/src/routes/search.rs
+bin:   built 2026-09-11 16:42:12.400900244 -0400
+--- POST /indexes/products/search (path the p13_13 suite POSTs) ---
+HTTP/1.1 404 Not Found
+x-request-id: 1c83d8a7
+content-length: 0
+date: Fri, 11 Sep 2026 22:28:51 GMT
+
+
+--- POST /search/products (control: registered route, same process) ---
+
+--- capture summary ---
+curl rc /indexes/products/search: 0 (0 = HTTP response received, any status)
+curl rc /search/products:         28 (0 = HTTP response received, any status)
+end of capture 2026-09-11T22:29:06Z
+```
+<!-- END-LOG: capture-20260911T222850Z.log -->
+
+### Verbatim proxy log — proxy-logs-20260911T222850Z.log
+
+Same shape as the 22:27Z run: `request_id 1c83d8a7` is the last
+`miroir.request` line (the native 404); the control POST that follows it
+never logs a completion; anti-entropy stops after shard 1.
+
+<!-- BEGIN-LOG: proxy-logs-20260911T222850Z.log -->
+```text
+{"timestamp":"2026-09-11T22:28:51.188330Z","level":"INFO","message":"miroir-proxy starting","shards":16,"replication_factor":1,"replica_groups":1,"target":"miroir_proxy","span":{"pod_id":"unknown","name":"runtime"}}
+{"timestamp":"2026-09-11T22:28:51.189115Z","level":"WARN","message":"generated random ADMIN_SESSION_SEAL_KEY; multi-pod deployments must set this manually to a shared value","target":"miroir_proxy::admin_session","span":{"pod_id":"unknown","name":"runtime"}}
+{"timestamp":"2026-09-11T22:28:51.230449Z","level":"INFO","message":"CDC: background publisher started","target":"miroir_core::cdc"}
+{"timestamp":"2026-09-11T22:28:51.230666Z","level":"INFO","message":"loading aliases from task store","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:28:51.230706Z","level":"INFO","message":"rebalancer worker task starting","pod_id":"unknown","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:28:51.230754Z","level":"INFO","message":"drift reconciler started","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:28:51.230705Z","level":"INFO","message":"peer discovery disabled (not running in Kubernetes)","target":"miroir_proxy","span":{"pod_id":"unknown","name":"runtime"}}
+{"timestamp":"2026-09-11T22:28:51.230773Z","level":"INFO","message":"ILM worker starting","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:28:51.230849Z","level":"INFO","message":"drift reconciler starting (Mode A coordination)","pod_id":"unknown","target":"miroir_core::rebalancer_worker::drift_reconciler"}
+{"timestamp":"2026-09-11T22:28:51.230827Z","level":"INFO","message":"anti-entropy worker started","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:28:51.230870Z","level":"INFO","message":"canary runner enabled but Redis not available - skipping","target":"miroir_proxy","span":{"pod_id":"unknown","name":"runtime"}}
+{"timestamp":"2026-09-11T22:28:51.230882Z","level":"INFO","message":"ILM worker: starting evaluation loop","target":"miroir_core::ilm"}
+{"timestamp":"2026-09-11T22:28:51.230890Z","level":"INFO","message":"loaded 0 aliases from task store","target":"miroir_core::alias"}
+{"timestamp":"2026-09-11T22:28:51.230885Z","level":"INFO","message":"Mode C worker started","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:28:51.230914Z","level":"INFO","message":"anti-entropy worker starting (Mode A coordination)","pod_id":"unknown","interval_s":21600,"target":"miroir_core::rebalancer_worker::anti_entropy_worker"}
+{"timestamp":"2026-09-11T22:28:51.230970Z","level":"INFO","message":"Starting Mode C worker loop","target":"miroir_core::mode_c_worker"}
+{"timestamp":"2026-09-11T22:28:51.230975Z","level":"INFO","message":"aliases loaded successfully","count":0,"target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:28:51.231000Z","level":"INFO","message":"group sync worker started","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:28:51.231054Z","level":"INFO","message":"Starting group sync worker","target":"miroir_core::group_sync_worker"}
+{"timestamp":"2026-09-11T22:28:51.231057Z","level":"INFO","message":"resource-pressure metrics collection started","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:28:51.231185Z","level":"INFO","message":"task registry TTL pruner started","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:28:51.231414Z","level":"INFO","message":"pruner: starting with interval=300s ttl=604800s","target":"miroir_core::task_pruner"}
+{"timestamp":"2026-09-11T22:28:51.232750Z","level":"INFO","message":"acquired Mode B leader lease","operation_type":"ilm","scope":"ilm","pod_id":"unknown","target":"miroir_core::mode_b_coordinator"}
+{"timestamp":"2026-09-11T22:28:51.232976Z","level":"INFO","message":"rebalancer worker starting","pod_id":"unknown","target":"miroir_core::rebalancer_worker"}
+{"timestamp":"2026-09-11T22:28:51.233799Z","level":"INFO","message":"node promoted to Active (was Joining)","node_id":"node-0","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:28:51.234368Z","level":"INFO","message":"acquired leader lease","scope":"rebalance:default","pod_id":"unknown","target":"miroir_core::rebalancer_worker"}
+{"timestamp":"2026-09-11T22:28:51.234482Z","level":"INFO","message":"Service marked as ready","target":"miroir_proxy::routes::admin_endpoints"}
+{"timestamp":"2026-09-11T22:28:51.234776Z","level":"INFO","message":"pruner: deleted 0 tasks (Mode A), registry_size=0","target":"miroir_core::task_pruner"}
+{"timestamp":"2026-09-11T22:28:51.235764Z","level":"INFO","message":"ILM worker: acquired leadership, starting evaluation","target":"miroir_core::ilm"}
+{"timestamp":"2026-09-11T22:28:51.243342Z","level":"INFO","message":"listening","main_addr":"127.0.0.1:17770","metrics_addr":"0.0.0.0:9090","target":"miroir_proxy","span":{"pod_id":"unknown","name":"runtime"}}
+{"timestamp":"2026-09-11T22:28:51.243794Z","level":"WARN","message":"peer discovery failed: discovery error: SRV lookup failed for _http._tcp.miroir-headless.default.svc.cluster.local: no record found for name: _http._tcp.miroir-headless.default.svc.cluster.local type: SRV class: IN","target":"miroir_core::mode_a_coordinator"}
+{"timestamp":"2026-09-11T22:28:51.243792Z","level":"WARN","message":"peer discovery failed: discovery error: SRV lookup failed for _http._tcp.miroir-headless.default.svc.cluster.local: no record found for name: _http._tcp.miroir-headless.default.svc.cluster.local type: SRV class: IN","target":"miroir_core::mode_a_coordinator"}
+{"timestamp":"2026-09-11T22:28:51.243838Z","level":"WARN","message":"failed to refresh peer set, using cached peers","error":"no peers discovered","target":"miroir_core::rebalancer_worker::anti_entropy_worker"}
+{"timestamp":"2026-09-11T22:28:51.243840Z","level":"WARN","message":"failed to refresh peer set, using cached peers","error":"no peers discovered","target":"miroir_core::rebalancer_worker::drift_reconciler"}
+{"timestamp":"2026-09-11T22:28:51.243854Z","level":"INFO","message":"starting anti-entropy pass","target":"miroir_core::rebalancer_worker::anti_entropy_worker"}
+{"timestamp":"2026-09-11T22:28:51.243885Z","level":"INFO","message":"Anti-entropy pass starting: 16 shards to scan","target":"miroir_core::anti_entropy"}
+{"timestamp":"2026-09-11T22:28:51.245673Z","level":"WARN","message":"Failed to fingerprint shard 0 on node node-0: topology error: fetch failed: HttpError { status: 404, body: \"{\\\"message\\\":\\\"Index `default` not found.\\\",\\\"code\\\":\\\"index_not_found\\\",\\\"type\\\":\\\"invalid_request\\\",\\\"link\\\":\\\"https://docs.meilisearch.com/errors#index_not_found\\\"}\" }","target":"miroir_core::anti_entropy"}
+{"timestamp":"2026-09-11T22:28:51.349478Z","level":"WARN","message":"Failed to fingerprint shard 1 on node node-0: topology error: fetch failed: HttpError { status: 404, body: \"{\\\"message\\\":\\\"Index `default` not found.\\\",\\\"code\\\":\\\"index_not_found\\\",\\\"type\\\":\\\"invalid_request\\\",\\\"link\\\":\\\"https://docs.meilisearch.com/errors#index_not_found\\\"}\" }","target":"miroir_core::anti_entropy"}
+{"timestamp":"2026-09-11T22:28:51.677526Z","level":"INFO","pod_id":"unknown","request_id":"8e19f193","message":"GET 200 OK","duration_ms":0,"status":200,"method":"GET","path_template":"/health","target":"miroir.request","span":{"method":"GET","path_template":"/health","pod_id":"unknown","request_id":"8e19f193","name":"request"}}
+{"timestamp":"2026-09-11T22:28:51.738315Z","level":"WARN","pod_id":"unknown","request_id":"1c83d8a7","message":"POST 404 Not Found","duration_ms":0,"status":404,"method":"POST","path_template":"/indexes/products/search","target":"miroir.request","span":{"method":"POST","path_template":"/indexes/products/search","pod_id":"unknown","request_id":"1c83d8a7","name":"request"}}
+{"timestamp":"2026-09-11T22:29:06.762526Z","level":"INFO","message":"shutdown signal received, draining in-flight requests...","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:29:06.762593Z","level":"INFO","message":"shutdown signal received, draining in-flight requests...","target":"miroir_proxy"}
+{"timestamp":"2026-09-11T22:29:07.236253Z","level":"INFO","message":"pruner: stopping during sleep","target":"miroir_core::task_pruner"}
+```
+<!-- END-LOG: proxy-logs-20260911T222850Z.log -->
+
+### Verbatim node-side evidence — manual diagnostic topology (22:31-22:41Z)
+
+To locate the stall, a third topology was spawned manually (not by the
+committed script; same rendered config, node `p13diag5ed-meili`, host port
+33182, proxy pid 2364546) and the control POST was fired while the topology
+was probed live. The node's own request log (ANSI stripped, `HTTP request`
+lines only) shows the node stayed healthy and that the proxy's search fetch
+**never arrives**:
+
+<!-- BEGIN-LOG: p13diag5ed-meili node HTTP-request lines -->
+```text
+2026-09-11T22:31:49.394571Z  INFO HTTP request{method=GET host="127.0.0.1:33182" route=/health query_parameters= user_agent= status_code=200}: meilisearch: close time.busy=48.4µs time.idle=11.2µs
+2026-09-11T22:31:49.410838Z  INFO HTTP request{method=GET host="127.0.0.1:33182" route=/indexes query_parameters= user_agent= status_code=200}: meilisearch: close time.busy=238µs time.idle=176µs
+2026-09-11T22:31:49.411070Z  WARN HTTP request{method=GET host="127.0.0.1:33182" route=/indexes/default/documents query_parameters=filter=%7B%22_miroir_shard%22%3A0%7D&limit=1000&offset=0 user_agent= status_code=404 error=Index `default` not found.}: tracing_actix_web::middleware: Error encountered while processing the incoming HTTP request: ResponseError { code: 404, message: "Index `default` not found.", error_code: "index_not_found", error_type: "invalid_request", error_link: "https://docs.meilisearch.com/errors#index_not_found" }
+2026-09-11T22:31:49.411116Z  INFO HTTP request{method=GET host="127.0.0.1:33182" route=/indexes/default/documents query_parameters=filter=%7B%22_miroir_shard%22%3A0%7D&limit=1000&offset=0 user_agent= status_code=404 error=Index `default` not found.}: meilisearch: close time.busy=360µs time.idle=185µs
+2026-09-11T22:31:49.513678Z  WARN HTTP request{method=GET host="127.0.0.1:33182" route=/indexes/default/documents query_parameters=filter=%7B%22_miroir_shard%22%3A1%7D&limit=1000&offset=0 user_agent= status_code=404 error=Index `default` not found.}: tracing_actix_web::middleware: Error encountered while processing the incoming HTTP request: ResponseError { code: 404, message: "Index `default` not found.", error_code: "index_not_found", error_type: "invalid_request", error_link: "https://docs.meilisearch.com/errors#index_not_found" }
+2026-09-11T22:31:49.513738Z  INFO HTTP request{method=GET host="127.0.0.1:33182" route=/indexes/default/documents query_parameters=filter=%7B%22_miroir_shard%22%3A1%7D&limit=1000&offset=0 user_agent= status_code=404 error=Index `default` not found.}: meilisearch: close time.busy=223µs time.idle=102µs
+2026-09-11T22:31:52.883749Z  INFO HTTP request{method=GET host="127.0.0.1:33182" route=/health query_parameters= user_agent=curl/8.14.1 status_code=200}: meilisearch: close time.busy=90.3µs time.idle=27.0µs
+2026-09-11T22:31:52.896000Z  WARN HTTP request{method=POST host="127.0.0.1:33182" route=/indexes/products/search query_parameters= user_agent=curl/8.14.1 status_code=404 error=Index `products` not found.}: tracing_actix_web::middleware: Error encountered while processing the incoming HTTP request: ResponseError { code: 404, message: "Index `products` not found.", error_code: "index_not_found", error_type: "invalid_request", error_link: "https://docs.meilisearch.com/errors#index_not_found" }
+2026-09-11T22:31:52.896075Z  INFO HTTP request{method=POST host="127.0.0.1:33182" route=/indexes/products/search query_parameters= user_agent=curl/8.14.1 status_code=404 error=Index `products` not found.}: meilisearch: close time.busy=402µs time.idle=141µs
+2026-09-11T22:35:23.011484Z  WARN HTTP request{method=GET host="127.0.0.1:33182" route=/indexes/products query_parameters= user_agent= status_code=404 error=Index `products` not found.}: tracing_actix_web::middleware: Error encountered while processing the incoming HTTP request: ResponseError { code: 404, message: "Index `products` not found.", error_code: "index_not_found", error_type: "invalid_request", error_link: "https://docs.meilisearch.com/errors#index_not_found" }
+2026-09-11T22:35:23.011544Z  INFO HTTP request{method=GET host="127.0.0.1:33182" route=/indexes/products query_parameters= user_agent= status_code=404 error=Index `products` not found.}: meilisearch: close time.busy=366µs time.idle=140µs
+2026-09-11T22:36:49.431097Z  INFO HTTP request{method=GET host="127.0.0.1:33182" route=/indexes query_parameters= user_agent= status_code=200}: meilisearch: close time.busy=231µs time.idle=183µs
+2026-09-11T22:41:49.447841Z  INFO HTTP request{method=GET host="127.0.0.1:33182" route=/indexes query_parameters= user_agent= status_code=200}: meilisearch: close time.busy=256µs time.idle=246µs
+```
+<!-- END-LOG: p13diag5ed-meili node HTTP-request lines -->
+
+Reading it (empty `user_agent` = the proxy's reqwest client; `curl/8.14.1` =
+direct host probes fired during the hang):
+
+- `22:31:49.394` — the proxy's health monitor polls the node's `/health`
+  **once** and never again, despite `health.interval_ms: 200` (expected ~5
+  polls/sec).
+- `22:31:49.411 / .513` — anti-entropy fingerprints shards 0 and 1 (both
+  answered, `index_not_found`), then no shard 2 fetch ever arrives.
+- `22:31:52.883 / .896` — direct host probes during the control hang: the node
+  answers `/health` 200 and a native search POST `index_not_found` in
+  milliseconds. **The node is healthy; the stall is inside the proxy.**
+- `22:35:23.011` — a request-scoped `GET /indexes/products` sent through the
+  proxy (fired minutes into the wedge) is forwarded upstream and answered
+  instantly — one-shot admin-path fetches still work while search handlers
+  wedge.
+- `22:36:49 / 22:41:49` — some periodic task still lists `/indexes` minutes
+  into the wedge; the wedge is selective, not a proxy-wide freeze.
+
+### Characterization established by this cycle
+
+1. **Determinism tonight:** 7/7 wedge (harness 22:27:00Z, harness 22:28:50Z,
+   manual 22:31:49Z, manual late-fire 22:35:23Z, manual early-fire 22:41:40Z,
+   harness retry 23:03:25Z, harness re-dispatch 23:26:22Z —
+   the early-fire manual run came ~15 ms after readiness, i.e. arrival timing
+   is NOT the discriminator; the control wedges whenever it fires).
+2. **Terminal per process:** a second control fired minutes later against the
+   same wedged proxy also hangs; the process never recovers. `GET /health`
+   (proxy) keeps answering instantly; router-served 404s keep working.
+3. **Where it blocks:** the proxy accepts the connection and the task parks
+   before issuing its upstream fetch (node never sees it); `ss` during the
+   hang shows the proxy's pooled connections to the node idle-ESTABLISHED;
+   `/proc/<pid>/task` shows all tokio workers parked (`futex_wait`/`epoll`),
+   nothing spinning — a lost wakeup / unsatisfiable dependency, not a spin.
+4. **What did NOT change:** the binary (byte-identical mtime to cycles 2-3),
+   the source tree (only docs/harness commits since `49deb4f`; same
+   `search.rs` diff), the script's behavior (diff = path defaults only), the
+   node image (`d1fb40664b6d…` all day), host load (0.20), no proxy env vars.
+5. **Correlated environment delta (mechanism NOT established):** the proxy's
+   SRV peer-discovery lookups took ~250 ms each in cycle 2's log (pass start
+   `20:42:34.7707` → first SRV warn `20:42:35.2699`) and fail in <1 ms in
+   every cycle-4 run (e.g. warn at `.243794`, one ms after `listening` at
+   `.243342`; re-dispatch run 4: warn `.910311` vs `listening` `.909317` —
+   the same ~1 ms shape). The host resolver still costs ~250-310 ms per cold negative
+   (`getent`), so the instant in-proxy failure originates in the proxy's own
+   DNS stack, unexplained. Because the early-fire experiment rules out timing,
+   this delta correlates with the behavior change but is not shown to cause
+   it. Cycle 2's window simply never observed the wedge (its process lived
+   ~1.3 s and its control completed before the wedge point), which is why
+   cycles 1-3 recorded a clean 200.
+
+### What this means for the diagnosis (no force-fit)
+
+- **Signature A's verdict STANDS:** the suite's 23 proxy search POSTs are all
+  on the native path; the native path still answers the exact router-miss 404
+  (reproduced twice this cycle), so the suite still panics at
+  `p13_13_cache_flow_integration.rs:508` with
+  `assertion failed: resp.status().is_success()` for the same router-404
+  reason. Nothing in this cycle contradicts
+  [p13-13-root-cause-diagnosis.md](p13-13-root-cause-diagnosis.md).
+- **What breaks is the control-path claim** the final attribution leans on
+  ("control POST answers 200 on the same process — auth, upstream, and proxy
+  internals all demonstrably healthy"). Tonight the control path itself wedges
+  deterministically, so a suite repointed at `/search/products` — the umbrella
+  decision pending with `miroir-1ec135a1` — would now HANG rather than pass.
+  The umbrella decision needs this new datum: there is a second, distinct,
+  previously-unobserved proxy defect (search-handler wedge; environment-
+  sensitive; absent 20:17-21:37Z, deterministic 22:27Z+) that must be
+  root-caused separately. This cycle deliberately does NOT guess its
+  mechanism.
+
+### Teardown verification
+
+All four committed-harness runs: the script's own cleanup ran (exit 1 path) —
+capture container removed, ports released, no proxy process (verified after
+runs 1, 3, and 4 with `ss`/`docker ps`/`pgrep -x`; run 2's log shows the same
+cleanup completing).
+The three manual diagnostic topologies were torn down explicitly: both
+`p13diag5ed*-meili` containers removed, manual proxy SIGTERM'd, `/tmp`
+config dirs deleted. Final state re-checked after the re-dispatch run
+(23:26Z): `ss -ltnp` shows nothing on
+17770/9090, `pgrep -x miroir-proxy` empty, no `p13_13-capture`/`p13diag5ed`
+containers.
