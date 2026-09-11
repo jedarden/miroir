@@ -50,6 +50,15 @@ const PROXY_PORT: u16 = 17770;
 /// holds the slot from setup until teardown.
 static PROXY_SLOT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// How long `wait_for_ready` waits for `/health` before giving up and
+/// embedding the proxy's log tails in the failure.
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Lines of each proxy log file embedded in a readiness-timeout failure.
+/// Startup failures (config validation, bind errors) report at the end of the
+/// stream, so a tail carries the reason.
+const LOG_TAIL_LINES: usize = 50;
+
 /// Check if Docker is available for testcontainers.
 fn check_docker_available() -> anyhow::Result<()> {
     if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
@@ -90,8 +99,11 @@ fn check_docker_available() -> anyhow::Result<()> {
 /// with a generated `miroir.yaml`. `kill_on_drop` tears the process down and
 /// `TempDir` removes the config dir when the setup is dropped.
 struct SpawnedProxy {
-    /// Never read directly: `kill_on_drop` tears the proxy down on drop.
-    _child: Child,
+    /// Mutexed because polling the exit status (`try_wait`) needs `&mut`,
+    /// while `wait_for_ready` only holds `&self`. stdio is never piped — the
+    /// child logs to files (see `spawn`) — and `kill_on_drop` tears the
+    /// proxy down on drop.
+    _child: tokio::sync::Mutex<Child>,
     _config_dir: tempfile::TempDir,
 }
 
@@ -119,9 +131,50 @@ impl SpawnedProxy {
             .context("failed to spawn miroir-proxy binary")?;
 
         Ok(Self {
-            _child: child,
+            _child: tokio::sync::Mutex::new(child),
             _config_dir: config_dir,
         })
+    }
+
+    /// Tail of the proxy's stdout and stderr logs, for attaching to a
+    /// readiness-timeout failure.
+    ///
+    /// The logs live in the config `TempDir` and are deleted with it on drop,
+    /// so this is only callable while the proxy is alive — exactly where
+    /// `wait_for_ready`'s timeout path sits. Without reading here, a timeout
+    /// carried no evidence at all: the parent bead failed three times with
+    /// nothing to inspect.
+    fn log_tails(&self) -> String {
+        ["proxy.stdout.log", "proxy.stderr.log"]
+            .into_iter()
+            .map(|name| {
+                let path = self._config_dir.path().join(name);
+                let tail = std::fs::read_to_string(&path)
+                    .map(|content| {
+                        let lines: Vec<&str> = content.lines().collect();
+                        let start = lines.len().saturating_sub(LOG_TAIL_LINES);
+                        lines[start..].join("\n")
+                    })
+                    .unwrap_or_else(|e| format!("<unreadable: {e}>"));
+                format!(
+                    "--- {} (last {LOG_TAIL_LINES} lines) ---\n{tail}",
+                    path.display()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// One-line liveness report for the proxy process, for the
+    /// readiness-timeout failure: distinguishes a proxy that died before it
+    /// could log anything (empty tails in the same message) from one still
+    /// running.
+    async fn exit_status_line(&self) -> String {
+        match self._child.lock().await.try_wait() {
+            Ok(Some(status)) => format!("proxy process has exited: {status}"),
+            Ok(None) => "proxy process is still running".to_string(),
+            Err(e) => format!("proxy process status unknown: {e}"),
+        }
     }
 }
 
@@ -221,20 +274,60 @@ impl CacheFlowTestSetup {
     }
 
     /// Wait for the proxy to be ready.
+    ///
+    /// Ready means `/health` answered with exactly `{"status":"available"}` —
+    /// the body that route returns unconditionally once the listener binds
+    /// (`routes/health.rs`). A bare 2xx is not enough: a stale proxy left
+    /// bound to the port from an earlier run would pass it, so a 2xx with any
+    /// other body bails immediately instead of burning [`READY_TIMEOUT`] on a
+    /// process that can never report ready.
+    ///
+    /// On timeout the bail embeds the tails of the proxy's stdout/stderr
+    /// logs, read here while the config `TempDir` still exists — once the
+    /// setup drops, they are gone and the timeout is undiagnosable — next to
+    /// the process liveness line and the last failed `/health` probe. Success
+    /// prints the readiness latency so the expected ~6s spawn time stays
+    /// verifiable per test.
     async fn wait_for_ready(&self) -> anyhow::Result<()> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let started = tokio::time::Instant::now();
+        let deadline = started + READY_TIMEOUT;
+        let url = &self.proxy_url;
+        // Outcome of the most recent failed probe, embedded in the timeout
+        // bail: it separates a proxy that never bound the port (every probe
+        // refused) from one bound but answering wrong.
+        let mut last_probe = String::from("no probe completed");
         while tokio::time::Instant::now() < deadline {
-            match self
-                .client
-                .get(format!("{}/health", self.proxy_url))
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => return Ok(()),
-                _ => sleep(Duration::from_millis(100)).await,
+            match self.client.get(format!("{url}/health")).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    let body: Value = serde_json::from_str(&text).with_context(|| {
+                        format!(
+                            "GET {url}/health returned {status} with a non-JSON body: {text}; \
+                             {{\"status\":\"available\"}} is expected — a process other than \
+                             this test's proxy is likely bound to port {PROXY_PORT}"
+                        )
+                    })?;
+                    anyhow::ensure!(
+                        body == json!({"status": "available"}),
+                        "GET {url}/health returned {status} with an unexpected body {body}; \
+                         {{\"status\":\"available\"}} is expected — a process other than \
+                         this test's proxy is bound to port {PROXY_PORT}"
+                    );
+                    println!("proxy ready in {:.2?}", started.elapsed());
+                    return Ok(());
+                }
+                Ok(resp) => last_probe = format!("GET {url}/health returned {}", resp.status()),
+                Err(e) => last_probe = format!("GET {url}/health failed: {e}"),
             }
+            sleep(Duration::from_millis(100)).await;
         }
-        anyhow::bail!("Proxy did not become ready in time")
+        anyhow::bail!(
+            "Proxy did not become ready within {READY_TIMEOUT:?} — {}; \
+             last probe: {last_probe}; proxy logs at timeout:\n{}",
+            self._proxy.exit_status_line().await,
+            self._proxy.log_tails()
+        )
     }
 
     /// Create an index on all Meilisearch nodes.
