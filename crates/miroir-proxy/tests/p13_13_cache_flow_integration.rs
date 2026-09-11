@@ -669,6 +669,18 @@ async fn acceptance_2_cache_miss_triggers_fan_out() {
         hits_before + 1,
         "the entry stored after the miss must serve the repeat query as a hit"
     );
+
+    // The served hit must short-circuit the fan-out here too: a hit that still
+    // scatters passes every delta above (the hit is recorded, the bodies
+    // identical), so without this flat counter the bypass regression would
+    // surface only in acceptance_1's body.
+    let scatter_after_second = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+    assert_eq!(
+        scatter_after_second, scatter_after_first,
+        "a served cache hit must bypass the scatter-gather fan-out"
+    );
 }
 
 #[tokio::test]
