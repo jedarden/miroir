@@ -16,12 +16,19 @@
 //!   Option 1: Docker available for testcontainers Meilisearch
 //!   Option 2: Set MIROIR_TEST_SKIP_DOCKER=1 to skip these tests
 //!
-//! On the lab box there is no docker.sock; podman rootless works instead:
+//! `check_docker_available` tries the default `/var/run/docker.sock` first;
+//! where that socket does not exist, podman rootless works instead:
 //!   systemctl --user start podman.socket
 //!   DOCKER_HOST=unix:///run/user/1001/podman/podman.sock cargo test \
 //!     -p miroir-proxy --test p13_13_cache_flow_integration
-//! (`check_docker_available` trusts an explicit DOCKER_HOST and lets
-//! testcontainers surface any connection failure itself.)
+//! (an explicit DOCKER_HOST is trusted, letting testcontainers surface any
+//! connection failure itself.)
+//!
+//! Live runs hard-bind host ports 17770 (client) and 9090 (Prometheus), and
+//! `PROXY_SLOT` serializes only this process — a `miroir-proxy` left running
+//! outside the suite (e.g. a scratch debugging session) holds both ports and
+//! poisons the readiness check. Check `ss -ltnp | grep -E '17770|9090'`
+//! before a live run; with one held, use MIROIR_TEST_SKIP_DOCKER=1 instead.
 
 use anyhow::Context;
 use reqwest::Client;
@@ -43,6 +50,10 @@ const NODE_MASTER_KEY: &str = "key0";
 /// Client-facing proxy key and port, mirrored into the generated config.
 const PROXY_MASTER_KEY: &str = "test_master_key";
 const PROXY_PORT: u16 = 17770;
+
+/// Fixed Prometheus listener port (`main.rs` binds 0.0.0.0:9090 regardless of
+/// `server.bind`); the reason the whole suite serializes on `PROXY_SLOT`.
+const PROXY_METRICS_PORT: u16 = 9090;
 
 /// Serializes the whole suite: the proxy binary hard-binds its Prometheus
 /// metrics listener on port 9090 (`main.rs`), so at most one instance can run
@@ -195,7 +206,9 @@ impl SpawnedProxy {
 /// The sqlite db path is pointed inside the config dir because the default
 /// (`/data/miroir-tasks.db`) is not writable here, and `search_ui` is
 /// disabled because the real binary refuses to start with it enabled but no
-/// JWT secret configured.
+/// JWT secret configured. `cdc.buffer.overflow` is pinned to `drop` because
+/// the default (`redis`) fails validation against a sqlite task store — the
+/// same pairing the config crate's own dev fixture uses.
 fn proxy_config_yaml(node_urls: &[String], task_db_path: &Path) -> String {
     let nodes = node_urls
         .iter()
@@ -215,6 +228,7 @@ fn proxy_config_yaml(node_urls: &[String], task_db_path: &Path) -> String {
          health:\n  interval_ms: 200\n  timeout_ms: 1000\n\
          task_store:\n  backend: sqlite\n  path: {}\n\
          result_cache:\n  enabled: true\n  ttl_ms: 500\n  max_size: 1000\n\
+         cdc:\n  buffer:\n    overflow: drop\n\
          search_ui:\n  enabled: false\n",
         task_db_path.display(),
     )
@@ -406,6 +420,35 @@ impl CacheFlowTestSetup {
     }
 }
 
+/// Read one unlabelled Prometheus series value from the proxy's metrics
+/// listener (`main.rs` binds it on 0.0.0.0:9090 regardless of `server.bind`).
+///
+/// The name must match a whole exposition token, so
+/// `miroir_scatter_fan_out_size_count` cannot collide with the same
+/// histogram's `_bucket`/`_sum` lines, nor with `# HELP`/`# TYPE` metadata.
+/// An absent series reads as 0 — the counter floor — so a proxy that stops
+/// exposing the metric, or a foreign process serving the port, surfaces as a
+/// failed delta assertion in the caller, never as a silently-passing check.
+/// (A dead endpoint never reaches the fallback: it errors the read outright.)
+async fn proxy_counter(client: &Client, metric: &str) -> anyhow::Result<u64> {
+    let body = client
+        .get(format!("http://127.0.0.1:{PROXY_METRICS_PORT}/metrics"))
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    for line in body.lines() {
+        let mut tokens = line.split_whitespace();
+        if tokens.next() == Some(metric) {
+            if let Some(value) = tokens.next().and_then(|v| v.parse::<u64>().ok()) {
+                return Ok(value);
+            }
+        }
+    }
+    Ok(0)
+}
+
 // ---------------------------------------------------------------------------
 // Integration tests for cache flow
 // ---------------------------------------------------------------------------
@@ -443,6 +486,16 @@ async fn acceptance_1_cache_hit_bypasses_fan_out() {
         "limit": 10
     });
 
+    // Counter baselines: the acceptance is pinned by deltas against these,
+    // not by body equality — identical rows come back on both paths whether
+    // or not the cache short-circuits the fan-out.
+    let hits_before = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
+        .await
+        .unwrap();
+    let scatter_before = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+
     let resp1 = setup
         .client
         .post(format!("{}/indexes/products/search", setup.proxy_url))
@@ -457,9 +510,20 @@ async fn acceptance_1_cache_hit_bypasses_fan_out() {
     assert_eq!(result1["hits"].as_array().unwrap().len(), 1);
     assert_eq!(result1["hits"][0]["name"], "Laptop");
 
+    // The uncached query must fan out exactly once: a flat count means the
+    // fan-out never ran (unwired metric, or the miss path wrongly
+    // short-circuited), a doubled one a retry/double scatter — either
+    // invalidates the bypass comparison below.
+    let scatter_after_first = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+    assert_eq!(
+        scatter_after_first,
+        scatter_before + 1,
+        "the uncached first query must trigger exactly one scatter-gather fan-out"
+    );
+
     // Second identical query - should hit cache and bypass scatter-gather
-    // This should be faster and not result in any upstream calls
-    let start = std::time::Instant::now();
     let resp2 = setup
         .client
         .post(format!("{}/indexes/products/search", setup.proxy_url))
@@ -468,21 +532,37 @@ async fn acceptance_1_cache_hit_bypasses_fan_out() {
         .send()
         .await
         .unwrap();
-    let cached_duration = start.elapsed();
 
     assert!(resp2.status().is_success());
     let result2: Value = resp2.json().await.unwrap();
 
-    // Results should be identical
+    // Cached body must round-trip unchanged; on its own this cannot detect a
+    // bypassed cache (both paths return the same rows) — the deltas below do.
     assert_eq!(result1, result2);
 
-    // Cache hit should be significantly faster than scatter-gather
-    // (This is a heuristic - in a real test we'd measure actual scatter-gather time)
-    // For now, we just verify the response was successful
-    assert!(cached_duration < Duration::from_millis(100));
+    // The repeat query must be recorded as a hit, not folded into a fresh
+    // miss. The 500 ms ttl_ms in the generated config is load-bearing: the
+    // entry is written during query 1 and hits never refresh it, so a host
+    // stall past the TTL reads here exactly like a lookup regression.
+    let hits_after = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
+        .await
+        .unwrap();
+    assert_eq!(
+        hits_after,
+        hits_before + 1,
+        "the repeat query must be served as a cache hit, not recorded as a miss"
+    );
 
-    // Verify cache statistics show a hit
-    // (In real implementation, we'd expose a /cache-stats endpoint)
+    // A served hit must short-circuit the fan-out: a hit that still scatters
+    // is exactly the bypass regression this test pins, and the identical
+    // bodies above cannot expose it — only this flat counter can.
+    let scatter_after_second = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+    assert_eq!(
+        scatter_after_second, scatter_after_first,
+        "a served cache hit must bypass the scatter-gather fan-out"
+    );
 }
 
 #[tokio::test]
@@ -517,6 +597,19 @@ async fn acceptance_2_cache_miss_triggers_fan_out() {
         "limit": 10
     });
 
+    // Counter baselines: the miss-side acceptance is pinned by deltas against
+    // these — body equality alone holds whether the flow fanned out or was
+    // served from a cache.
+    let misses_before = proxy_counter(&setup.client, "miroir_result_cache_misses_total")
+        .await
+        .unwrap();
+    let hits_before = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
+        .await
+        .unwrap();
+    let scatter_before = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+
     let resp = setup
         .client
         .post(format!("{}/indexes/products/search", setup.proxy_url))
@@ -531,6 +624,28 @@ async fn acceptance_2_cache_miss_triggers_fan_out() {
     assert_eq!(result["hits"].as_array().unwrap().len(), 1);
     assert_eq!(result["hits"][0]["name"], "Mouse");
 
+    // The uncached query is recorded as a miss and triggers the full
+    // scatter-gather fan-out — the two halves of this acceptance. A flat miss
+    // count means the query was wrongly served as a hit (or a lookup error
+    // recorded neither counter); a flat or doubled scatter count means the
+    // miss path short-circuited or scattered twice.
+    let misses_after_first = proxy_counter(&setup.client, "miroir_result_cache_misses_total")
+        .await
+        .unwrap();
+    assert_eq!(
+        misses_after_first,
+        misses_before + 1,
+        "the uncached query must be recorded as a cache miss"
+    );
+    let scatter_after_first = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+    assert_eq!(
+        scatter_after_first,
+        scatter_before + 1,
+        "a cache miss must trigger the scatter-gather fan-out"
+    );
+
     // Second query should now be cached
     let resp2 = setup
         .client
@@ -543,7 +658,17 @@ async fn acceptance_2_cache_miss_triggers_fan_out() {
 
     assert!(resp2.status().is_success());
     let result2: Value = resp2.json().await.unwrap();
+    // Body equality holds on both paths (see acceptance_1); the hit delta
+    // below is what proves the miss actually filed a serving entry.
     assert_eq!(result, result2);
+    let hits_after_second = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
+        .await
+        .unwrap();
+    assert_eq!(
+        hits_after_second,
+        hits_before + 1,
+        "the entry stored after the miss must serve the repeat query as a hit"
+    );
 }
 
 #[tokio::test]
