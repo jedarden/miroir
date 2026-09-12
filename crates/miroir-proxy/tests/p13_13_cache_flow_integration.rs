@@ -382,7 +382,9 @@ impl CacheFlowTestSetup {
 
     /// Add documents to an index.
     async fn add_documents(&self, index_uid: &str, documents: Value) -> anyhow::Result<()> {
-        // Add documents to the first node only (replication will handle the rest)
+        // Add documents to the first node only: the proxy's scatter-gather
+        // merge covers the other nodes (they hold the index but no
+        // documents, and answer these terms with zero hits).
         let url = &self.meilisearch_urls[0];
         let resp = self
             .client
@@ -396,7 +398,11 @@ impl CacheFlowTestSetup {
             anyhow::bail!("Failed to add documents to index {index_uid}");
         }
 
-        // Wait for replication
+        // Fixed-sleep lean, same shape as `set_node_settings` below: the
+        // document add is an async Meilisearch task, and this sleep is the
+        // fixed budget for it to apply before the proxy's first search —
+        // no poll of the tasks API. A stall past the budget surfaces as a
+        // content assert in the caller, never as a silent pass.
         sleep(Duration::from_millis(500)).await;
         Ok(())
     }
@@ -418,8 +424,12 @@ impl CacheFlowTestSetup {
             }
         }
 
-        // Settings updates are async tasks in Meilisearch; give them a moment
-        // to apply before the first query that depends on them.
+        // Fixed-sleep lean, mirrored by `add_documents` above: a settings
+        // update is an async Meilisearch task, and this sleep is the fixed
+        // budget for it to apply before the first query that depends on it —
+        // no poll of the tasks API. A stall past the budget surfaces as a
+        // failed assert in the caller (acceptance_10's status/facet pins —
+        // its only `set_node_settings` consumer), never as a silent pass.
         sleep(Duration::from_millis(500)).await;
         Ok(())
     }
@@ -1351,9 +1361,15 @@ async fn acceptance_8_concurrent_cache_access() {
 
     // No cache-counter bounds in this test, deliberately: ten identical
     // queries fired concurrently land as an arbitrary mix of coalesced
-    // waits, hits, and misses (the proxy coalesces in-flight duplicates),
-    // so any hit/miss split would flake the run. What this acceptance pins
-    // is response consistency under that race — the identical-body compare
+    // waits, hits, and misses — a coalesced subscriber returns at the
+    // try_coalesce check, which sits before the cache lookup
+    // (routes/search.rs), recording neither hit nor miss — so any
+    // hit/miss split here would flake the run. The converse is why the
+    // sequential tests' deltas are safe: coalescing is inert there only
+    // by sequencing, each query registering in flight only during its own
+    // scatter and unregistering before its response, so the next query's
+    // try_coalesce never finds a duplicate. What this acceptance pins is
+    // response consistency under the race — the identical-body compare
     // below.
 
     // Execute concurrent queries
@@ -1396,6 +1412,10 @@ async fn acceptance_8_concurrent_cache_access() {
         assert_eq!(first_result, result);
     }
 
+    // Content pin the equality loop cannot imply: if every concurrent
+    // response came back identically wrong (a uniformly empty or
+    // shape-corrupt body under the race), all nine compares above still
+    // pass — this catches the uniformly-wrong case.
     assert_eq!(results[0]["hits"].as_array().unwrap().len(), 1);
 }
 
@@ -1603,7 +1623,12 @@ async fn acceptance_10_cache_with_complex_query() {
     assert!(resp1.status().is_success());
     let result1: Value = resp1.json().await.unwrap();
 
-    // Verify facets are present
+    // Facets must actually come back: this reads result1 before the
+    // repeat, so it fires independently of any equality, and pins the
+    // acceptance's premise — a proxy that drops `facets`/`filter` on
+    // forward, or nodes whose filterableAttributes did not apply, serves
+    // no facetDistribution and fails here instead of passing while caching
+    // a degenerate query.
     assert!(result1["facetDistribution"].is_object());
 
     // The complex query must fan out exactly once before there is anything
