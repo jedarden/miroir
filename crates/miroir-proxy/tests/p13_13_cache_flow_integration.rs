@@ -1152,6 +1152,20 @@ async fn acceptance_6_graceful_handling_of_cache_connection_failure() {
     // Execute a query
     let query = json!({"q": "test", "limit": 10});
 
+    // Counter baselines: with the in-process ResultCache there is no failure
+    // to inject here — every get/insert path returns Ok (result_cache.rs), so
+    // real failure injection stays unit-level in
+    // p13_12_cache_failure_handling.rs. What this test can pin end-to-end is
+    // the flow an uncached request takes through the cache layer; the deltas
+    // below, not the body asserts (which hold on any healthy proxy), are its
+    // regression sensitivity.
+    let misses_before = proxy_counter(&setup.client, "miroir_result_cache_misses_total")
+        .await
+        .unwrap();
+    let scatter_before = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+
     let resp = setup
         .client
         .post(format!("{}/indexes/products/search", setup.proxy_url))
@@ -1166,8 +1180,28 @@ async fn acceptance_6_graceful_handling_of_cache_connection_failure() {
     let result: Value = resp.json().await.unwrap();
     assert_eq!(result["hits"].as_array().unwrap().len(), 1);
 
-    // The system should continue to handle requests despite cache issues
-    // (In a real test, we'd simulate cache failures and verify graceful degradation)
+    // The request must survive the cache layer as a clean miss into a full
+    // fan-out: a flat miss delta means the lookup never ran (a cache-layer
+    // regression that aborts or bypasses accounting while still serving), and
+    // a flat scatter delta means the graceful path served without gathering.
+    // A failure that aborted the request outright already fails the status
+    // assert above — these pin the degrade-and-continue shape.
+    let misses_after = proxy_counter(&setup.client, "miroir_result_cache_misses_total")
+        .await
+        .unwrap();
+    assert_eq!(
+        misses_after,
+        misses_before + 1,
+        "the uncached query must be recorded as a cache miss, not lost at the cache layer"
+    );
+    let scatter_after = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+    assert_eq!(
+        scatter_after,
+        scatter_before + 1,
+        "the request must continue into a full scatter-gather fan-out despite the cache layer"
+    );
 }
 
 #[tokio::test]
