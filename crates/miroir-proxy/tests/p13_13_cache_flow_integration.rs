@@ -197,7 +197,13 @@ impl SpawnedProxy {
 }
 
 /// Render the proxy's `miroir.yaml`. Only overrides of `MiroirConfig`
-/// defaults are written; every other field keeps its default.
+/// defaults are written; every other field keeps its serde default
+/// (`replica_groups` 1, sqlite task store, result cache `enabled` +
+/// `max_size`). The exception is `result_cache.ttl_ms`, written at the
+/// default 500 anyway: a pin, not an override — the expiry and hit-timing
+/// asserts below (acceptance_7's 600 ms sleep, every "well inside the
+/// TTL" repeat) are calibrated to it, so it must not start tracking
+/// future default drift.
 ///
 /// Topology note: `MiroirConfig::validate` requires a redis task store (plus
 /// leader election) once `replication_factor > 1` or `replica_groups > 1`,
@@ -222,12 +228,11 @@ fn proxy_config_yaml(node_urls: &[String], task_db_path: &Path) -> String {
          node_master_key: {NODE_MASTER_KEY}\n\
          shards: 16\n\
          replication_factor: 1\n\
-         replica_groups: 1\n\
          nodes:\n{nodes}\n\
          server:\n  bind: 127.0.0.1\n  port: {PROXY_PORT}\n\
          health:\n  interval_ms: 200\n  timeout_ms: 1000\n\
-         task_store:\n  backend: sqlite\n  path: {}\n\
-         result_cache:\n  enabled: true\n  ttl_ms: 500\n  max_size: 1000\n\
+         task_store:\n  path: {}\n\
+         result_cache:\n  ttl_ms: 500\n\
          cdc:\n  buffer:\n    overflow: drop\n\
          search_ui:\n  enabled: false\n",
         task_db_path.display(),
