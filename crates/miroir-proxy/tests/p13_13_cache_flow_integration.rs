@@ -661,6 +661,9 @@ async fn acceptance_2_cache_miss_triggers_fan_out() {
     // Body equality holds on both paths (see acceptance_1); the hit delta
     // below is what proves the miss actually filed a serving entry.
     assert_eq!(result, result2);
+    // The 500 ms ttl_ms is load-bearing as in acceptance_1 — the entry is
+    // written during the first query and hits never refresh it, so a host
+    // stall past the TTL reads here exactly like a store regression.
     let hits_after_second = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
         .await
         .unwrap();
