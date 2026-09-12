@@ -297,3 +297,24 @@ The third cycle's verbatim logs (run 2026-09-11T21:37:57Z; capture bead
 pins in
 [p13-13-third-cycle-signature-a-capture-2026-09-11.md](p13-13-third-cycle-signature-a-capture-2026-09-11.md)
 (task `miroir-20f236c3`).
+
+The FOURTH cycle (four committed-harness runs, 2026-09-11T22:27:00Z–23:26:22Z,
+task `miroir-5ed697fa`, commit `09b7866`) found the first DIVERGENCE: the
+native-path 404 fingerprint stayed identical while the control
+`POST /search/products` wedged (curl aborted at its client cap, rc=28,
+0 bytes) — preserved in
+[p13-13-fourth-cycle-committed-harness-capture-2026-09-11.md](p13-13-fourth-cycle-committed-harness-capture-2026-09-11.md).
+The FIFTH cycle (manually-spawned topology, capture 2026-09-12T00:05:19Z,
+final-gate child `miroir-f79b50e1`) reproduced the native fingerprint for the
+8th consecutive observation and independently confirmed the control-path wedge
+on that topology (connection accepted and routed — open span
+`request_id abf9606e` — but 0 response bytes; attempt-1 pending 15:16 elapsed
+at teardown, bounded retry rc=28 at 150.002 s), bringing the wedge to 8/8
+across all attempts since 2026-09-11T22:27Z. Its verbatim logs and the full
+attribution note are preserved in
+[p13-13-fifth-cycle-signature-a-capture-2026-09-12.md](p13-13-fifth-cycle-signature-a-capture-2026-09-12.md)
+(task `miroir-7522b867`). The router-miss verdict above remains
+five-cycle-stable; the control-path wedge is a SECOND, DISTINCT failure mode —
+it lives in the registered `/search/:index` handler, whereas the native path
+never reaches any handler — and needs its own diagnosis regardless of which
+remediation the umbrella bead `miroir-1ec135a1` picks.
