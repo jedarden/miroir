@@ -1198,6 +1198,16 @@ async fn acceptance_7_cache_ttl_expiration() {
     // Execute a query
     let query = json!({"q": "expiring", "limit": 10});
 
+    // Counter baselines: the expiry acceptance is pinned by deltas against
+    // these — identical bodies hold whether the repeat was re-scattered or
+    // served from an entry that never expired.
+    let misses_before = proxy_counter(&setup.client, "miroir_result_cache_misses_total")
+        .await
+        .unwrap();
+    let scatter_before = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+
     let resp1 = setup
         .client
         .post(format!("{}/indexes/products/search", setup.proxy_url))
@@ -1210,7 +1220,10 @@ async fn acceptance_7_cache_ttl_expiration() {
     assert!(resp1.status().is_success());
     let result1: Value = resp1.json().await.unwrap();
 
-    // Wait for cache to expire (TTL is 500ms in test config)
+    // Wait for cache to expire (TTL is 500ms in test config). The sleep is
+    // measured from query 1's completion — the entry is inserted at its
+    // scatter end — so 600 ms always overshoots the 500 ms ttl_ms, and a
+    // host stall only makes the entry more expired, never less.
     sleep(Duration::from_millis(600)).await;
 
     // Query again after expiration - should trigger fresh scatter-gather
@@ -1226,8 +1239,35 @@ async fn acceptance_7_cache_ttl_expiration() {
     assert!(resp2.status().is_success());
     let result2: Value = resp2.json().await.unwrap();
 
-    // Results should match
+    // Results should match. On its own this cannot detect an entry that
+    // outlived its TTL — both paths return the same rows — the deltas below
+    // do.
     assert_eq!(result1, result2);
+
+    // The repeat must miss again: query 1 is the cold miss, and the repeat
+    // looks up an entry written before the 600 ms sleep — past the
+    // 500 ms ttl_ms, and an expired entry is a miss by definition. A repeat
+    // served as a hit means the entry survived its TTL (expiry broken) and
+    // this delta falls short at +1.
+    let misses_after = proxy_counter(&setup.client, "miroir_result_cache_misses_total")
+        .await
+        .unwrap();
+    assert_eq!(
+        misses_after,
+        misses_before + 2,
+        "the post-TTL repeat must be a cache miss, not a hit on the expired entry"
+    );
+
+    // The expired lookup must re-scatter: a repeat served from an unexpired
+    // entry bypasses the fan-out entirely and leaves this flat at +1.
+    let scatter_after = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+    assert_eq!(
+        scatter_after,
+        scatter_before + 2,
+        "the post-TTL repeat must trigger a fresh scatter-gather fan-out"
+    );
 }
 
 #[tokio::test]
@@ -1254,6 +1294,13 @@ async fn acceptance_8_concurrent_cache_access() {
         {"id": 1, "name": "Concurrent Product", "category": "test"}
     ]);
     setup.add_documents("products", documents).await.unwrap();
+
+    // No cache-counter bounds in this test, deliberately: ten identical
+    // queries fired concurrently land as an arbitrary mix of coalesced
+    // waits, hits, and misses (the proxy coalesces in-flight duplicates),
+    // so any hit/miss split would flake the run. What this acceptance pins
+    // is response consistency under that race — the identical-body compare
+    // below.
 
     // Execute concurrent queries
     let query = json!({"q": "concurrent", "limit": 10});
@@ -1326,6 +1373,16 @@ async fn acceptance_9_cache_invalidation_on_index_update() {
     // Execute a search
     let query = json!({"q": "searchable", "limit": 10});
 
+    // Counter baselines: the invalidation acceptance is pinned by deltas
+    // against these — identical bodies hold whether the post-change repeat
+    // was a fresh miss or a stale entry served under the old version.
+    let misses_before = proxy_counter(&setup.client, "miroir_result_cache_misses_total")
+        .await
+        .unwrap();
+    let scatter_before = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+
     let resp1 = setup
         .client
         .post(format!("{}/indexes/products/search", setup.proxy_url))
@@ -1343,33 +1400,65 @@ async fn acceptance_9_cache_invalidation_on_index_update() {
         "rankingRules": ["words", "typo", "proximity", "attribute", "sort", "exactness"]
     });
 
+    // The broadcast must actually be reached: swallowing a transport error
+    // here used to skip the entire acceptance while the test still passed.
+    // A proxy that answered query 1 but won't take the PATCH is a broken
+    // run, not a pass — and the status itself must be success, because the
+    // cache key is versioned by the commit a successful broadcast performs.
     let settings_resp = setup
         .client
         .patch(format!("{}/indexes/products/settings", setup.proxy_url))
         .header("Authorization", format!("Bearer {}", setup.master_key))
         .json(&settings)
         .send()
-        .await;
+        .await
+        .unwrap();
+    assert!(
+        settings_resp.status().is_success(),
+        "the settings broadcast must succeed: its commit is what versions the cache key"
+    );
 
-    // Settings update might fail in test environment, but the test framework
-    // should handle it gracefully
-    if let Ok(resp) = settings_resp {
-        assert!(resp.status().is_success());
+    // Query again - should use new cache key (different settings version)
+    let resp2 = setup
+        .client
+        .post(format!("{}/indexes/products/search", setup.proxy_url))
+        .header("Authorization", format!("Bearer {}", setup.master_key))
+        .json(&query)
+        .send()
+        .await
+        .unwrap();
 
-        // Query again - should use new cache key (different settings version)
-        let resp2 = setup
-            .client
-            .post(format!("{}/indexes/products/search", setup.proxy_url))
-            .header("Authorization", format!("Bearer {}", setup.master_key))
-            .json(&query)
-            .send()
-            .await
-            .unwrap();
+    assert!(resp2.status().is_success());
+    let result2: Value = resp2.json().await.unwrap();
 
-        assert!(resp2.status().is_success());
-        let result2: Value = resp2.json().await.unwrap();
-        assert_eq!(result1, result2); // Results should still match
-    }
+    // Results should still match. On its own this cannot detect a stale
+    // entry surviving the settings change — one document means both paths
+    // return the same row — the deltas below do.
+    assert_eq!(result1, result2);
+
+    // The repeat must miss: the broadcast commit bumped the settings
+    // version inside the cache key, so the lookup cannot see query 1's
+    // entry. A hit means the stale entry survived invalidation and this
+    // delta falls short at +1 (query 1 is the cold miss).
+    let misses_after = proxy_counter(&setup.client, "miroir_result_cache_misses_total")
+        .await
+        .unwrap();
+    assert_eq!(
+        misses_after,
+        misses_before + 2,
+        "the repeat after a settings commit must miss into a fresh cache key, not hit the stale entry"
+    );
+
+    // A stale hit would also have bypassed the fan-out: the re-scatter pins
+    // the same invalidation regression from the upstream-load side.
+    let scatter_after = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+    assert_eq!(
+        scatter_after,
+        scatter_before + 2,
+        "the post-invalidation repeat must re-scatter instead of serving the stale entry"
+    );
 }
 
 #[tokio::test]
@@ -1417,6 +1506,16 @@ async fn acceptance_10_cache_with_complex_query() {
         "limit": 10
     });
 
+    // Counter baselines: the caching half of the acceptance is pinned by
+    // deltas against these — identical bodies hold whether the repeat was
+    // replayed from the entry or re-ran as a second miss.
+    let hits_before = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
+        .await
+        .unwrap();
+    let scatter_before = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+
     let resp1 = setup
         .client
         .post(format!("{}/indexes/products/search", setup.proxy_url))
@@ -1432,6 +1531,20 @@ async fn acceptance_10_cache_with_complex_query() {
     // Verify facets are present
     assert!(result1["facetDistribution"].is_object());
 
+    // The complex query must fan out exactly once before there is anything
+    // to cache: a flat count means the query short-circuited or the fan-out
+    // is unwired, a doubled one a retry — either poisons the repeat
+    // comparison below. (acceptance_1's pin, repeated for the
+    // filtered/faceted shape.)
+    let scatter_after_first = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+    assert_eq!(
+        scatter_after_first,
+        scatter_before + 1,
+        "the complex query must trigger exactly one scatter-gather fan-out"
+    );
+
     // Second query should hit cache
     let resp2 = setup
         .client
@@ -1444,8 +1557,38 @@ async fn acceptance_10_cache_with_complex_query() {
 
     assert!(resp2.status().is_success());
     let result2: Value = resp2.json().await.unwrap();
+
+    // The repeat must round-trip the stored body, facet distribution
+    // included. Equality holds on both paths for an identical repeat (a
+    // re-scatter reproduces the rows) — the deltas below are what pin the
+    // "cached" half of the acceptance.
     assert_eq!(result1, result2);
 
-    // Verify facet distribution is preserved
-    assert_eq!(result1["facetDistribution"], result2["facetDistribution"]);
+    // The repeat must be served as a hit: query 1 filed the complex body —
+    // filter, facets, and empty q all canonicalized into the key — at its
+    // scatter end, and the repeat lands well inside the 500 ms ttl_ms,
+    // which is anchored at that insert as in acceptance_1. A repeat that
+    // misses means the complex query never stored or looked up under a
+    // different key than it stored, and this delta falls short. (The old
+    // facetDistribution self-compare could not do this: it is implied by
+    // the whole-body equality above and can never fail on its own.)
+    let hits_after = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
+        .await
+        .unwrap();
+    assert_eq!(
+        hits_after,
+        hits_before + 1,
+        "the identical complex repeat must be served as a cache hit"
+    );
+
+    // A served hit must short-circuit the fan-out: a hit that still
+    // scatters passes the hit delta and the identical bodies above, so only
+    // this flat counter exposes the bypass regression.
+    let scatter_after = proxy_counter(&setup.client, "miroir_scatter_fan_out_size_count")
+        .await
+        .unwrap();
+    assert_eq!(
+        scatter_after, scatter_after_first,
+        "a served cache hit must bypass the scatter-gather fan-out"
+    );
 }
