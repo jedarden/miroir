@@ -454,6 +454,21 @@ async fn proxy_counter(client: &Client, metric: &str) -> anyhow::Result<u64> {
     Ok(0)
 }
 
+/// `X-Miroir-Settings-Version` from a search response, absent reading as 0:
+/// the proxy omits the header entirely until the first settings-broadcast
+/// commit lifts the global version above 0 (`routes/search.rs` adds it
+/// whenever the version is > 0, on the cached and scattered paths alike).
+/// Only acceptance_9 needs it: its deltas are only a valid invalidation pin
+/// if the broadcast actually bumped the version, and the header pair is what
+/// observes that bump.
+fn response_settings_version(resp: &reqwest::Response) -> u64 {
+    resp.headers()
+        .get("X-Miroir-Settings-Version")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
 // ---------------------------------------------------------------------------
 // Integration tests for cache flow
 // ---------------------------------------------------------------------------
@@ -1432,6 +1447,7 @@ async fn acceptance_9_cache_invalidation_on_index_update() {
         .unwrap();
 
     assert!(resp1.status().is_success());
+    let version1 = response_settings_version(&resp1);
     let result1: Value = resp1.json().await.unwrap();
 
     // Update index settings (this should increment the settings version)
@@ -1468,7 +1484,27 @@ async fn acceptance_9_cache_invalidation_on_index_update() {
         .unwrap();
 
     assert!(resp2.status().is_success());
+    let version2 = response_settings_version(&resp2);
     let result2: Value = resp2.json().await.unwrap();
+
+    // The bump the deltas below lean on must be observed, not assumed: a 2xx
+    // PATCH commits a +1 settings-version bump (`indexes.rs` Phase 3) and
+    // every search response reports the version it was served under, so this
+    // pair pins the commit itself. The commit is awaited inside the PATCH
+    // handler before its 2xx is returned, so the bump is ordered before the
+    // repeat below — this assert cannot flake against a late commit.
+    // Without it a broadcast that stalls past query 1's 500 ms ttl_ms
+    // (e.g. one hash-mismatch repair, whose backoff
+    // is >=1 s) lets the entry expire naturally, the repeat misses either
+    // way, and the miss/scatter deltas below pass with the invalidation
+    // regression present. Absent reads as 0 — the proxy omits the header
+    // while the version is still 0, which is exactly the pre-broadcast state
+    // query 1 was served under.
+    assert_eq!(
+        version2,
+        version1 + 1,
+        "the settings broadcast must bump the settings version the search responses report"
+    );
 
     // Results should still match. On its own this cannot detect a stale
     // entry surviving the settings change — one document means both paths
