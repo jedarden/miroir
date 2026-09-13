@@ -71,26 +71,51 @@ const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const LOG_TAIL_LINES: usize = 50;
 
 /// Check if Docker is available for testcontainers.
+///
+/// Reads the two env inputs and the default socket path, then delegates to
+/// [`check_docker_available_with`], which carries the asserted decision
+/// table — this wrapper stays thin so there is exactly one place (the
+/// `_with` tests) that pins the skip contract the module docs promise.
 fn check_docker_available() -> anyhow::Result<()> {
-    if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
+    check_docker_available_with(
+        std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok(),
+        std::env::var("DOCKER_HOST").is_ok(),
+        Path::new("/var/run/docker.sock"),
+    )
+}
+
+/// The docker gate's decision table, parameterized over its three inputs:
+/// the skip env, an explicit `DOCKER_HOST`, and the default socket path.
+/// Precedence is skip-env > `DOCKER_HOST` > socket: the skip env wins over
+/// everything (it is how the suite signals a deliberate skip instead of an
+/// incidental container-start failure — the `Err` each test turns into a
+/// "Skipping test" line); an explicit `DOCKER_HOST` (podman service, TCP
+/// daemon, ...) is trusted outright, letting testcontainers surface any
+/// connection failure itself; otherwise the socket must exist and be
+/// statable. Split out from [`check_docker_available`] so these decisions
+/// are unit-testable with literal inputs — setting the env here would race
+/// the integration tests' own reads on other threads.
+fn check_docker_available_with(
+    skip_docker_set: bool,
+    docker_host_set: bool,
+    docker_sock: &Path,
+) -> anyhow::Result<()> {
+    if skip_docker_set {
         anyhow::bail!(
             "Docker tests skipped via MIROIR_TEST_SKIP_DOCKER. \
              Unset MIROIR_TEST_SKIP_DOCKER and ensure Docker is available."
         );
     }
 
-    // An explicit DOCKER_HOST (podman service, TCP daemon, ...) overrides the
-    // default socket path; trust it and let testcontainers surface any
-    // connection failure itself.
-    if std::env::var("DOCKER_HOST").is_ok() {
+    if docker_host_set {
         return Ok(());
     }
 
-    let docker_sock = Path::new("/var/run/docker.sock");
     if !docker_sock.exists() {
         anyhow::bail!(
-            "Docker socket not found at /var/run/docker.sock. \
-             Set MIROIR_TEST_SKIP_DOCKER=1 to skip, or ensure Docker is running."
+            "Docker socket not found at {}. \
+             Set MIROIR_TEST_SKIP_DOCKER=1 to skip, or ensure Docker is running.",
+            docker_sock.display()
         );
     }
 
@@ -1691,4 +1716,62 @@ async fn acceptance_10_cache_with_complex_query() {
         scatter_after, scatter_after_first,
         "a served cache hit must bypass the scatter-gather fan-out"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Docker gate decision table
+// ---------------------------------------------------------------------------
+
+/// Pins [`check_docker_available_with`] on all four inputs it can see, which
+/// is what wires the docker gate itself: without these asserts the gate is
+/// setup-only plumbing whose skip contract (`MIROIR_TEST_SKIP_DOCKER` ⇒ a
+/// deliberate, messaged skip rather than an incidental container-start
+/// failure; an explicit `DOCKER_HOST` trusted without any socket check) could
+/// silently rot. The skip messages here are the ones each integration test
+/// prints in its "Skipping test" line under `MIROIR_TEST_SKIP_DOCKER=1`, so
+/// they are asserted on, not just the Ok/Err shape.
+///
+/// The literals go straight to [`check_docker_available_with`] — going
+/// through [`check_docker_available`] would mean mutating process env, which
+/// races the integration tests' own reads of the same variables on other
+/// threads. The "socket exists" case is an ordinary file: the gate only
+/// checks existence and statability, and requiring a real socket here would
+/// make the assert depend on the host's docker setup.
+#[test]
+fn docker_gate_decides_on_inputs_not_env() {
+    // Skip env wins over everything, even an explicit DOCKER_HOST and a
+    // present socket: the message names the env var so the operator knows
+    // the skip is deliberate.
+    let err = check_docker_available_with(true, true, Path::new("/var/run/docker.sock"))
+        .expect_err("skip env must gate even with a DOCKER_HOST and a socket");
+    let err = err.to_string();
+    assert!(
+        err.contains("MIROIR_TEST_SKIP_DOCKER") && err.contains("skipped"),
+        "skip bail must name the env var, got: {err}"
+    );
+
+    // An explicit DOCKER_HOST is trusted with no socket present: the
+    // podman/TCP-daemon setups from the module docs pass here, and
+    // testcontainers surfaces any connection failure itself.
+    check_docker_available_with(false, true, Path::new("/nonexistent/docker.sock"))
+        .expect("an explicit DOCKER_HOST must be trusted without a socket check");
+
+    // Neither env set and no socket: bail must both say what is missing and
+    // point at the skip env, since that guidance is what a docker-less host's
+    // "Skipping test" lines print.
+    let err = check_docker_available_with(false, false, Path::new("/nonexistent/docker.sock"))
+        .expect_err("a missing socket must bail when no DOCKER_HOST overrides it");
+    let err = err.to_string();
+    assert!(
+        err.contains("not found") && err.contains("MIROIR_TEST_SKIP_DOCKER=1"),
+        "missing-socket bail must name the socket and the skip env, got: {err}"
+    );
+
+    // Neither env set, path present and statable: the gate passes and lets
+    // testcontainers decide.
+    let sock_dir = tempfile::TempDir::new().expect("temp dir for a statable socket path");
+    let sock = sock_dir.path().join("docker.sock");
+    std::fs::write(&sock, b"").expect("create a statable stand-in socket path");
+    check_docker_available_with(false, false, &sock)
+        .expect("an existing, statable socket path must pass the gate");
 }
