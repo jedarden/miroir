@@ -1143,6 +1143,10 @@ async fn acceptance_5_different_queries_use_different_cache_keys() {
     // fire — but only while the collided entries carry different rows; the
     // miss delta above is the detector that survives equal rows.
     assert_ne!(result1["hits"], result2["hits"]);
+    // The second pair is shadowed for key regressions — any key collapsing
+    // query 3 into query 2 collapses 1 into 2 first, failing the pair above
+    // or the miss delta — so what it pins is a merge that attributes one
+    // query's rows to another while every key dimension is honored.
     assert_ne!(result2["hits"], result3["hits"]);
     // No row assert separates query 4 from query 2: one Desk document means
     // neither limit truncates and the two row sets are equal by
