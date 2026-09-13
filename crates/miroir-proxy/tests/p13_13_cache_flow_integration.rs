@@ -140,6 +140,10 @@ struct SpawnedProxy {
     /// child logs to files (see `spawn`) — and `kill_on_drop` tears the
     /// proxy down on drop.
     _child: tokio::sync::Mutex<Child>,
+    /// The child's cwd — config resolution scans it — and the home of
+    /// everything the spawn created: the generated `miroir.yaml`, the
+    /// sqlite task db, and the proxy's stdout/stderr log files. `TempDir`
+    /// deletes the whole tree on drop, log files included.
     _config_dir: tempfile::TempDir,
 }
 
