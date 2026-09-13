@@ -281,6 +281,13 @@ struct CacheFlowTestSetup {
 }
 
 impl CacheFlowTestSetup {
+    /// Build the live topology every assertion in this file depends on: three
+    /// testcontainers Meilisearch nodes, the compiled proxy spawned against
+    /// them, and the shared client. The `Err` return is the suite's skip
+    /// signal — Docker unavailable (or the skip env set) surfaces as a
+    /// "Skipping test" line in every caller, never a panic — and the
+    /// `PROXY_SLOT` guard held inside the returned setup is what makes the
+    /// fixed 9090 metrics listener safe to bind for the whole test body.
     async fn new() -> anyhow::Result<Self> {
         // Take the proxy slot first: with it held, no other test in this
         // binary can race us for the metrics port while our containers start.
@@ -381,7 +388,12 @@ impl CacheFlowTestSetup {
         )
     }
 
-    /// Create an index on all Meilisearch nodes.
+    /// Create an index on every spawned node directly — index management
+    /// bypasses the proxy, as `set_node_settings` documents below. Every
+    /// content assertion downstream depends on these indexes existing:
+    /// documents are then placed per node through `add_documents*`, so a
+    /// create that skipped a node fails the document add or the search pins,
+    /// never a silent pass.
     async fn create_index(&self, uid: &str) -> anyhow::Result<()> {
         let body = json!({
             "uid": uid,
@@ -405,12 +417,27 @@ impl CacheFlowTestSetup {
         Ok(())
     }
 
-    /// Add documents to an index.
+    /// Add documents to an index on the first node.
     async fn add_documents(&self, index_uid: &str, documents: Value) -> anyhow::Result<()> {
-        // Add documents to the first node only: the proxy's scatter-gather
-        // merge covers the other nodes (they hold the index but no
-        // documents, and answer these terms with zero hits).
-        let url = &self.meilisearch_urls[0];
+        self.add_documents_on_node(0, index_uid, documents).await
+    }
+
+    /// Add documents to an index on one specific node, bypassing the proxy.
+    ///
+    /// Most tests target node 0 only: the proxy's scatter-gather merge covers
+    /// the other nodes (they hold the index but no documents, and answer
+    /// these terms with zero hits). The exception is acceptance_3, which
+    /// spreads its fixture one document per spawned node so its
+    /// merged-hit-count assert exercises every node's contribution to the
+    /// merge — with all documents on one node, a fan-out narrowed to that
+    /// node would still serve the full result set.
+    async fn add_documents_on_node(
+        &self,
+        node: usize,
+        index_uid: &str,
+        documents: Value,
+    ) -> anyhow::Result<()> {
+        let url = &self.meilisearch_urls[node];
         let resp = self
             .client
             .post(format!("{url}/indexes/{index_uid}/documents"))
@@ -759,14 +786,22 @@ async fn acceptance_3_cache_stores_results_after_scatter_gather() {
     };
     setup.wait_for_ready().await.unwrap();
 
-    // Create an index with test data
+    // Create an index with test data, one book per spawned node: every
+    // other test loads node 0 alone, so there a fan-out silently narrowed
+    // to that node still serves the full result set. Here the merged body
+    // is only complete if the gather actually reached all three.
     setup.create_index("books").await.unwrap();
-    let documents = json!([
-        {"id": 1, "title": "Rust Programming", "author": "Steve Klabnik"},
-        {"id": 2, "title": "The Rust Language", "author": "Carol Nichols"},
-        {"id": 3, "title": "Rust in Action", "author": "Tim McNamara"}
-    ]);
-    setup.add_documents("books", documents).await.unwrap();
+    let books = [
+        json!({"id": 1, "title": "Rust Programming", "author": "Steve Klabnik"}),
+        json!({"id": 2, "title": "The Rust Language", "author": "Carol Nichols"}),
+        json!({"id": 3, "title": "Rust in Action", "author": "Tim McNamara"}),
+    ];
+    for (node, book) in books.iter().enumerate() {
+        setup
+            .add_documents_on_node(node, "books", book.clone())
+            .await
+            .unwrap();
+    }
 
     // Execute a search query
     let query = json!({
@@ -827,8 +862,10 @@ async fn acceptance_3_cache_stores_results_after_scatter_gather() {
     // Results should match exactly; on its own this cannot detect a bypassed
     // cache (both paths return the same rows) — the deltas below do.
     assert_eq!(result1, result2);
-    // All 3 books contain "rust": a scatter-gather merge that drops or
-    // duplicates rows changes this count on the very body being cached.
+    // All 3 books contain "rust", and each lives on a different spawned
+    // node (see the fixture above): a scatter-gather merge that drops or
+    // duplicates rows changes this count on the very body being cached, and
+    // a gather narrowed to fewer nodes loses exactly the nodes it dropped.
     assert_eq!(hit_count, 3);
 
     // The entry stored after the scatter-gather must serve the repeat as a
