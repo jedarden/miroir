@@ -243,7 +243,20 @@ impl SpawnedProxy {
 /// disabled because the real binary refuses to start with it enabled but no
 /// JWT secret configured. `cdc.buffer.overflow` is pinned to `drop` because
 /// the default (`redis`) fails validation against a sqlite task store — the
-/// same pairing the config crate's own dev fixture uses.
+/// same pairing the config crate's own dev fixture uses. `server.bind` is
+/// pinned to loopback for hygiene, not correctness: the default `0.0.0.0`
+/// would serve these tests identically (every client dials 127.0.0.1), but
+/// it would also expose the spawned proxy on every interface of a shared
+/// host. `health.interval_ms`/`timeout_ms` are written tighter than their
+/// serde defaults (5000/2000) so the checker's failure accounting moves at
+/// test timescale in the proxy's logs and health metrics; the asserts are
+/// invariant to both values — `Joining` nodes are promoted to `Active` on
+/// the checker's first (immediate) tick regardless of the interval, so
+/// readiness never waits on it, no assertion reads node-health state, and
+/// RF 1 leaves the per-shard replica choice health-invariant. Each node
+/// line writes `replica_group: 0` because `NodeConfig` carries no serde
+/// defaults — omitting the field fails deserialization — even though 0 is
+/// the only value this RF-1 topology can use.
 fn proxy_config_yaml(node_urls: &[String], task_db_path: &Path) -> String {
     let nodes = node_urls
         .iter()
