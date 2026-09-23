@@ -30,7 +30,7 @@ use tokio::time::{timeout, Duration};
 // Type alias to reduce complexity
 type VerifyResultVec = Vec<(String, Result<(u16, String), String>)>;
 
-use crate::routes::{admin_endpoints::AppState, documents, explain};
+use crate::routes::{admin_endpoints::AppState, documents, explain, search};
 
 /// Convert MiroirError to MeilisearchError.
 fn convert_miroir_error(e: MiroirError) -> MeilisearchError {
@@ -313,6 +313,10 @@ where
                 .patch(update_index_handler)
                 .delete(delete_index_handler),
         )
+        // Meilisearch-native search path (the proxy speaks this path outbound
+        // when scattering to nodes); delegates to the same handler as
+        // POST /search/:index.
+        .route("/:index/search", post(search::search_handler))
         .route("/:index/stats", get(get_index_stats_handler))
         .route(
             "/:index/settings",

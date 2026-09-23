@@ -88,13 +88,13 @@ impl NodeClient for HttpClient {
         let start = Instant::now();
         let url = self.search_url(address, &request.index_uid);
 
-        let mut body = request.to_node_body();
-
-        if let Some(global_idf) = &request.global_idf {
-            body["_miroir_global_idf"] = serde_json::to_value(global_idf).map_err(|e| {
-                NodeError::NetworkError(format!("Failed to serialize global_idf: {e}"))
-            })?;
-        }
+        // The preflight-derived `request.global_idf` stays in-process. It used
+        // to be serialized onto the body as `_miroir_global_idf`, but that
+        // field is not part of the Meilisearch search API: stock nodes reject
+        // unknown body fields with 400, so every hit-bearing per-node search
+        // failed and the merged result came back empty. No node build reads
+        // the field off the wire.
+        let body = request.to_node_body();
 
         let response = self
             .client

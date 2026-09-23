@@ -550,7 +550,15 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
             *current = Some(pass.clone());
         }
 
-        let topology = self.topology.read().await;
+        // Snapshot the topology and release the read guard before scanning.
+        // Holding the guard across the pass self-deadlocks the
+        // write-preferring RwLock: once a writer (health checker) queues
+        // behind the read, scan_shard's own re-acquire queues behind that
+        // write while still holding the read — a self-deadlock that also
+        // starves every fresh reader for the rest of the pass. The pass
+        // deliberately scans the start-of-pass view; topology changes made
+        // while it runs are picked up by the next pass.
+        let topology = self.topology.read().await.clone();
         let shard_count = topology.shards;
         let replica_groups = topology.groups().count() as u32;
 
@@ -679,9 +687,10 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
         for group in topology.groups() {
             let assigned = assign_shard_in_group(shard_id, group.nodes(), topology.rf());
             for node_id in assigned {
-                // Look up node address from topology
-                let topology_guard = self.topology.read().await;
-                let node = topology_guard
+                // Look up node address from the caller's topology snapshot —
+                // never re-acquire the lock here: under a held read guard
+                // this nested acquire self-deadlocked behind a queued writer.
+                let node = topology
                     .node(&node_id)
                     .ok_or_else(|| MiroirError::Topology(format!("node {node_id} not found")))?;
 
@@ -691,7 +700,6 @@ impl<C: NodeClient> AntiEntropyReconciler<C> {
                 }
 
                 let address = node.address.clone();
-                drop(topology_guard);
 
                 match self
                     .fingerprint_shard(&node_id, shard_id, &self.config.index_uid, &address)

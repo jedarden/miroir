@@ -130,7 +130,7 @@ where
 
 /// Search request body.
 #[derive(Deserialize, Serialize)]
-struct SearchRequestBody {
+pub(crate) struct SearchRequestBody {
     q: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
@@ -170,7 +170,7 @@ impl std::fmt::Debug for SearchRequestBody {
 /// Session pinning (plan §13.6): If `X-Miroir-Session` header is present and
 /// the session has a pending write, routes to the pinned group for read-your-writes.
 #[tracing::instrument(skip(state, headers, body))]
-async fn search_handler(
+pub(crate) async fn search_handler(
     Path(index): Path<String>,
     Extension(state): Extension<Arc<AppState>>,
     session_id: Option<Extension<crate::middleware::SessionId>>,
@@ -476,6 +476,16 @@ async fn search_handler(
         }
     }
 
+    // The cache key computed for the lookup is reused verbatim to store the
+    // freshly merged response after the scatter (plan §13.10.1): the store
+    // must land under exactly the key the next identical lookup computes, and
+    // under the settings version the merged content was actually produced
+    // under, so a mid-request version commit invalidates the entry instead of
+    // serving pre-change rows under the post-change key. `None` when the
+    // cache is disabled, the query is multi-target, or canonicalization
+    // failed — the same conditions that skip the lookup.
+    let mut result_cache_key: Option<miroir_core::result_cache::CacheKey> = None;
+
     // Result cache lookup (plan §13.10): Check for cached completed results
     // Skip for multi-target aliases (each target is different)
     if state.config.result_cache.enabled && resolved_targets.len() == 1 {
@@ -501,6 +511,7 @@ async fn search_handler(
                 &canonicalized_query,
                 settings_version,
             );
+            result_cache_key = Some(cache_key.clone());
 
             match state.result_cache.get(&cache_key).await {
                 Ok(Some(cached_bytes)) => {
@@ -800,9 +811,8 @@ async fn search_handler(
     state.metrics.record_scatter_fan_out(node_count);
 
     // Build search request
-    // Clone facets for fingerprinting and cache storage before moving into SearchRequest
+    // Clone facets for coalescing fingerprinting before moving into SearchRequest
     let facets_clone = body.facets.clone();
-    let facets_for_cache = body.facets.clone(); // Additional clone for cache storage
     let rest_body = body.rest.clone(); // Clone before body is partially moved
 
     // Detect vector search mode from request body (plan §13.12)
@@ -824,7 +834,6 @@ async fn search_handler(
     // Capture query data for canary creation before search_req is moved (plan §13.18)
     let capture_query = body.q.clone().unwrap_or_default();
     let capture_body = rest_body.clone();
-    let capture_body_for_cache = rest_body.clone(); // Additional clone for cache storage
 
     let search_req = SearchRequest {
         index_uid: effective_index.clone(),
@@ -927,61 +936,20 @@ async fn search_handler(
 
     // Store result in cache (plan §13.10): Cache successful scatter-gather results
     // Only cache single-target queries (multi-target aliases have different results per target)
-    if state.config.result_cache.enabled && resolved_targets.len() == 1 {
-        // Get settings version for cache key
-        let settings_version = state.settings_broadcast.current_version().await;
-
-        // Reconstruct the canonicalized query for caching (same as cache lookup)
-        // Use the original request body components that were cloned earlier
-        let cache_body = SearchRequestBody {
-            q: capture_body_for_cache
-                .get("q")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            offset: capture_body_for_cache
-                .get("offset")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize),
-            limit: capture_body_for_cache
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize),
-            filter: capture_body_for_cache.get("filter").cloned(),
-            facets: facets_for_cache,
-            ranking_score: Some(client_requested_score),
-            rest: capture_body_for_cache,
-        };
-
-        let canonicalized_query = match miroir_core::result_cache::canonicalize_query(
-            &serde_json::to_value(&cache_body).unwrap_or_default(),
-        ) {
-            Ok(canon) => canon,
-            Err(e) => {
-                debug!(error = %e, "failed to canonicalize query for cache storage");
-                String::new()
-            }
-        };
-
-        if !canonicalized_query.is_empty() {
-            // Create cache key and store the result
-            let cache_key = miroir_core::result_cache::CacheKey::new(
-                &effective_index,
-                &canonicalized_query,
-                settings_version,
-            );
-
-            // Serialize the response body for caching
-            if let Ok(response_bytes) = serde_json::to_vec(&body) {
-                match state.result_cache.insert(cache_key, response_bytes).await {
-                    Ok(_) => {
-                        debug!(
-                            index = %effective_index,
-                            "result cached successfully"
-                        );
-                    }
-                    Err(e) => {
-                        debug!(error = %e, "failed to store result in cache");
-                    }
+    // The key is the one computed at lookup time, so the next identical query
+    // finds this entry (see the comment above `result_cache_key`).
+    if let Some(cache_key) = result_cache_key {
+        // Serialize the response body for caching
+        if let Ok(response_bytes) = serde_json::to_vec(&body) {
+            match state.result_cache.insert(cache_key, response_bytes).await {
+                Ok(_) => {
+                    debug!(
+                        index = %effective_index,
+                        "result cached successfully"
+                    );
+                }
+                Err(e) => {
+                    debug!(error = %e, "failed to store result in cache");
                 }
             }
         }

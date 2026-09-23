@@ -482,7 +482,7 @@ impl CacheFlowTestSetup {
         for url in &self.meilisearch_urls {
             let resp = self
                 .client
-                .put(format!("{url}/indexes/{index_uid}/settings"))
+                .patch(format!("{url}/indexes/{index_uid}/settings"))
                 .header("Authorization", format!("Bearer {NODE_MASTER_KEY}"))
                 .json(&settings)
                 .send()
