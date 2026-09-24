@@ -27,20 +27,25 @@
 //! Live runs hard-bind host ports 17770 (client) and 9090 (Prometheus), and
 //! `PROXY_SLOT` serializes only this process — a `miroir-proxy` left running
 //! outside the suite (e.g. a scratch debugging session) holds both ports and
-//! poisons the readiness check. Check `ss -ltnp | grep -E '17770|9090'`
-//! before a live run; with one held, use MIROIR_TEST_SKIP_DOCKER=1 instead.
+//! poisons the readiness check. The suite probes both ports itself before
+//! spawning anything (`ensure_suite_ports_free`): either held bails within
+//! ~2s naming the port and the `ss -ltnp | grep -E '17770|9090'` recipe,
+//! instead of the readiness burn a bind death used to cost. With a squatter
+//! present, use MIROIR_TEST_SKIP_DOCKER=1 instead.
 
 use anyhow::Context;
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use testcontainers::{runners::AsyncRunner, ContainerAsync};
 use testcontainers_modules::meilisearch::Meilisearch;
+use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 use tokio::sync::MutexGuard;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 /// Master key shared by every Meilisearch node. `NodeConfig` carries no
 /// per-node credentials, so the proxy (`node_master_key`) and the helpers
@@ -69,6 +74,12 @@ const READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Startup failures (config validation, bind errors) report at the end of the
 /// stream, so a tail carries the reason.
 const LOG_TAIL_LINES: usize = 50;
+
+/// Bound on each port preflight probe ([`loopback_port_has_listener`]). On
+/// loopback a connect either completes or is refused in microseconds, so
+/// this is a safety net, not a wait: the guard exists to fail fast, and must
+/// not become its own long stall when a port state is merely weird.
+const PORT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Check if Docker is available for testcontainers.
 ///
@@ -127,6 +138,79 @@ fn check_docker_available_with(
     }
 
     Ok(())
+}
+
+/// Probe the suite's fixed loopback ports and bail before anything spawns
+/// when either already has a listener.
+///
+/// `PROXY_SLOT` serializes this suite against itself, but nothing stops a
+/// `miroir-proxy` left running outside it (a scratch debugging session, a
+/// leaked run) from holding the fixed ports; the spawned binary then dies on
+/// bind and every test burns [`READY_TIMEOUT`] in `wait_for_ready` before
+/// failing with at best a hint. This guard runs first instead: a connect to
+/// each port either completes (a live listener — bail, naming the port and
+/// how to find the squatter) or is refused (port free — proceed). Called
+/// after [`check_docker_available`] so the skip env still short-circuits the
+/// whole setup before any host probing, and its `Err` rides the same skip
+/// channel as the docker gate's — the "Skipping test" line carries the
+/// named error, quickly, rather than a 30s bind-death timeout.
+async fn ensure_suite_ports_free() -> anyhow::Result<()> {
+    // Concurrent on purpose: the two probes share the one ~2s bound, so a
+    // wedged port cannot stretch the guard into its own stall.
+    let (metrics_bound, client_bound) = tokio::join!(
+        loopback_port_has_listener(SocketAddr::from(([127, 0, 0, 1], PROXY_METRICS_PORT))),
+        loopback_port_has_listener(SocketAddr::from(([127, 0, 0, 1], PROXY_PORT))),
+    );
+    ensure_suite_ports_free_with(metrics_bound, client_bound)
+}
+
+/// The port preflight's decision table, parameterized over the two probe
+/// outcomes so it stays unit-testable without binding ports — the same
+/// split as [`check_docker_available_with`]. The bail names each taken port
+/// with its role (the metrics port is the one any off-suite proxy always
+/// collides on, since `main.rs` binds it regardless of `server.bind`) and
+/// the `ss -ltnp` recipe, because the point of the guard is to replace a
+/// 30s readiness burn with a diagnosis.
+fn ensure_suite_ports_free_with(metrics_bound: bool, client_bound: bool) -> anyhow::Result<()> {
+    let mut taken: Vec<String> = Vec::new();
+    if metrics_bound {
+        taken.push(format!(
+            "127.0.0.1:{PROXY_METRICS_PORT} (Prometheus metrics — main.rs hard-binds \
+             0.0.0.0:{PROXY_METRICS_PORT})"
+        ));
+    }
+    if client_bound {
+        taken.push(format!(
+            "127.0.0.1:{PROXY_PORT} (the proxy's client listener)"
+        ));
+    }
+    anyhow::ensure!(
+        taken.is_empty(),
+        "Suite port(s) already have a listener: {}. A process left holding them \
+         (e.g. a miroir-proxy from an earlier run) makes this suite's proxy die on \
+         bind and burns the {READY_TIMEOUT:?} readiness timeout. Find the squatter \
+         with `ss -ltnp | grep -E '17770|9090'` and stop it, or set \
+         MIROIR_TEST_SKIP_DOCKER=1 to skip the live suite.",
+        taken.join("; ")
+    );
+    Ok(())
+}
+
+/// True when something accepts connections on the loopback port, false when
+/// the connect is refused. A completed handshake is the evidence that
+/// matters: TIME_WAIT remnants from a just-torn-down run refuse connects
+/// too, so they cannot false-positive the guard the way a bind-based probe
+/// would. A probe that neither connects nor refuses within
+/// [`PORT_PROBE_TIMEOUT`] counts as taken — the conservative reading, since
+/// the guard's job is keeping the suite off an unverifiable port, and on
+/// loopback a connect with no answer in 2s means the port is wedged, not
+/// free.
+async fn loopback_port_has_listener(addr: SocketAddr) -> bool {
+    match timeout(PORT_PROBE_TIMEOUT, TcpStream::connect(addr)).await {
+        Ok(Ok(_stream)) => true,
+        Ok(Err(_refused)) => false,
+        Err(_elapsed) => true,
+    }
 }
 
 /// A proxy process spawned from the compiled `miroir-proxy` binary. The
@@ -313,6 +397,12 @@ impl CacheFlowTestSetup {
         // Bail with the skip reason when Docker is unavailable so callers can
         // skip instead of panicking on the first container start.
         check_docker_available()?;
+
+        // Then the fixed-port preflight, still before anything spawns: a
+        // squatter holding 9090/17770 bails here with a named port and the
+        // `ss -ltnp` recipe instead of dying on bind and burning
+        // READY_TIMEOUT in wait_for_ready (see ensure_suite_ports_free).
+        ensure_suite_ports_free().await?;
 
         // Start 3 Meilisearch nodes for scatter-gather testing
         let mut containers = Vec::new();
@@ -1832,4 +1922,81 @@ fn docker_gate_decides_on_inputs_not_env() {
     std::fs::write(&sock, b"").expect("create a statable stand-in socket path");
     check_docker_available_with(false, false, &sock)
         .expect("an existing, statable socket path must pass the gate");
+}
+
+// ---------------------------------------------------------------------------
+// Port preflight decision table
+// ---------------------------------------------------------------------------
+
+/// Pins [`ensure_suite_ports_free_with`] on all four probe-outcome
+/// combinations, which is what wires the preflight itself: the guard is
+/// setup-only plumbing, so without these asserts its contract — bail naming
+/// the taken port and the `ss -ltnp` recipe, pass when both ports are free —
+/// could silently rot back into a 30s readiness burn. Like the docker gate
+/// test, the literals go straight to the `_with` variant: driving this
+/// through [`ensure_suite_ports_free`] would require actually holding the
+/// suite's fixed ports, which a concurrent live run of this same suite owns.
+#[test]
+fn port_preflight_decides_on_probe_outcomes_not_live_ports() {
+    // Both probes say free: the guard passes and setup proceeds to the
+    // container starts.
+    ensure_suite_ports_free_with(false, false).expect("free ports must pass the preflight");
+
+    // Prometheus port taken — the collision any off-suite miroir-proxy
+    // produces, since main.rs hard-binds 0.0.0.0:9090 regardless of
+    // server.bind. The bail must name the port and the squatter recipe.
+    let err =
+        ensure_suite_ports_free_with(true, false).expect_err("a taken metrics port must bail");
+    let err = err.to_string();
+    assert!(
+        err.contains("9090") && err.contains("ss -ltnp"),
+        "metrics-port bail must name the port and the squatter recipe, got: {err}"
+    );
+
+    // Client port taken: same contract, the other port named.
+    let err = ensure_suite_ports_free_with(false, true).expect_err("a taken client port must bail");
+    let err = err.to_string();
+    assert!(
+        err.contains("17770") && err.contains("ss -ltnp"),
+        "client-port bail must name the port and the squatter recipe, got: {err}"
+    );
+
+    // Both taken — the shape the 2026-09-10 leak had: the message carries
+    // both ports so one read diagnoses the full squatter.
+    let err = ensure_suite_ports_free_with(true, true).expect_err("two taken ports must bail");
+    let err = err.to_string();
+    assert!(
+        err.contains("9090") && err.contains("17770") && err.contains("ss -ltnp"),
+        "both-port bail must name both ports and the recipe, got: {err}"
+    );
+}
+
+/// Pins [`loopback_port_has_listener`] on the two outcomes the decision
+/// table above consumes, against real loopback sockets on ephemeral ports —
+/// a probe stand-in rather than the suite's fixed ports keeps this
+/// independent of host state and of a concurrently live p13_13 run. The
+/// refused case reuses the listener's own just-released port: a listener
+/// that never accepted a connection leaves no TIME_WAIT remnants, so the
+/// connect is refused deterministically — which is also the property that
+/// makes a connect probe the right shape here and a bind probe the wrong
+/// one.
+#[tokio::test]
+async fn port_probe_reads_live_listener_and_refused_ports() {
+    // A live listener must read as taken: the handshake completes even
+    // though nothing ever accepts.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind an ephemeral listener for the taken case");
+    let addr = listener.local_addr().expect("listener address");
+    assert!(
+        loopback_port_has_listener(addr).await,
+        "a port with an accepting listener must probe as taken"
+    );
+
+    // The same port with the listener dropped must read as free: the
+    // connect is refused.
+    drop(listener);
+    assert!(
+        !loopback_port_has_listener(addr).await,
+        "a port with no listener must probe as free (connect refused)"
+    );
 }
