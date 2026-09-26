@@ -7,8 +7,11 @@
 //! entry point itself — `200` with a `text/html` body. On top of it, the
 //! second test pins wiring requirement (a): the served `<head>` closes its
 //! `<script type="importmap">` before the Agentation module script opens,
-//! and the map declares the `agentation` specifier (later children add the
-//! remaining wiring assertions).
+//! and the map declares the `agentation` specifier. The third test pins
+//! wiring requirement (b): the served page carries the
+//! `<div id="agentation-root">` mount point — the element the bootstrap's
+//! `createRoot(document.getElementById('agentation-root'))` call renders the
+//! toolbar into (later children add the remaining wiring assertions).
 //!
 //! Production wiring being mirrored:
 //! - `main.rs:849` nests the admin router under `/_miroir`
@@ -250,5 +253,48 @@ async fn p13_22_import_map_closed_before_agentation_module_script() {
         agentation_url, "https://esm.sh/agentation@3.0.2?external=react,react-dom",
         "the \"agentation\" specifier must point at the pinned esm.sh module with \
          react/react-dom externalized, got: {agentation_url}"
+    );
+}
+
+/// Wiring requirement (b): the served HTML carries the Agentation toolbar's
+/// mount point, `<div id="agentation-root">`.
+///
+/// The bootstrap resolves its React root with
+/// `document.getElementById('agentation-root')`; when no element carries the
+/// id, that returns `null`, `createRoot(null)` throws, and the bootstrap's
+/// own try/catch demotes the throw to a console warning — so a page missing
+/// the mount div renders toolbar-less *without any hard failure*. The
+/// assertion therefore pins the element itself rather than trusting the
+/// module script's presence (requirement (a) already pins that).
+///
+/// The mount point is also asserted UNIQUE: `getElementById` returns the
+/// first match, so a second element carrying the id would silently route the
+/// toolbar into the wrong node. Counting the exact tag `<div
+/// id="agentation-root">` is safe as a uniqueness measure because the
+/// bootstrap's own mention uses single quotes
+/// (`getElementById('agentation-root')`) and the head comment uses the
+/// `#`-form — neither matches the tag.
+#[tokio::test]
+async fn p13_22_admin_html_contains_agentation_root_mount_div() {
+    let (status, _headers, html) = serve_admin_ui_response().await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "GET /_miroir/admin should serve the admin UI, got body:\n{html}"
+    );
+
+    let mount_tag = "<div id=\"agentation-root\">";
+    assert!(
+        html.contains(mount_tag),
+        "GET /_miroir/admin must carry the Agentation mount point {mount_tag}; \
+         without it document.getElementById('agentation-root') returns null and \
+         the toolbar never mounts, got body:\n{html}"
+    );
+    assert_eq!(
+        html.matches(mount_tag).count(),
+        1,
+        "the agentation-root mount point must be unique: getElementById returns \
+         the FIRST match, so a duplicate id would mount the toolbar into the \
+         wrong element"
     );
 }
