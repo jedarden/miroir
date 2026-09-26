@@ -49,8 +49,12 @@ pub struct AdminUiAssets;
 pub async fn serve_admin_ui<S>(
     State(state): State<S>,
     headers: HeaderMap,
-    axum::extract::Path(path): axum::extract::Path<String>,
-    Extension(admin_session): Extension<Option<AdminSessionId>>,
+    // `None` on the bare `/admin` entry point (no path capture); the
+    // `/admin/*path` route always yields `Some`. Empty means index.html below.
+    path: Option<axum::extract::Path<String>>,
+    // `None` unless `auth_middleware` inserted a session extension (cookie
+    // path) — header-key auth is decided from `headers` below instead.
+    admin_session: Option<Extension<AdminSessionId>>,
 ) -> Result<Response, StatusCode>
 where
     S: Clone + Send + Sync + 'static,
@@ -67,6 +71,7 @@ where
 
     // Determine the file to serve
     // Empty path or "/" means serve index.html
+    let path = path.map(|p| p.0).unwrap_or_default();
     let path = if path.is_empty() || path == "/" {
         "index.html"
     } else {
