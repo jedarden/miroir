@@ -809,7 +809,10 @@ async fn main() -> anyhow::Result<()> {
 
             // Create and start the canary runner
             // Wire up Mode A coordinator for shard-partitioned canary execution (plan §14.5 Mode A, P6.3)
-            let runner = CanaryRunner::new(
+            // Mutated only under peer-discovery (Mode A wiring below); bare `mut`
+            // would trip unused_mut on default-feature builds.
+            #[cfg_attr(not(feature = "peer-discovery"), allow(unused_mut))]
+            let mut runner = CanaryRunner::new(
                 store,
                 canary_config.max_concurrent_canaries as usize,
                 canary_config.run_history_per_canary as usize,
