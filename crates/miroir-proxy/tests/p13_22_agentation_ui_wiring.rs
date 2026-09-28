@@ -11,7 +11,11 @@
 //! wiring requirement (b): the served page carries the
 //! `<div id="agentation-root">` mount point — the element the bootstrap's
 //! `createRoot(document.getElementById('agentation-root'))` call renders the
-//! toolbar into (later children add the remaining wiring assertions).
+//! toolbar into. The fourth test pins wiring requirement (c): the
+//! `Content-Security-Policy` header served with the page grants
+//! `https://esm.sh` to both `script-src` and `connect-src` — scoped there,
+//! not leaked into `default-src` (later children add the remaining wiring
+//! assertions).
 //!
 //! Production wiring being mirrored:
 //! - `main.rs:849` nests the admin router under `/_miroir`
@@ -50,6 +54,7 @@ use miroir_proxy::admin_ui::serve_admin_ui;
 use miroir_proxy::middleware::Metrics;
 use miroir_proxy::routes::admin_endpoints::AppState;
 use serde_json::json;
+use std::collections::HashMap;
 use tower::ServiceExt;
 
 /// Test config in the same shape as the other admin tests, except
@@ -297,4 +302,93 @@ async fn p13_22_admin_html_contains_agentation_root_mount_div() {
          the FIRST match, so a duplicate id would mount the toolbar into the \
          wrong element"
     );
+}
+
+/// Wiring requirement (c): the `Content-Security-Policy` response header
+/// served WITH the admin page grants `https://esm.sh` to BOTH `script-src`
+/// and `connect-src`, and scopes the grant there — it must not leak into
+/// `default-src`.
+///
+/// script-src is what lets the toolbar's modules load at all (the import map
+/// rewrites `agentation`/`react`/`react-dom` onto `https://esm.sh/...`, and a
+/// module fetch is a script fetch); connect-src is what lets the Agentation
+/// module fetch from esm.sh once running. `csp_defaults_allow_agentation_esm_sh`
+/// (src/auth.rs) pins the BUILDER's output; this test pins the SERVED header
+/// — the value a browser actually enforces on `GET /_miroir/admin` — without
+/// calling `build_csp_header`.
+///
+/// The header is parsed into `directive -> sources` before asserting rather
+/// than substring-matched, because a raw-header substring like
+/// `"https://esm.sh"` cannot tell which directive earned it: the same tokens
+/// inside `default-src` would satisfy a `contains` check while granting the
+/// origin to every fetch type on the page.
+#[tokio::test]
+async fn p13_22_served_admin_csp_allows_agentation_esm_sh() {
+    let (status, headers, html) = serve_admin_ui_response().await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "GET /_miroir/admin should serve the admin UI, got body:\n{html}"
+    );
+
+    let csp = headers
+        .get("content-security-policy")
+        .unwrap_or_else(|| {
+            panic!(
+                "GET /_miroir/admin must serve a Content-Security-Policy header, \
+                 got response headers:\n{headers:?}"
+            )
+        })
+        .to_str()
+        .expect("Content-Security-Policy header is valid UTF-8");
+
+    // Parse the served value into `directive name -> sources`. Directive
+    // names are case-insensitive (the builder lowercases them) and sources
+    // are whitespace-separated within a `;`-delimited directive.
+    let mut directives: HashMap<&str, Vec<&str>> = HashMap::new();
+    for directive in csp.split(';') {
+        let mut parts = directive.split_whitespace();
+        if let Some(name) = parts.next() {
+            directives.insert(name, parts.collect());
+        }
+    }
+    let sources =
+        |name: &str| -> &[&str] { directives.get(name).map(Vec::as_slice).unwrap_or(&[]) };
+
+    // The module loads: script-src must allow the esm.sh modules.
+    assert!(
+        sources("script-src").contains(&"https://esm.sh"),
+        "served admin CSP script-src must allow https://esm.sh — the Agentation \
+         module and its externalized react/react-dom load from there; without \
+         the grant the browser refuses to load the toolbar, got: {csp}"
+    );
+    // The runtime fetches: connect-src must allow esm.sh too.
+    assert!(
+        sources("connect-src").contains(&"https://esm.sh"),
+        "served admin CSP connect-src must allow https://esm.sh — the Agentation \
+         module fetches from there at runtime, got: {csp}"
+    );
+
+    // Scoping: esm.sh must NOT leak into default-src. The grant exists so the
+    // toolbar's scripts and fetches work — not every fetch type on the page.
+    let default_src = sources("default-src");
+    assert!(
+        !default_src.is_empty(),
+        "served admin CSP must carry a default-src directive, got: {csp}"
+    );
+    assert!(
+        !default_src.contains(&"https://esm.sh"),
+        "esm.sh must stay scoped to script-src/connect-src and must not leak \
+         into default-src (that would grant the origin to every fetch type), \
+         got: {csp}"
+    );
+
+    // Mirroring csp_defaults_allow_agentation_esm_sh: no directive may grant
+    // everything — an esm.sh grant alongside `*` would be no scoping at all.
+    for name in ["default-src", "script-src", "connect-src"] {
+        assert!(
+            !sources(name).contains(&"*"),
+            "served admin CSP {name} must not use the * wildcard, got: {csp}"
+        );
+    }
 }
