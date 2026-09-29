@@ -3081,4 +3081,58 @@ mod tests {
         // Verify the counter has the expected value (1500)
         assert!(encoded.contains("miroir_reshard_documents_backfilled_total{index_uid=\"products\",source_index=\"products__old\"} 1500"));
     }
+
+    #[test]
+    fn test_result_cache_metrics_registered_and_start_at_zero() {
+        let metrics = Metrics::new(&MiroirConfig::default());
+
+        // Encode and verify each §13.10 result-cache metric is registered
+        // under its namespaced name with its documented help text and type.
+        let encoded = metrics.encode_metrics().unwrap();
+
+        assert!(
+            encoded.contains(
+                "# HELP miroir_result_cache_hits_total Total number of result cache hits"
+            ),
+            "missing miroir_result_cache_hits_total help text"
+        );
+        assert!(
+            encoded.contains("# TYPE miroir_result_cache_hits_total counter"),
+            "miroir_result_cache_hits_total is not a counter"
+        );
+        assert!(
+            encoded.contains(
+                "# HELP miroir_result_cache_misses_total Total number of result cache misses"
+            ),
+            "missing miroir_result_cache_misses_total help text"
+        );
+        assert!(
+            encoded.contains("# TYPE miroir_result_cache_misses_total counter"),
+            "miroir_result_cache_misses_total is not a counter"
+        );
+        assert!(
+            encoded.contains(
+                "# HELP miroir_result_cache_size Current number of entries in the result cache"
+            ),
+            "missing miroir_result_cache_size help text"
+        );
+        assert!(
+            encoded.contains("# TYPE miroir_result_cache_size gauge"),
+            "miroir_result_cache_size is not a gauge"
+        );
+
+        // A fresh registry starts every result-cache metric at zero.
+        assert!(
+            encoded.contains("miroir_result_cache_hits_total 0"),
+            "miroir_result_cache_hits_total does not start at zero"
+        );
+        assert!(
+            encoded.contains("miroir_result_cache_misses_total 0"),
+            "miroir_result_cache_misses_total does not start at zero"
+        );
+        assert!(
+            encoded.contains("miroir_result_cache_size 0"),
+            "miroir_result_cache_size does not start at zero"
+        );
+    }
 }
