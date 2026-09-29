@@ -2,6 +2,37 @@
 
 This guide covers setting up Miroir secrets with OpenBao and External Secrets Operator (ESO).
 
+## Live cluster state (ardenone-cluster, verified 2026-09-29)
+
+The steps below describe the plan §9 reference layout for a fresh deployment.
+The live ardenone-cluster OpenBao differs structurally; integrate against the
+existing deployment using these verified facts:
+
+- **Server:** `https://openbao-v2-ardenone-cluster-active.openbao-v2.svc.cluster.local:8200`
+  (TLS; CA from Secret `openbao-v2-internal-tls`, ns `openbao-v2`, key
+  `ca.crt`). Statefulset pod `openbao-v2-ardenone-cluster-0` in ns `openbao-v2`.
+- **KV v2 mount:** `secret` — not `kv`. API data paths are
+  `secret/data/<cluster>/<namespace>/keys`.
+- **Auth:** Kubernetes mount `kubernetes`, role
+  `external-secrets-ardenone-cluster` bound to ServiceAccount
+  `external-secrets-ardenone-cluster` (ns `external-secrets`, audience
+  `openbao-v2`). Workloads hold no OpenBao tokens; they read secrets through
+  ESO only.
+- **Store:** ClusterSecretStore `openbao-v2` (Valid, ReadWrite).
+- **ExternalSecrets:** `miroir-keys` (ns `miroir`) and `miroir-dev-keys` (ns
+  `miroir-dev`), each targeting a same-named Secret, with remote keys
+  `ardenone-cluster/miroir/keys` and `ardenone-cluster/miroir-dev/keys`
+  (properties: `masterKey`, `nodeMasterKey`, `adminApiKey`).
+- **Status:** both ExternalSecrets report `SecretSyncedError` ("could not get
+  secret data from provider") because those remote keys are not populated yet —
+  a missing-secret condition, not a store or auth defect (the store is Ready).
+
+The plan §9 artifacts below — server `openbao.openbao.svc`, mount `kv`, path
+`kv/search/miroir`, role `miroir`, namespace `search`, and the companion
+`openbao-policy.hcl` — do not describe the live deployment. Reconcile them with
+this section before populating secrets or authoring policies for the live
+cluster.
+
 ## Prerequisites
 
 - OpenBao deployed in the cluster with KV v2 secrets engine enabled
