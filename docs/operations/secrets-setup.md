@@ -1,18 +1,21 @@
-# Miroir Secrets Setup Guide (plan §9)
+# Miroir Secrets Setup Guide
 
-This guide covers setting up Miroir secrets with OpenBao and External Secrets Operator (ESO).
+This guide covers setting up Miroir secrets with OpenBao and External Secrets
+Operator (ESO) on the **live ardenone-cluster OpenBao v2 cell**. Every step
+below operates on the existing deployment — there is no separate fresh-install
+path here. The plan §9 reference layout for a hypothetical standalone install
+is retained in [Appendix A](#appendix-a-plan-9-reference-layout-non-live) as a
+clearly-labeled non-live alternative; do not run it against ardenone-cluster.
 
-## Live cluster state (ardenone-cluster, verified 2026-09-29)
-
-The steps below describe the plan §9 reference layout for a fresh deployment.
-The live ardenone-cluster OpenBao differs structurally; integrate against the
-existing deployment using these verified facts:
+## Live cluster layout (ardenone-cluster, verified 2026-09-29, re-confirmed 2026-09-30)
 
 - **Server:** `https://openbao-v2-ardenone-cluster-active.openbao-v2.svc.cluster.local:8200`
   (TLS; CA from Secret `openbao-v2-internal-tls`, ns `openbao-v2`, key
   `ca.crt`). Statefulset pod `openbao-v2-ardenone-cluster-0` in ns `openbao-v2`.
 - **KV v2 mount:** `secret` — not `kv`. API data paths are
-  `secret/data/<cluster>/<namespace>/keys`.
+  `secret/data/<cluster>/<namespace>/keys`; the cell has no `kv` mount
+  (`kv/search/miroir` belonged to the decommissioned v1 cell and must never be
+  addressed).
 - **Auth:** Kubernetes mount `kubernetes`, role
   `external-secrets-ardenone-cluster` bound to ServiceAccount
   `external-secrets-ardenone-cluster` (ns `external-secrets`, audience
@@ -27,14 +30,15 @@ existing deployment using these verified facts:
   secret data from provider") because those remote keys are not populated yet —
   a missing-secret condition, not a store or auth defect (the store is Ready).
 
-The plan §9 artifacts below — server `openbao.openbao.svc`, mount `kv`, path
-`kv/search/miroir`, role `miroir`, and namespace `search` — do not describe the
-live deployment. Reconcile them with this section before populating secrets or
-authoring policies for the live cluster. The companion
-[`openbao-policy.hcl`](openbao-policy.hcl) is corrected to the live path shape
-(read-only, ESO sync path). For the operator credential that writes the keys
-docs on the live cell, follow
-[Runbook: obtaining the miroir write token](openbao-write-token.md).
+The GitOps sources of record for everything above live in
+`jedarden/declarative-config`:
+`k8s/ardenone-cluster/external-secrets/openbao-v2-cluster-secret-store.yml`
+(the store), `k8s/ardenone-cluster/miroir/miroir-externalsecret.yml` and
+`k8s/ardenone-cluster/miroir-dev/miroir-dev-externalsecret.yml` (the syncs),
+and `k8s/ardenone-cluster/openbao-v2/reconciler-config.yml` (policies and
+auth roles). The repo file [`openbao-policy.hcl`](openbao-policy.hcl)
+documents the ESO read policy's shape, narrowed to exactly the two miroir
+keys docs, at the live path shape.
 
 ## Credential source
 
@@ -79,7 +83,8 @@ secret values or key material are committed to this repository.
   during the 2026-08-29 decommission. Despite the name it is not this cell's
   recovery share and opens nothing that exists.
 - **Policy and role provisioning** (the `bao policy write` and
-  `bao write auth/kubernetes/role/...` calls in the plan §9 steps below):
+  `bao write auth/kubernetes/role/...` calls shown in the plan §9 reference
+  steps in [Appendix A](#appendix-a-plan-9-reference-layout-non-live)):
   declarative. The OpenBao reconciler in declarative-config
   (`k8s/ardenone-cluster/openbao-v2/reconciler-config.yml`) converges
   policies, Kubernetes auth roles, and AppRoles from git on every cycle, and
@@ -133,17 +138,356 @@ The key checked by the proxy's admin auth headers and sent by `miroir-ctl`:
 
 Carried in the Meilisearch pod environment — not a separately distributed
 credential. Its source of truth is the `nodeMasterKey` entry of the Secret
-Inventory below (OpenBao → ESO → `miroir-secret`); rotate it with the
+Inventory below (OpenBao → ESO → `miroir-keys`); rotate it with the
 nodeMasterKey rotation procedure below, which moves the source of truth to a
 new value in OpenBao and lets ESO re-sync.
 
 ## Prerequisites
 
-- OpenBao deployed in the cluster with KV v2 secrets engine enabled
-- External Secrets Operator installed
-- Kubernetes cluster with miroir namespace
+- **Operator write credential:** the **miroir write token** — see
+  [Credential source](#credential-source) and the runbook
+  [`openbao-write-token.md`](openbao-write-token.md). Every `bao` write in
+  Step 3 runs under it; nothing here uses an admin or root token, and no
+  token is ever written into a workload or manifest.
+- **`bao` CLI** (v2.6 family) with `BAO_ADDR` at the cell entrypoint
+  (`https://openbao.ardenone.com:8444`) and `BAO_CACERT` from Secret
+  `openbao-v2-internal-tls` (ns `openbao-v2`, key `ca.crt`) — the runbook's
+  login step covers both.
+- **Read-only kubectl** for verification via the proxy:
+  `kubectl --server=http://traefik-ardenone-cluster:8001 ...`. Its RBAC
+  cannot write; that is by design.
+- **A declarative-config checkout with Forgejo push rights** — needed only
+  when a step changes a GitOps artifact (policy, role, store, ExternalSecret,
+  or deployment values). There is no direct-write path to this cluster, and
+  ArgoCD `selfHeal` reverts out-of-band mutations.
 
-## Secret Inventory (plan §9)
+## Secret Inventory
+
+The live layout keeps **one KV v2 doc per environment** with camelCase
+properties. ESO maps each property 1:1 onto a key of the target Secret:
+
+| Property (remote keys doc) | Secret key after sync | Purpose | Rotation |
+|----------------------------|-----------------------|---------|----------|
+| masterKey | masterKey | Meilisearch master (admin) key | Manual |
+| nodeMasterKey | nodeMasterKey | Meilisearch node key (cluster auth) | Zero-downtime (below) |
+| adminApiKey | adminApiKey | Miroir admin API key (`MIROIR_ADMIN_API_KEY`) | Manual; leak procedure below |
+
+Remote keys and targets:
+
+- `ardenone-cluster/miroir/keys` → Secret `miroir-keys`, ns `miroir`
+- `ardenone-cluster/miroir-dev/keys` → Secret `miroir-dev-keys`, ns `miroir-dev`
+
+The plan §9 inventory carried further properties (`adminSessionSealKey`,
+`searchUiJwtSecret`, `searchUiSharedKey`, `redis-password`, …); they are not
+part of the live keys docs. Adding one is a two-sided GitOps change: write the
+property into the keys doc **and** add a matching `data` entry to that
+environment's ExternalSecret manifest in declarative-config — ESO prunes
+target-Secret keys it does not manage on its next sync. The full plan §9
+table is preserved in Appendix A.
+
+## Step 1: Policies are declarative — no `bao policy write`
+
+On the live cell, policies are converged from git by the OpenBao reconciler;
+hand-created policy objects (CLI or UI) are reverted on the next cycle. The
+two identities Miroir needs are therefore git artifacts, not commands:
+
+- **ESO read identity:** policy `eso-ardenone-cluster`, attached by the
+  Kubernetes auth role to ESO's logins. Declared in
+  `k8s/ardenone-cluster/openbao-v2/reconciler-config.yml`;
+  [`openbao-policy.hcl`](openbao-policy.hcl) documents its shape narrowed to
+  exactly the two miroir keys docs (read-only, data + metadata paths).
+- **Operator write identity:** policy `miroir-write` — `create`, `update`,
+  `patch`, `read` on the two keys docs plus metadata `read`, nothing else —
+  declared in the same reconciler config together with its AppRole.
+
+To change either policy, edit `reconciler-config.yml` in declarative-config,
+push, and let ArgoCD sync (force the Application sync if it lags). There is
+no `miroir-policy` on the live cell — that name belongs to the non-live
+Appendix A layout.
+
+## Step 2: Kubernetes auth role — ESO only, no workload tokens
+
+The Kubernetes auth role is declarative too and already exists. Verify it
+with a read call (no values involved):
+
+```bash
+bao read auth/kubernetes/role/external-secrets-ardenone-cluster
+```
+
+Expected: bound service account `external-secrets-ardenone-cluster`, namespace
+`external-secrets`, token policy `eso-ardenone-cluster`, audience
+`openbao-v2`. The role is created by the reconciler from
+`reconciler-config.yml`; changes go through declarative-config.
+
+Nothing in this guide issues a token for a workload to hold: ESO logs in to
+OpenBao with its own ServiceAccount when the ClusterSecretStore
+authenticates, and Miroir pods consume only the resulting Kubernetes Secret.
+If a step ever asks you to place an OpenBao token into a Secret, manifest, or
+pod spec, that is the Appendix A shape — stop; it is not how the live
+deployment works.
+
+## Step 3: Populate the keys docs
+
+Run under the miroir write token (see Prerequisites). The cell enforces CAS
+on the `secret` mount, so pass `-cas` on every write — `-cas=0` creates
+version 1 of a doc that does not exist yet:
+
+```bash
+bao kv put -cas=0 secret/ardenone-cluster/miroir/keys \
+  masterKey="$(openssl rand -base64 32)" \
+  nodeMasterKey="$(openssl rand -base64 32)" \
+  adminApiKey="$(openssl rand -base64 32)"
+
+bao kv put -cas=0 secret/ardenone-cluster/miroir-dev/keys \
+  masterKey="$(openssl rand -base64 32)" \
+  nodeMasterKey="$(openssl rand -base64 32)" \
+  adminApiKey="$(openssl rand -base64 32)"
+```
+
+Later single-property changes patch the existing doc at its current version:
+
+```bash
+bao kv metadata get secret/ardenone-cluster/miroir/keys   # current version, no values
+bao kv patch -cas=<version> secret/ardenone-cluster/miroir/keys \
+  adminApiKey="$(openssl rand -base64 32)"
+```
+
+Do not enable any mount: `secret` already exists, and
+`bao secrets enable -path=kv kv-v2` is Appendix A machinery — the live cell
+has no `kv` mount.
+
+Populate is an operator action, run out-of-band on purpose; nothing in this
+repository writes to the cluster. Once a keys doc exists, ESO syncs it into
+the target Secret within `refreshInterval` (1h) and the ExternalSecret flips
+from `SecretSyncedError` to Ready. Confirm with the read-only proxy:
+
+```bash
+kubectl --server=http://traefik-ardenone-cluster:8001 \
+  get externalsecret -n miroir miroir-keys
+kubectl --server=http://traefik-ardenone-cluster:8001 \
+  get externalsecret -n miroir-dev miroir-dev-keys
+```
+
+## Step 4: ClusterSecretStore `openbao-v2` — verify, don't create
+
+The store already exists and is GitOps-owned. Verify it read-only:
+
+```bash
+kubectl --server=http://traefik-ardenone-cluster:8001 \
+  get clustersecretstore openbao-v2
+```
+
+Expected: `STATUS: Valid`, capabilities `ReadWrite`, `READY: True`. Its spec
+(from `k8s/ardenone-cluster/external-secrets/openbao-v2-cluster-secret-store.yml`
+in declarative-config) is the live reference shape:
+
+```yaml
+apiVersion: external-secrets.io/v1
+kind: ClusterSecretStore
+metadata:
+  name: openbao-v2
+spec:
+  provider:
+    vault:
+      server: https://openbao-v2-ardenone-cluster-active.openbao-v2.svc.cluster.local:8200
+      path: secret
+      version: v2
+      caProvider:
+        type: Secret
+        name: openbao-v2-internal-tls
+        namespace: openbao-v2
+        key: ca.crt
+      auth:
+        kubernetes:
+          mountPath: kubernetes
+          role: external-secrets-ardenone-cluster
+          serviceAccountRef:
+            name: external-secrets-ardenone-cluster
+            namespace: external-secrets
+            audiences:
+              - openbao-v2
+```
+
+There is no `openbao-backend` store on this cluster — the
+`http://openbao.openbao.svc` endpoint in Appendix A belongs to the non-live
+layout. Corrections go through declarative-config (edit, push, let ArgoCD
+sync), not `kubectl apply`.
+
+## Step 5: Deploy Miroir against the ESO-managed Secret
+
+Deployment is GitOps. ArgoCD Application `miroir-ardenone-cluster`
+(`k8s/ardenone-cluster/miroir/miroir-application.yml` in declarative-config)
+installs chart `miroir` 0.1.0 from `oci://ghcr.io/jedarden/charts` into ns
+`miroir`, with the ESO-managed Secret wired to the pods:
+
+```yaml
+miroir:
+  existingSecret: miroir-keys  # ESO-managed from remote key ardenone-cluster/miroir/keys
+```
+
+`miroir-dev-ardenone-cluster` is the dev twin (Secret `miroir-keys` in ns
+`miroir-dev`). Deploying means editing the Application's Helm values in
+declarative-config and letting ArgoCD sync — there is no operator
+`helm install` step on this cluster. The chart injects the synced keys into
+the pod environment, so after Step 3 pods come up with real values. Never
+point a workload at a hand-made Secret: the only supported Secret is the one
+the ExternalSecret owns.
+
+Status snapshot (2026-09-30): the namespaces and ExternalSecrets exist; the
+workloads do not — both Applications were showing a chart-pull
+`ComparisonError` at the time of writing. Populate the keys docs first
+(Step 3); the resulting sync flip to Ready is observable at any time with
+read-only kubectl.
+
+## Rotation Procedures
+
+### nodeMasterKey Rotation (Zero-Downtime)
+
+1. Generate a new admin-scoped key on each running Meilisearch node:
+   ```bash
+   kubectl --server=http://traefik-ardenone-cluster:8001 exec -it \
+     statefulset/meilisearch -n miroir -- bash -c '
+     curl -X POST http://localhost:7700/keys \
+       -H "Authorization: Bearer $MEILI_MASTER_KEY" \
+       -H "Content-Type: application/json" \
+       -d '"'"'{"actions": ["*"], "indexes": ["*"], "description": "miroir node key v2"}'"'"'
+   '
+   ```
+2. Move the source of truth in OpenBao (miroir write token, at the doc's
+   current version):
+   ```bash
+   bao kv patch -cas=<version> secret/ardenone-cluster/miroir/keys \
+     nodeMasterKey="<new-key>"
+   ```
+3. ESO syncs the update within `refreshInterval` (1h on the live
+   ExternalSecrets). To force it immediately, delete the ESO-owned target —
+   ESO recreates it from OpenBao:
+   ```bash
+   kubectl --server=http://traefik-ardenone-cluster:8001 \
+     delete secret miroir-keys -n miroir
+   ```
+4. Rolling-restart Miroir pods so they pick up the new key:
+   ```bash
+   kubectl --server=http://traefik-ardenone-cluster:8001 \
+     rollout restart deployment/miroir -n miroir
+   ```
+5. Delete the old key from all nodes once the rollout is healthy:
+   ```bash
+   kubectl --server=http://traefik-ardenone-cluster:8001 exec -it \
+     statefulset/meilisearch -n miroir -- bash -c '
+     curl -X DELETE http://localhost:7700/keys/<old-uid> \
+       -H "Authorization: Bearer $MEILI_MASTER_KEY"
+   '
+   ```
+
+### JWT Secret Rotation (Zero-Downtime)
+
+Automated via `miroir-ctl ui rotate-jwt-secret`:
+
+```bash
+miroir-ctl ui rotate-jwt-secret \
+  --namespace=miroir \
+  --secret-name=miroir-keys \
+  --deployment-name=miroir
+```
+
+**Live-layout precondition:** the live keys docs carry only the three
+inventory properties today. The rotation rewrites the target Secret in
+place, and ESO prunes unmanaged keys on its next sync (1h) — so before
+running it against the live cell, land the GitOps change from the Secret
+Inventory section first (property `searchUiJwtSecret` /
+`searchUiJwtSecretPrevious` in the keys doc plus matching ExternalSecret
+`data` entries). Then rotation survives re-syncs, and the promotion of the
+current value to the `…Previous` key still gives a zero-downtime overlap
+window.
+
+The plan §9 quarterly CronJob does not exist on this cluster and is listed
+only in Appendix A.
+
+## Leak Response
+
+If a secret is leaked, immediate revocation — always at the OpenBao source of
+truth, never by hand-editing the ESO-owned target Secret (the next sync
+overwrites it):
+
+1. **JWT secret leaked** — run the JWT rotation procedure above; it promotes
+   the leaked value into `searchUiJwtSecretPrevious`, and the closing step of
+   the rotation removes it once every pod holds the new secret.
+2. **Admin API key leaked** — rotate at the source:
+   ```bash
+   bao kv patch -cas=<version> secret/ardenone-cluster/miroir/keys \
+     adminApiKey="$(openssl rand -base64 32)"
+   # Force the re-sync, then restart pods so they drop the leaked value
+   kubectl --server=http://traefik-ardenone-cluster:8001 \
+     delete secret miroir-keys -n miroir
+   kubectl --server=http://traefik-ardenone-cluster:8001 \
+     rollout restart deployment/miroir -n miroir
+   ```
+   Update operator workstations afterwards (`MIROIR_ADMIN_API_KEY`,
+   `~/.config/miroir/credentials`, or the `--admin-key` flag — see
+   [Credential source](#credential-source)).
+3. **Node master key leaked** — follow the nodeMasterKey rotation procedure
+   above.
+
+## Validation
+
+Verify secrets are loaded correctly — every command is read-only, via the
+proxy:
+
+```bash
+# Check ESO sync status (Ready once the remote keys exist)
+kubectl --server=http://traefik-ardenone-cluster:8001 \
+  get externalsecret -n miroir
+
+# Verify the target Secrets exist
+kubectl --server=http://traefik-ardenone-cluster:8001 \
+  get secret miroir-keys -n miroir
+
+# Check Miroir pods came up with secrets
+kubectl --server=http://traefik-ardenone-cluster:8001 \
+  logs -l app.kubernetes.io/name=miroir -n miroir --tail=20
+```
+
+And verify the OpenBao side without reading values:
+
+```bash
+bao kv metadata get secret/ardenone-cluster/miroir/keys
+bao kv metadata get secret/ardenone-cluster/miroir-dev/keys
+```
+
+## Security Notes
+
+- The ESO read policy is least-privilege: read-only access to
+  `secret/data/ardenone-cluster/miroir/keys` and its `miroir-dev` twin
+  ([`openbao-policy.hcl`](openbao-policy.hcl)); on the live cell the actual
+  ESO read identity is the declarative `eso-ardenone-cluster` policy, and
+  operator writes use the scoped `miroir-write` token
+  ([`openbao-write-token.md`](openbao-write-token.md))
+- Miroir never writes to OpenBao, and miroir pods hold no OpenBao tokens —
+  they read via ESO only
+- The live cell enforces CAS on the `secret` mount, so every write above is
+  version-checked; concurrent operators cannot silently stomp a keys doc
+- All secrets are base64-encoded in Kubernetes Secrets
+- Use separate policies per environment (the `miroir-write` policy's exact
+  two-path scope shows the pattern; split prod/dev further if desired)
+- Rotate keys quarterly or immediately on leak
+- Monitor ESO sync errors via Prometheus alerts
+
+## Appendix A: plan §9 reference layout (non-live)
+
+> **Warning — not the live deployment.** This appendix preserves the plan §9
+> reference procedure for a *hypothetical fresh standalone deployment*:
+> server `openbao.openbao.svc`, KV v2 mount `kv`, path `kv/search/miroir`,
+> role `miroir`, policy `miroir-policy`, store `openbao-backend`, namespace
+> `search`. **None of those objects exist on ardenone-cluster** — the live
+> cell has no `kv` mount and no `search` namespace, and hand-created policies
+> or roles on the live cell are reverted by the reconciler. Do not run these
+> steps against ardenone-cluster. They are retained because the chart's
+> optional `eso.*` plumbing (`charts/miroir/templates/miroir-externalsecret.yaml`,
+> `charts/miroir/examples/eso-external-secret.yaml`) still implements this
+> shape for an isolated from-scratch install; use it only in such a sandbox.
+
+### Reference secret inventory (plan §9)
 
 | Secret | OpenBao Key | ESO Target | Rotation |
 |--------|-------------|------------|----------|
@@ -156,7 +500,7 @@ new value in OpenBao and lets ESO re-sync.
 | searchUiSharedKey | search_ui_shared_key | miroir-secret | Manual |
 | redis-password | redis_password | miroir-secret | Manual |
 
-## Step 1: Create OpenBao Policy
+### Reference Step 1: Create OpenBao Policy
 
 Create the least-privilege policy for Miroir:
 
@@ -170,7 +514,7 @@ Or via the OpenBao UI:
 2. Create new policy named `miroir-policy`
 3. Paste the contents of `docs/operations/openbao-policy.hcl`
 
-## Step 2: Create OpenBao Role and Token
+### Reference Step 2: Create OpenBao Role and Token
 
 ```bash
 # Create the role
@@ -184,7 +528,7 @@ bao write auth/kubernetes/role/miroir \
 bao read auth/kubernetes/role/miroir
 ```
 
-## Step 3: Populate Secrets in OpenBao
+### Reference Step 3: Populate Secrets in OpenBao
 
 Enable KV v2 secrets engine (if not already enabled):
 
@@ -218,7 +562,7 @@ bao kv patch kv/search/miroir \
   redis_password="$(openssl rand -base64 32)"
 ```
 
-## Step 4: Configure ESO ClusterSecretStore
+### Reference Step 4: Configure ESO ClusterSecretStore
 
 Create the ClusterSecretStore for OpenBao:
 
@@ -260,7 +604,7 @@ spec:
 EOF
 ```
 
-## Step 5: Deploy Miroir with ESO Enabled
+### Reference Step 5: Deploy Miroir with ESO Enabled
 
 Update your Helm values:
 
@@ -282,52 +626,10 @@ Deploy:
 helm install miroir ./charts/miroir -f values.yaml
 ```
 
-## Rotation Procedures
+### Reference JWT rotation CronJob (plan §9)
 
-### nodeMasterKey Rotation (Zero-Downtime)
-
-1. Generate new admin-scoped key on each Meilisearch node:
-   ```bash
-   kubectl exec -it statefulset/meilisearch -- bash -c '
-     curl -X POST http://localhost:7700/keys \
-       -H "Authorization: Bearer $MEILI_MASTER_KEY" \
-       -H "Content-Type: application/json" \
-       -d '"'"'{"actions": ["*"], "indexes": ["*"], "description": "miroir node key v2"}'"'"'
-   '
-   ```
-
-2. Update OpenBao with the new key:
-   ```bash
-   bao kv patch kv/search/miroir node_master_key="<new-key>"
-   ```
-
-3. ESO will sync the update within `refreshInterval` (default 15m)
-
-4. Rolling restart Miroir pods:
-   ```bash
-   kubectl rollout restart deployment/miroir -n search
-   ```
-
-5. Delete old keys from all nodes:
-   ```bash
-   kubectl exec -it statefulset/meilisearch -- bash -c '
-     curl -X DELETE http://localhost:7700/keys/<old-uid> \
-       -H "Authorization: Bearer $MEILI_MASTER_KEY"
-   '
-   ```
-
-### JWT Secret Rotation (Zero-Downtime)
-
-Automated via `miroir-ctl ui rotate-jwt-secret`:
-
-```bash
-miroir-ctl ui rotate-jwt-secret \
-  --namespace=search \
-  --secret-name=miroir-secret \
-  --deployment-name=miroir
-```
-
-Or use the CronJob (quarterly, suspended by default):
+The §9 layout optionally ships a suspended quarterly rotation CronJob
+(`charts/miroir/templates/miroir-rotate-jwt-cronjob.yaml`):
 
 ```bash
 # Enable the CronJob for automated rotation
@@ -337,49 +639,5 @@ kubectl patch cronjob miroir-rotate-jwt -n search -p '{"spec":{"suspend":false}}
 kubectl create job --from=cronjob/miroir-rotate-jwt manual-rotation-$(date +%s) -n search
 ```
 
-## Leak Response
-
-If a secret is leaked, immediate revocation:
-
-1. **JWT secret leaked** - Set `SEARCH_UI_JWT_SECRET_PREVIOUS` to empty string:
-   ```bash
-   kubectl patch secret miroir-secret -n search -p '{"stringData":{"searchUiJwtSecretPrevious":""}}'
-   kubectl rollout restart deployment/miroir -n search
-   ```
-
-2. **Admin API key leaked** - Rotate immediately:
-   ```bash
-   # Generate new key
-   bao kv patch kv/search/miroir admin_api_key="$(openssl rand -base64 32)"
-   # Wait for ESO sync (or force delete Secret)
-   kubectl delete secret miroir-secret -n search
-   ```
-
-3. **Node master key leaked** - Follow nodeMasterKey rotation procedure above
-
-## Validation
-
-Verify secrets are loaded correctly:
-
-```bash
-# Check ESO sync status
-kubectl get externalsecret miroir-eso -n search -o yaml
-
-# Verify Secret exists
-kubectl get secret miroir-secret -n search
-
-# Check Miroir pods have secrets
-kubectl logs -l app.kubernetes.io/name=miroir -n search --tail=20 | grep -i jwt
-```
-
-## Security Notes
-
-- The OpenBao policy is least-privilege: read-only access to
-  `secret/data/ardenone-cluster/miroir/keys` and its `miroir-dev` twin
-  ([`openbao-policy.hcl`](openbao-policy.hcl)); on the live cell the actual
-  ESO read identity is the declarative `eso-ardenone-cluster` policy
-- Miroir never writes to OpenBao; it only reads via ESO
-- All secrets are base64-encoded in Kubernetes Secrets
-- Use separate OpenBao policies per namespace/environment
-- Rotate keys quarterly or immediately on leak
-- Monitor ESO sync errors via Prometheus alerts
+No such CronJob exists on ardenone-cluster; use the `miroir-ctl` procedure in
+the main body instead.
