@@ -28,10 +28,13 @@ existing deployment using these verified facts:
   a missing-secret condition, not a store or auth defect (the store is Ready).
 
 The plan §9 artifacts below — server `openbao.openbao.svc`, mount `kv`, path
-`kv/search/miroir`, role `miroir`, namespace `search`, and the companion
-`openbao-policy.hcl` — do not describe the live deployment. Reconcile them with
-this section before populating secrets or authoring policies for the live
-cluster.
+`kv/search/miroir`, role `miroir`, and namespace `search` — do not describe the
+live deployment. Reconcile them with this section before populating secrets or
+authoring policies for the live cluster. The companion
+[`openbao-policy.hcl`](openbao-policy.hcl) is corrected to the live path shape
+(read-only, ESO sync path). For the operator credential that writes the keys
+docs on the live cell, follow
+[Runbook: obtaining the miroir write token](openbao-write-token.md).
 
 ## Credential source
 
@@ -82,8 +85,12 @@ secret values or key material are committed to this repository.
   policies, Kubernetes auth roles, and AppRoles from git on every cycle, and
   reverts hand-created API objects. To change provisioning, push to
   declarative-config. Interactive `bao` writes against the live cell (e.g.
-  populating the keys doc) use the scoped periodic operator token above, with
-  write access limited to the miroir keys paths.
+  populating the keys doc) use the dedicated **miroir write token** — a
+  periodic AppRole-issued client token bound to the `miroir-write` policy, not
+  an admin-minted token. See
+  [Runbook: obtaining the miroir write token](openbao-write-token.md) for the
+  full obtain-and-verify procedure; it is the credential behind every `bao kv
+  put` / `bao kv patch` the populate steps need on the live cell.
 
 ### Workload credentials (miroir pods)
 
@@ -367,7 +374,10 @@ kubectl logs -l app.kubernetes.io/name=miroir -n search --tail=20 | grep -i jwt
 
 ## Security Notes
 
-- The OpenBao policy is least-privilege: read-only access to `kv/search/miroir`
+- The OpenBao policy is least-privilege: read-only access to
+  `secret/data/ardenone-cluster/miroir/keys` and its `miroir-dev` twin
+  ([`openbao-policy.hcl`](openbao-policy.hcl)); on the live cell the actual
+  ESO read identity is the declarative `eso-ardenone-cluster` policy
 - Miroir never writes to OpenBao; it only reads via ESO
 - All secrets are base64-encoded in Kubernetes Secrets
 - Use separate OpenBao policies per namespace/environment
