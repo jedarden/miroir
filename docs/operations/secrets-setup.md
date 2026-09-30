@@ -33,6 +33,103 @@ The plan §9 artifacts below — server `openbao.openbao.svc`, mount `kv`, path
 this section before populating secrets or authoring policies for the live
 cluster.
 
+## Credential source
+
+Where each credential involved in operating Miroir secrets comes from, and how
+a team member obtains it. This section names sources and locations only — no
+secret values or key material are committed to this repository.
+
+### Operator cluster access (kubectl)
+
+- **Read path:** the read-only kubectl proxy at
+  `http://traefik-ardenone-cluster:8001` (Tailscale-only), backed by the
+  `devpod-observer` ServiceAccount's read-only RBAC. Any team member on the
+  tailnet can use it directly; no kubeconfig or token is handed out.
+- **Write path:** GitOps only. Edit the manifest in
+  `jedarden/declarative-config`, push, and let ArgoCD sync the change. The
+  proxy cannot write, and direct mutations of managed resources are reverted
+  by ArgoCD `selfHeal` anyway — there is no operator kubectl write credential
+  to obtain.
+
+### OpenBao administration (ardenone-cluster)
+
+- **Day-to-day admin credential:** a scoped periodic OpenBao token (720 h)
+  minted for the operator by an existing admin. Verify a fresh grant with
+  `bao token lookup` (expected: your scoped policy only, periodic,
+  renewable). Expired tokens are re-minted by an admin — they are never
+  shared or stored.
+- **Root tokens:** live in the team password manager. They are never written
+  into the cluster, git, or dotfiles on shared hosts. A team member who needs
+  one for a break-glass operation obtains it from an operator, uses it, and
+  lets it stay escrowed.
+- **Unseal / recovery key material:** the live v2 cell auto-unseals via cloud
+  KMS, so routine operation never handles an unseal key. Its single recovery
+  share exists only inside the PGP-encrypted initialization JSON held in the
+  operator's holder bundle (see
+  `k8s/ardenone-cluster/openbao-v2/recovery-share-secret.yml.template` in
+  declarative-config); rekey ceremonies escrow a share transiently as a
+  SealedSecret and delete it in the closing commit. Access goes through the
+  operators — never ad-hoc reconstruction.
+  **Name-collision warning:** the KV object
+  `ardenone-cluster/openbao/openbao-unseal-key` in this cell is the
+  decommissioned v1 instance's Shamir unseal key, preserved deliberately
+  during the 2026-08-29 decommission. Despite the name it is not this cell's
+  recovery share and opens nothing that exists.
+- **Policy and role provisioning** (the `bao policy write` and
+  `bao write auth/kubernetes/role/...` calls in the plan §9 steps below):
+  declarative. The OpenBao reconciler in declarative-config
+  (`k8s/ardenone-cluster/openbao-v2/reconciler-config.yml`) converges
+  policies, Kubernetes auth roles, and AppRoles from git on every cycle, and
+  reverts hand-created API objects. To change provisioning, push to
+  declarative-config. Interactive `bao` writes against the live cell (e.g.
+  populating the keys doc) use the scoped periodic operator token above, with
+  write access limited to the miroir keys paths.
+
+### Workload credentials (miroir pods)
+
+Miroir pods hold **no** OpenBao tokens or provider credentials of their own.
+All secret reads flow through External Secrets Operator, which authenticates
+to OpenBao with Kubernetes auth:
+
+- ServiceAccount `external-secrets-ardenone-cluster` (ns `external-secrets`)
+- auth role `external-secrets-ardenone-cluster` (policy
+  `eso-ardenone-cluster`), audience `openbao-v2`
+
+This identity is created and owned by GitOps
+(`k8s/ardenone-cluster/external-secrets/openbao-v2-cluster-secret-store.yml`
+and the reconciler config in declarative-config). There is nothing for a team
+member to obtain, copy, or rotate by hand.
+
+### Runtime admin API key (`adminApiKey`)
+
+The key checked by the proxy's admin auth headers and sent by `miroir-ctl`:
+
+- **In-cluster:** not a manual credential — ESO syncs it from the OpenBao
+  remote key `ardenone-cluster/miroir/keys` (property `adminApiKey`) into
+  Secret `miroir-keys` (ns `miroir`) and `miroir-dev-keys` (ns `miroir-dev`).
+  The value itself is generated once, by the operator populating the keys doc
+  (the Step 3 pattern: `openssl rand -base64 32` or equivalent).
+- **Operator workstation (`miroir-ctl`):** resolved in priority order
+  (implementation:
+  [`crates/miroir-ctl/src/credentials.rs`](../../crates/miroir-ctl/src/credentials.rs);
+  usage notes: [`docs/ctl/README.md`](../ctl/README.md)):
+  1. `MIROIR_ADMIN_API_KEY` environment variable
+  2. `~/.config/miroir/credentials` (or `credentials.toml`), TOML section
+     `[default]`, key `admin_api_key`
+  3. `--admin-key` flag — last resort; visible in the process list
+
+  To obtain it, read the `adminApiKey` property from the OpenBao remote key
+  using a scoped operator token, or have an operator provision one. Never
+  commit it to a repository or shell profile.
+
+### Meilisearch node key (`MEILI_MASTER_KEY`)
+
+Carried in the Meilisearch pod environment — not a separately distributed
+credential. Its source of truth is the `nodeMasterKey` entry of the Secret
+Inventory above (OpenBao → ESO → `miroir-secret`); rotate it with the
+nodeMasterKey rotation procedure below, which moves the source of truth to a
+new value in OpenBao and lets ESO re-sync.
+
 ## Prerequisites
 
 - OpenBao deployed in the cluster with KV v2 secrets engine enabled
