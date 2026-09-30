@@ -148,8 +148,12 @@ exist. Watch with:
 
 ```bash
 kubectl --server=http://traefik-ardenone-cluster:8001 logs -n openbao-v2 \
-  openbao-v2-reconciler-0 -c reconciler | grep miroir-write
+  -l app=openbao-v2-reconciler -c reconciler --tail=-1 | grep miroir-write
 ```
+
+(The reconciler runs as a single-replica Deployment, not a StatefulSet —
+select the pod by its `app=openbao-v2-reconciler` label; the second container
+is the `publisher` sidecar.)
 
 ## Step 2 — collect the identity material (ex44)
 
