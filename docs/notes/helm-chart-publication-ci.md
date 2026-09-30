@@ -32,6 +32,38 @@ The `miroir-ci` WorkflowTemplate in `declarative-config` includes three tasks fo
 - Uses the same `ghcr-credentials` secret as Kaniko
 - Parses Docker config JSON for GHCR authentication
 
+## miroir-release: post-publish smoke-test gates
+
+Chart publication now ships in the `miroir-release` WorkflowTemplate (`declarative-config` → `k8s/iad-ci/argo-workflows/miroir-release-workflowtemplate.yml`), not `miroir-ci`: the original `miroir-ci` template whose three tasks are broken down above is retired (`miroir-ci.yaml.disabled`), and its package/publish work is now the single `helm-publish` task in the `miroir-release` pipeline (`check-release-ready` → `build` → `publish-chart` → `github-release`).
+
+`helm-publish` ends with two smoke-test gates that verify the chart actually landed before the GitHub release is cut. The task runs under `set -e`, so a non-zero exit from either gate fails the `helm-publish` task — and the pipeline's next step, `create-github-release`, never runs on a broken publish.
+
+### 1. OCI re-pull gate — after `helm push`, before gh-pages publication
+
+Re-pulls the just-pushed chart version back out of ghcr.io to prove the OCI artifact is readable:
+
+```sh
+mkdir -p /verify-oci
+helm pull oci://ghcr.io/jedarden/charts/miroir --version "$VERSION" -d /verify-oci
+```
+
+If the push silently failed or ghcr rejected the version, `helm pull` exits non-zero and the task fails here — gh-pages is never updated with a version whose OCI artifact cannot be pulled.
+
+### 2. gh-pages index gate — after the gh-pages push, before `create-github-release`
+
+Fetches the live GitHub Pages `index.yaml` and requires the new version entry:
+
+```sh
+wget -qO /tmp/index.yaml https://jedarden.github.io/miroir/index.yaml
+grep -q "version: ${VERSION}" /tmp/index.yaml
+```
+
+`wget` fails if Pages is not serving at all, and `grep -q` fails until the pushed `index.yaml` entry is live (including Pages' redeploy lag). Either way the task fails before `create-github-release` runs, so a release is never announced for a chart that is not installable from the documented channels.
+
+### Cross-reference: ADR-1
+
+These gates close the silent-publication-failure gap documented in `docs/plan/plan.md` **ADR-1 (2026-07-20)**: the audit there found both published channels dark for roughly three months (gh-pages `index.yaml` 404, GHCR 403) with nothing noticing, because nothing verified that a publish had actually landed. ADR-1's decision removes the fleet's own GitOps dependency on those channels; the `miroir-release` gates are the complementary publish-side guard for the external/air-gapped consumers that decision keeps on GHCR OCI and GitHub Pages.
+
 ## Usage
 
 ### Adding the Helm repository
@@ -69,4 +101,5 @@ The following secrets are required in the `argo-workflows` namespace:
 ## References
 
 - Plan §12: Delivered Artifacts
+- Plan ADR-1 (2026-07-20): silent publication-failure audit — the gap the `miroir-release` smoke-test gates close
 - Bead miroir-uyx.6: P11.6 Helm chart publication
