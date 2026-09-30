@@ -37,10 +37,17 @@ kubectl -n search patch secret miroir-keys \
   -p "{\"stringData\":{\"nodeMasterKey\":\"$NEW_MASTER\"}}"
 ```
 
-**Option B — ExternalSecret / OpenBao:**
+**Option B — ExternalSecret / OpenBao (the live ardenone-cluster path):**
 
-Update the secret at the external source (e.g., OpenBao KV path
-`kv/search/miroir`, property `node_master_key`). Wait for ESO to sync.
+On ardenone-cluster the Secret is ESO-managed — a hand patch (Option A) is
+reverted on the next sync — so update the external source: the OpenBao KV v2
+doc `secret/ardenone-cluster/miroir/keys`, property `nodeMasterKey` (dev
+twin: `secret/ardenone-cluster/miroir-dev/keys`). Write it with the miroir
+write token — see
+[Runbook: obtaining the miroir write token](../operations/openbao-write-token.md) —
+then wait for ESO to sync. (The old `kv/search/miroir` /
+`node_master_key` addressing belonged to the decommissioned v1 cell and must
+not be used.)
 
 ### 3. Rolling restart Meilisearch StatefulSet (one pod at a time)
 
