@@ -133,7 +133,7 @@ The key checked by the proxy's admin auth headers and sent by `miroir-ctl`:
 
 Carried in the Meilisearch pod environment — not a separately distributed
 credential. Its source of truth is the `nodeMasterKey` entry of the Secret
-Inventory above (OpenBao → ESO → `miroir-secret`); rotate it with the
+Inventory below (OpenBao → ESO → `miroir-secret`); rotate it with the
 nodeMasterKey rotation procedure below, which moves the source of truth to a
 new value in OpenBao and lets ESO re-sync.
 
