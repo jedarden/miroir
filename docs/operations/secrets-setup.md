@@ -256,6 +256,15 @@ Do not enable any mount: `secret` already exists, and
 `bao secrets enable -path=kv kv-v2` is Appendix A machinery — the live cell
 has no `kv` mount.
 
+> **Do not apply the old populate manifests.**
+> [`../../scripts/populate-openbao-job.yaml`](../../scripts/populate-openbao-job.yaml)
+> and
+> [`../../scripts/populate-openbao-secrets.yaml`](../../scripts/populate-openbao-secrets.yaml)
+> are older Job-manifest attempts at this step. They predate the current
+> layout — wrong server, wrong auth role, no CAS, extra properties — and are
+> flagged in [Artifacts and tools](#artifacts-and-tools) rather than updated.
+> The commands above are the reconciled equivalent.
+
 Populate is an operator action, run out-of-band on purpose; nothing in this
 repository writes to the cluster. Once a keys doc exists, ESO syncs it into
 the target Secret within `refreshInterval` (1h) and the ExternalSecret flips
@@ -343,6 +352,15 @@ read-only kubectl.
 
 ### nodeMasterKey Rotation (Zero-Downtime)
 
+The same rotation exists as a runnable `miroir-ctl` flow — see
+[`../runbooks/node-master-key-rotation.md`](../runbooks/node-master-key-rotation.md)
+(`miroir-ctl key rotate-node-master`). On ardenone-cluster, follow the
+procedure below as the source-of-truth update (the OpenBao patch); the CLI
+flow's printed `kubectl patch secret` step is a hand edit of the ESO-owned
+target and the next sync overwrites it. The runbook's `search`-namespace
+examples are the plan §9 default — also the CLI's `--namespace` default — so
+pass `--namespace miroir` (or `miroir-dev`) on this cluster.
+
 1. Generate a new admin-scoped key on each running Meilisearch node:
    ```bash
    kubectl --server=http://traefik-ardenone-cluster:8001 exec -it \
@@ -379,6 +397,18 @@ read-only kubectl.
        -H "Authorization: Bearer $MEILI_MASTER_KEY"
    '
    ```
+
+### masterKey Rotation (Startup `MEILI_MASTER_KEY`, Maintenance Window)
+
+The inventory's `masterKey` property is Meilisearch's startup master key,
+fixed for the life of the Meilisearch process, so rotating it is the
+maintenance-window procedure in
+[`../runbooks/startup-master-key-rotation.md`](../runbooks/startup-master-key-rotation.md).
+Its Option B already targets the live source of truth — the
+`secret/ardenone-cluster/miroir/keys` doc, property `masterKey`, written with
+the miroir write token. The runbook's remaining `search`-namespace examples
+are plan §9 defaults; on ardenone-cluster substitute ns `miroir` (or
+`miroir-dev`) and the live resource names.
 
 ### JWT Secret Rotation (Zero-Downtime)
 
@@ -454,6 +484,77 @@ And verify the OpenBao side without reading values:
 bao kv metadata get secret/ardenone-cluster/miroir/keys
 bao kv metadata get secret/ardenone-cluster/miroir-dev/keys
 ```
+
+## Artifacts and tools
+
+Every procedural step above maps onto artifacts committed in this repository
+or named by path in `jedarden/declarative-config` (the GitOps source of
+record). State at HEAD:
+
+| Procedure | Artifact | Status |
+|-----------|----------|--------|
+| Operator write credential (Prerequisites) | [`openbao-write-token.md`](openbao-write-token.md) | Current — the obtain-and-verify runbook for the `miroir-write` token |
+| Step 1 — policies | [`openbao-policy.hcl`](openbao-policy.hcl); live objects in declarative-config `k8s/ardenone-cluster/openbao-v2/reconciler-config.yml` | Current — documents the live `eso-ardenone-cluster` read policy's shape; the policy objects themselves are declarative |
+| Step 2 — auth role | none in this repo: a one-line `bao read` verification, and the role is declared in declarative-config's `reconciler-config.yml` | Absence is deliberate — the role is GitOps-owned; there is no manifest or script to run |
+| Step 3 — populate | [`../../scripts/populate-openbao-job.yaml`](../../scripts/populate-openbao-job.yaml), [`../../scripts/populate-openbao-secrets.yaml`](../../scripts/populate-openbao-secrets.yaml) | **Predates the current layout — do not apply** (see the address reconciliation below); the reconciled equivalent is the Step 3 command pair under the `miroir-write` token |
+| Step 4 — ClusterSecretStore | declarative-config `k8s/ardenone-cluster/external-secrets/openbao-v2-cluster-secret-store.yml` (spec quoted in Step 4) | Current |
+| Step 5 — deploy / ExternalSecrets | declarative-config `k8s/ardenone-cluster/miroir/miroir-application.yml`, `miroir-externalsecret.yml`, `miroir-dev/miroir-dev-externalsecret.yml`; example [`../../k8s/examples/argocd-apps/external-secret.yaml`](../../k8s/examples/argocd-apps/external-secret.yaml) | Live objects current; the repo example predates the layout (Appendix A shape — see below) |
+| nodeMasterKey rotation | [`../runbooks/node-master-key-rotation.md`](../runbooks/node-master-key-rotation.md) | Current flow; `search`-namespace examples are the plan §9 default (also the `miroir-ctl` `--namespace` default) — pass `--namespace miroir` on ardenone-cluster |
+| masterKey (startup) rotation | [`../runbooks/startup-master-key-rotation.md`](../runbooks/startup-master-key-rotation.md) | Option B names the live keys doc; remaining examples carry the same §9 namespace defaults |
+| JWT rotation | `miroir-ctl ui rotate-jwt-secret` — implementation [`../../crates/miroir-ctl`](../../crates/miroir-ctl), usage notes [`../ctl/README.md`](../ctl/README.md) | Current |
+| Validation / leak response | read-only commands inline above; no artifact beyond the `miroir-ctl` binary and the read-only proxy | — |
+
+### Removed artifact: the token-generation Job
+
+`k8s/generate-miroir-openbao-token-job.yaml` **does not exist at HEAD**, and
+this section records its absence rather than linking it. It was a
+banned-shape Kubernetes Job manifest (this repository never creates new
+`kind: Job` manifests) that minted an operator token against the
+decommissioned v1 cell: plain-HTTP
+`BAO_ADDR=http://openbao-ardenone-cluster.openbao.svc.cluster.local:8200`,
+Kubernetes-auth role `openbao-ardenone-cluster`, and an inline
+`miroir-policy-write` policy on the dead `kv/data/search/miroir` paths. It
+was deleted on 2026-09-30 together with `scripts/generate-openbao-token.sh`
+and the stale `k8s/*.hcl` policy drafts;
+[`openbao-write-token.md`](openbao-write-token.md) records it among rejected
+issuance mechanisms. The reconciled equivalent is that runbook: declarative
+`miroir-write` policy plus AppRole in declarative-config, AppRole login, and
+a scoped periodic client token.
+
+### Address reconciliation: manifests vs live cell
+
+The two populate manifests (and the removed token Job) export
+`BAO_ADDR=http://openbao-ardenone-cluster.openbao.svc.cluster.local:8200` —
+plain HTTP against the `openbao` service of the decommissioned v1 cell. The
+live cell is
+`https://openbao-v2-ardenone-cluster-active.openbao-v2.svc.cluster.local:8200`
+with TLS (CA from Secret `openbao-v2-internal-tls`, ns `openbao-v2`). The
+mismatch is flagged here rather than patched into the manifests: they are
+banned `kind: Job` shapes, this repository never writes new ones, and nothing
+at HEAD applies them. Beyond the address they also:
+
+- log in with Kubernetes-auth role `eso` and a ServiceAccount token audience
+  `openbao` — the live role is `external-secrets-ardenone-cluster` with
+  audience `openbao-v2`, and neither is the credential a population run
+  should use anyway (that is the operator's `miroir-write` token);
+- write without the `-cas` version checks the live `secret` mount enforces;
+- write eight properties on creation — the three live inventory properties plus five
+  (`adminSessionSealKey`, `searchUiJwtSecret`, `searchUiJwtSecretPrevious`,
+  `searchUiSharedKey`, `redis-password`) that are not in the live keys docs.
+
+The reconciled equivalent of both manifests is the Step 3 procedure verbatim:
+`bao kv put -cas=0` for first creation, `bao kv patch -cas=<version>` for
+updates, run by an operator under the `miroir-write` token. The manifests are
+retained only as historical reference.
+
+The Step 5 example
+[`../../k8s/examples/argocd-apps/external-secret.yaml`](../../k8s/examples/argocd-apps/external-secret.yaml)
+carries the same flag for the same reason: it targets store `openbao-backend`
+with `kv/search/miroir` snake_case remote keys under
+`external-secrets.io/v1beta1` — the Appendix A shape for a sandbox install,
+matching the chart's `charts/miroir/examples/eso-external-secret.yaml`. The
+live ExternalSecrets are the declarative-config manifests named in Step 5,
+and the live store is `openbao-v2`.
 
 ## Security Notes
 

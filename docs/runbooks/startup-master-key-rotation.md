@@ -33,16 +33,18 @@ echo "New master key: $NEW_MASTER"
 **Option A — K8s Secret:**
 
 ```bash
+# MEILI_MASTER_KEY is sourced from the Secret's masterKey key
 kubectl -n search patch secret miroir-keys \
-  -p "{\"stringData\":{\"nodeMasterKey\":\"$NEW_MASTER\"}}"
+  -p "{\"stringData\":{\"masterKey\":\"$NEW_MASTER\"}}"
 ```
 
 **Option B — ExternalSecret / OpenBao (the live ardenone-cluster path):**
 
 On ardenone-cluster the Secret is ESO-managed — a hand patch (Option A) is
 reverted on the next sync — so update the external source: the OpenBao KV v2
-doc `secret/ardenone-cluster/miroir/keys`, property `nodeMasterKey` (dev
-twin: `secret/ardenone-cluster/miroir-dev/keys`). Write it with the miroir
+doc `secret/ardenone-cluster/miroir/keys`, property `masterKey` (the
+MEILI_MASTER_KEY source; dev twin:
+`secret/ardenone-cluster/miroir-dev/keys`). Write it with the miroir
 write token — see
 [Runbook: obtaining the miroir write token](../operations/openbao-write-token.md) —
 then wait for ESO to sync. (The old `kv/search/miroir` /
