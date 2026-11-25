@@ -39,7 +39,7 @@ use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use testcontainers::{runners::AsyncRunner, ContainerAsync};
 use testcontainers_modules::meilisearch::Meilisearch;
 use tokio::net::TcpStream;
@@ -63,7 +63,11 @@ const PROXY_METRICS_PORT: u16 = 9090;
 /// Serializes the whole suite: the proxy binary hard-binds its Prometheus
 /// metrics listener on port 9090 (`main.rs`), so at most one instance can run
 /// on this host. The guard lives inside `CacheFlowTestSetup`, so each test
-/// holds the slot from setup until teardown.
+/// holds the slot from setup until teardown — and past the proxy's death:
+/// the field order in `CacheFlowTestSetup` keeps the guard held while the
+/// spawned proxy is killed, reaped, and its ports confirmed free
+/// ([`quiesce_proxy`]), so the successor that acquires the slot next always
+/// finds the suite ports refusing connects instead of skipping.
 static PROXY_SLOT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// How long `wait_for_ready` waits for `/health` before giving up and
@@ -80,6 +84,26 @@ const LOG_TAIL_LINES: usize = 50;
 /// this is a safety net, not a wait: the guard exists to fail fast, and must
 /// not become its own long stall when a port state is merely weird.
 const PORT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long [`quiesce_proxy_with`] waits for the killed child's exit status
+/// before giving up on reaping it. Normally sub-millisecond (SIGKILL + reap
+/// beats the first poll); the bound only caps a wedged teardown, because the
+/// port check below — not the reap — is what gates the successor test.
+const EXIT_REAP_WAIT: Duration = Duration::from_secs(5);
+
+/// How long [`quiesce_proxy_with`] waits for both suite ports to refuse
+/// connects before reporting them as still held. On the normal path the
+/// first probe already passes (the reaped child's sockets are closed), so
+/// like [`PORT_PROBE_TIMEOUT`] this bounds a weird state, not the expected
+/// one.
+const PORT_RELEASE_WAIT: Duration = Duration::from_secs(2);
+
+/// Bound on one blocking port probe inside [`quiesce_proxy_with`]. Deliberately
+/// far under [`PORT_PROBE_TIMEOUT`]: this probe runs synchronously on the test
+/// thread during teardown (no `.await` available in `Drop`), where a long
+/// stall would hold the suite's [`PROXY_SLOT`] against the very successor this
+/// teardown exists to unblock.
+const BLOCKING_PORT_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Check if Docker is available for testcontainers.
 ///
@@ -216,8 +240,10 @@ async fn loopback_port_has_listener(addr: SocketAddr) -> bool {
 /// A proxy process spawned from the compiled `miroir-proxy` binary. The
 /// config file is resolved from the process CWD (`MiroirConfig::load` scans
 /// search paths relative to it), so the child runs inside its own temp dir
-/// with a generated `miroir.yaml`. `kill_on_drop` tears the process down and
-/// `TempDir` removes the config dir when the setup is dropped.
+/// with a generated `miroir.yaml`. `kill_on_drop` only *queues* the SIGKILL;
+/// the `Drop` impl below does the real teardown — kill, reap, and confirm
+/// the suite ports refuse connects — and `TempDir` removes the config dir
+/// when the setup is dropped.
 struct SpawnedProxy {
     /// Mutexed because polling the exit status (`try_wait`) needs `&mut`,
     /// while `wait_for_ready` only holds `&self`. stdio is never piped — the
@@ -309,6 +335,130 @@ impl SpawnedProxy {
     }
 }
 
+impl Drop for SpawnedProxy {
+    /// Deterministic teardown: kill the child, reap it, and confirm both
+    /// suite ports refuse connects ([`quiesce_proxy`]) before the caller's
+    /// fields continue dropping. When this drop runs from
+    /// [`CacheFlowTestSetup`], the field-order contract on that struct
+    /// guarantees [`PROXY_SLOT`] is still held — the successor that acquires
+    /// the slot next therefore always finds the ports free.
+    ///
+    /// Never panics: a teardown that cannot confirm port release prints its
+    /// diagnostic and lets [`ensure_suite_ports_free`] — the successor's own
+    /// preflight — be the tripwire. Panicking from `drop` during a test's
+    /// own unwind would abort the whole process and mask the real failure.
+    /// Diagnostics go to stderr, which libtest only surfaces on failure or
+    /// `--nocapture` — the right audience for a note about a path the
+    /// preflight will independently catch.
+    fn drop(&mut self) {
+        let report = quiesce_proxy(self._child.get_mut());
+        if !report.is_empty() {
+            eprintln!("p13_13 proxy teardown: {report}");
+        }
+    }
+}
+
+/// Tear the spawned proxy down *deterministically* with a blocking (non-`Drop`-
+/// compatible) probe set: kill the child, wait for the OS to reap it, then
+/// confirm both suite ports refuse connects — all bounded.
+///
+/// `Child`'s `kill_on_drop` only *sends* SIGKILL; it never waits for the
+/// exit, and the sockets a killed process holds are released when the kernel
+/// tears the process down, not when the signal is queued. A successor test
+/// that acquired [`PROXY_SLOT`] inside that window ran its port preflight
+/// against the dying predecessor's listeners, connected successfully, and
+/// skipped — the skip-storm this file used to emit (8–9 of 10 acceptance
+/// tests skipped per invocation, because the preflight beat the proxy kill
+/// every time). Waiting for the exit status closes the race: a reaped
+/// child's ports are genuinely free, and the port loop then verifies exactly
+/// the observable the successor's [`ensure_suite_ports_free`] will re-probe.
+///
+/// Returns "" when teardown confirmed both ports free, else a diagnostic
+/// naming the ports that stayed held and whether the reap completed. The
+/// parameterized shape follows the file's `_with` convention: the port probe
+/// and both waits are injected so the decision logic is unit-testable
+/// without spawning the real proxy or touching the suite's fixed ports.
+fn quiesce_proxy_with(
+    child: &mut Child,
+    mut port_held: impl FnMut(u16) -> bool,
+    exit_wait: Duration,
+    port_wait: Duration,
+) -> String {
+    // Kill first. Idempotent by design: an already-exited child — including
+    // one a prior quiesce already reaped — just errors here, which is the
+    // outcome this call wanted anyway.
+    let _ = child.start_kill();
+
+    // Wait for the exit status. SIGKILL delivery and socket release are not
+    // the same event: `try_wait` returning `Some` is the parent-visible
+    // proof that the kernel finished tearing the process down (and with it
+    // the listeners on 9090/17770).
+    let reap_deadline = Instant::now() + exit_wait;
+    let mut reaped = false;
+    while Instant::now() < reap_deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                reaped = true;
+                break;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(2)),
+            // No driver to poll through (e.g. a drop during runtime
+            // teardown): the port loop below still gates on the observable
+            // the successor actually tests.
+            Err(_) => break,
+        }
+    }
+
+    // Confirm the ports actually refuse connects, bounded. On the normal
+    // path the first probe already passes; the loop exists so a wedged
+    // teardown is reported rather than silently passed.
+    let port_deadline = Instant::now() + port_wait;
+    let held = loop {
+        let held: Vec<u16> = [PROXY_METRICS_PORT, PROXY_PORT]
+            .into_iter()
+            .filter(|port| port_held(*port))
+            .collect();
+        if held.is_empty() || Instant::now() >= port_deadline {
+            break held;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    if held.is_empty() {
+        return String::new();
+    }
+    let held_list = held
+        .iter()
+        .map(|port| port.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "proxy teardown did not release the suite ports within {port_wait:?}: still \
+         held: {held_list}; reap observed: {reaped} (exit wait {exit_wait:?}). Find \
+         the holder with `ss -ltnp | grep -E '17770|9090'`."
+    )
+}
+
+/// The live variant of [`quiesce_proxy_with`]: real blocking connect probes
+/// against the suite's two fixed loopback ports, with the module's standard
+/// teardown bounds. Runs synchronously from [`SpawnedProxy`]'s `Drop` — no
+/// `.await` is available there, hence [`BLOCKING_PORT_PROBE_TIMEOUT`] rather
+/// than the async [`PORT_PROBE_TIMEOUT`].
+fn quiesce_proxy(child: &mut Child) -> String {
+    quiesce_proxy_with(
+        child,
+        |port| {
+            std::net::TcpStream::connect_timeout(
+                &SocketAddr::from(([127, 0, 0, 1], port)),
+                BLOCKING_PORT_PROBE_TIMEOUT,
+            )
+            .is_ok()
+        },
+        EXIT_REAP_WAIT,
+        PORT_RELEASE_WAIT,
+    )
+}
+
 /// Render the proxy's `miroir.yaml`. Only overrides of `MiroirConfig`
 /// defaults are written; every other field keeps its serde default
 /// (`replica_groups` 1, sqlite task store, result cache `enabled` +
@@ -366,15 +516,30 @@ fn proxy_config_yaml(node_urls: &[String], task_db_path: &Path) -> String {
 }
 
 /// Test configuration helper.
+///
+/// The field order below is the teardown contract, not a style choice: Rust
+/// drops fields in declaration order, and `_proxy` must die — killed, reaped,
+/// its ports confirmed free — before `_proxy_slot` releases. This struct
+/// originally declared `_proxy_slot` first and `_proxy` last, so the slot
+/// released while the dying predecessor still listened on 9090/17770, and
+/// the immediate successor's [`ensure_suite_ports_free`] bail surfaced as a
+/// spurious port-precondition skip: 8–9 of the 10 acceptance tests skipped
+/// per invocation, because the preflight beat the proxy kill every time.
 struct CacheFlowTestSetup {
-    /// Holds `PROXY_SLOT` for the whole test body (see its docs).
-    _proxy_slot: MutexGuard<'static, ()>,
+    /// The proxy under test. Declared FIRST so its drop — [`SpawnedProxy`]'s
+    /// `Drop` impl, which kills, reaps, and confirms the ports free via
+    /// [`quiesce_proxy`] — runs while the slot guard below is still held.
+    _proxy: SpawnedProxy,
     /// Container handles must be retained for the whole test: dropping a
     /// `ContainerAsync` removes the container, which would tear the nodes
-    /// down before any request is made.
+    /// down before any request is made. Dropped after the proxy (which no
+    /// longer needs the nodes) and before the slot, per the field-order
+    /// contract on this struct.
     _containers: Vec<ContainerAsync<Meilisearch>>,
-    /// The proxy under test; killed and cleaned up on drop.
-    _proxy: SpawnedProxy,
+    /// Holds `PROXY_SLOT` for the whole test body (see its docs) and past
+    /// the proxy's death: declared LAST so field drop order cannot release
+    /// the slot while the predecessor still holds the suite's fixed ports.
+    _proxy_slot: MutexGuard<'static, ()>,
     meilisearch_urls: Vec<String>,
     proxy_url: String,
     master_key: String,
@@ -428,9 +593,9 @@ impl CacheFlowTestSetup {
         let proxy = SpawnedProxy::spawn(&meilisearch_urls).await?;
 
         Ok(Self {
-            _proxy_slot: proxy_slot,
-            _containers: containers,
             _proxy: proxy,
+            _containers: containers,
+            _proxy_slot: proxy_slot,
             meilisearch_urls,
             proxy_url: format!("http://127.0.0.1:{PROXY_PORT}"),
             master_key: PROXY_MASTER_KEY.to_string(),
@@ -1998,5 +2163,116 @@ async fn port_probe_reads_live_listener_and_refused_ports() {
     assert!(
         !loopback_port_has_listener(addr).await,
         "a port with no listener must probe as free (connect refused)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Teardown quiesce
+// ---------------------------------------------------------------------------
+
+/// Pins [`quiesce_proxy_with`]'s success path on a real child process: a
+/// killed `sleep` must end up *reaped* — its exit status observable, not
+/// merely signaled — and a port probe that already reports both ports free
+/// must pass through untouched. This is the sequencing the skip-storm fix
+/// leans on: `kill_on_drop` queues a SIGKILL and returns immediately, so the
+/// guarantee the successor test depends on (suite ports free before the slot
+/// releases) exists only if the drop actually waits. The port probe is a
+/// closure standing in for the live loopback connect, keeping this
+/// independent of host port state and of a concurrently live p13_13 run —
+/// the same stand-in rule as the preflight decision-table test above.
+#[tokio::test]
+async fn quiesce_reaps_a_killed_child_and_passes_free_ports() {
+    let mut child = Command::new("sleep")
+        .arg("30")
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn sleep for the reap test");
+
+    let report = quiesce_proxy_with(
+        &mut child,
+        |_| false,
+        Duration::from_millis(500),
+        Duration::from_millis(100),
+    );
+
+    assert!(
+        report.is_empty(),
+        "a killed child with free ports must quiesce cleanly, got: {report}"
+    );
+    let status = child
+        .try_wait()
+        .expect("poll the child after quiesce")
+        .expect("quiesce must leave the child reaped, not merely signaled");
+    assert!(
+        !status.success(),
+        "a SIGKILLed sleep must not produce a clean exit status"
+    );
+}
+
+/// Pins the held-port diagnostic: when the port probe keeps reporting a
+/// listener past the injected [`PORT_RELEASE_WAIT`] stand-in, quiesce must
+/// say so — naming exactly the ports held — instead of reporting success.
+/// This is the reporting half of the contract: if a successor-side skip ever
+/// reappears despite the drop-order fix, its cause should surface as this
+/// diagnostic on stderr at teardown, not as an inexplicable skip with no
+/// holder named.
+#[tokio::test]
+async fn quiesce_reports_ports_that_stay_held() {
+    let mut child = Command::new("sleep")
+        .arg("30")
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn sleep for the held-port test");
+
+    let report = quiesce_proxy_with(
+        &mut child,
+        |port| port == PROXY_PORT,
+        Duration::from_millis(500),
+        Duration::from_millis(100),
+    );
+
+    assert!(
+        report.contains("still held: 17770"),
+        "a port that stays held must be named in the diagnostic, got: {report}"
+    );
+    assert!(
+        !report.contains("still held: 9090"),
+        "a port the probe reports free must not be named as held, got: {report}"
+    );
+}
+
+/// Pins quiesce's idempotence on a real child: [`SpawnedProxy`]'s `Drop`
+/// quiesces first, and the field dropglue may run teardown paths again after
+/// it, so a second call against an already-reaped child must tolerate the
+/// state — `start_kill` errors swallowed, the reap check finding the cached
+/// exit status — and still report success.
+#[tokio::test]
+async fn quiesce_tolerates_an_already_reaped_child() {
+    let mut child = Command::new("sleep")
+        .arg("30")
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn sleep for the idempotence test");
+    let first = quiesce_proxy_with(
+        &mut child,
+        |_| false,
+        Duration::from_millis(500),
+        Duration::from_millis(100),
+    );
+    assert!(
+        first.is_empty(),
+        "the first quiesce must succeed before the idempotence check, got: {first}"
+    );
+
+    let second = quiesce_proxy_with(
+        &mut child,
+        |_| false,
+        Duration::from_millis(500),
+        Duration::from_millis(100),
+    );
+
+    assert!(
+        second.is_empty(),
+        "quiescing an already-reaped child must stay clean, got: {second}"
     );
 }
