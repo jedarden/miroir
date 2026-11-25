@@ -301,6 +301,87 @@ fn fingerprint_settings(settings: &Value) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Poll interval while waiting for a node's settings task to reach a
+/// terminal state ([`await_settings_task`]). Small enough that the wait adds
+/// at most one interval of latency to a broadcast on the healthy path
+/// (Meilisearch applies settings tasks in single-digit milliseconds on an
+/// idle node), coarse enough not to hammer `/tasks/{uid}`.
+const TASK_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+/// Wait until one node's settings task reaches a terminal state.
+///
+/// Meilisearch applies settings asynchronously: a settings PATCH answers 202
+/// with a `taskUid`, and the setting takes effect when that task reaches
+/// `succeeded`. Verifying a broadcast before its tasks land reads the
+/// PRE-patch settings on whichever node is still processing, so a healthy
+/// broadcast can look diverged and burn the repair-retry budget (each retry
+/// sleeps ≥1 s, and exhausting the budget freezes writes on the index —
+/// exactly the failure this two-phase design exists to avoid).
+///
+/// Poll failures (transport errors, 5xx, unparsable bodies) are retried
+/// rather than fatal: Meilisearch tasks are durable server-side, so a read
+/// glitch must not fail a broadcast whose task is fine. `failed`/`canceled`
+/// tasks are fatal immediately — no retry can make Meilisearch apply a task
+/// it rejected. The `deadline` bounds the whole wait; the caller sizes it
+/// from `settings_broadcast.verify_timeout_s`.
+///
+/// `Err` carries the Miroir code to answer with plus the abort message.
+async fn await_settings_task(
+    client: &MeilisearchClient,
+    address: &str,
+    task_uid: u64,
+    deadline: tokio::time::Instant,
+) -> Result<(), (MiroirCode, String)> {
+    let task_path = format!("/tasks/{task_uid}");
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err((
+                MiroirCode::Timeout,
+                format!(
+                    "settings task {task_uid} on {address} did not reach a terminal state \
+                     before the verify deadline"
+                ),
+            ));
+        }
+
+        match client.get_raw(address, &task_path).await {
+            Ok((status, text)) if (200..300).contains(&status) => {
+                let task: Value = match serde_json::from_str(&text) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        tokio::time::sleep(TASK_POLL_INTERVAL).await;
+                        continue;
+                    }
+                };
+                match task
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("enqueued")
+                {
+                    "succeeded" => return Ok(()),
+                    task_status @ ("failed" | "canceled") => {
+                        let detail = task
+                            .get("error")
+                            .and_then(|v| v.get("message"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("no error detail");
+                        return Err((
+                            MiroirCode::NoQuorum,
+                            format!(
+                                "settings task {task_uid} on {address} ended '{task_status}': {detail}"
+                            ),
+                        ));
+                    }
+                    // enqueued / processing: keep polling.
+                    _ => tokio::time::sleep(TASK_POLL_INTERVAL).await,
+                }
+            }
+            // Transient poll failure: keep polling until the deadline.
+            _ => tokio::time::sleep(TASK_POLL_INTERVAL).await,
+        }
+    }
+}
+
 pub fn router<S>() -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -861,8 +942,68 @@ async fn two_phase_settings_broadcast(
         ));
     }
 
-    // Compute expected fingerprint of proposed settings
-    let expected_fingerprint = fingerprint_settings(body);
+    if nodes.is_empty() {
+        return Err(MeilisearchError::new(
+            MiroirCode::NoQuorum,
+            format!("no nodes configured for a settings broadcast on index '{index}'"),
+        ));
+    }
+
+    // Compute the fingerprint the nodes' settings must converge to.
+    //
+    // For the top-level route the PATCH body is PARTIAL — Meilisearch merges
+    // it onto the existing settings — while Phase 2 below GETs the settings
+    // document from each node and fingerprints THAT. Hashing the raw body
+    // here made the expected fingerprint the hash of a different document
+    // than the one the verify reads, so every top-level broadcast failed
+    // Phase 2 three times and froze the index with `miroir_no_quorum` — on a
+    // healthy, homogeneous cluster. Read the pre-patch settings from the
+    // first node, merge the body on top (Meilisearch's PATCH semantics: each
+    // top-level key replaces that whole setting), and fingerprint the merged
+    // document. A subpath route reads and writes the same single value on
+    // both sides, so the body itself is the expected document there.
+    let expected_fingerprint = if settings_path == "/settings" {
+        match client.get_raw(&nodes[0], &full_path).await {
+            Ok((status, text)) if (200..300).contains(&status) => {
+                let pre_settings: Value = match serde_json::from_str(&text) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        state.metrics.clear_settings_broadcast_phase(index);
+                        return Err(MeilisearchError::new(
+                            MiroirCode::NoQuorum,
+                            format!("settings pre-read unparsable from {}: {e}", nodes[0]),
+                        ));
+                    }
+                };
+                let mut merged = pre_settings.as_object().cloned().unwrap_or_default();
+                if let Some(body_obj) = body.as_object() {
+                    for (key, value) in body_obj {
+                        merged.insert(key.clone(), value.clone());
+                    }
+                }
+                fingerprint_settings(&Value::Object(merged))
+            }
+            Ok((status, text)) => {
+                state.metrics.clear_settings_broadcast_phase(index);
+                return Err(MeilisearchError::new(
+                    MiroirCode::NoQuorum,
+                    format!(
+                        "settings pre-read failed from {}: HTTP {status} — {text}",
+                        nodes[0]
+                    ),
+                ));
+            }
+            Err(e) => {
+                state.metrics.clear_settings_broadcast_phase(index);
+                return Err(MeilisearchError::new(
+                    MiroirCode::NoQuorum,
+                    format!("settings pre-read failed from {}: {e}", nodes[0]),
+                ));
+            }
+        }
+    } else {
+        fingerprint_settings(body)
+    };
 
     // Set phase to Propose (1)
     state.metrics.set_settings_broadcast_phase(index, 1);
@@ -914,6 +1055,26 @@ async fn two_phase_settings_broadcast(
         .start_propose(index.to_string(), body)
         .await
         .map_err(convert_miroir_error)?;
+
+    // Phase 1.5: wait for every node's settings task to land. Placed after
+    // start_propose so every error path here can abort, and before the
+    // verify phase so the first verification GET reads post-patch settings
+    // on every node (see await_settings_task for why the wait is required).
+    let await_deadline = tokio::time::Instant::now()
+        + Duration::from_secs(config.settings_broadcast.verify_timeout_s);
+    for (address, task_uid) in &node_task_uids {
+        if let Err((code, message)) =
+            await_settings_task(&client, address, *task_uid, await_deadline).await
+        {
+            state
+                .settings_broadcast
+                .abort(index, message.clone())
+                .await
+                .ok();
+            state.metrics.clear_settings_broadcast_phase(index);
+            return Err(MeilisearchError::new(code, message));
+        }
+    }
 
     // Set phase to Verify (2)
     state.metrics.set_settings_broadcast_phase(index, 2);
@@ -1057,13 +1218,42 @@ async fn two_phase_settings_broadcast(
                 let mut repair_errors: Vec<String> = Vec::new();
                 for address in &mismatched_nodes {
                     match client.patch_raw(address, &full_path, body).await {
-                        Ok((status, _text)) if (200..300).contains(&status) => {
+                        Ok((status, text)) if (200..300).contains(&status) => {
                             tracing::info!(
                                 node = %address,
                                 index = %index,
                                 retry = retry_count,
                                 "successfully reissued settings PATCH"
                             );
+                            // The reissued PATCH is async like the original
+                            // ones: wait its task out before the re-verify
+                            // below, or the re-read lands in the same
+                            // pre-patch window this repair is trying to
+                            // leave. A response without a taskUid cannot be
+                            // awaited — the re-verify still gates it.
+                            let repair_deadline = tokio::time::Instant::now()
+                                + Duration::from_secs(config.settings_broadcast.verify_timeout_s);
+                            if let Ok(resp) = serde_json::from_str::<Value>(&text) {
+                                if let Some(task_uid) = resp.get("taskUid").and_then(|v| v.as_u64())
+                                {
+                                    if let Err((code, message)) = await_settings_task(
+                                        &client,
+                                        address,
+                                        task_uid,
+                                        repair_deadline,
+                                    )
+                                    .await
+                                    {
+                                        state
+                                            .settings_broadcast
+                                            .abort(index, message.clone())
+                                            .await
+                                            .ok();
+                                        state.metrics.clear_settings_broadcast_phase(index);
+                                        return Err(MeilisearchError::new(code, message));
+                                    }
+                                }
+                            }
                         }
                         Ok((status, text)) => {
                             repair_errors.push(format!("{address}: HTTP {status} — {text}"));
