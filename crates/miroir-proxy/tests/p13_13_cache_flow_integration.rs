@@ -2184,28 +2184,42 @@ fn port_preflight_decides_on_probe_outcomes_not_live_ports() {
 /// independent of host state and of a concurrently live p13_13 run. The
 /// refused case reuses the listener's own just-released port: a listener
 /// that never accepted a connection leaves no TIME_WAIT remnants, so the
-/// connect is refused deterministically — which is also the property that
-/// makes a connect probe the right shape here and a bind probe the wrong
-/// one.
+/// connect is refused — which is also the property that makes a connect
+/// probe the right shape here and a bind probe the wrong one.
+///
+/// The refusal sample tolerates ephemeral-port churn: in the full-target
+/// run the sibling harness tests bind ephemeral listeners in parallel, and
+/// the kernel can re-hand the just-released port to one of them inside the
+/// drop-to-probe window, so a single drop-then-probe sample can race. On a
+/// "taken" reading after our own drop, the port is re-drawn from the
+/// ephemeral pool and the sample repeated; the assert only fires when the
+/// probe never reads a released port as free.
 #[tokio::test]
 async fn port_probe_reads_live_listener_and_refused_ports() {
     // A live listener must read as taken: the handshake completes even
     // though nothing ever accepts.
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("bind an ephemeral listener for the taken case");
-    let addr = listener.local_addr().expect("listener address");
+    let mut addr = listener.local_addr().expect("listener address");
     assert!(
         loopback_port_has_listener(addr).await,
         "a port with an accepting listener must probe as taken"
     );
 
     // The same port with the listener dropped must read as free: the
-    // connect is refused.
+    // connect is refused. Retry on fresh ephemeral ports when a parallel
+    // binder re-claimed the released one before the probe.
     drop(listener);
-    assert!(
-        !loopback_port_has_listener(addr).await,
-        "a port with no listener must probe as free (connect refused)"
-    );
+    for _ in 0..8 {
+        if !loopback_port_has_listener(addr).await {
+            return;
+        }
+        let rebound = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind a replacement ephemeral listener");
+        addr = rebound.local_addr().expect("replacement listener address");
+        drop(rebound);
+    }
+    panic!("a port with no listener must probe as free (connect refused)");
 }
 
 // ---------------------------------------------------------------------------
