@@ -1641,10 +1641,24 @@ async fn acceptance_7_cache_ttl_expiration() {
     assert!(resp2.status().is_success());
     let result2: Value = resp2.json().await.unwrap();
 
-    // Results should match. On its own this cannot detect an entry that
-    // outlived its TTL — both paths return the same rows — the deltas below
-    // do.
-    assert_eq!(result1, result2);
+    // Results should agree on the served rows. The compare is scoped to the
+    // response's content — hits and estimatedTotalHits — deliberately not
+    // the whole body: both queries here are live scatter-gather executions
+    // (the miss delta below requires the expired entry to re-execute), and
+    // processingTimeMs is per-request wall clock, so two independent
+    // executions legitimately disagree on it (0 ms vs 1 ms flipped
+    // acceptance_8's equivalent whole-body compare — see miroir-9d786ffe).
+    // Row identity across the TTL boundary is what this acceptance owns;
+    // per-request timing telemetry is not. On its own the compare still
+    // cannot detect an entry that outlived its TTL — the deltas below do.
+    assert_eq!(
+        result1["hits"], result2["hits"],
+        "the post-TTL repeat returned different rows than the original response"
+    );
+    assert_eq!(
+        result1["estimatedTotalHits"], result2["estimatedTotalHits"],
+        "the post-TTL repeat returned a different hit estimate than the original response"
+    );
 
     // The repeat must miss again: query 1 is the cold miss, and the repeat
     // looks up an entry written before the 600 ms sleep — past the
