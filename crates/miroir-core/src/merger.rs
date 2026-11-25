@@ -10,6 +10,32 @@ use serde_json::{Map, Value};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+/// Render a hit's primary-key value as the string used for cross-shard
+/// deduplication and tie-breaking.
+///
+/// Meilisearch primary keys are not restricted to strings — integer ids are
+/// common, and this workspace's own live integration fixtures use them — but
+/// the extraction sites used to call `as_str()` directly, which returns
+/// `None` for numbers, so every numeric-id document deduplicated onto the
+/// same empty key and all but the first page's hit were dropped as
+/// duplicates (the p13_13 acceptance_3 red: a 3-node one-book-per-node
+/// fixture merged to a single row). Stringify whatever scalar type carries
+/// the id instead. A single index cannot mix primary-key types, so within
+/// one merge input the rendered keys are collision-free; composite
+/// (object/array) ids have no scalar form and keep the historical `""`
+/// fallback.
+fn primary_key_string(map: &Map<String, Value>) -> String {
+    map.get("id")
+        .or_else(|| map.get("pk"))
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            _ => String::new(),
+        })
+        .unwrap_or_default()
+}
+
 /// Input to the merge operation.
 #[derive(Debug, Clone)]
 pub struct MergeInput {
@@ -268,12 +294,7 @@ fn rrf_merge(k: &u32, input: MergeInput) -> Result<MergedSearchResult> {
                     let map = map.clone();
 
                     // Extract primary key for deduplication.
-                    let primary_key = map
-                        .get("id")
-                        .or_else(|| map.get("pk"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                    let primary_key = primary_key_string(&map);
 
                     // RRF contribution: 1 / (k + rank + 1)
                     // rank is 0-based, so +1 converts to 1-based position.
@@ -420,12 +441,7 @@ fn score_merge(input: MergeInput) -> Result<MergedSearchResult> {
         if let Some(Value::Array(hits)) = body.get("hits") {
             for hit in hits {
                 if let Value::Object(map) = hit {
-                    let pk = map
-                        .get("id")
-                        .or_else(|| map.get("pk"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                    let pk = primary_key_string(map);
                     if seen_pks.insert(pk) {
                         all_hits.push(map.clone());
                     }
@@ -446,22 +462,14 @@ fn score_merge(input: MergeInput) -> Result<MergedSearchResult> {
             .unwrap_or(0.0);
 
         // Extract primary keys for tie-breaking.
-        let pk_a = a
-            .get("id")
-            .or_else(|| a.get("pk"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let pk_b = b
-            .get("id")
-            .or_else(|| b.get("pk"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let pk_a = primary_key_string(a);
+        let pk_b = primary_key_string(b);
 
         // Primary sort: score descending (higher score = better rank)
         match score_a.partial_cmp(&score_b) {
             Some(Ordering::Equal) => {
                 // Secondary sort: primary key ascending for deterministic tie-breaking
-                pk_a.cmp(pk_b)
+                pk_a.cmp(&pk_b)
             }
             Some(ord) => ord.reverse(),
             None => {
@@ -573,12 +581,7 @@ fn vector_merge(merger: &VectorMerger, input: &MergeInput) -> Result<MergedSearc
         if let Some(Value::Array(hits)) = body.get("hits") {
             for hit in hits {
                 if let Value::Object(map) = hit {
-                    let pk = map
-                        .get("id")
-                        .or_else(|| map.get("pk"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                    let pk = primary_key_string(map);
 
                     let ranking_score = map
                         .get("_rankingScore")
@@ -874,6 +877,78 @@ mod tests {
                 "facetDistribution": {},
             }),
         }
+    }
+
+    #[test]
+    fn test_score_merge_dedupes_numeric_ids_across_shards() {
+        // The p13_13 acceptance_3 red: numeric primary keys used to extract
+        // as `""`, so every document collapsed onto one dedupe key and all
+        // but the first page's hit was dropped as a "duplicate". The page
+        // list below mirrors the scatter shape that made this visible:
+        // execute_scatter pushes a node's body once per shard it owns, so a
+        // two-shard node's page appears twice, and the books live one per
+        // node across three nodes.
+        let node_a = make_shard_response(
+            vec![
+                json!({"id": 1, "title": "Rust Programming"}),
+                json!({"id": 2, "title": "The Rust Language"}),
+            ],
+            2,
+            3,
+        );
+        let node_b = make_shard_response(vec![json!({"id": 3, "title": "Rust in Action"})], 1, 4);
+        let input = MergeInput {
+            shard_hits: vec![node_a.clone(), node_a, node_b.clone(), node_b],
+            offset: 0,
+            limit: 20,
+            client_requested_score: false,
+            facets: None,
+            failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
+        };
+
+        let result = ScoreMergeStrategy.merge(input).unwrap();
+
+        let ids: Vec<i64> = result
+            .hits
+            .iter()
+            .map(|h| h["id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(ids, vec![1, 2, 3], "each node's row must survive the merge");
+    }
+
+    #[test]
+    fn test_rrf_merge_dedupes_numeric_ids_across_shards() {
+        // Same numeric-key collapse on the RRF path: duplicated pages (one
+        // per owned shard) must collapse onto one entry per document, while
+        // distinct numeric ids stay distinct documents.
+        let node_a = make_shard_response(vec![json!({"id": 1, "title": "Rust Programming"})], 1, 2);
+        let node_b = make_shard_response(vec![json!({"id": 2, "title": "Rust in Action"})], 1, 2);
+        let input = MergeInput {
+            shard_hits: vec![node_a.clone(), node_a, node_b.clone(), node_b],
+            offset: 0,
+            limit: 20,
+            client_requested_score: false,
+            facets: None,
+            failed_shards: Vec::new(),
+            vector_mode: VectorMode::KeywordOnly,
+            vector_config: None,
+        };
+
+        let result = merge(input).unwrap();
+
+        let ids: Vec<i64> = result
+            .hits
+            .iter()
+            .map(|h| h["id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            ids.len(),
+            2,
+            "duplicate shard pages must not duplicate hits"
+        );
+        assert!(ids.contains(&1) && ids.contains(&2));
     }
 
     #[test]
