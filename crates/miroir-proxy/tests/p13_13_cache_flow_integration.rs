@@ -1744,10 +1744,27 @@ async fn acceptance_8_concurrent_cache_access() {
         results.push(result);
     }
 
-    // All results should be identical
+    // All results should agree on the served rows. The compare is scoped to
+    // the response's content — hits and estimatedTotalHits — deliberately
+    // not the whole body: processingTimeMs is per-request wall clock, and
+    // coalescing is best-effort, so a concurrent duplicate is not guaranteed
+    // to share one execution. try_coalesce (routes/search.rs) and register
+    // are separate steps, and the coalescer prunes pending entries older
+    // than window_ms even while their leader is still scattering
+    // (idempotency.rs prune_stale_locked), so a duplicate can become a
+    // second leader and legitimately re-execute the query (0 ms vs 1 ms
+    // observed at suite level). Row identity under the race is what this
+    // acceptance owns; per-request timing telemetry is not.
     let first_result = &results[0];
-    for result in &results[1..] {
-        assert_eq!(first_result, result);
+    for (i, result) in results[1..].iter().enumerate() {
+        assert_eq!(
+            first_result["hits"], result["hits"],
+            "concurrent query {i} returned different rows than the first response"
+        );
+        assert_eq!(
+            first_result["estimatedTotalHits"], result["estimatedTotalHits"],
+            "concurrent query {i} returned a different hit estimate than the first response"
+        );
     }
 
     // Content pin the equality loop cannot imply: if every concurrent
