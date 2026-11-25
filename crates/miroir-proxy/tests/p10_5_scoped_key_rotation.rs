@@ -99,19 +99,33 @@ async fn redis_store(
     let url = match maybe_url {
         Some(url) => url,
         None => {
-            use testcontainers::runners::AsyncRunner;
-            use testcontainers_modules::redis::Redis;
+            // Honor the repo-wide docker-skip / external-redis convention
+            // (see `check_docker_or_redis_url`). Without this guard the
+            // testcontainers session starts unconditionally and can wedge
+            // indefinitely on hosts where the Docker socket exists but the
+            // ryuk handshake stalls, hanging `cargo test --workspace`.
+            if std::env::var("MIROIR_TEST_SKIP_DOCKER").is_ok() {
+                return Err("Docker tests skipped via MIROIR_TEST_SKIP_DOCKER. \
+                     Set MIROIR_TEST_REDIS_URL=redis://localhost:6379 to test against external Redis."
+                    .into());
+            }
+            if let Ok(url) = std::env::var("MIROIR_TEST_REDIS_URL") {
+                url
+            } else {
+                use testcontainers::runners::AsyncRunner;
+                use testcontainers_modules::redis::Redis;
 
-            let node = Redis::default();
-            let container = node
-                .start()
-                .await
-                .map_err(|e| format!("start redis: {e}"))?;
-            let port = container
-                .get_host_port_ipv4(6379)
-                .await
-                .map_err(|e| format!("get port: {e}"))?;
-            format!("redis://localhost:{port}")
+                let node = Redis::default();
+                let container = node
+                    .start()
+                    .await
+                    .map_err(|e| format!("start redis: {e}"))?;
+                let port = container
+                    .get_host_port_ipv4(6379)
+                    .await
+                    .map_err(|e| format!("get port: {e}"))?;
+                format!("redis://localhost:{port}")
+            }
         }
     };
     Ok(RedisTaskStore::open(&url)
