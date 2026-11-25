@@ -463,10 +463,20 @@ fn quiesce_proxy(child: &mut Child) -> String {
 /// defaults are written; every other field keeps its serde default
 /// (`replica_groups` 1, sqlite task store, result cache `enabled` +
 /// `max_size`). The exception is `result_cache.ttl_ms`, written at the
-/// default 500 anyway: a pin, not an override — the expiry and hit-timing
-/// asserts below (acceptance_7's 600 ms sleep, every "well inside the
-/// TTL" repeat) are calibrated to it, so it must not start tracking
-/// future default drift.
+/// validator ceiling 2000 rather than the serde default 500 — still a pin,
+/// not an override: the expiry and hit-timing asserts below (acceptance_7's
+/// 2500 ms sleep, every "well inside the TTL" repeat) are calibrated to it,
+/// so it must not start tracking future default drift. The value itself is
+/// sized for the suite's own wall-clock budget: at the 500 default the
+/// repeat deltas had a ~500 ms window, and a cgroup-limited host
+/// (CPUQuota=200% shared by the harness, the proxy, and three containers)
+/// once stalled past it, reading acceptance_5's +4 hit delta as 3
+/// (miroir-6a864f33). 2000 is the largest value
+/// `MiroirConfig::validate` accepts (250..=2000, config/validate.rs), so
+/// the pin buys the 4× stall headroom that is expressible without
+/// rejecting the config, while acceptance_7's expiry sleep stays
+/// stall-safe: it is measured from the insert, and a stall can only push
+/// the repeat further past the TTL.
 ///
 /// Topology note: `MiroirConfig::validate` requires a redis task store (plus
 /// leader election) once `replication_factor > 1` or `replica_groups > 1`,
@@ -508,7 +518,7 @@ fn proxy_config_yaml(node_urls: &[String], task_db_path: &Path) -> String {
          server:\n  bind: 127.0.0.1\n  port: {PROXY_PORT}\n\
          health:\n  interval_ms: 200\n  timeout_ms: 1000\n\
          task_store:\n  path: {}\n\
-         result_cache:\n  ttl_ms: 500\n\
+         result_cache:\n  ttl_ms: 2000\n\
          cdc:\n  buffer:\n    overflow: drop\n\
          search_ui:\n  enabled: false\n",
         task_db_path.display(),
@@ -895,7 +905,7 @@ async fn acceptance_1_cache_hit_bypasses_fan_out() {
     assert_eq!(result1, result2);
 
     // The repeat query must be recorded as a hit, not folded into a fresh
-    // miss. The 500 ms ttl_ms in the generated config is load-bearing: the
+    // miss. The pinned ttl_ms in the generated config is load-bearing: the
     // entry is written during query 1 and hits never refresh it, so a host
     // stall past the TTL reads here exactly like a lookup regression.
     let hits_after = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
@@ -1015,7 +1025,7 @@ async fn acceptance_2_cache_miss_triggers_fan_out() {
     // Body equality holds on both paths (see acceptance_1); the hit delta
     // below is what proves the miss actually filed a serving entry.
     assert_eq!(result, result2);
-    // The 500 ms ttl_ms is load-bearing as in acceptance_1 — the entry is
+    // The pinned ttl_ms is load-bearing as in acceptance_1 — the entry is
     // written during the first query and hits never refresh it, so a host
     // stall past the TTL reads here exactly like a store regression.
     let hits_after_second = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
@@ -1142,7 +1152,7 @@ async fn acceptance_3_cache_stores_results_after_scatter_gather() {
 
     // The entry stored after the scatter-gather must serve the repeat as a
     // hit: an insert that never landed or was evicted early leaves the
-    // repeat a second miss. The 500 ms ttl_ms is load-bearing as in
+    // repeat a second miss. The pinned ttl_ms is load-bearing as in
     // acceptance_1 — the entry is written during query 1 and hits never
     // refresh it, so a host stall past the TTL reads here exactly like a
     // store regression.
@@ -1237,7 +1247,7 @@ async fn acceptance_4_cache_reduces_upstream_meilisearch_calls() {
     // Four of the five queries must be served as hits: query 1 misses and
     // stores, queries 2-5 replay the entry. A repeat that leaks past the
     // cache — entry never stored, evicted early, or a host stall past the
-    // 500 ms ttl_ms, which is anchored at the query-1 insert and never
+    // pinned ttl_ms, which is anchored at the query-1 insert and never
     // refreshed on a hit — is recorded as a miss instead and this delta
     // falls short.
     let hits_after = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
@@ -1468,7 +1478,7 @@ async fn acceptance_5_different_queries_use_different_cache_keys() {
     assert_eq!(result4, result4_cached);
 
     // All four repeats must be recorded as hits: each query filed its own
-    // entry in the first pass, and the 500 ms ttl_ms is load-bearing as in
+    // entry in the first pass, and the pinned ttl_ms is load-bearing as in
     // acceptance_1 — hits never refresh an entry, so a host stall past the
     // TTL reads here exactly like a lookup regression.
     let hits_after = proxy_counter(&setup.client, "miroir_result_cache_hits_total")
@@ -1622,11 +1632,12 @@ async fn acceptance_7_cache_ttl_expiration() {
     assert!(resp1.status().is_success());
     let result1: Value = resp1.json().await.unwrap();
 
-    // Wait for cache to expire (TTL is 500ms in test config). The sleep is
-    // measured from query 1's completion — the entry is inserted at its
-    // scatter end — so 600 ms always overshoots the 500 ms ttl_ms, and a
-    // host stall only makes the entry more expired, never less.
-    sleep(Duration::from_millis(600)).await;
+    // Wait for cache to expire (ttl_ms is pinned to 2000 in the test
+    // config). The sleep is measured from query 1's completion — the entry
+    // is inserted at its scatter end — so 2500 ms always overshoots the
+    // 2000 ms ttl_ms, and a host stall only makes the entry more expired,
+    // never less.
+    sleep(Duration::from_millis(2_500)).await;
 
     // Query again after expiration - should trigger fresh scatter-gather
     let resp2 = setup
@@ -1661,8 +1672,8 @@ async fn acceptance_7_cache_ttl_expiration() {
     );
 
     // The repeat must miss again: query 1 is the cold miss, and the repeat
-    // looks up an entry written before the 600 ms sleep — past the
-    // 500 ms ttl_ms, and an expired entry is a miss by definition. A repeat
+    // looks up an entry written before the 2500 ms sleep — past the
+    // 2000 ms ttl_ms, and an expired entry is a miss by definition. A repeat
     // served as a hit means the entry survived its TTL (expiry broken) and
     // this delta falls short at +1.
     let misses_after = proxy_counter(&setup.client, "miroir_result_cache_misses_total")
@@ -1882,7 +1893,7 @@ async fn acceptance_9_cache_invalidation_on_index_update() {
     // pair pins the commit itself. The commit is awaited inside the PATCH
     // handler before its 2xx is returned, so the bump is ordered before the
     // repeat below — this assert cannot flake against a late commit.
-    // Without it a broadcast that stalls past query 1's 500 ms ttl_ms
+    // Without it a broadcast that stalls past query 1's pinned ttl_ms
     // (e.g. one hash-mismatch repair, whose backoff
     // is >=1 s) lets the entry expire naturally, the repeat misses either
     // way, and the miss/scatter deltas below pass with the invalidation
@@ -2035,7 +2046,7 @@ async fn acceptance_10_cache_with_complex_query() {
 
     // The repeat must be served as a hit: query 1 filed the complex body —
     // filter, facets, and empty q all canonicalized into the key — at its
-    // scatter end, and the repeat lands well inside the 500 ms ttl_ms,
+    // scatter end, and the repeat lands well inside the pinned ttl_ms,
     // which is anchored at that insert as in acceptance_1. A repeat that
     // misses means the complex query never stored or looked up under a
     // different key than it stored, and this delta falls short. (The old
